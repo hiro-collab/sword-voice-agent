@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sword-voice-agent"
+version = "0.1.0"
+description = "Gesture-gated voice interface for AI agents such as Dify."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "hiro-collab" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = []
+
+[project.scripts]
+sword-gate-sim = "sword_voice_agent.apps.gate_simulator:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
