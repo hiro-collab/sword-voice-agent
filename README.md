@@ -43,6 +43,7 @@ Ports and Adapters 型で構成します。
 - 刀印の揺れを吸収する `GestureInputGate`
 - `GestureState` をHTTP POSTで受け取るreceiver
 - `VoiceState` を `ai_talk_core` の input gate payload へ変換するadapter
+- `VoiceState` のON/OFFエッジから `start_recording` / `stop_recording` を作るturn controller
 - Dify Chat App API用の最小クライアント
 - JSON Linesでinput gateを試せるCLI
 
@@ -98,6 +99,19 @@ Invoke-RestMethod `
 {
   "type": "input_gate_state",
   "input_enabled": true,
+  "mic_enabled": true,
+  "reason": "activation_delay_passed",
+  "source": "sword_voice_agent",
+  "timestamp": 0.4
+}
+```
+
+HTTP receiverの応答には、録音制御用のcommandも含まれます。
+
+```json
+{
+  "type": "voice_control_command",
+  "action": "start_recording",
   "mic_enabled": true,
   "reason": "activation_delay_passed",
   "source": "sword_voice_agent",

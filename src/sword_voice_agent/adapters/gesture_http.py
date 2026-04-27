@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Mapping, Protocol
 
 from sword_voice_agent.core.input_gate import GestureInputGate
+from sword_voice_agent.core.turn_controller import VoiceTurnController
 from sword_voice_agent.protocol.messages import GestureState, ProtocolError, VoiceState
 
 
@@ -18,6 +19,7 @@ def build_gesture_response(
     payload: Mapping[str, Any],
     gate: GestureInputGate,
     voice_state_sink: VoiceStateSink | None = None,
+    turn_controller: VoiceTurnController | None = None,
 ) -> dict[str, Any]:
     state = GestureState.from_dict(payload)
     decision = gate.update(state)
@@ -27,6 +29,10 @@ def build_gesture_response(
         "voice_state": voice_state.to_dict(),
         "gate_decision": decision.to_dict(),
     }
+    if turn_controller is not None:
+        response_payload["voice_control_command"] = (
+            turn_controller.update(voice_state).to_dict()
+        )
     if voice_state_sink is not None:
         response_payload["input_gate_response"] = dict(
             voice_state_sink.send_voice_state(voice_state)
@@ -37,6 +43,7 @@ def build_gesture_response(
 class GestureGateHttpHandler(BaseHTTPRequestHandler):
     gate: GestureInputGate
     voice_state_sink: VoiceStateSink | None = None
+    turn_controller: VoiceTurnController | None = None
 
     server_version = "SwordGestureHTTP/0.1"
 
@@ -57,6 +64,7 @@ class GestureGateHttpHandler(BaseHTTPRequestHandler):
                 payload,
                 self.gate,
                 self.voice_state_sink,
+                self.turn_controller,
             )
         except (json.JSONDecodeError, ProtocolError, ValueError, TypeError) as exc:
             self._write_json(
@@ -96,12 +104,14 @@ class GestureGateHttpHandler(BaseHTTPRequestHandler):
 def make_handler(
     gate: GestureInputGate,
     voice_state_sink: VoiceStateSink | None = None,
+    turn_controller: VoiceTurnController | None = None,
 ) -> type[GestureGateHttpHandler]:
     class ConfiguredGestureGateHttpHandler(GestureGateHttpHandler):
         pass
 
     ConfiguredGestureGateHttpHandler.gate = gate
     ConfiguredGestureGateHttpHandler.voice_state_sink = voice_state_sink
+    ConfiguredGestureGateHttpHandler.turn_controller = turn_controller
     return ConfiguredGestureGateHttpHandler
 
 
@@ -110,5 +120,9 @@ def create_server(
     port: int,
     gate: GestureInputGate,
     voice_state_sink: VoiceStateSink | None = None,
+    turn_controller: VoiceTurnController | None = None,
 ) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((host, port), make_handler(gate, voice_state_sink))
+    return ThreadingHTTPServer(
+        (host, port),
+        make_handler(gate, voice_state_sink, turn_controller),
+    )

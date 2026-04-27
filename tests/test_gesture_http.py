@@ -2,6 +2,7 @@ from unittest import TestCase
 
 from sword_voice_agent.adapters.gesture_http import build_gesture_response
 from sword_voice_agent.core.input_gate import GestureInputGate
+from sword_voice_agent.core.turn_controller import VoiceTurnController
 from sword_voice_agent.protocol.messages import VoiceState
 
 
@@ -82,3 +83,29 @@ class GestureHttpTest(TestCase):
         self.assertEqual(response["input_gate_response"], {"ok": True})
         self.assertEqual(len(sink.voice_states), 1)
         self.assertTrue(sink.voice_states[0].mic_enabled)
+
+    def test_includes_voice_control_command_when_controller_is_provided(self) -> None:
+        gate = GestureInputGate(activation_delay_s=0.0)
+        controller = VoiceTurnController(source="test")
+
+        response = build_gesture_response(
+            {
+                "type": "gesture_state",
+                "source": "test",
+                "timestamp": 10.0,
+                "gestures": {
+                    "sword_sign": {
+                        "active": True,
+                        "confidence": 0.95,
+                    }
+                },
+            },
+            gate,
+            turn_controller=controller,
+        )
+
+        self.assertEqual(
+            response["voice_control_command"]["action"],
+            "start_recording",
+        )
+        self.assertEqual(response["voice_control_command"]["source"], "test")

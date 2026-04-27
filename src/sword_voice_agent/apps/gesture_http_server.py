@@ -5,6 +5,7 @@ import argparse
 from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreInputGateClient
 from sword_voice_agent.adapters.gesture_http import create_server
 from sword_voice_agent.core.input_gate import GestureInputGate
+from sword_voice_agent.core.turn_controller import VoiceTurnController
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.input_gate_url
         else None
     )
-    server = create_server(args.host, args.port, gate, sink)
+    server = create_server(args.host, args.port, gate, sink, VoiceTurnController())
     print(f"listening on http://{args.host}:{args.port}", flush=True)
 
     try:

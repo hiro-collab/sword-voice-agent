@@ -4,6 +4,7 @@ from sword_voice_agent.protocol.messages import (
     AgentRequest,
     GestureSignal,
     GestureState,
+    VoiceControlCommand,
     VoicePhase,
     VoiceState,
     message_from_dict,
@@ -40,9 +41,23 @@ class ProtocolTest(TestCase):
         self.assertIsInstance(message, VoiceState)
         self.assertEqual(message.phase, VoicePhase.RECORDING)
 
+    def test_voice_control_command_dispatch(self) -> None:
+        message = message_from_dict(
+            {
+                "type": "voice_control_command",
+                "timestamp": 1.0,
+                "action": "start_recording",
+                "mic_enabled": True,
+                "reason": "activation_delay_passed",
+                "source": "test",
+            }
+        )
+
+        self.assertIsInstance(message, VoiceControlCommand)
+        self.assertEqual(message.action.value, "start_recording")
+
     def test_agent_request_context_defaults(self) -> None:
         request = AgentRequest.from_dict({"text": "今日の記録をまとめて"})
 
         self.assertEqual(request.user, "local-user")
         self.assertEqual(request.context, {})
-

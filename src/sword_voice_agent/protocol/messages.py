@@ -25,6 +25,12 @@ class VoicePhase(str, Enum):
     ERROR = "error"
 
 
+class VoiceControlAction(str, Enum):
+    NONE = "none"
+    START_RECORDING = "start_recording"
+    STOP_RECORDING = "stop_recording"
+
+
 @dataclass(frozen=True)
 class GestureSignal:
     active: bool
@@ -137,6 +143,40 @@ class VoiceState:
 
 
 @dataclass(frozen=True)
+class VoiceControlCommand:
+    action: VoiceControlAction
+    timestamp: float
+    mic_enabled: bool
+    reason: str
+    source: str = "sword_voice_agent"
+
+    type: ClassVar[str] = "voice_control_command"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.type,
+            "timestamp": self.timestamp,
+            "action": self.action.value,
+            "mic_enabled": self.mic_enabled,
+            "reason": self.reason,
+            "source": self.source,
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False)
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "VoiceControlCommand":
+        return cls(
+            action=VoiceControlAction(str(payload["action"])),
+            timestamp=float(payload.get("timestamp", now_timestamp())),
+            mic_enabled=bool(payload.get("mic_enabled", False)),
+            reason=str(payload.get("reason", "external")),
+            source=str(payload.get("source", "external")),
+        )
+
+
+@dataclass(frozen=True)
 class AgentRequest:
     text: str
     user: str = "local-user"
@@ -230,15 +270,18 @@ class AgentResponse:
         )
 
 
-def message_from_dict(payload: Mapping[str, Any]) -> GestureState | VoiceState | AgentRequest | AgentResponse:
+def message_from_dict(
+    payload: Mapping[str, Any],
+) -> GestureState | VoiceState | VoiceControlCommand | AgentRequest | AgentResponse:
     message_type = payload.get("type")
     if message_type == GestureState.type:
         return GestureState.from_dict(payload)
     if message_type == VoiceState.type:
         return VoiceState.from_dict(payload)
+    if message_type == VoiceControlCommand.type:
+        return VoiceControlCommand.from_dict(payload)
     if message_type == AgentRequest.type:
         return AgentRequest.from_dict(payload)
     if message_type == AgentResponse.type:
         return AgentResponse.from_dict(payload)
     raise ProtocolError(f"unsupported message type: {message_type!r}")
-

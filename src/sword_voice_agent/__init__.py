@@ -6,6 +6,8 @@ from sword_voice_agent.protocol.messages import (
     AgentResponse,
     GestureSignal,
     GestureState,
+    VoiceControlAction,
+    VoiceControlCommand,
     VoicePhase,
     VoiceState,
 )
@@ -17,7 +19,8 @@ __all__ = [
     "GestureSignal",
     "GestureState",
     "InputGateDecision",
+    "VoiceControlAction",
+    "VoiceControlCommand",
     "VoicePhase",
     "VoiceState",
 ]
-
