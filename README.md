@@ -11,9 +11,9 @@ Camera
   -> gesture module
   -> GestureState
   -> input gate
-  -> voice module / STT
-  -> Dify
-  -> response display / TTS
+  -> ai_talk_core input gate
+  -> browser recording / STT
+  -> response display / handoff
 ```
 
 最初のMVPは次の流れです。
@@ -25,7 +25,7 @@ Camera
   -> MIC OFF
   -> 録音終了
   -> STT
-  -> Difyへ送信
+  -> handoff生成
 ```
 
 ## 設計方針
@@ -112,6 +112,38 @@ cd C:\Users\kawai\dev\works\mediapipe_test
 uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765
 ```
 
+## ローカル統合手順
+
+1. `ai_talk_core` のWeb UIを起動する。
+
+```powershell
+cd C:\Users\kawai\dev\works\ai_talk_core\ai_talk_core
+uv run python -m src.web.app
+```
+
+2. ブラウザで `http://127.0.0.1:8000` を開き、ブラウザ録音の `入力ゲートで録音を制御する` を有効にする。
+
+3. `sword-voice-agent` のUDP receiverを起動する。
+
+```powershell
+cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
+$env:PYTHONPATH = "src"
+python -m sword_voice_agent.apps.gesture_udp_receiver `
+  --host 127.0.0.1 `
+  --port 8765 `
+  --input-gate-url http://127.0.0.1:8000/api/input-gate `
+  --print-json
+```
+
+4. `mediapipe-sword-sign` からUDPで `GestureState` を送る。
+
+```powershell
+cd C:\Users\kawai\dev\works\mediapipe_test
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765
+```
+
+この状態で刀印が安定検出されると、`ai_talk_core` のinput gateがenabledになり、Web UI側のブラウザ録音が開始します。刀印を解除するとinput gateがdisabledになり、録音停止とアップロード処理に進みます。
+
 `ai_talk_core` へ渡すinput gate payloadの形:
 
 ```json
@@ -140,7 +172,7 @@ HTTP receiverの応答には、録音制御用のcommandも含まれます。
 
 ## 次の実装
 
-1. `mediapipe-sword-sign` 側から `GestureState` JSONをHTTP POSTするadapterを追加する。
-2. `ai_talk_core` 側に上記payloadを受け取るWeb/API endpointを追加する。
-3. 統合アプリで `GestureState -> GestureInputGate -> voice capture -> Dify` を配線する。
-4. Web UIに刀印検出、MIC、処理状態のインジケータを表示する。
+1. 実機で `mediapipe-sword-sign -> sword-voice-agent -> ai_talk_core` の録音開始/停止を確認する。
+2. `ai_talk_core` の文字起こし結果をDifyへ渡す経路を追加する。
+3. Dify応答の表示/TTSを追加する。
+4. 必要ならWebSocket receiverも追加する。
