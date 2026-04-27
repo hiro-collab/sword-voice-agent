@@ -144,6 +144,31 @@ uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765
 
 この状態で刀印が安定検出されると、`ai_talk_core` のinput gateがenabledになり、Web UI側のブラウザ録音が開始します。刀印を解除するとinput gateがdisabledになり、録音停止とアップロード処理に進みます。
 
+5. `ai_talk_core` のWeb UIで `handoff payload を保存する` を有効にしておく。
+
+6. 保存されたhandoffをDifyへ送る。
+
+```powershell
+cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
+$env:PYTHONPATH = "src"
+$env:AI_TALK_CORE_ROOT = "C:\Users\kawai\dev\works\ai_talk_core\ai_talk_core"
+$env:DIFY_BASE_URL = "http://localhost/v1"
+$env:DIFY_API_KEY = "app-..."
+python -m sword_voice_agent.apps.send_handoff_to_dify --source web --field command
+```
+
+Difyへ実送信せず、handoffから作られる `AgentRequest` だけ確認する場合:
+
+```powershell
+python -m sword_voice_agent.apps.send_handoff_to_dify `
+  --ai-talk-core-root C:\Users\kawai\dev\works\ai_talk_core\ai_talk_core `
+  --source web `
+  --field command `
+  --dry-run
+```
+
+`--field` は `command`, `transcript`, `prompt` から選べます。Dify Chat APIには `response_mode=blocking` で `/chat-messages` へ送ります。
+
 `ai_talk_core` へ渡すinput gate payloadの形:
 
 ```json
@@ -173,6 +198,6 @@ HTTP receiverの応答には、録音制御用のcommandも含まれます。
 ## 次の実装
 
 1. 実機で `mediapipe-sword-sign -> sword-voice-agent -> ai_talk_core` の録音開始/停止を確認する。
-2. `ai_talk_core` の文字起こし結果をDifyへ渡す経路を追加する。
-3. Dify応答の表示/TTSを追加する。
+2. Dify応答の表示/TTSを追加する。
+3. `ai_talk_core` の処理完了を監視してDify送信まで自動化する。
 4. 必要ならWebSocket receiverも追加する。
