@@ -48,9 +48,30 @@ Ports and Adapters 型で構成します。
 - Dify Chat App API用の最小クライアント
 - JSON Linesでinput gateを試せるCLI
 
-## 開発
+## リポジトリ配置
+
+このREADMEの `sword_voice_agent` を実行するコマンドは、次の内側ディレクトリから実行します。
 
 ```powershell
+cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
+```
+
+外側の `C:\Users\kawai\dev\works\sword-voice-agent` には `src` がないため、そこで `PYTHONPATH=src` を指定しても `No module named 'sword_voice_agent'` になります。
+
+関連モジュールは別リポジトリです。
+
+```text
+C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent  # 統合アプリ
+C:\Users\kawai\dev\works\ai_talk_core\ai_talk_core            # 音声/STT/Web UI
+C:\Users\kawai\dev\works\mediapipe_test                       # 刀印検出
+```
+
+## 開発
+
+実行場所: `C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent`
+
+```powershell
+cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
 $env:PYTHONPATH = "src"
 python -m unittest discover -s tests
 ```
@@ -58,18 +79,23 @@ python -m unittest discover -s tests
 CLIデモ:
 
 ```powershell
+cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
+$env:PYTHONPATH = "src"
 python -m sword_voice_agent.apps.gate_simulator --demo
 ```
 
 標準入力から `GestureState` JSON Lines を流すこともできます。
 
 ```powershell
+cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
+$env:PYTHONPATH = "src"
 '{"type":"gesture_state","source":"demo","timestamp":0.0,"gestures":{"sword_sign":{"active":true,"confidence":0.95}}}' | python -m sword_voice_agent.apps.gate_simulator
 ```
 
 HTTP receiver:
 
 ```powershell
+cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
 $env:PYTHONPATH = "src"
 python -m sword_voice_agent.apps.gesture_http_server --host 127.0.0.1 --port 8787
 ```
@@ -77,6 +103,7 @@ python -m sword_voice_agent.apps.gesture_http_server --host 127.0.0.1 --port 878
 `ai_talk_core` 側にinput gate endpointを用意した後は、receiverから転送できます。
 
 ```powershell
+cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
 $env:PYTHONPATH = "src"
 python -m sword_voice_agent.apps.gesture_http_server `
   --host 127.0.0.1 `
@@ -87,6 +114,7 @@ python -m sword_voice_agent.apps.gesture_http_server `
 別ターミナルから:
 
 ```powershell
+cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
 Invoke-RestMethod `
   -Method Post `
   -Uri http://127.0.0.1:8787/gesture-state `
@@ -97,6 +125,7 @@ Invoke-RestMethod `
 UDP receiver:
 
 ```powershell
+cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
 $env:PYTHONPATH = "src"
 python -m sword_voice_agent.apps.gesture_udp_receiver `
   --host 127.0.0.1 `
@@ -160,6 +189,8 @@ python -m sword_voice_agent.apps.send_handoff_to_dify --source web --field comma
 Difyへ実送信せず、handoffから作られる `AgentRequest` だけ確認する場合:
 
 ```powershell
+cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
+$env:PYTHONPATH = "src"
 python -m sword_voice_agent.apps.send_handoff_to_dify `
   --ai-talk-core-root C:\Users\kawai\dev\works\ai_talk_core\ai_talk_core `
   --source web `
