@@ -72,6 +72,16 @@ $env:PYTHONPATH = "src"
 python -m sword_voice_agent.apps.gesture_http_server --host 127.0.0.1 --port 8787
 ```
 
+`ai_talk_core` 側にinput gate endpointを用意した後は、receiverから転送できます。
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m sword_voice_agent.apps.gesture_http_server `
+  --host 127.0.0.1 `
+  --port 8787 `
+  --input-gate-url http://127.0.0.1:8000/api/input-gate
+```
+
 別ターミナルから:
 
 ```powershell

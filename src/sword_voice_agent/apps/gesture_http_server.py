@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreInputGateClient
 from sword_voice_agent.adapters.gesture_http import create_server
 from sword_voice_agent.core.input_gate import GestureInputGate
 
@@ -14,6 +15,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-confidence", type=float, default=0.8)
     parser.add_argument("--activation-delay", type=float, default=0.3)
     parser.add_argument("--release-delay", type=float, default=0.5)
+    parser.add_argument(
+        "--input-gate-url",
+        default=None,
+        help="Optional ai_talk_core-compatible input gate endpoint.",
+    )
+    parser.add_argument("--input-gate-timeout", type=float, default=5.0)
     args = parser.parse_args(argv)
 
     gate = GestureInputGate(
@@ -22,7 +29,15 @@ def main(argv: list[str] | None = None) -> int:
         activation_delay_s=args.activation_delay,
         release_delay_s=args.release_delay,
     )
-    server = create_server(args.host, args.port, gate)
+    sink = (
+        AiTalkCoreInputGateClient(
+            endpoint_url=args.input_gate_url,
+            timeout_s=args.input_gate_timeout,
+        )
+        if args.input_gate_url
+        else None
+    )
+    server = create_server(args.host, args.port, gate, sink)
     print(f"listening on http://{args.host}:{args.port}", flush=True)
 
     try:
@@ -37,4 +52,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
