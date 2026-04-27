@@ -42,6 +42,7 @@ Ports and Adapters 型で構成します。
 - `GestureState`, `VoiceState`, `AgentRequest`, `AgentResponse`
 - 刀印の揺れを吸収する `GestureInputGate`
 - `GestureState` をHTTP POSTで受け取るreceiver
+- `VoiceState` を `ai_talk_core` の input gate payload へ変換するadapter
 - Dify Chat App API用の最小クライアント
 - JSON Linesでinput gateを試せるCLI
 
@@ -81,9 +82,22 @@ Invoke-RestMethod `
   -Body '{"type":"gesture_state","source":"demo","timestamp":0.0,"gestures":{"sword_sign":{"active":true,"confidence":0.95}}}'
 ```
 
+`ai_talk_core` へ渡すinput gate payloadの形:
+
+```json
+{
+  "type": "input_gate_state",
+  "input_enabled": true,
+  "mic_enabled": true,
+  "reason": "activation_delay_passed",
+  "source": "sword_voice_agent",
+  "timestamp": 0.4
+}
+```
+
 ## 次の実装
 
 1. `mediapipe-sword-sign` 側から `GestureState` JSONをHTTP POSTするadapterを追加する。
-2. `ai_talk_core` 側に `mic_enabled` を外部から渡すadapterを追加する。
+2. `ai_talk_core` 側に上記payloadを受け取るWeb/API endpointを追加する。
 3. 統合アプリで `GestureState -> GestureInputGate -> voice capture -> Dify` を配線する。
 4. Web UIに刀印検出、MIC、処理状態のインジケータを表示する。
