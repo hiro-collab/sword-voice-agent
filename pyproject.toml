@@ -20,6 +20,7 @@ dev = []
 [project.scripts]
 sword-gate-sim = "sword_voice_agent.apps.gate_simulator:main"
 sword-gesture-http = "sword_voice_agent.apps.gesture_http_server:main"
+sword-gesture-udp = "sword_voice_agent.apps.gesture_udp_receiver:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

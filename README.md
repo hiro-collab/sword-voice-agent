@@ -42,6 +42,7 @@ Ports and Adapters 型で構成します。
 - `GestureState`, `VoiceState`, `AgentRequest`, `AgentResponse`
 - 刀印の揺れを吸収する `GestureInputGate`
 - `GestureState` をHTTP POSTで受け取るreceiver
+- `mediapipe-sword-sign` のUDP publisherから `GestureState` を受け取るreceiver
 - `VoiceState` を `ai_talk_core` の input gate payload へ変換するadapter
 - `VoiceState` のON/OFFエッジから `start_recording` / `stop_recording` を作るturn controller
 - Dify Chat App API用の最小クライアント
@@ -91,6 +92,24 @@ Invoke-RestMethod `
   -Uri http://127.0.0.1:8787/gesture-state `
   -ContentType "application/json" `
   -Body '{"type":"gesture_state","source":"demo","timestamp":0.0,"gestures":{"sword_sign":{"active":true,"confidence":0.95}}}'
+```
+
+UDP receiver:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m sword_voice_agent.apps.gesture_udp_receiver `
+  --host 127.0.0.1 `
+  --port 8765 `
+  --input-gate-url http://127.0.0.1:8000/api/input-gate `
+  --print-json
+```
+
+`mediapipe-sword-sign` 側から送る場合:
+
+```powershell
+cd C:\Users\kawai\dev\works\mediapipe_test
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765
 ```
 
 `ai_talk_core` へ渡すinput gate payloadの形:
