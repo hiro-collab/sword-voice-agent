@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from sword_voice_agent.protocol.messages import GestureState, VoicePhase, VoiceState
 
@@ -14,6 +15,17 @@ class InputGateDecision:
     mic_enabled: bool
     changed: bool
     reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "timestamp": self.timestamp,
+            "gesture_name": self.gesture_name,
+            "raw_active": self.raw_active,
+            "confidence": self.confidence,
+            "mic_enabled": self.mic_enabled,
+            "changed": self.changed,
+            "reason": self.reason,
+        }
 
     def to_voice_state(self) -> VoiceState:
         phase = VoicePhase.ARMED if self.mic_enabled else VoicePhase.IDLE
@@ -103,4 +115,3 @@ class GestureInputGate:
             changed=previous != self._mic_enabled,
             reason=reason,
         )
-
