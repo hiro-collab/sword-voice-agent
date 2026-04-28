@@ -23,6 +23,7 @@ sword-gesture-http = "sword_voice_agent.apps.gesture_http_server:main"
 sword-gesture-udp = "sword_voice_agent.apps.gesture_udp_receiver:main"
 sword-demo-gestures = "sword_voice_agent.apps.send_demo_gestures:main"
 sword-dify-handoff = "sword_voice_agent.apps.send_handoff_to_dify:main"
+sword-dify-watch = "sword_voice_agent.apps.watch_handoff_to_dify:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

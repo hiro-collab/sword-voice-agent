@@ -8,6 +8,6 @@ __pycache__/
 .coverage
 htmlcov/
 .env
+tests/_tmp/
 dist/
 build/
-

@@ -46,6 +46,7 @@ Ports and Adapters 型で構成します。
 - `VoiceState` を `ai_talk_core` の input gate payload へ変換するadapter
 - `VoiceState` のON/OFFエッジから `start_recording` / `stop_recording` を作るturn controller
 - Dify Chat App API用の最小クライアント
+- `ai_talk_core` のhandoff更新を監視してDifyへ送るwatcher
 - JSON Linesでinput gateを試せるCLI
 
 ## リポジトリ配置
@@ -186,7 +187,45 @@ uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --debug --debug-e
 
 5. `ai_talk_core` のWeb UIで `handoff payload を保存する` を有効にしておく。
 
-6. 保存されたhandoffをDifyへ送る。
+6. 保存されたhandoffをDifyへ自動送信するwatcherを起動する。
+
+```powershell
+cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
+$env:PYTHONPATH = "src"
+$env:AI_TALK_CORE_ROOT = "C:\Users\kawai\dev\works\ai_talk_core\ai_talk_core"
+$env:DIFY_BASE_URL = "http://localhost/v1"
+$env:DIFY_API_KEY = "app-..."
+python -m sword_voice_agent.apps.watch_handoff_to_dify `
+  --source web `
+  --field command `
+  --skip-existing
+```
+
+新しいhandoffが保存されるたびにDifyへ送信し、結果を次のファイルに保存します。
+
+```text
+C:\Users\kawai\dev\works\ai_talk_core\ai_talk_core\.cache\codex\web_dify_latest.json
+C:\Users\kawai\dev\works\ai_talk_core\ai_talk_core\.cache\codex\web_dify_latest.txt
+C:\Users\kawai\dev\works\ai_talk_core\ai_talk_core\.cache\codex\web_dify_conversation_id.txt
+```
+
+`web_dify_conversation_id.txt` がある場合は、次回以降の送信でDifyの同じ会話を継続します。会話を継続したくない場合は `--no-conversation-state` を追加します。
+
+Difyへ実送信せず、handoffから作られる `AgentRequest` だけ確認する場合:
+
+```powershell
+cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
+$env:PYTHONPATH = "src"
+python -m sword_voice_agent.apps.watch_handoff_to_dify `
+  --ai-talk-core-root C:\Users\kawai\dev\works\ai_talk_core\ai_talk_core `
+  --source web `
+  --field command `
+  --once `
+  --dry-run `
+  --print-json
+```
+
+手動で現在のhandoffを1回だけ送る場合:
 
 ```powershell
 cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
@@ -197,7 +236,7 @@ $env:DIFY_API_KEY = "app-..."
 python -m sword_voice_agent.apps.send_handoff_to_dify --source web --field command
 ```
 
-Difyへ実送信せず、handoffから作られる `AgentRequest` だけ確認する場合:
+手動送信でDifyへ実送信せず、handoffから作られる `AgentRequest` だけ確認する場合:
 
 ```powershell
 cd C:\Users\kawai\dev\works\sword-voice-agent\sword-voice-agent
@@ -210,6 +249,8 @@ python -m sword_voice_agent.apps.send_handoff_to_dify `
 ```
 
 `--field` は `command`, `transcript`, `prompt` から選べます。Dify Chat APIには `response_mode=blocking` で `/chat-messages` へ送ります。
+
+`ai_talk_core` が無音として保存した `音声を認識できませんでした。` は、watcherではデフォルトでDifyへ送りません。確認用に送信したい場合だけ `--send-no-speech` を追加します。
 
 `ai_talk_core` へ渡すinput gate payloadの形:
 
@@ -241,5 +282,5 @@ HTTP receiverの応答には、録音制御用のcommandも含まれます。
 
 1. 実機で `mediapipe-sword-sign -> sword-voice-agent -> ai_talk_core` の録音開始/停止を確認する。
 2. Dify応答の表示/TTSを追加する。
-3. `ai_talk_core` の処理完了を監視してDify送信まで自動化する。
+3. `ai_talk_core` 側でDify応答ファイルをUI表示またはTTSへ渡す。
 4. 必要ならWebSocket receiverも追加する。
