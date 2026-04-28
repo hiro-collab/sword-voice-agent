@@ -131,15 +131,25 @@ python -m sword_voice_agent.apps.gesture_udp_receiver `
   --host 127.0.0.1 `
   --port 8765 `
   --input-gate-url http://127.0.0.1:8000/api/input-gate `
-  --print-json
+  --debug `
+  --debug-every 30
 ```
 
 `mediapipe-sword-sign` 側から送る場合:
 
 ```powershell
 cd C:\Users\kawai\dev\works\mediapipe_test
-uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --debug --debug-every 30
 ```
+
+`mediapipe-sword-sign` のカメラ/手検出/信頼度を画面でも確認したい場合は、送信側に `--preview` を追加します。
+
+```powershell
+cd C:\Users\kawai\dev\works\mediapipe_test
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --debug --debug-every 30 --preview
+```
+
+protobuf の非推奨warningが通常ログに混ざって見づらい場合は、送信側に `--suppress-protobuf-warnings` を追加します。
 
 ## ローカル統合手順
 
@@ -161,14 +171,15 @@ python -m sword_voice_agent.apps.gesture_udp_receiver `
   --host 127.0.0.1 `
   --port 8765 `
   --input-gate-url http://127.0.0.1:8000/api/input-gate `
-  --print-json
+  --debug `
+  --debug-every 30
 ```
 
 4. `mediapipe-sword-sign` からUDPで `GestureState` を送る。
 
 ```powershell
 cd C:\Users\kawai\dev\works\mediapipe_test
-uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --debug --debug-every 30
 ```
 
 この状態で刀印が安定検出されると、`ai_talk_core` のinput gateがenabledになり、Web UI側のブラウザ録音が開始します。刀印を解除するとinput gateがdisabledになり、録音停止とアップロード処理に進みます。

@@ -2,11 +2,67 @@ from __future__ import annotations
 
 import argparse
 import json
+from typing import Any, Mapping
 
 from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreInputGateClient
 from sword_voice_agent.adapters.gesture_udp import GestureUdpReceiver
 from sword_voice_agent.core.input_gate import GestureInputGate
 from sword_voice_agent.core.turn_controller import VoiceTurnController
+
+
+def format_debug_line(
+    response: Mapping[str, Any],
+    address: tuple[str, int],
+    *,
+    sequence: int,
+) -> str:
+    decision = _mapping(response.get("gate_decision"))
+    voice_state = _mapping(response.get("voice_state"))
+    command = _mapping(response.get("voice_control_command"))
+    input_gate = _mapping(response.get("input_gate_response"))
+    input_gate_state = _mapping(input_gate.get("input_gate"))
+    input_gate_status = (
+        "not_configured"
+        if not input_gate
+        else "ok" if input_gate.get("ok") else "error"
+    )
+    return (
+        "[gesture-udp] "
+        f"seq={sequence} "
+        f"from={address[0]}:{address[1]} "
+        f"raw_active={_bool_label(decision.get('raw_active'))} "
+        f"confidence={_float_value(decision.get('confidence')):.3f} "
+        f"mic_enabled={_bool_label(voice_state.get('mic_enabled'))} "
+        f"changed={_bool_label(decision.get('changed'))} "
+        f"reason={decision.get('reason', '')} "
+        f"phase={voice_state.get('phase', '')} "
+        f"action={command.get('action', 'none')} "
+        f"input_gate={input_gate_status}"
+        f"{_input_gate_suffix(input_gate_state)}"
+    )
+
+
+def _mapping(value: object) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _bool_label(value: object) -> str:
+    return "1" if bool(value) else "0"
+
+
+def _float_value(value: object) -> float:
+    if value is None:
+        return 0.0
+    return float(value)
+
+
+def _input_gate_suffix(input_gate_state: Mapping[str, Any]) -> str:
+    if not input_gate_state:
+        return ""
+    return (
+        f" input_gate_enabled={_bool_label(input_gate_state.get('input_enabled'))}"
+        f" input_gate_reason={input_gate_state.get('reason', '')}"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -24,6 +80,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--input-gate-timeout", type=float, default=5.0)
     parser.add_argument("--print-json", action="store_true")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print one-line receive/gate/forwarding diagnostics.",
+    )
+    parser.add_argument(
+        "--debug-every",
+        type=int,
+        default=1,
+        help="Print every N received datagrams when --debug is enabled.",
+    )
     args = parser.parse_args(argv)
 
     gate = GestureInputGate(
@@ -49,10 +116,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     print(f"listening for GestureState UDP on {args.host}:{args.port}", flush=True)
+    sequence = 0
     try:
         with receiver:
             while True:
                 response, address = receiver.receive_once()
+                sequence += 1
                 if args.print_json:
                     print(
                         json.dumps(
@@ -64,6 +133,11 @@ def main(argv: list[str] | None = None) -> int:
                         ),
                         flush=True,
                     )
+                if args.debug and sequence % max(1, args.debug_every) == 0:
+                    print(
+                        format_debug_line(response, address, sequence=sequence),
+                        flush=True,
+                    )
     except KeyboardInterrupt:
         pass
 
@@ -72,4 +146,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
