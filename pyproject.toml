@@ -25,6 +25,7 @@ sword-demo-gestures = "sword_voice_agent.apps.send_demo_gestures:main"
 sword-dify-handoff = "sword_voice_agent.apps.send_handoff_to_dify:main"
 sword-dify-watch = "sword_voice_agent.apps.watch_handoff_to_dify:main"
 sword-console = "sword_voice_agent.apps.console_server:main"
+sword-status-clear = "sword_voice_agent.apps.clear_status:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

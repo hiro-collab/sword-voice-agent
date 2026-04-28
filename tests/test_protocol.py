@@ -78,3 +78,25 @@ class ProtocolTest(TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(ProtocolError):
                     GestureSignal.from_dict({"active": True, "confidence": value})
+
+    def test_rejects_malformed_gesture_entry(self) -> None:
+        with self.assertRaises(ProtocolError):
+            GestureState.from_dict(
+                {
+                    "type": "gesture_state",
+                    "timestamp": 1.0,
+                    "gestures": {"sword_sign": "not-an-object"},
+                }
+            )
+
+    def test_rejects_non_finite_gesture_timestamp(self) -> None:
+        with self.assertRaises(ProtocolError):
+            GestureState.from_dict(
+                {
+                    "type": "gesture_state",
+                    "timestamp": float("inf"),
+                    "gestures": {
+                        "sword_sign": {"active": True, "confidence": 0.9},
+                    },
+                }
+            )

@@ -74,7 +74,7 @@ class GestureGateHttpHandler(BaseHTTPRequestHandler):
         except RuntimeError as exc:
             self._write_json(
                 HTTPStatus.BAD_GATEWAY,
-                {"ok": False, "error": str(exc)},
+                {"ok": False, "error": "upstream_error"},
             )
             return
 

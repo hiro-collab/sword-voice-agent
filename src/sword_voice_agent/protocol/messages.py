@@ -97,18 +97,28 @@ class GestureState:
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "GestureState":
+        message_type = payload.get("type")
+        if message_type is not None and message_type != cls.type:
+            raise ProtocolError(f"gesture_state has unsupported type: {message_type!r}")
+
         gestures_payload = payload.get("gestures")
         if not isinstance(gestures_payload, Mapping):
             raise ProtocolError("gesture_state requires mapping 'gestures'")
 
+        timestamp = _finite_float(
+            payload.get("timestamp", now_timestamp()),
+            "gesture_state 'timestamp'",
+        )
+        gestures: dict[str, GestureSignal] = {}
+        for name, signal in gestures_payload.items():
+            if not isinstance(signal, Mapping):
+                raise ProtocolError(f"gesture signal {name!r} must be an object")
+            gestures[str(name)] = GestureSignal.from_dict(signal)
+
         return cls(
             source=str(payload.get("source", "unknown")),
-            timestamp=float(payload.get("timestamp", now_timestamp())),
-            gestures={
-                str(name): GestureSignal.from_dict(signal)
-                for name, signal in gestures_payload.items()
-                if isinstance(signal, Mapping)
-            },
+            timestamp=timestamp,
+            gestures=gestures,
         )
 
     @classmethod
@@ -308,3 +318,12 @@ def message_from_dict(
     if message_type == AgentResponse.type:
         return AgentResponse.from_dict(payload)
     raise ProtocolError(f"unsupported message type: {message_type!r}")
+
+
+def _finite_float(value: object, label: str) -> float:
+    if not isinstance(value, Real) or isinstance(value, bool):
+        raise ProtocolError(f"{label} must be numeric")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ProtocolError(f"{label} must be finite")
+    return result

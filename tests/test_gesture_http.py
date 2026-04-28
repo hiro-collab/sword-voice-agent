@@ -23,6 +23,11 @@ class FakeVoiceStateSink:
         return {"ok": True}
 
 
+class FailingVoiceStateSink:
+    def send_voice_state(self, voice_state: VoiceState) -> dict[str, bool]:
+        raise RuntimeError("internal path C:\\secret\\input-gate failed")
+
+
 class GestureHttpTest(TestCase):
     def test_requires_auth_for_non_loopback_bind(self) -> None:
         with self.assertRaises(AuthError):
@@ -74,6 +79,41 @@ class GestureHttpTest(TestCase):
             with self.assertRaises(error.HTTPError) as caught:
                 request.urlopen(req, timeout=2)
             self.assertEqual(caught.exception.code, 413)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_server_hides_upstream_error_details(self) -> None:
+        server = create_server(
+            "127.0.0.1",
+            0,
+            GestureInputGate(activation_delay_s=0.0),
+            voice_state_sink=FailingVoiceStateSink(),
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            payload = json.dumps(
+                {
+                    "type": "gesture_state",
+                    "source": "test",
+                    "timestamp": 10.0,
+                    "gestures": {"sword_sign": {"active": True, "confidence": 0.95}},
+                }
+            ).encode("utf-8")
+            req = request.Request(
+                f"http://127.0.0.1:{server.server_port}/gesture-state",
+                data=payload,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with self.assertRaises(error.HTTPError) as caught:
+                request.urlopen(req, timeout=2)
+            body = caught.exception.read().decode("utf-8")
+            self.assertEqual(caught.exception.code, 502)
+            self.assertIn("upstream_error", body)
+            self.assertNotIn("secret", body)
         finally:
             server.shutdown()
             server.server_close()
