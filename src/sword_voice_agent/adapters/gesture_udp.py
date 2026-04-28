@@ -4,6 +4,10 @@ import json
 import socket
 from typing import Any, Mapping
 
+from sword_voice_agent.adapters.auth import (
+    payload_authorized,
+    strip_payload_auth,
+)
 from sword_voice_agent.adapters.gesture_gateway import (
     VoiceStateSink,
     build_gesture_response,
@@ -18,12 +22,15 @@ def build_udp_gesture_response(
     gate: GestureInputGate,
     voice_state_sink: VoiceStateSink | None = None,
     turn_controller: VoiceTurnController | None = None,
+    auth_token: str = "",
 ) -> dict[str, Any]:
     payload = json.loads(datagram.decode("utf-8"))
     if not isinstance(payload, Mapping):
         raise ProtocolError("UDP datagram must contain a JSON object")
+    if not payload_authorized(payload, auth_token):
+        raise ProtocolError("unauthorized gesture datagram")
     return build_gesture_response(
-        payload,
+        strip_payload_auth(payload),
         gate,
         voice_state_sink=voice_state_sink,
         turn_controller=turn_controller,
@@ -40,6 +47,7 @@ class GestureUdpReceiver:
         turn_controller: VoiceTurnController | None = None,
         buffer_size: int = 65535,
         sock: socket.socket | None = None,
+        auth_token: str = "",
     ) -> None:
         self.host = host
         self.port = port
@@ -48,6 +56,7 @@ class GestureUdpReceiver:
         self.turn_controller = turn_controller
         self.buffer_size = buffer_size
         self.sock = sock or socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.auth_token = auth_token
         self._owns_socket = sock is None
         self._bound = False
 
@@ -75,7 +84,7 @@ class GestureUdpReceiver:
                 self.gate,
                 voice_state_sink=self.voice_state_sink,
                 turn_controller=self.turn_controller,
+                auth_token=self.auth_token,
             ),
             address,
         )
-

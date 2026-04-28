@@ -45,6 +45,7 @@ class WatchHandoffToDifyTest(TestCase):
 
             self.assertFalse(result["skipped"])
             self.assertEqual(client.requests[0].text, "今日の作業を整理して")
+            self.assertNotIn("transcript", client.requests[0].context)
             cache_dir = root / ".cache" / "codex"
             saved = json.loads(
                 (cache_dir / "web_dify_latest.json").read_text(encoding="utf-8")
@@ -81,6 +82,62 @@ class WatchHandoffToDifyTest(TestCase):
             run_once(args, client=client)
 
             self.assertEqual(client.requests[0].conversation_id, "conv-1")
+
+    def test_run_once_can_include_transcript_context(self) -> None:
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            write_handoff(root, command="続きを考えて")
+            client = FakeDifyClient()
+            args = build_parser().parse_args(
+                [
+                    "--ai-talk-core-root",
+                    str(root),
+                    "--once",
+                    "--include-transcript-context",
+                ]
+            )
+
+            run_once(args, client=client)
+
+            self.assertEqual(client.requests[0].context["transcript"], "続きを考えて")
+
+    def test_run_once_uses_latest_turn_id_for_status_only(self) -> None:
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            write_handoff(root, command="続きを考えて")
+            status_dir = root / ".cache" / "sword_voice_agent"
+            status_dir.mkdir(parents=True)
+            (status_dir / "latest_voice_turn.json").write_text(
+                json.dumps(
+                    {
+                        "type": "latest_voice_turn",
+                        "timestamp": 1.0,
+                        "turn_id": "turn-1",
+                        "voice_control_command": {"turn_id": "turn-1"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            client = FakeDifyClient()
+            args = build_parser().parse_args(
+                [
+                    "--ai-talk-core-root",
+                    str(root),
+                    "--once",
+                    "--status-dir",
+                    str(status_dir),
+                ]
+            )
+
+            run_once(args, client=client)
+
+            self.assertNotIn("turn_id", client.requests[0].context)
+            latest = json.loads(
+                (status_dir / "latest_dify_response.json").read_text(encoding="utf-8")
+            )
+            event = json.loads((status_dir / "events.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual(latest["turn_id"], "turn-1")
+            self.assertEqual(event["turn_id"], "turn-1")
 
     def test_run_once_skips_no_speech_placeholder_by_default(self) -> None:
         with workspace_tempdir() as tmp:

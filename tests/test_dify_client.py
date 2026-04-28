@@ -19,7 +19,7 @@ class DifyClientTest(TestCase):
         response = MagicMock()
         response.__enter__.return_value.read.return_value = json.dumps(payload).encode("utf-8")
         urlopen.return_value = response
-        client = DifyClient(api_key="test-key", base_url="http://dify.test/v1")
+        client = DifyClient(api_key="test-key", base_url="https://dify.test/v1")
 
         result = client.send_chat_message(
             AgentRequest(text="こんにちは", context={"trigger": "sword_sign"})
@@ -28,9 +28,17 @@ class DifyClientTest(TestCase):
         self.assertEqual(result.text, "応答です")
         self.assertEqual(result.conversation_id, "conv-1")
         request_arg = urlopen.call_args.args[0]
-        self.assertEqual(request_arg.full_url, "http://dify.test/v1/chat-messages")
+        self.assertEqual(request_arg.full_url, "https://dify.test/v1/chat-messages")
         self.assertEqual(request_arg.headers["Authorization"], "Bearer test-key")
         sent = json.loads(request_arg.data.decode("utf-8"))
         self.assertEqual(sent["query"], "こんにちは")
         self.assertEqual(sent["inputs"], {"trigger": "sword_sign"})
 
+    def test_rejects_plain_http_for_non_loopback_base_url(self) -> None:
+        with self.assertRaises(ValueError):
+            DifyClient(api_key="test-key", base_url="http://dify.test/v1")
+
+    def test_allows_plain_http_for_loopback_base_url(self) -> None:
+        client = DifyClient(api_key="test-key", base_url="http://127.0.0.1:8080/v1")
+
+        self.assertEqual(client.base_url, "http://127.0.0.1:8080/v1")

@@ -14,6 +14,7 @@ from sword_voice_agent.adapters.ai_talk_core import (
     get_handoff_json_path,
 )
 from sword_voice_agent.adapters.dify import DifyClient, DifyClientError
+from sword_voice_agent.adapters.status_store import StatusStore
 from sword_voice_agent.apps.send_handoff_to_dify import (
     load_handoff_from_args,
     parse_context_pairs,
@@ -80,6 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Extra Dify input context. Can be repeated.",
     )
     parser.add_argument(
+        "--include-transcript-context",
+        action="store_true",
+        help="Include the raw transcript in Dify inputs/context.",
+    )
+    parser.add_argument(
         "--output-json",
         default="",
         help=(
@@ -94,6 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
             "Path to write the latest Dify answer text. Defaults to "
             ".cache/codex/{source}_dify_latest.txt."
         ),
+    )
+    parser.add_argument(
+        "--status-dir",
+        default=".cache/sword_voice_agent",
+        help="Directory for latest status snapshots and events.jsonl.",
     )
     parser.add_argument(
         "--poll-interval-s",
@@ -163,11 +174,13 @@ def process_handoff(
 ) -> dict[str, Any]:
     handoff = load_handoff_from_args(args)
     conversation_id = resolve_conversation_id(args)
+    context = parse_context_pairs(args.context)
     agent_request = handoff.to_agent_request(
         field=args.field,
         user=args.user,
         conversation_id=conversation_id,
-        context=parse_context_pairs(args.context),
+        context=context,
+        include_transcript_context=args.include_transcript_context,
     )
 
     result: dict[str, Any] = {
@@ -199,6 +212,23 @@ def process_handoff(
 
 def should_skip_request(text: str, args: argparse.Namespace) -> bool:
     return not args.send_no_speech and text.strip() == NO_SPEECH_PLACEHOLDER
+
+
+def load_latest_turn_id(status_dir: str | Path) -> str | None:
+    path = StatusStore(status_dir).latest_voice_turn_path
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("turn_id")
+    if value is None:
+        command = payload.get("voice_control_command")
+        if isinstance(command, dict):
+            value = command.get("turn_id")
+    text = str(value).strip() if value is not None else ""
+    return text or None
 
 
 def resolve_conversation_id(args: argparse.Namespace) -> str | None:
@@ -293,6 +323,11 @@ def run_once(
 ) -> dict[str, Any]:
     result = process_handoff(args, client=client)
     save_result_outputs(args, result)
+    if args.status_dir:
+        StatusStore(args.status_dir).write_latest_dify_response(
+            result,
+            turn_id=load_latest_turn_id(args.status_dir),
+        )
     return result
 
 

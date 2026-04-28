@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sword Voice Agent Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="product-label">LOCAL INTEGRATION CONSOLE</p>
+          <h1>Sword Voice Agent</h1>
+        </div>
+        <div class="topbar-actions">
+          <input
+            id="authTokenInput"
+            class="token-input"
+            type="password"
+            autocomplete="off"
+            placeholder="auth token"
+          />
+          <button id="saveTokenButton" class="button secondary" type="button">保存</button>
+          <button id="refreshButton" class="button" type="button">更新</button>
+          <span id="lastUpdated" class="timestamp">未取得</span>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="status-grid" aria-label="Status summary">
+          <article class="status-panel" data-state="unknown" id="gesturePanel">
+            <div class="panel-head">
+              <span class="panel-title">Gesture</span>
+              <span id="gestureState" class="state-pill">unknown</span>
+            </div>
+            <dl class="metrics">
+              <div><dt>confidence</dt><dd id="gestureConfidence">-</dd></div>
+              <div><dt>mic gate</dt><dd id="gestureMic">-</dd></div>
+              <div><dt>action</dt><dd id="gestureAction">-</dd></div>
+              <div><dt>turn</dt><dd id="gestureTurn">-</dd></div>
+            </dl>
+          </article>
+
+          <article class="status-panel" data-state="unknown" id="inputGatePanel">
+            <div class="panel-head">
+              <span class="panel-title">Input Gate</span>
+              <span id="inputGateState" class="state-pill">unknown</span>
+            </div>
+            <dl class="metrics">
+              <div><dt>enabled</dt><dd id="inputGateEnabled">-</dd></div>
+              <div><dt>reason</dt><dd id="inputGateReason">-</dd></div>
+              <div><dt>source</dt><dd id="inputGateSource">-</dd></div>
+            </dl>
+          </article>
+
+          <article class="status-panel" data-state="unknown" id="voicePanel">
+            <div class="panel-head">
+              <span class="panel-title">Voice</span>
+              <span id="voiceState" class="state-pill">unknown</span>
+            </div>
+            <dl class="metrics">
+              <div><dt>transcript</dt><dd id="voiceTranscriptShort">-</dd></div>
+              <div><dt>command</dt><dd id="voiceCommandShort">-</dd></div>
+              <div><dt>updated</dt><dd id="voiceUpdated">-</dd></div>
+              <div><dt>turn</dt><dd id="voiceTurn">-</dd></div>
+            </dl>
+          </article>
+
+          <article class="status-panel" data-state="unknown" id="difyPanel">
+            <div class="panel-head">
+              <span class="panel-title">Dify</span>
+              <span id="difyState" class="state-pill">unknown</span>
+            </div>
+            <dl class="metrics">
+              <div><dt>tokens</dt><dd id="difyTokens">-</dd></div>
+              <div><dt>cost</dt><dd id="difyCost">-</dd></div>
+              <div><dt>latency</dt><dd id="difyLatency">-</dd></div>
+              <div><dt>turn</dt><dd id="difyTurn">-</dd></div>
+            </dl>
+          </article>
+        </section>
+
+        <section class="work-grid" aria-label="Latest turn">
+          <article class="work-panel voice-detail">
+            <div class="section-head">
+              <h2>Latest Voice Turn</h2>
+              <span id="handoffPath" class="path-label">-</span>
+            </div>
+            <div class="field-block">
+              <label>transcript</label>
+              <pre id="voiceTranscript">-</pre>
+            </div>
+            <div class="field-block">
+              <label>command</label>
+              <pre id="voiceCommand">-</pre>
+            </div>
+          </article>
+
+          <article class="work-panel response-detail">
+            <div class="section-head">
+              <h2>Dify Response</h2>
+              <span id="conversationId" class="path-label">-</span>
+            </div>
+            <div class="response-box" id="difyAnswer">-</div>
+            <div class="usage-row">
+              <span id="messageId">message: -</span>
+              <span id="difyUpdated">updated: -</span>
+            </div>
+          </article>
+        </section>
+
+        <section class="event-panel" aria-label="Event log">
+          <div class="section-head">
+            <h2>Event Log</h2>
+            <span id="sourceSummary" class="path-label">-</span>
+          </div>
+          <ol id="eventLog" class="event-log"></ol>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

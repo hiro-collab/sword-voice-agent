@@ -4,6 +4,7 @@ from sword_voice_agent.protocol.messages import (
     AgentRequest,
     GestureSignal,
     GestureState,
+    ProtocolError,
     VoiceControlCommand,
     VoicePhase,
     VoiceState,
@@ -50,14 +51,30 @@ class ProtocolTest(TestCase):
                 "mic_enabled": True,
                 "reason": "activation_delay_passed",
                 "source": "test",
+                "turn_id": "turn-1",
             }
         )
 
         self.assertIsInstance(message, VoiceControlCommand)
         self.assertEqual(message.action.value, "start_recording")
+        self.assertEqual(message.turn_id, "turn-1")
 
     def test_agent_request_context_defaults(self) -> None:
         request = AgentRequest.from_dict({"text": "今日の記録をまとめて"})
 
         self.assertEqual(request.user, "local-user")
         self.assertEqual(request.context, {})
+
+    def test_rejects_string_active_gesture_signal(self) -> None:
+        with self.assertRaises(ProtocolError):
+            GestureSignal.from_dict({"active": "false", "confidence": 0.1})
+
+    def test_rejects_out_of_range_confidence(self) -> None:
+        with self.assertRaises(ProtocolError):
+            GestureSignal.from_dict({"active": True, "confidence": 1.1})
+
+    def test_rejects_non_finite_confidence(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                with self.assertRaises(ProtocolError):
+                    GestureSignal.from_dict({"active": True, "confidence": value})

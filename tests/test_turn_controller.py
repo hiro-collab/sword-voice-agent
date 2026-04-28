@@ -54,4 +54,7 @@ class VoiceTurnControllerTest(TestCase):
         self.assertEqual(stable.action, VoiceControlAction.NONE)
         self.assertEqual(stop.action, VoiceControlAction.STOP_RECORDING)
         self.assertEqual(stop.source, "test")
-
+        self.assertIsNotNone(start.turn_id)
+        self.assertEqual(stable.turn_id, start.turn_id)
+        self.assertEqual(stop.turn_id, start.turn_id)
+        self.assertIsNone(idle.turn_id)

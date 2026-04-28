@@ -25,6 +25,7 @@ class AiTalkCoreHandoff:
     source: str = "web"
     json_path: Path | None = None
     text_path: Path | None = None
+    turn_id: str | None = None
 
     def text_for_agent(self, field: str = "command") -> str:
         if field == "command":
@@ -44,6 +45,7 @@ class AiTalkCoreHandoff:
         user: str = "local-user",
         conversation_id: str | None = None,
         context: Mapping[str, Any] | None = None,
+        include_transcript_context: bool = False,
     ) -> AgentRequest:
         text = self.text_for_agent(field).strip()
         if not text:
@@ -55,7 +57,9 @@ class AiTalkCoreHandoff:
             "handoff_field": field,
             "trigger": "sword_sign",
         }
-        if self.transcript:
+        if self.turn_id:
+            request_context["turn_id"] = self.turn_id
+        if include_transcript_context and self.transcript:
             request_context["transcript"] = self.transcript
         if context:
             request_context.update(dict(context))
@@ -195,6 +199,11 @@ def load_handoff_json(
         source=_normalize_handoff_source(source),
         json_path=path,
         text_path=resolved_text_path,
+        turn_id=(
+            str(payload["turn_id"])
+            if payload.get("turn_id") is not None
+            else None
+        ),
     )
 
 

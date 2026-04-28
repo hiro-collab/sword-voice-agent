@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 
 from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreInputGateClient
+from sword_voice_agent.adapters.auth import AuthError, resolve_auth_token
 from sword_voice_agent.adapters.gesture_http import create_server
 from sword_voice_agent.core.input_gate import GestureInputGate
 from sword_voice_agent.core.turn_controller import VoiceTurnController
@@ -22,6 +23,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional ai_talk_core-compatible input gate endpoint.",
     )
     parser.add_argument("--input-gate-timeout", type=float, default=5.0)
+    parser.add_argument(
+        "--max-body-bytes",
+        type=int,
+        default=64 * 1024,
+        help="Maximum accepted /gesture-state JSON body size.",
+    )
+    parser.add_argument(
+        "--auth-token",
+        default=None,
+        help="Optional token required for /gesture-state. Defaults to SWORD_VOICE_AGENT_AUTH_TOKEN.",
+    )
     args = parser.parse_args(argv)
 
     gate = GestureInputGate(
@@ -38,7 +50,19 @@ def main(argv: list[str] | None = None) -> int:
         if args.input_gate_url
         else None
     )
-    server = create_server(args.host, args.port, gate, sink, VoiceTurnController())
+    try:
+        server = create_server(
+            args.host,
+            args.port,
+            gate,
+            sink,
+            VoiceTurnController(),
+            auth_token=resolve_auth_token(args.auth_token),
+            max_body_bytes=args.max_body_bytes,
+        )
+    except AuthError as exc:
+        print(f"Input error: {exc}")
+        return 1
     print(f"listening on http://{args.host}:{args.port}", flush=True)
 
     try:

@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from typing import Any, Mapping
 
 from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreInputGateClient
+from sword_voice_agent.adapters.auth import (
+    AuthError,
+    require_auth_token_for_bind,
+    resolve_auth_token,
+)
 from sword_voice_agent.adapters.gesture_udp import GestureUdpReceiver
+from sword_voice_agent.adapters.status_store import StatusStore
 from sword_voice_agent.core.input_gate import GestureInputGate
 from sword_voice_agent.core.turn_controller import VoiceTurnController
+from sword_voice_agent.protocol.messages import ProtocolError, now_timestamp
 
 
 def format_debug_line(
@@ -65,6 +73,42 @@ def _input_gate_suffix(input_gate_state: Mapping[str, Any]) -> str:
     )
 
 
+def build_status_payload(
+    response: Mapping[str, Any],
+    address: tuple[str, int],
+    *,
+    sequence: int,
+) -> dict[str, Any]:
+    return {
+        "type": "gesture_receiver_status",
+        "timestamp": now_timestamp(),
+        "sequence": sequence,
+        "from": f"{address[0]}:{address[1]}",
+        "response": dict(response),
+    }
+
+
+def write_status_json(
+    path: str | Path,
+    response: Mapping[str, Any],
+    address: tuple[str, int],
+    *,
+    sequence: int,
+) -> None:
+    resolved = Path(path)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    payload = build_status_payload(response, address, sequence=sequence)
+    write_status_payload(resolved, payload)
+
+
+def write_status_payload(path: str | Path, payload: Mapping[str, Any]) -> None:
+    resolved = Path(path)
+    resolved.write_text(
+        json.dumps(dict(payload), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
@@ -91,7 +135,28 @@ def main(argv: list[str] | None = None) -> int:
         default=1,
         help="Print every N received datagrams when --debug is enabled.",
     )
+    parser.add_argument(
+        "--status-json",
+        default="",
+        help="Optional path for the latest receiver status JSON consumed by the console.",
+    )
+    parser.add_argument(
+        "--status-dir",
+        default=".cache/sword_voice_agent",
+        help="Directory for latest status snapshots and events.jsonl.",
+    )
+    parser.add_argument(
+        "--auth-token",
+        default=None,
+        help="Optional token required in UDP payload. Defaults to SWORD_VOICE_AGENT_AUTH_TOKEN.",
+    )
     args = parser.parse_args(argv)
+    auth_token = resolve_auth_token(args.auth_token)
+    try:
+        require_auth_token_for_bind(args.host, auth_token, "gesture UDP receiver")
+    except AuthError as exc:
+        print(f"Input error: {exc}")
+        return 1
 
     gate = GestureInputGate(
         gesture_name=args.gesture_name,
@@ -113,14 +178,21 @@ def main(argv: list[str] | None = None) -> int:
         gate,
         voice_state_sink=sink,
         turn_controller=VoiceTurnController(),
+        auth_token=auth_token,
     )
+    status_store = StatusStore(args.status_dir) if args.status_dir else None
 
     print(f"listening for GestureState UDP on {args.host}:{args.port}", flush=True)
     sequence = 0
     try:
         with receiver:
             while True:
-                response, address = receiver.receive_once()
+                try:
+                    response, address = receiver.receive_once()
+                except (json.JSONDecodeError, ProtocolError, ValueError, TypeError):
+                    if args.debug:
+                        print("[gesture-udp] rejected datagram", flush=True)
+                    continue
                 sequence += 1
                 if args.print_json:
                     print(
@@ -137,6 +209,12 @@ def main(argv: list[str] | None = None) -> int:
                     print(
                         format_debug_line(response, address, sequence=sequence),
                         flush=True,
+                    )
+                if args.status_json:
+                    write_status_json(args.status_json, response, address, sequence=sequence)
+                if status_store is not None:
+                    status_store.write_latest_gesture(
+                        build_status_payload(response, address, sequence=sequence)
                     )
     except KeyboardInterrupt:
         pass

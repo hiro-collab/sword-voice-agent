@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import json
+import math
+from numbers import Real
 import time
 from typing import Any, ClassVar, Mapping
 
@@ -46,9 +48,21 @@ class GestureSignal:
     def from_dict(cls, payload: Mapping[str, Any]) -> "GestureSignal":
         if "active" not in payload:
             raise ProtocolError("gesture signal requires 'active'")
+        active = payload["active"]
+        if not isinstance(active, bool):
+            raise ProtocolError("gesture signal 'active' must be a bool")
+
+        confidence = payload.get("confidence", 0.0)
+        if not isinstance(confidence, Real) or isinstance(confidence, bool):
+            raise ProtocolError("gesture signal 'confidence' must be numeric")
+        confidence_float = float(confidence)
+        if not math.isfinite(confidence_float):
+            raise ProtocolError("gesture signal 'confidence' must be finite")
+        if confidence_float < 0.0 or confidence_float > 1.0:
+            raise ProtocolError("gesture signal 'confidence' must be between 0.0 and 1.0")
         return cls(
-            active=bool(payload["active"]),
-            confidence=float(payload.get("confidence", 0.0)),
+            active=active,
+            confidence=confidence_float,
         )
 
 
@@ -149,11 +163,12 @@ class VoiceControlCommand:
     mic_enabled: bool
     reason: str
     source: str = "sword_voice_agent"
+    turn_id: str | None = None
 
     type: ClassVar[str] = "voice_control_command"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "type": self.type,
             "timestamp": self.timestamp,
             "action": self.action.value,
@@ -161,6 +176,9 @@ class VoiceControlCommand:
             "reason": self.reason,
             "source": self.source,
         }
+        if self.turn_id:
+            payload["turn_id"] = self.turn_id
+        return payload
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False)
@@ -173,6 +191,11 @@ class VoiceControlCommand:
             mic_enabled=bool(payload.get("mic_enabled", False)),
             reason=str(payload.get("reason", "external")),
             source=str(payload.get("source", "external")),
+            turn_id=(
+                str(payload["turn_id"])
+                if payload.get("turn_id") is not None
+                else None
+            ),
         )
 
 

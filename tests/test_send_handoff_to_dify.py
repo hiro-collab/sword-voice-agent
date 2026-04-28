@@ -26,3 +26,21 @@ class SendHandoffToDifyTest(TestCase):
         self.assertEqual(request["text"], "冷蔵庫の材料から買い物リストを提案する")
         self.assertEqual(request["context"]["mode"], "test")
         self.assertEqual(request["context"]["trigger"], "sword_sign")
+        self.assertNotIn("transcript", request["context"])
+
+    def test_can_include_transcript_context(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "--handoff-json",
+                str(FIXTURES / "handoff.json"),
+                "--dry-run",
+                "--include-transcript-context",
+            ]
+        )
+
+        result = run(args)
+
+        self.assertEqual(
+            result["request"]["context"]["transcript"],
+            "買い物リストを作って",
+        )

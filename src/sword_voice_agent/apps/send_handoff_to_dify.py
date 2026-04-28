@@ -49,6 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Extra Dify input context. Can be repeated.",
     )
     parser.add_argument(
+        "--include-transcript-context",
+        action="store_true",
+        help="Include the raw transcript in Dify inputs/context.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the AgentRequest without calling Dify.",
@@ -98,6 +103,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         user=args.user,
         conversation_id=args.conversation_id or None,
         context=parse_context_pairs(args.context),
+        include_transcript_context=args.include_transcript_context,
     )
     if args.dry_run:
         return {"request": agent_request.to_dict(), "response": None}

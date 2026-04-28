@@ -5,6 +5,10 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Mapping
 
+from sword_voice_agent.adapters.auth import (
+    headers_authorized,
+    require_auth_token_for_bind,
+)
 from sword_voice_agent.core.input_gate import GestureInputGate
 from sword_voice_agent.core.turn_controller import VoiceTurnController
 from sword_voice_agent.adapters.gesture_gateway import (
@@ -14,10 +18,19 @@ from sword_voice_agent.adapters.gesture_gateway import (
 from sword_voice_agent.protocol.messages import ProtocolError
 
 
+DEFAULT_MAX_BODY_BYTES = 64 * 1024
+
+
+class RequestBodyTooLarge(RuntimeError):
+    pass
+
+
 class GestureGateHttpHandler(BaseHTTPRequestHandler):
     gate: GestureInputGate
     voice_state_sink: VoiceStateSink | None = None
     turn_controller: VoiceTurnController | None = None
+    auth_token: str = ""
+    max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
 
     server_version = "SwordGestureHTTP/0.1"
 
@@ -31,6 +44,12 @@ class GestureGateHttpHandler(BaseHTTPRequestHandler):
         if self.path != "/gesture-state":
             self._write_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
             return
+        if not headers_authorized(self.headers, self.auth_token):
+            self._write_json(
+                HTTPStatus.UNAUTHORIZED,
+                {"ok": False, "error": "unauthorized"},
+            )
+            return
 
         try:
             payload = self._read_json_body()
@@ -40,6 +59,12 @@ class GestureGateHttpHandler(BaseHTTPRequestHandler):
                 self.voice_state_sink,
                 self.turn_controller,
             )
+        except RequestBodyTooLarge:
+            self._write_json(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                {"ok": False, "error": "request_body_too_large"},
+            )
+            return
         except (json.JSONDecodeError, ProtocolError, ValueError, TypeError) as exc:
             self._write_json(
                 HTTPStatus.BAD_REQUEST,
@@ -59,7 +84,10 @@ class GestureGateHttpHandler(BaseHTTPRequestHandler):
         return
 
     def _read_json_body(self) -> Mapping[str, Any]:
-        content_length = int(self.headers.get("Content-Length", "0"))
+        content_length = parse_content_length(
+            self.headers.get("Content-Length", "0"),
+            max_body_bytes=self.max_body_bytes,
+        )
         body = self.rfile.read(content_length).decode("utf-8")
         payload = json.loads(body)
         if not isinstance(payload, Mapping):
@@ -79,6 +107,8 @@ def make_handler(
     gate: GestureInputGate,
     voice_state_sink: VoiceStateSink | None = None,
     turn_controller: VoiceTurnController | None = None,
+    auth_token: str = "",
+    max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
 ) -> type[GestureGateHttpHandler]:
     class ConfiguredGestureGateHttpHandler(GestureGateHttpHandler):
         pass
@@ -86,6 +116,8 @@ def make_handler(
     ConfiguredGestureGateHttpHandler.gate = gate
     ConfiguredGestureGateHttpHandler.voice_state_sink = voice_state_sink
     ConfiguredGestureGateHttpHandler.turn_controller = turn_controller
+    ConfiguredGestureGateHttpHandler.auth_token = auth_token
+    ConfiguredGestureGateHttpHandler.max_body_bytes = max_body_bytes
     return ConfiguredGestureGateHttpHandler
 
 
@@ -95,8 +127,29 @@ def create_server(
     gate: GestureInputGate,
     voice_state_sink: VoiceStateSink | None = None,
     turn_controller: VoiceTurnController | None = None,
+    auth_token: str = "",
+    max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
 ) -> ThreadingHTTPServer:
+    require_auth_token_for_bind(host, auth_token, "gesture HTTP receiver")
     return ThreadingHTTPServer(
         (host, port),
-        make_handler(gate, voice_state_sink, turn_controller),
+        make_handler(
+            gate,
+            voice_state_sink,
+            turn_controller,
+            auth_token,
+            max_body_bytes=max_body_bytes,
+        ),
     )
+
+
+def parse_content_length(value: str, *, max_body_bytes: int) -> int:
+    try:
+        content_length = int(value)
+    except ValueError as exc:
+        raise ProtocolError("Content-Length must be an integer") from exc
+    if content_length < 0:
+        raise ProtocolError("Content-Length must be >= 0")
+    if content_length > max_body_bytes:
+        raise RequestBodyTooLarge
+    return content_length
