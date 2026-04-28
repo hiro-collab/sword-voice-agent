@@ -153,11 +153,26 @@ class VoiceState:
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "VoiceState":
+        message_type = payload.get("type")
+        if message_type is not None and message_type != cls.type:
+            raise ProtocolError(f"voice_state has unsupported type: {message_type!r}")
+
         return cls(
             phase=VoicePhase(str(payload["phase"])),
-            mic_enabled=bool(payload["mic_enabled"]),
-            recording=bool(payload.get("recording", False)),
-            timestamp=float(payload.get("timestamp", now_timestamp())),
+            mic_enabled=_required_bool(
+                payload.get("mic_enabled"),
+                "voice_state 'mic_enabled'",
+            ),
+            recording=_optional_bool(
+                payload,
+                "recording",
+                default=False,
+                label="voice_state 'recording'",
+            ),
+            timestamp=_finite_float(
+                payload.get("timestamp", now_timestamp()),
+                "voice_state 'timestamp'",
+            ),
             reason=(
                 str(payload["reason"])
                 if payload.get("reason") is not None
@@ -195,10 +210,24 @@ class VoiceControlCommand:
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "VoiceControlCommand":
+        message_type = payload.get("type")
+        if message_type is not None and message_type != cls.type:
+            raise ProtocolError(
+                f"voice_control_command has unsupported type: {message_type!r}"
+            )
+
         return cls(
             action=VoiceControlAction(str(payload["action"])),
-            timestamp=float(payload.get("timestamp", now_timestamp())),
-            mic_enabled=bool(payload.get("mic_enabled", False)),
+            timestamp=_finite_float(
+                payload.get("timestamp", now_timestamp()),
+                "voice_control_command 'timestamp'",
+            ),
+            mic_enabled=_optional_bool(
+                payload,
+                "mic_enabled",
+                default=False,
+                label="voice_control_command 'mic_enabled'",
+            ),
             reason=str(payload.get("reason", "external")),
             source=str(payload.get("source", "external")),
             turn_id=(
@@ -327,3 +356,21 @@ def _finite_float(value: object, label: str) -> float:
     if not math.isfinite(result):
         raise ProtocolError(f"{label} must be finite")
     return result
+
+
+def _required_bool(value: object, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise ProtocolError(f"{label} must be a bool")
+    return value
+
+
+def _optional_bool(
+    payload: Mapping[str, Any],
+    key: str,
+    *,
+    default: bool,
+    label: str,
+) -> bool:
+    if key not in payload:
+        return default
+    return _required_bool(payload[key], label)

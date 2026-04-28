@@ -56,3 +56,6 @@ class GestureInputGateTest(TestCase):
         self.assertTrue(gate.update(state(0.2, True)).mic_enabled)
         self.assertTrue(gate.update(state(0.7, True)).mic_enabled)
 
+    def test_rejects_out_of_range_min_confidence(self) -> None:
+        with self.assertRaises(ValueError):
+            GestureInputGate(min_confidence=-0.1)

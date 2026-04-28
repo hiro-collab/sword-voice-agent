@@ -68,17 +68,34 @@ def build_parser() -> argparse.ArgumentParser:
 
 def load_handoff_from_args(args: argparse.Namespace):
     if args.handoff_json:
+        validate_path_argument(args.handoff_json, "--handoff-json")
         return load_handoff_json(
             args.handoff_json,
             source=args.source,
-            text_path=args.handoff_text or None,
+            text_path=validated_optional_path(args.handoff_text, "--handoff-text"),
         )
     if args.ai_talk_core_root:
+        validate_path_argument(args.ai_talk_core_root, "--ai-talk-core-root")
         return load_handoff_from_root(args.ai_talk_core_root, source=args.source)
     raise AiTalkCoreHandoffError(
         "set --ai-talk-core-root, --handoff-json, AI_TALK_CORE_ROOT, "
         "or AI_TALK_CORE_HANDOFF_JSON"
     )
+
+
+def validated_optional_path(value: str, label: str) -> str | None:
+    if not value:
+        return None
+    validate_path_argument(value, label)
+    return value
+
+
+def validate_path_argument(value: str, label: str) -> None:
+    if "<" in value or ">" in value:
+        raise AiTalkCoreHandoffError(
+            f"{label} still contains a placeholder: {value!r}. "
+            "Replace placeholders such as <ai_talk_core_root> with an actual local path."
+        )
 
 
 def parse_context_pairs(pairs: list[str]) -> dict[str, str]:

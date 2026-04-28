@@ -12,9 +12,15 @@ from sword_voice_agent.adapters.gesture_gateway import (
     VoiceStateSink,
     build_gesture_response,
 )
+from sword_voice_agent.adapters.rate_limit import (
+    FixedWindowRateLimiter,
+    RateLimitExceeded,
+)
 from sword_voice_agent.core.input_gate import GestureInputGate
 from sword_voice_agent.core.turn_controller import VoiceTurnController
 from sword_voice_agent.protocol.messages import ProtocolError
+
+DEFAULT_RATE_LIMIT_PER_MINUTE = 6000
 
 
 def build_udp_gesture_response(
@@ -48,6 +54,8 @@ class GestureUdpReceiver:
         buffer_size: int = 65535,
         sock: socket.socket | None = None,
         auth_token: str = "",
+        receive_timeout_s: float | None = 0.5,
+        rate_limit_per_minute: int = DEFAULT_RATE_LIMIT_PER_MINUTE,
     ) -> None:
         self.host = host
         self.port = port
@@ -57,8 +65,13 @@ class GestureUdpReceiver:
         self.buffer_size = buffer_size
         self.sock = sock or socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.auth_token = auth_token
+        self.rate_limiter = FixedWindowRateLimiter(rate_limit_per_minute)
+        self.receive_timeout_s = (
+            None if receive_timeout_s is None or receive_timeout_s <= 0 else receive_timeout_s
+        )
         self._owns_socket = sock is None
         self._bound = False
+        self._configure_timeout()
 
     def __enter__(self) -> "GestureUdpReceiver":
         self.bind()
@@ -76,8 +89,19 @@ class GestureUdpReceiver:
         if self._owns_socket:
             self.sock.close()
 
+    def _configure_timeout(self) -> None:
+        settimeout = getattr(self.sock, "settimeout", None)
+        if callable(settimeout):
+            settimeout(self.receive_timeout_s)
+
     def receive_once(self) -> tuple[dict[str, Any], tuple[str, int]]:
         data, address = self.sock.recvfrom(self.buffer_size)
+        try:
+            self.rate_limiter.check(address[0])
+        except RateLimitExceeded as exc:
+            raise ProtocolError(
+                f"rate limit exceeded; retry after {exc.retry_after_s:.3f}s"
+            ) from exc
         return (
             build_udp_gesture_response(
                 data,

@@ -18,6 +18,7 @@ from sword_voice_agent.adapters.status_store import StatusStore
 from sword_voice_agent.apps.send_handoff_to_dify import (
     load_handoff_from_args,
     parse_context_pairs,
+    validate_path_argument,
 )
 
 
@@ -147,6 +148,10 @@ def handoff_signature(path: str | Path) -> HandoffSignature | None:
         data = resolved.read_bytes()
     except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise AiTalkCoreHandoffError(
+            f"cannot read handoff JSON path: {resolved} ({exc})"
+        ) from exc
 
     return HandoffSignature(
         path=str(resolved.resolve()),
@@ -158,8 +163,10 @@ def handoff_signature(path: str | Path) -> HandoffSignature | None:
 
 def resolve_handoff_json_path(args: argparse.Namespace) -> Path:
     if args.handoff_json:
+        validate_path_argument(args.handoff_json, "--handoff-json")
         return Path(args.handoff_json)
     if args.ai_talk_core_root:
+        validate_path_argument(args.ai_talk_core_root, "--ai-talk-core-root")
         return get_handoff_json_path(args.ai_talk_core_root, args.source)
     raise AiTalkCoreHandoffError(
         "set --ai-talk-core-root, --handoff-json, AI_TALK_CORE_ROOT, "

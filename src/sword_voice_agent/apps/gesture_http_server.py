@@ -4,7 +4,10 @@ import argparse
 
 from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreInputGateClient
 from sword_voice_agent.adapters.auth import AuthError, resolve_auth_token
-from sword_voice_agent.adapters.gesture_http import create_server
+from sword_voice_agent.adapters.gesture_http import (
+    DEFAULT_RATE_LIMIT_PER_MINUTE,
+    create_server,
+)
 from sword_voice_agent.core.input_gate import GestureInputGate
 from sword_voice_agent.core.turn_controller import VoiceTurnController
 
@@ -34,6 +37,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Optional token required for /gesture-state. Defaults to SWORD_VOICE_AGENT_AUTH_TOKEN.",
     )
+    parser.add_argument(
+        "--rate-limit-per-minute",
+        type=int,
+        default=DEFAULT_RATE_LIMIT_PER_MINUTE,
+        help="Per-client /gesture-state request limit. Use 0 to disable.",
+    )
     args = parser.parse_args(argv)
 
     gate = GestureInputGate(
@@ -59,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
             VoiceTurnController(),
             auth_token=resolve_auth_token(args.auth_token),
             max_body_bytes=args.max_body_bytes,
+            rate_limit_per_minute=args.rate_limit_per_minute,
         )
     except AuthError as exc:
         print(f"Input error: {exc}")

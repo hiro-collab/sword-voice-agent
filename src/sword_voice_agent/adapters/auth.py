@@ -4,6 +4,7 @@ import ipaddress
 import os
 import secrets
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 
 AUTH_TOKEN_ENV = "SWORD_VOICE_AGENT_AUTH_TOKEN"
@@ -32,6 +33,29 @@ def require_auth_token_for_bind(host: str, auth_token: str, surface: str) -> Non
         raise AuthError(
             f"{surface} auth token is required when binding outside loopback"
         )
+
+
+def validate_http_url(
+    value: str,
+    *,
+    label: str,
+    allow_remote_https: bool = True,
+) -> str:
+    candidate = (value or "").strip()
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{label} must be an http(s) URL")
+    if parsed.username or parsed.password:
+        raise ValueError(f"{label} must not include embedded credentials")
+
+    host = parsed.hostname or ""
+    if parsed.scheme == "http" and not is_loopback_host(host):
+        raise ValueError(
+            f"{label} may use http only for loopback hosts; use https for remote hosts"
+        )
+    if not allow_remote_https and not is_loopback_host(host):
+        raise ValueError(f"{label} must use a loopback host")
+    return candidate
 
 
 def token_matches(expected: str, provided: str | None) -> bool:

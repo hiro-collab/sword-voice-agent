@@ -1,6 +1,7 @@
 from pathlib import Path
 from unittest import TestCase
 
+from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreHandoffError
 from sword_voice_agent.apps.send_handoff_to_dify import build_parser, run
 
 
@@ -44,3 +45,15 @@ class SendHandoffToDifyTest(TestCase):
             result["request"]["context"]["transcript"],
             "買い物リストを作って",
         )
+
+    def test_rejects_placeholder_root(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "--ai-talk-core-root",
+                "<ai_talk_core_root>",
+                "--dry-run",
+            ]
+        )
+
+        with self.assertRaises(AiTalkCoreHandoffError):
+            run(args)

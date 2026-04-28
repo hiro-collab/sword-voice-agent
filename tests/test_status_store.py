@@ -102,6 +102,11 @@ class StatusStoreTest(TestCase):
                     "skipped": False,
                 }
             )
+            store.write_module_status(
+                "gesture_udp_receiver",
+                "running",
+                label="Gesture UDP receiver",
+            )
 
             store.clear()
 
@@ -109,6 +114,7 @@ class StatusStoreTest(TestCase):
             self.assertFalse(store.latest_voice_turn_path.exists())
             self.assertFalse(store.latest_dify_response_path.exists())
             self.assertFalse(store.events_path.exists())
+            self.assertEqual(store.read_module_statuses(), {})
 
     def test_idle_gesture_does_not_clear_latest_turn_id(self) -> None:
         with workspace_tempdir() as tmp:
@@ -121,6 +127,24 @@ class StatusStoreTest(TestCase):
                 store.latest_voice_turn_path.read_text(encoding="utf-8")
             )
             self.assertEqual(latest["turn_id"], "turn-1")
+
+    def test_writes_and_reads_module_status(self) -> None:
+        with workspace_tempdir() as tmp:
+            store = StatusStore(tmp)
+
+            store.write_module_status(
+                "dify_watcher",
+                "running",
+                label="Dify watcher",
+                detail="source=web",
+                timestamp=10.0,
+            )
+
+            statuses = store.read_module_statuses()
+            self.assertEqual(statuses["dify_watcher"]["state"], "running")
+            self.assertEqual(statuses["dify_watcher"]["label"], "Dify watcher")
+            self.assertEqual(statuses["dify_watcher"]["detail"], "source=web")
+            self.assertEqual(statuses["dify_watcher"]["timestamp"], 10.0)
 
 
 def gesture_payload(

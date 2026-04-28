@@ -4,9 +4,8 @@ import json
 import os
 from typing import Any, Mapping
 from urllib import error, request
-from urllib.parse import urlparse
 
-from sword_voice_agent.adapters.auth import is_loopback_host
+from sword_voice_agent.adapters.auth import validate_http_url
 from sword_voice_agent.protocol.messages import AgentRequest, AgentResponse, now_timestamp
 
 
@@ -98,11 +97,4 @@ class DifyClient:
 
 
 def validate_base_url(base_url: str) -> str:
-    parsed = urlparse(base_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("DIFY_BASE_URL must be an http(s) URL")
-    if parsed.scheme == "http" and not is_loopback_host(parsed.hostname or ""):
-        raise ValueError(
-            "DIFY_BASE_URL may use http only for loopback hosts; use https for remote Dify"
-        )
-    return base_url
+    return validate_http_url(base_url, label="DIFY_BASE_URL")

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from sword_voice_agent.adapters.ai_talk_core import resolve_ai_talk_core_web_token
 from sword_voice_agent.adapters.auth import (
     AuthError,
     headers_authorized,
@@ -20,9 +21,15 @@ from sword_voice_agent.adapters.console_status import (
     ConsoleStatusConfig,
     build_console_status,
 )
+from sword_voice_agent.adapters.rate_limit import (
+    FixedWindowRateLimiter,
+    RateLimitExceeded,
+)
+from sword_voice_agent.adapters.status_store import StatusStore
 
 
 STATIC_DIR = Path(__file__).resolve().parents[1] / "web"
+DEFAULT_API_RATE_LIMIT_PER_MINUTE = 120
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,9 +64,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--input-gate-timeout", type=float, default=1.5)
     parser.add_argument(
+        "--dify-base-url",
+        default=os.environ.get("DIFY_BASE_URL", ""),
+        help="Optional Dify API base URL for readiness status.",
+    )
+    parser.add_argument("--dify-timeout", type=float, default=1.5)
+    parser.add_argument(
         "--auth-token",
         default=None,
         help="Optional token required for /api/status. Defaults to SWORD_VOICE_AGENT_AUTH_TOKEN.",
+    )
+    parser.add_argument(
+        "--api-rate-limit-per-minute",
+        type=int,
+        default=DEFAULT_API_RATE_LIMIT_PER_MINUTE,
+        help="Per-client API request limit for /api/status. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--redact-sensitive",
+        action="store_true",
+        default=env_flag("SWORD_VOICE_AGENT_REDACT_STATUS"),
+        help="Hide transcript, command, Dify answer, IDs, and local paths in /api/status.",
     )
     return parser
 
@@ -67,13 +92,18 @@ def build_parser() -> argparse.ArgumentParser:
 def make_handler(
     config: ConsoleStatusConfig,
     auth_token: str = "",
+    rate_limit_per_minute: int = DEFAULT_API_RATE_LIMIT_PER_MINUTE,
 ) -> type[BaseHTTPRequestHandler]:
+    rate_limiter = FixedWindowRateLimiter(rate_limit_per_minute)
+
     class ConsoleRequestHandler(BaseHTTPRequestHandler):
         server_version = "SwordVoiceConsole/0.1"
 
         def do_GET(self) -> None:
             path = urlparse(self.path).path
             if path == "/api/status":
+                if not self.check_api_rate_limit():
+                    return
                 if not headers_authorized(self.headers, auth_token):
                     self.send_json(
                         {"ok": False, "error": "unauthorized"},
@@ -86,6 +116,31 @@ def make_handler(
                 self.send_static("index.html")
                 return
             self.send_static(path.lstrip("/"))
+
+        def do_POST(self) -> None:
+            path = urlparse(self.path).path
+            if path != "/api/status/clear":
+                self.send_json(
+                    {"ok": False, "error": "not_found"},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            if not self.check_api_rate_limit():
+                return
+            if not headers_authorized(self.headers, auth_token):
+                self.send_json(
+                    {"ok": False, "error": "unauthorized"},
+                    status=HTTPStatus.UNAUTHORIZED,
+                )
+                return
+            if config.status_dir is None:
+                self.send_json(
+                    {"ok": False, "error": "status_dir_not_configured"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            StatusStore(config.status_dir).clear()
+            self.send_json({"ok": True, "cleared": True})
 
         def log_message(self, format: str, *args: Any) -> None:
             print(
@@ -106,6 +161,21 @@ def make_handler(
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def check_api_rate_limit(self) -> bool:
+            try:
+                rate_limiter.check(self.client_address[0])
+            except RateLimitExceeded as exc:
+                self.send_json(
+                    {
+                        "ok": False,
+                        "error": "rate_limited",
+                        "retry_after_s": round(exc.retry_after_s, 3),
+                    },
+                    status=HTTPStatus.TOO_MANY_REQUESTS,
+                )
+                return False
+            return True
 
         def send_static(self, relative_path: str) -> None:
             requested = (STATIC_DIR / relative_path).resolve()
@@ -154,12 +224,24 @@ def run_server(args: argparse.Namespace) -> ThreadingHTTPServer:
         else None,
         status_dir=Path(args.status_dir) if args.status_dir else None,
         input_gate_url=args.input_gate_url or None,
+        input_gate_token=resolve_ai_talk_core_web_token(),
         input_gate_timeout_s=args.input_gate_timeout,
+        dify_base_url=args.dify_base_url or None,
+        dify_timeout_s=args.dify_timeout,
+        redact_sensitive=args.redact_sensitive,
     )
     return ThreadingHTTPServer(
         (args.host, args.port),
-        make_handler(config, auth_token=auth_token),
+        make_handler(
+            config,
+            auth_token=auth_token,
+            rate_limit_per_minute=args.api_rate_limit_per_minute,
+        ),
     )
+
+
+def env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def main(argv: list[str] | None = None) -> int:

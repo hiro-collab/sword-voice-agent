@@ -1,17 +1,32 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 from pathlib import Path
 from typing import Any, Mapping
 from urllib import error, request
 
+from sword_voice_agent.adapters.auth import validate_http_url
 from sword_voice_agent.adapters.ai_talk_core import (
+    ai_talk_core_api_headers,
     get_handoff_json_path,
     get_handoff_text_path,
 )
+from sword_voice_agent.adapters.dify import validate_base_url
 from sword_voice_agent.adapters.status_store import StatusStore
 from sword_voice_agent.protocol.messages import now_timestamp
+
+REDACTED = "[redacted]"
+
+EXPECTED_MODULES = (
+    ("ai_talk_core", "ai_talk_core Web UI"),
+    ("gesture_udp_receiver", "Gesture UDP receiver"),
+    ("mediapipe_udp_publisher", "MediaPipe UDP publisher"),
+    ("dify_api", "Dify API"),
+    ("dify_watcher", "Dify watcher"),
+    ("console", "Integration console"),
+)
 
 
 @dataclass(frozen=True)
@@ -21,10 +36,16 @@ class ConsoleStatusConfig:
     gesture_status_json: Path | None = None
     status_dir: Path | None = Path(".cache/sword_voice_agent")
     input_gate_url: str | None = None
+    input_gate_token: str | None = None
     input_gate_timeout_s: float = 1.5
+    dify_base_url: str | None = None
+    dify_timeout_s: float = 1.5
+    module_stale_after_s: float = 6.0
+    redact_sensitive: bool = False
 
 
 def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
+    timestamp = now_timestamp()
     cache_dir = config.ai_talk_core_root / ".cache" / "codex"
     status_store = StatusStore(config.status_dir) if config.status_dir else None
     handoff_json = read_json_file(get_handoff_json_path(config.ai_talk_core_root, config.source))
@@ -47,6 +68,7 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
         cache_dir / f"{config.source}_dify_conversation_id.txt"
     )
     input_gate = fetch_input_gate(config)
+    dify_api = fetch_dify_api(config)
     store_gesture = (
         read_json_file(status_store.latest_gesture_path)
         if status_store is not None
@@ -60,10 +82,14 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
         else empty_file_state()
     )
     events = status_store.read_events(limit=40) if status_store is not None else []
+    module_statuses = (
+        status_store.read_module_statuses() if status_store is not None else {}
+    )
 
-    return {
+    status = {
         "type": "console_status",
-        "timestamp": now_timestamp(),
+        "timestamp": timestamp,
+        "redacted": False,
         "paths": {
             "ai_talk_core_root": str(config.ai_talk_core_root),
             "cache_dir": str(cache_dir),
@@ -77,6 +103,7 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
         "health": {
             "handoff": handoff_json["exists"] and not handoff_json.get("error"),
             "dify": dify_json["exists"] and not dify_json.get("error"),
+            "dify_api": dify_api["available"],
             "gesture": gesture["exists"] and not gesture.get("error"),
             "input_gate": None if not config.input_gate_url else input_gate["available"],
         },
@@ -87,7 +114,15 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
             store_voice_turn_json,
         ),
         "dify": normalize_dify_status(dify_json, dify_text, conversation_id),
+        "dify_api": dify_api,
         "input_gate": input_gate,
+        "modules": normalize_module_statuses(
+            module_statuses,
+            input_gate=input_gate,
+            dify_api=dify_api,
+            timestamp=timestamp,
+            stale_after_s=config.module_stale_after_s,
+        ),
         "events": events,
         "files": {
             "handoff_json": strip_payload(handoff_json),
@@ -101,6 +136,143 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
             "status_voice_turn_json": strip_payload(store_voice_turn_json),
         },
     }
+    return redact_console_status(status) if config.redact_sensitive else status
+
+
+def redact_console_status(status: Mapping[str, Any]) -> dict[str, Any]:
+    redacted = deepcopy(dict(status))
+    redacted["redacted"] = True
+
+    for value in _mapping_mutable(redacted.get("paths")).keys():
+        redacted["paths"][value] = _redact_scalar(redacted["paths"][value])
+
+    gesture = _mapping_mutable(redacted.get("gesture"))
+    for key in ("from", "turn_id"):
+        gesture[key] = _redact_scalar(gesture.get(key))
+
+    voice = _mapping_mutable(redacted.get("voice"))
+    for key in ("transcript", "command", "turn_id", "prompt_text"):
+        voice[key] = _redact_scalar(voice.get(key))
+
+    dify = _mapping_mutable(redacted.get("dify"))
+    for key in ("request_text", "turn_id", "answer", "conversation_id", "message_id"):
+        dify[key] = _redact_scalar(dify.get(key))
+
+    input_gate = _mapping_mutable(redacted.get("input_gate"))
+    input_gate["url"] = _redact_scalar(input_gate.get("url"))
+
+    dify_api = _mapping_mutable(redacted.get("dify_api"))
+    dify_api["url"] = _redact_scalar(dify_api.get("url"))
+
+    for module in _list_of_mappings(redacted.get("modules")):
+        module["detail"] = _redact_scalar(module.get("detail"))
+
+    for file_state in _mapping_mutable(redacted.get("files")).values():
+        if isinstance(file_state, dict):
+            file_state["path"] = _redact_scalar(file_state.get("path"))
+
+    redacted["events"] = [
+        redact_event(event)
+        for event in redacted.get("events", [])
+        if isinstance(event, Mapping)
+    ]
+    return redacted
+
+
+def redact_event(event: Mapping[str, Any]) -> dict[str, Any]:
+    item = dict(event)
+    item["turn_id"] = _redact_scalar(item.get("turn_id"))
+    data = mapping(item.get("payload") or item.get("data"))
+    redacted_payload: dict[str, Any] = {"redacted": True}
+    if item.get("type") == "dify.response":
+        redacted_payload.update(
+            {
+                "request_text": _redact_scalar(data.get("request_text")),
+                "response_text": _redact_scalar(data.get("response_text")),
+                "conversation_id": _redact_scalar(data.get("conversation_id")),
+                "conversation_id_present": data.get("conversation_id_present"),
+                "message_id": _redact_scalar(data.get("message_id")),
+                "skipped": data.get("skipped", False),
+                "skip_reason": data.get("skip_reason"),
+            }
+        )
+    elif item.get("type") == "gesture.received":
+        response = mapping(data.get("response"))
+        command = mapping(response.get("voice_control_command"))
+        decision = mapping(response.get("gate_decision"))
+        redacted_payload.update(
+            {
+                "response": {
+                    "voice_control_command": {
+                        "action": command.get("action", "none"),
+                        "turn_id": _redact_scalar(command.get("turn_id")),
+                    },
+                    "gate_decision": {
+                        "raw_active": decision.get("raw_active"),
+                        "reason": decision.get("reason"),
+                        "confidence": decision.get("confidence"),
+                    },
+                }
+            }
+        )
+    item["payload"] = redacted_payload
+    item.pop("data", None)
+    return item
+
+
+def normalize_module_statuses(
+    statuses: Mapping[str, Mapping[str, Any]],
+    *,
+    input_gate: Mapping[str, Any],
+    dify_api: Mapping[str, Any] | None = None,
+    timestamp: float,
+    stale_after_s: float,
+) -> list[dict[str, Any]]:
+    modules: list[dict[str, Any]] = []
+    for name, default_label in EXPECTED_MODULES:
+        status = mapping(statuses.get(name))
+        state = str(status.get("state") or "missing")
+        updated_at = float_or_none(status.get("timestamp"))
+        age = timestamp - updated_at if updated_at is not None else None
+        label = str(status.get("label") or default_label)
+        detail = str(status.get("detail") or "")
+
+        if name == "ai_talk_core" and input_gate.get("available"):
+            state = "running"
+            updated_at = timestamp
+            age = 0.0
+            detail = detail or "input gate API reachable"
+        elif name == "dify_api" and dify_api is not None:
+            if dify_api.get("available"):
+                state = "running"
+                updated_at = timestamp
+                age = 0.0
+                detail = str(dify_api.get("url") or detail or "reachable")
+            elif dify_api.get("url"):
+                state = "error"
+                updated_at = timestamp
+                age = 0.0
+                error_text = str(dify_api.get("error") or "not reachable")
+                detail = f"{dify_api.get('url')} / {error_text}"
+        elif name == "console":
+            state = "running"
+            updated_at = timestamp
+            age = 0.0
+            detail = detail or "console API reachable"
+        elif state in {"running", "starting"} and age is not None and age > stale_after_s:
+            state = "stale"
+
+        modules.append(
+            {
+                "name": name,
+                "label": label,
+                "state": state,
+                "detail": detail,
+                "updated_at": updated_at,
+                "age_seconds": age,
+            }
+        )
+    return modules
 
 
 def read_json_file(path: str | Path | None) -> dict[str, Any]:
@@ -272,10 +444,26 @@ def fetch_input_gate(config: ConsoleStatusConfig) -> dict[str, Any]:
     if not config.input_gate_url:
         return {"available": False, "url": None, "error": None, "payload": None}
 
+    try:
+        input_gate_url = validate_http_url(
+            config.input_gate_url,
+            label="input gate status URL",
+        )
+    except ValueError as exc:
+        return {
+            "available": False,
+            "url": config.input_gate_url,
+            "error": str(exc),
+            "payload": None,
+        }
+
     req = request.Request(
-        url=config.input_gate_url,
+        url=input_gate_url,
         method="GET",
-        headers={"Accept": "application/json"},
+        headers={
+            "Accept": "application/json",
+            **ai_talk_core_api_headers(config.input_gate_token),
+        },
     )
     try:
         with request.urlopen(req, timeout=config.input_gate_timeout_s) as response:
@@ -283,7 +471,7 @@ def fetch_input_gate(config: ConsoleStatusConfig) -> dict[str, Any]:
     except (error.HTTPError, error.URLError, TimeoutError, OSError) as exc:
         return {
             "available": False,
-            "url": config.input_gate_url,
+            "url": input_gate_url,
             "error": str(exc),
             "payload": None,
         }
@@ -293,21 +481,98 @@ def fetch_input_gate(config: ConsoleStatusConfig) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         return {
             "available": False,
-            "url": config.input_gate_url,
+            "url": input_gate_url,
             "error": f"invalid JSON: {exc}",
             "payload": None,
         }
 
     return {
         "available": isinstance(payload, Mapping),
-        "url": config.input_gate_url,
+        "url": input_gate_url,
         "error": None,
         "payload": payload if isinstance(payload, Mapping) else None,
     }
 
 
+def fetch_dify_api(config: ConsoleStatusConfig) -> dict[str, Any]:
+    return fetch_http_reachability(
+        config.dify_base_url,
+        timeout_s=config.dify_timeout_s,
+    )
+
+
+def fetch_http_reachability(
+    url: str | None,
+    *,
+    timeout_s: float,
+) -> dict[str, Any]:
+    if not url:
+        return {
+            "available": False,
+            "url": None,
+            "status": None,
+            "error": None,
+        }
+    try:
+        request_url = validate_base_url(url)
+    except ValueError as exc:
+        return {
+            "available": False,
+            "url": url,
+            "status": None,
+            "error": str(exc),
+        }
+
+    req = request.Request(
+        url=request_url,
+        method="GET",
+        headers={"Accept": "application/json"},
+    )
+    try:
+        with request.urlopen(req, timeout=timeout_s) as response:
+            response.read(0)
+            return {
+                "available": True,
+                "url": request_url,
+                "status": response.status,
+                "error": None,
+            }
+    except error.HTTPError as exc:
+        try:
+            exc.close()
+        except AttributeError:
+            pass
+        return {
+            "available": True,
+            "url": request_url,
+            "status": exc.code,
+            "error": None,
+        }
+    except (error.URLError, TimeoutError, OSError) as exc:
+        return {
+            "available": False,
+            "url": request_url,
+            "status": None,
+            "error": str(exc),
+        }
+
+
 def mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _mapping_mutable(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _list_of_mappings(value: object) -> list[dict[str, Any]]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _redact_scalar(value: object) -> object:
+    if value is None or value == "":
+        return value
+    return REDACTED
 
 
 def float_or_none(value: object) -> float | None:

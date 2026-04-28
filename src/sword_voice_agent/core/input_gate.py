@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 from sword_voice_agent.protocol.messages import GestureState, VoicePhase, VoiceState
@@ -48,10 +49,12 @@ class GestureInputGate:
         activation_delay_s: float = 0.3,
         release_delay_s: float = 0.5,
     ) -> None:
-        if activation_delay_s < 0:
-            raise ValueError("activation_delay_s must be >= 0")
-        if release_delay_s < 0:
-            raise ValueError("release_delay_s must be >= 0")
+        if not math.isfinite(min_confidence) or not 0.0 <= min_confidence <= 1.0:
+            raise ValueError("min_confidence must be finite and between 0.0 and 1.0")
+        if not math.isfinite(activation_delay_s) or activation_delay_s < 0:
+            raise ValueError("activation_delay_s must be finite and >= 0")
+        if not math.isfinite(release_delay_s) or release_delay_s < 0:
+            raise ValueError("release_delay_s must be finite and >= 0")
 
         self.gesture_name = gesture_name
         self.min_confidence = min_confidence

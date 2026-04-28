@@ -70,6 +70,8 @@ h2 {
 .topbar-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 12px;
 }
 
@@ -131,6 +133,7 @@ h2 {
 
 .status-panel,
 .work-panel,
+.module-panel,
 .event-panel {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -141,6 +144,46 @@ h2 {
 .status-panel {
   min-height: 132px;
   padding: 16px;
+}
+
+.module-panel {
+  padding: 16px;
+}
+
+.module-list {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.module-item {
+  min-height: 86px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  padding: 12px;
+}
+
+.module-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.module-head strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.module-meta {
+  display: block;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .panel-head,
@@ -290,6 +333,7 @@ pre,
 }
 
 @media (max-width: 1180px) {
+  .module-list,
   .status-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -313,6 +357,7 @@ pre,
   }
 
   .metrics div,
+  .module-list,
   .status-grid,
   .event-log li {
     grid-template-columns: 1fr;

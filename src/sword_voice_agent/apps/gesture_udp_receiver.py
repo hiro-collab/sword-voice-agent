@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -12,6 +13,7 @@ from sword_voice_agent.adapters.auth import (
     resolve_auth_token,
 )
 from sword_voice_agent.adapters.gesture_udp import GestureUdpReceiver
+from sword_voice_agent.adapters.gesture_udp import DEFAULT_RATE_LIMIT_PER_MINUTE
 from sword_voice_agent.adapters.status_store import StatusStore
 from sword_voice_agent.core.input_gate import GestureInputGate
 from sword_voice_agent.core.turn_controller import VoiceTurnController
@@ -123,6 +125,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional ai_talk_core-compatible input gate endpoint.",
     )
     parser.add_argument("--input-gate-timeout", type=float, default=5.0)
+    parser.add_argument(
+        "--socket-timeout",
+        type=float,
+        default=0.5,
+        help=(
+            "UDP recv timeout in seconds. Keeps Ctrl+C responsive on Windows; "
+            "use 0 to block forever."
+        ),
+    )
     parser.add_argument("--print-json", action="store_true")
     parser.add_argument(
         "--debug",
@@ -149,6 +160,12 @@ def main(argv: list[str] | None = None) -> int:
         "--auth-token",
         default=None,
         help="Optional token required in UDP payload. Defaults to SWORD_VOICE_AGENT_AUTH_TOKEN.",
+    )
+    parser.add_argument(
+        "--rate-limit-per-minute",
+        type=int,
+        default=DEFAULT_RATE_LIMIT_PER_MINUTE,
+        help="Per-source UDP datagram limit. Use 0 to disable.",
     )
     args = parser.parse_args(argv)
     auth_token = resolve_auth_token(args.auth_token)
@@ -179,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
         voice_state_sink=sink,
         turn_controller=VoiceTurnController(),
         auth_token=auth_token,
+        receive_timeout_s=args.socket_timeout,
+        rate_limit_per_minute=args.rate_limit_per_minute,
     )
     status_store = StatusStore(args.status_dir) if args.status_dir else None
 
@@ -189,6 +208,8 @@ def main(argv: list[str] | None = None) -> int:
             while True:
                 try:
                     response, address = receiver.receive_once()
+                except socket.timeout:
+                    continue
                 except (json.JSONDecodeError, ProtocolError, ValueError, TypeError):
                     if args.debug:
                         print("[gesture-udp] rejected datagram", flush=True)

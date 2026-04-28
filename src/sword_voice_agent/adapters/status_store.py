@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping
 from uuid import uuid4
 
 from sword_voice_agent.protocol.messages import now_timestamp
+
+MODULE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 class StatusStore:
@@ -31,6 +34,10 @@ class StatusStore:
     @property
     def latest_dify_response_path(self) -> Path:
         return self.root / "latest_dify_response.json"
+
+    @property
+    def modules_dir(self) -> Path:
+        return self.root / "modules"
 
     @property
     def events_path(self) -> Path:
@@ -98,6 +105,42 @@ class StatusStore:
             },
         )
 
+    def write_module_status(
+        self,
+        name: str,
+        state: str,
+        *,
+        label: str = "",
+        detail: str = "",
+        timestamp: float | None = None,
+    ) -> None:
+        safe_name = normalize_module_name(name)
+        self.write_json(
+            self.modules_dir / f"{safe_name}.json",
+            {
+                "type": "module_status",
+                "name": safe_name,
+                "label": label or safe_name,
+                "state": state,
+                "detail": detail,
+                "timestamp": timestamp if timestamp is not None else now_timestamp(),
+            },
+        )
+
+    def read_module_statuses(self) -> dict[str, dict[str, Any]]:
+        if not self.modules_dir.exists():
+            return {}
+        statuses: dict[str, dict[str, Any]] = {}
+        for path in sorted(self.modules_dir.glob("*.json")):
+            payload = self.read_json(path)
+            if not isinstance(payload, dict):
+                continue
+            name = str(payload.get("name") or path.stem)
+            if not MODULE_NAME_PATTERN.fullmatch(name):
+                continue
+            statuses[name] = payload
+        return statuses
+
     def write_json(self, path: Path, payload: Mapping[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -153,6 +196,12 @@ class StatusStore:
                 path.unlink()
             except FileNotFoundError:
                 pass
+        if self.modules_dir.exists():
+            for path in self.modules_dir.glob("*.json"):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
 
     def read_events(self, limit: int = 50) -> list[dict[str, Any]]:
         try:
@@ -179,6 +228,15 @@ class StatusStore:
 
 def _mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def normalize_module_name(name: str) -> str:
+    normalized = name.strip()
+    if not MODULE_NAME_PATTERN.fullmatch(normalized):
+        raise ValueError(
+            "module name must contain only letters, numbers, hyphen, or underscore"
+        )
+    return normalized
 
 
 def _optional_text(value: object) -> str | None:

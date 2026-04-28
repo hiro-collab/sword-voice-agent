@@ -84,6 +84,50 @@ class GestureHttpTest(TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def test_server_rate_limits_post_requests(self) -> None:
+        server = create_server(
+            "127.0.0.1",
+            0,
+            GestureInputGate(),
+            rate_limit_per_minute=1,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            payload = json.dumps(
+                {
+                    "type": "gesture_state",
+                    "source": "test",
+                    "timestamp": 10.0,
+                    "gestures": {"sword_sign": {"active": True, "confidence": 0.95}},
+                }
+            ).encode("utf-8")
+            url = f"http://127.0.0.1:{server.server_port}/gesture-state"
+            req = request.Request(
+                url,
+                data=payload,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with request.urlopen(req, timeout=2) as response:
+                self.assertEqual(response.status, 200)
+
+            req = request.Request(
+                url,
+                data=payload,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with self.assertRaises(error.HTTPError) as caught:
+                request.urlopen(req, timeout=2)
+            body = caught.exception.read().decode("utf-8")
+            self.assertEqual(caught.exception.code, 429)
+            self.assertIn("rate_limited", body)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_server_hides_upstream_error_details(self) -> None:
         server = create_server(
             "127.0.0.1",

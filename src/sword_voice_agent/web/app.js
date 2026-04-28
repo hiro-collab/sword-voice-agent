@@ -106,6 +106,7 @@ function renderStatus(payload) {
   text("lastUpdated", `更新 ${formatDateTime(payload.timestamp)}`);
   text("sourceSummary", payload.paths?.status_dir || payload.paths?.cache_dir || "-");
   state.storeEvents = Array.isArray(payload.events) ? payload.events : [];
+  renderModules(Array.isArray(payload.modules) ? payload.modules : []);
 
   const gestureActive = Boolean(gesture.raw_active);
   const gestureReady = Boolean(gesture.available);
@@ -165,6 +166,50 @@ function renderStatus(payload) {
   renderEvents();
 }
 
+function renderModules(modules) {
+  const list = $("moduleList");
+  list.innerHTML = "";
+  for (const moduleStatus of modules) {
+    const item = document.createElement("div");
+    const head = document.createElement("div");
+    const name = document.createElement("strong");
+    const pill = document.createElement("span");
+    const meta = document.createElement("span");
+    const stateName = moduleStatus.state || "missing";
+    item.className = "module-item";
+    item.dataset.state = moduleStateForPanel(stateName);
+    head.className = "module-head";
+    name.textContent = moduleStatus.label || moduleStatus.name || "-";
+    pill.className = "state-pill";
+    pill.textContent = stateName;
+    meta.className = "module-meta";
+    meta.textContent = moduleStatusLine(moduleStatus);
+    head.append(name, pill);
+    item.append(head, meta);
+    list.appendChild(item);
+  }
+}
+
+function moduleStateForPanel(stateName) {
+  if (stateName === "running") return "ok";
+  if (stateName === "starting" || stateName === "stale") return "warn";
+  return "bad";
+}
+
+function moduleStatusLine(moduleStatus) {
+  const parts = [];
+  if (moduleStatus.updated_at) {
+    parts.push(`updated ${formatTime(moduleStatus.updated_at)}`);
+  }
+  if (moduleStatus.age_seconds !== null && moduleStatus.age_seconds !== undefined) {
+    parts.push(`${Number(moduleStatus.age_seconds).toFixed(1)}s ago`);
+  }
+  if (moduleStatus.detail) {
+    parts.push(moduleStatus.detail);
+  }
+  return parts.join(" / ") || "-";
+}
+
 function inputGatePayload(inputGate) {
   const payload = inputGate.payload || {};
   return payload.input_gate || payload;
@@ -196,12 +241,16 @@ function collectEvents(gesture, voice, dify) {
   }
 }
 
+function authHeaders() {
+  const headers = {};
+  const token = sessionStorage.getItem(AUTH_STORAGE_KEY) || "";
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
 async function refresh() {
   try {
-    const headers = {};
-    const token = sessionStorage.getItem(AUTH_STORAGE_KEY) || "";
-    if (token) headers.Authorization = `Bearer ${token}`;
-    const response = await fetch("/api/status", { cache: "no-store", headers });
+    const response = await fetch("/api/status", { cache: "no-store", headers: authHeaders() });
     if (response.status === 401) {
       setPanel("gesturePanel", "bad", "gestureState", "auth");
       setPanel("inputGatePanel", "bad", "inputGateState", "auth");
@@ -221,6 +270,28 @@ async function refresh() {
   }
 }
 
+async function clearStatus() {
+  if (!window.confirm("ローカルの status キャッシュとイベント履歴を削除します。")) return;
+  try {
+    const response = await fetch("/api/status/clear", {
+      method: "POST",
+      cache: "no-store",
+      headers: authHeaders(),
+    });
+    if (response.status === 401) {
+      addEvent("auth-required-clear", "auth token is required for status clear");
+      return;
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    state.events = [];
+    state.storeEvents = [];
+    addEvent(`status-cleared:${Date.now()}`, "local status cache cleared");
+    await refresh();
+  } catch (error) {
+    addEvent(`error:${Date.now()}`, `status clear failed: ${error.message}`);
+  }
+}
+
 $("authTokenInput").value = sessionStorage.getItem(AUTH_STORAGE_KEY) || "";
 $("saveTokenButton").addEventListener("click", () => {
   const token = $("authTokenInput").value.trim();
@@ -234,5 +305,6 @@ $("saveTokenButton").addEventListener("click", () => {
   refresh();
 });
 $("refreshButton").addEventListener("click", refresh);
+$("clearStatusButton").addEventListener("click", clearStatus);
 refresh();
 setInterval(refresh, 1000);

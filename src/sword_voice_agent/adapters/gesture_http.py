@@ -15,10 +15,15 @@ from sword_voice_agent.adapters.gesture_gateway import (
     VoiceStateSink,
     build_gesture_response,
 )
+from sword_voice_agent.adapters.rate_limit import (
+    FixedWindowRateLimiter,
+    RateLimitExceeded,
+)
 from sword_voice_agent.protocol.messages import ProtocolError
 
 
 DEFAULT_MAX_BODY_BYTES = 64 * 1024
+DEFAULT_RATE_LIMIT_PER_MINUTE = 1800
 
 
 class RequestBodyTooLarge(RuntimeError):
@@ -31,6 +36,7 @@ class GestureGateHttpHandler(BaseHTTPRequestHandler):
     turn_controller: VoiceTurnController | None = None
     auth_token: str = ""
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
+    rate_limiter: FixedWindowRateLimiter = FixedWindowRateLimiter.disabled()
 
     server_version = "SwordGestureHTTP/0.1"
 
@@ -43,6 +49,8 @@ class GestureGateHttpHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path != "/gesture-state":
             self._write_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
+            return
+        if not self._check_rate_limit():
             return
         if not headers_authorized(self.headers, self.auth_token):
             self._write_json(
@@ -102,6 +110,21 @@ class GestureGateHttpHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _check_rate_limit(self) -> bool:
+        try:
+            self.rate_limiter.check(self.client_address[0])
+        except RateLimitExceeded as exc:
+            self._write_json(
+                HTTPStatus.TOO_MANY_REQUESTS,
+                {
+                    "ok": False,
+                    "error": "rate_limited",
+                    "retry_after_s": round(exc.retry_after_s, 3),
+                },
+            )
+            return False
+        return True
+
 
 def make_handler(
     gate: GestureInputGate,
@@ -109,6 +132,7 @@ def make_handler(
     turn_controller: VoiceTurnController | None = None,
     auth_token: str = "",
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
+    rate_limit_per_minute: int = DEFAULT_RATE_LIMIT_PER_MINUTE,
 ) -> type[GestureGateHttpHandler]:
     class ConfiguredGestureGateHttpHandler(GestureGateHttpHandler):
         pass
@@ -118,6 +142,9 @@ def make_handler(
     ConfiguredGestureGateHttpHandler.turn_controller = turn_controller
     ConfiguredGestureGateHttpHandler.auth_token = auth_token
     ConfiguredGestureGateHttpHandler.max_body_bytes = max_body_bytes
+    ConfiguredGestureGateHttpHandler.rate_limiter = FixedWindowRateLimiter(
+        rate_limit_per_minute,
+    )
     return ConfiguredGestureGateHttpHandler
 
 
@@ -129,6 +156,7 @@ def create_server(
     turn_controller: VoiceTurnController | None = None,
     auth_token: str = "",
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
+    rate_limit_per_minute: int = DEFAULT_RATE_LIMIT_PER_MINUTE,
 ) -> ThreadingHTTPServer:
     require_auth_token_for_bind(host, auth_token, "gesture HTTP receiver")
     return ThreadingHTTPServer(
@@ -139,6 +167,7 @@ def create_server(
             turn_controller,
             auth_token,
             max_body_bytes=max_body_bytes,
+            rate_limit_per_minute=rate_limit_per_minute,
         ),
     )
 

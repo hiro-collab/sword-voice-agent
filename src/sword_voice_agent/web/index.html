@@ -23,11 +23,20 @@
           />
           <button id="saveTokenButton" class="button secondary" type="button">保存</button>
           <button id="refreshButton" class="button" type="button">更新</button>
+          <button id="clearStatusButton" class="button secondary" type="button">履歴クリア</button>
           <span id="lastUpdated" class="timestamp">未取得</span>
         </div>
       </header>
 
       <main class="layout">
+        <section class="module-panel" aria-label="Module status">
+          <div class="section-head">
+            <h2>Modules</h2>
+            <span class="path-label">起動スクリプトの状態</span>
+          </div>
+          <div id="moduleList" class="module-list"></div>
+        </section>
+
         <section class="status-grid" aria-label="Status summary">
           <article class="status-panel" data-state="unknown" id="gesturePanel">
             <div class="panel-head">

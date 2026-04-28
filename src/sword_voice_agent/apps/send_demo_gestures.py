@@ -5,6 +5,7 @@ import json
 import socket
 import time
 
+from sword_voice_agent.adapters.auth import resolve_auth_token
 from sword_voice_agent.protocol.messages import GestureSignal, GestureState
 
 
@@ -39,12 +40,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--interval", type=float, default=0.1)
     parser.add_argument("--print-json", action="store_true")
+    parser.add_argument(
+        "--auth-token",
+        default=None,
+        help="Optional UDP auth token. Defaults to SWORD_VOICE_AGENT_AUTH_TOKEN.",
+    )
     args = parser.parse_args(argv)
+    auth_token = resolve_auth_token(args.auth_token)
 
     address = (args.host, args.port)
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         for state in demo_sequence():
-            payload = json.dumps(state.to_dict(), ensure_ascii=False).encode("utf-8")
+            message = state.to_dict()
+            if auth_token:
+                message["auth_token"] = auth_token
+            payload = json.dumps(message, ensure_ascii=False).encode("utf-8")
             sock.sendto(payload, address)
             if args.print_json:
                 print(state.to_json(), flush=True)
@@ -54,4 +64,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

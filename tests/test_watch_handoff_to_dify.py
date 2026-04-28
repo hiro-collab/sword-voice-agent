@@ -8,8 +8,10 @@ from uuid import uuid4
 from sword_voice_agent.apps.watch_handoff_to_dify import (
     build_parser,
     handoff_signature,
+    resolve_handoff_json_path,
     run_once,
 )
+from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreHandoffError
 from sword_voice_agent.protocol.messages import AgentResponse
 
 
@@ -170,6 +172,23 @@ class WatchHandoffToDifyTest(TestCase):
             self.assertIsNotNone(first)
             self.assertIsNotNone(second)
             self.assertNotEqual(first, second)
+
+    def test_resolve_handoff_path_rejects_placeholder_root(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "--ai-talk-core-root",
+                "<ai_talk_core_root>",
+                "--source",
+                "web",
+            ]
+        )
+
+        with self.assertRaises(AiTalkCoreHandoffError):
+            resolve_handoff_json_path(args)
+
+    def test_handoff_signature_wraps_invalid_windows_path_error(self) -> None:
+        with self.assertRaises(AiTalkCoreHandoffError):
+            handoff_signature("<ai_talk_core_root>\\.cache\\codex\\web_latest.json")
 
 
 def write_handoff(root: Path, *, command: str) -> Path:

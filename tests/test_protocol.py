@@ -100,3 +100,26 @@ class ProtocolTest(TestCase):
                     },
                 }
             )
+
+    def test_rejects_string_voice_state_bool(self) -> None:
+        with self.assertRaises(ProtocolError):
+            VoiceState.from_dict(
+                {
+                    "type": "voice_state",
+                    "timestamp": 1.0,
+                    "phase": "recording",
+                    "mic_enabled": "false",
+                    "recording": True,
+                }
+            )
+
+    def test_rejects_string_voice_control_bool(self) -> None:
+        with self.assertRaises(ProtocolError):
+            VoiceControlCommand.from_dict(
+                {
+                    "type": "voice_control_command",
+                    "timestamp": 1.0,
+                    "action": "start_recording",
+                    "mic_enabled": "false",
+                }
+            )

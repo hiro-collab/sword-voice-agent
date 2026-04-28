@@ -6,6 +6,7 @@ import shutil
 from uuid import uuid4
 
 from sword_voice_agent.adapters.gesture_udp import build_udp_gesture_response
+from sword_voice_agent.adapters.gesture_udp import GestureUdpReceiver
 from sword_voice_agent.apps.gesture_udp_receiver import (
     format_debug_line,
     write_status_json,
@@ -151,6 +152,65 @@ class GestureUdpTest(TestCase):
             self.assertEqual(payload["from"], "127.0.0.1:55218")
             self.assertTrue(payload["response"]["voice_state"]["mic_enabled"])
 
+    def test_receiver_configures_socket_timeout_for_responsive_shutdown(self) -> None:
+        sock = FakeSocket()
+
+        GestureUdpReceiver(
+            "127.0.0.1",
+            8765,
+            GestureInputGate(),
+            sock=sock,
+            receive_timeout_s=0.25,
+        )
+
+        self.assertEqual(sock.timeout, 0.25)
+
+    def test_receiver_can_disable_socket_timeout(self) -> None:
+        sock = FakeSocket()
+
+        GestureUdpReceiver(
+            "127.0.0.1",
+            8765,
+            GestureInputGate(),
+            sock=sock,
+            receive_timeout_s=0,
+        )
+
+        self.assertIsNone(sock.timeout)
+
+    def test_receiver_rate_limits_datagrams_by_source(self) -> None:
+        payload = json.dumps(
+            {
+                "type": "gesture_state",
+                "timestamp": 10.0,
+                "source": "mediapipe_sword_sign",
+                "gestures": {
+                    "sword_sign": {
+                        "active": True,
+                        "confidence": 0.95,
+                    }
+                },
+            }
+        ).encode("utf-8")
+        sock = FakeSocket(
+            [
+                (payload, ("127.0.0.1", 50100)),
+                (payload, ("127.0.0.1", 50100)),
+            ]
+        )
+        receiver = GestureUdpReceiver(
+            "127.0.0.1",
+            8765,
+            GestureInputGate(activation_delay_s=0.0),
+            sock=sock,
+            rate_limit_per_minute=1,
+        )
+
+        response, _ = receiver.receive_once()
+        self.assertTrue(response["voice_state"]["mic_enabled"])
+        with self.assertRaises(ProtocolError):
+            receiver.receive_once()
+
 
 @contextmanager
 def workspace_tempdir():
@@ -160,3 +220,18 @@ def workspace_tempdir():
         yield str(root)
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+class FakeSocket:
+    def __init__(
+        self,
+        datagrams: list[tuple[bytes, tuple[str, int]]] | None = None,
+    ) -> None:
+        self.timeout = "unset"
+        self.datagrams = list(datagrams or [])
+
+    def settimeout(self, timeout: float | None) -> None:
+        self.timeout = timeout
+
+    def recvfrom(self, buffer_size: int) -> tuple[bytes, tuple[str, int]]:
+        return self.datagrams.pop(0)

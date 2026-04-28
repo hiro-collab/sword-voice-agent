@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 from typing import Any, Mapping
 from urllib import error, request
 
+from sword_voice_agent.adapters.auth import validate_http_url
 from sword_voice_agent.protocol.messages import AgentRequest, VoiceState
+
+AI_TALK_CORE_WEB_TOKEN_ENV = "AI_TALK_CORE_WEB_TOKEN"
+LOCAL_API_TOKEN_HEADER = "X-AI-Core-Token"
 
 
 class AiTalkCoreInputGateError(RuntimeError):
@@ -95,10 +100,15 @@ class AiTalkCoreInputGateClient:
         endpoint_url: str = "http://127.0.0.1:8000/api/input-gate",
         timeout_s: float = 5.0,
         source: str = "sword_voice_agent",
+        api_token: str | None = None,
     ) -> None:
-        self.endpoint_url = endpoint_url
+        self.endpoint_url = validate_http_url(
+            endpoint_url,
+            label="ai_talk_core input gate URL",
+        )
         self.timeout_s = timeout_s
         self.source = source
+        self.api_token = resolve_ai_talk_core_web_token(api_token)
 
     def send_voice_state(self, voice_state: VoiceState) -> dict[str, Any]:
         payload = voice_state_to_input_gate_payload(voice_state, source=self.source)
@@ -106,14 +116,17 @@ class AiTalkCoreInputGateClient:
 
     def _post_json(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if self.api_token:
+            headers[LOCAL_API_TOKEN_HEADER] = self.api_token
         req = request.Request(
             url=self.endpoint_url,
             data=body,
             method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
+            headers=headers,
         )
 
         try:
@@ -143,6 +156,17 @@ class AiTalkCoreInputGateClient:
                 "ai_talk_core input gate returned unexpected JSON payload"
             )
         return decoded
+
+
+def resolve_ai_talk_core_web_token(value: str | None = None) -> str:
+    return (value or os.environ.get(AI_TALK_CORE_WEB_TOKEN_ENV, "")).strip()
+
+
+def ai_talk_core_api_headers(api_token: str | None = None) -> dict[str, str]:
+    token = resolve_ai_talk_core_web_token(api_token)
+    if not token:
+        return {}
+    return {LOCAL_API_TOKEN_HEADER: token}
 
 
 def get_handoff_json_path(ai_talk_core_root: str | Path, source: str = "web") -> Path:
