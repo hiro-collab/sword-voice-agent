@@ -124,6 +124,28 @@ ai_talk_core Web UI: http://127.0.0.1:8000
 sword-voice-agent console: http://127.0.0.1:8790
 ```
 
+## 動作確認チェックリスト
+
+起動後は、まず統合コンソール上段の module card を確認します。次のカードがすべて緑なら、各プロセスと外部APIの最低限の疎通はできています。
+
+- `ai_talk_core Web UI`
+- `Gesture UDP receiver`
+- `MediaPipe UDP publisher`
+- `Dify API`
+- `Dify watcher`
+- `Integration console`
+
+その後、刀印を出した状態で短く発話します。正常なら次の流れになります。
+
+```text
+Gesture: idle -> active
+Input Gate: disabled -> enabled
+Voice: ready -> transcript/command 更新
+Dify: ready -> answer 更新
+```
+
+`ai_talk_core` の local API は `X-AI-Core-Token` を要求します。`start-full-stack.ps1` でまとめて起動した場合は、起動スクリプトが `AI_TALK_CORE_WEB_TOKEN` を各プロセスへ共有します。個別起動で `Input Gate` が更新されない場合は、同じ `AI_TALK_CORE_WEB_TOKEN` を各PowerShellに読み込ませてください。
+
 よく使うオプション:
 
 | Option | 用途 |
