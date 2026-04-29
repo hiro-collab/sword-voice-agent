@@ -60,6 +60,8 @@ class StatusStoreTest(TestCase):
             self.assertEqual(events[0]["payload"]["response_text"], "[redacted]")
             self.assertEqual(events[0]["payload"]["conversation_id"], "[redacted]")
             self.assertTrue(events[0]["payload"]["conversation_id_present"])
+            self.assertEqual(events[0]["payload"]["message_id"], "[redacted]")
+            self.assertTrue(events[0]["payload"]["message_id_present"])
 
     def test_writes_gesture_diagnostic_event(self) -> None:
         with workspace_tempdir() as tmp:

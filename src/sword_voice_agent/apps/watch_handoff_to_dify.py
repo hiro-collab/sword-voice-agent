@@ -512,8 +512,13 @@ class DifyStreamStatusWriter:
                 "conversation_id_present": bool(
                     response.get("conversation_id") if isinstance(response, dict) else ""
                 ),
-                "message_id": (
-                    response.get("message_id") if isinstance(response, dict) else None
+                "message_id": redacted_text(
+                    response.get("message_id", "")
+                    if isinstance(response, dict)
+                    else ""
+                ),
+                "message_id_present": bool(
+                    response.get("message_id") if isinstance(response, dict) else ""
                 ),
             },
         )
@@ -527,8 +532,10 @@ def stream_event_payload(event: DifyStreamEvent) -> dict[str, Any]:
         "answer_delta": redacted_text(event.answer_delta),
         "conversation_id": redacted_text(event.conversation_id or ""),
         "conversation_id_present": bool(event.conversation_id),
-        "message_id": event.message_id,
-        "task_id": event.task_id,
+        "message_id": redacted_text(event.message_id or ""),
+        "message_id_present": bool(event.message_id),
+        "task_id": redacted_text(event.task_id or ""),
+        "task_id_present": bool(event.task_id),
     }
 
 
@@ -624,7 +631,8 @@ class TtsStreamForwarder:
             source="watch_handoff_to_dify",
             turn_id=self.turn_id,
             payload={
-                "chunk_url": self.chunk_url,
+                "chunk_url": redacted_text(self.chunk_url),
+                "chunk_url_present": bool(self.chunk_url),
                 "error": message[:240],
             },
         )

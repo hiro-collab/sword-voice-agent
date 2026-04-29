@@ -123,7 +123,8 @@ class StatusStore:
                     response_payload.get("conversation_id", "")
                 ),
                 "conversation_id_present": bool(response_payload.get("conversation_id")),
-                "message_id": response_payload.get("message_id"),
+                "message_id": redacted_text(response_payload.get("message_id", "")),
+                "message_id_present": bool(response_payload.get("message_id")),
                 "skipped": payload.get("skipped", False),
                 "skip_reason": payload.get("skip_reason"),
             },

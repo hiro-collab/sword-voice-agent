@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from sword_voice_agent.apps.watch_handoff_to_dify import (
+    TtsStreamForwarder,
     build_parser,
     handoff_signature,
     is_suspect_short_ascii_stt,
@@ -15,6 +16,7 @@ from sword_voice_agent.apps.watch_handoff_to_dify import (
 )
 from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreHandoffError
 from sword_voice_agent.adapters.dify import DifyStreamEvent
+from sword_voice_agent.adapters.status_store import StatusStore
 from sword_voice_agent.protocol.messages import AgentResponse
 
 
@@ -236,6 +238,28 @@ class WatchHandoffToDifyTest(TestCase):
             )
             self.assertEqual(events[0]["payload"]["answer_delta"], "[redacted]")
             self.assertEqual(events[0]["payload"]["elapsed_s"], 0.2)
+            self.assertEqual(events[0]["payload"]["message_id"], "[redacted]")
+            self.assertTrue(events[0]["payload"]["message_id_present"])
+            self.assertNotIn("msg-1", json.dumps(events, ensure_ascii=False))
+            self.assertNotIn("conv-2", json.dumps(events, ensure_ascii=False))
+
+    def test_tts_forward_error_redacts_chunk_url_in_status_event(self) -> None:
+        with workspace_tempdir() as tmp:
+            store = StatusStore(Path(tmp) / ".cache" / "sword_voice_agent")
+            forwarder = TtsStreamForwarder(
+                "https://tts.example.test/api/tts/chunk?token=secret",
+                timeout_s=0.1,
+                store=store,
+                turn_id="turn-1",
+            )
+
+            forwarder.record_error("connection failed")
+
+            events = store.read_events()
+            self.assertEqual(events[0]["type"], "tts.forward_error")
+            self.assertEqual(events[0]["payload"]["chunk_url"], "[redacted]")
+            self.assertTrue(events[0]["payload"]["chunk_url_present"])
+            self.assertNotIn("secret", json.dumps(events, ensure_ascii=False))
 
     @patch("sword_voice_agent.apps.watch_handoff_to_dify.request.urlopen")
     def test_run_once_streaming_forwards_tts_chunks(self, urlopen: MagicMock) -> None:
