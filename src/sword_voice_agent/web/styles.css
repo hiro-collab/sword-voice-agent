@@ -316,7 +316,9 @@ h2 {
 
 .panel-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
+  gap: 8px;
   margin-top: 12px;
 }
 
@@ -342,6 +344,57 @@ h2 {
   color: var(--muted);
   font-size: 12px;
   min-height: 16px;
+}
+
+.avatar-controls {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.avatar-control-row {
+  display: grid;
+  grid-template-columns: 72px minmax(112px, 1fr) 58px;
+  gap: 8px;
+  align-items: center;
+  margin: 0;
+}
+
+.avatar-select-row {
+  grid-template-columns: 72px minmax(112px, 1fr);
+}
+
+.avatar-control-row span,
+.avatar-control-row output {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.avatar-control-row output {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.avatar-control-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.avatar-control-row select {
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(8, 12, 18, 0.84);
+  color: var(--text);
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.is-hidden {
+  display: none !important;
 }
 
 dt {
@@ -487,13 +540,19 @@ pre,
 @media (max-width: 560px) {
   .metrics div,
   .event-log li,
-  .volume-control {
+  .volume-control,
+  .avatar-control-row,
+  .avatar-select-row {
     grid-template-columns: 1fr;
     gap: 4px;
   }
 
   .volume-control span {
     grid-column: auto;
+  }
+
+  .avatar-control-row output {
+    text-align: left;
   }
 
   .token-input {

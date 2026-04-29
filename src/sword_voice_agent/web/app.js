@@ -1,3 +1,15 @@
+const AUTH_STORAGE_KEY = "swordVoiceAgentAuthToken";
+const AVATAR_BACKGROUND_COLOR = "#070b12";
+const AVATAR_VIEW_STORAGE_KEY = "swordVoiceAgentAvatarViewSettings";
+const DEFAULT_AVATAR_VIEW_SETTINGS = {
+  projection: "perspective",
+  cameraDistance: 3.1,
+  cameraFov: 28,
+  orthographicWidth: 2.1,
+  avatarHeight: 1.7,
+  lightHeight: 1.25,
+};
+
 const state = {
   events: [],
   storeEvents: [],
@@ -13,13 +25,12 @@ const state = {
     lastConfigKey: "",
     lastSentAt: null,
     popup: null,
+    viewSettings: loadAvatarViewSettings(),
   },
   ttsVolume: {
     dirty: false,
   },
 };
-const AUTH_STORAGE_KEY = "swordVoiceAgentAuthToken";
-const AVATAR_BACKGROUND_COLOR = "#070b12";
 
 const $ = (id) => document.getElementById(id);
 
@@ -420,11 +431,19 @@ function postAvatarState(url, event) {
 }
 
 function postAvatarConfig(url) {
+  const viewSettings = state.avatar.viewSettings || DEFAULT_AVATAR_VIEW_SETTINGS;
   const config = {
     type: "avatar_config",
     background: AVATAR_BACKGROUND_COLOR,
+    projection: viewSettings.projection,
+    camera_distance: viewSettings.cameraDistance,
+    camera_fov: viewSettings.cameraFov,
+    orthographic_width: viewSettings.orthographicWidth,
+    ortho_width: viewSettings.orthographicWidth,
+    avatar_height: viewSettings.avatarHeight,
+    light_height: viewSettings.lightHeight,
   };
-  const configKey = JSON.stringify({ url, background: config.background });
+  const configKey = JSON.stringify({ url, ...config });
   if (configKey === state.avatar.lastConfigKey) return;
   state.avatar.lastConfigKey = configKey;
 
@@ -459,10 +478,117 @@ function avatarRuntimeUrl(url, modelUrl = "") {
     if (!runtimeUrl.searchParams.has("background") && !runtimeUrl.searchParams.has("bg")) {
       runtimeUrl.searchParams.set("background", AVATAR_BACKGROUND_COLOR);
     }
+    applyAvatarViewSettingsToUrl(runtimeUrl);
     return runtimeUrl.toString();
   } catch {
     return url;
   }
+}
+
+function loadAvatarViewSettings() {
+  try {
+    const raw = localStorage.getItem(AVATAR_VIEW_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_AVATAR_VIEW_SETTINGS };
+    return normalizeAvatarViewSettings(JSON.parse(raw));
+  } catch {
+    return { ...DEFAULT_AVATAR_VIEW_SETTINGS };
+  }
+}
+
+function saveAvatarViewSettings(settings) {
+  try {
+    localStorage.setItem(AVATAR_VIEW_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // Local storage is best-effort; live controls still work without persistence.
+  }
+}
+
+function normalizeAvatarViewSettings(settings) {
+  const source = settings || {};
+  return {
+    projection: source.projection === "orthographic" ? "orthographic" : "perspective",
+    cameraDistance: clampNumber(source.cameraDistance, 0.8, 9.5, DEFAULT_AVATAR_VIEW_SETTINGS.cameraDistance),
+    cameraFov: clampNumber(source.cameraFov, 12, 70, DEFAULT_AVATAR_VIEW_SETTINGS.cameraFov),
+    orthographicWidth: clampNumber(source.orthographicWidth, 0.8, 4.8, DEFAULT_AVATAR_VIEW_SETTINGS.orthographicWidth),
+    avatarHeight: clampNumber(source.avatarHeight, 0.6, 2.6, DEFAULT_AVATAR_VIEW_SETTINGS.avatarHeight),
+    lightHeight: clampNumber(source.lightHeight, 0.2, 2.6, DEFAULT_AVATAR_VIEW_SETTINGS.lightHeight),
+  };
+}
+
+function clampNumber(value, min, max, fallback) {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) return fallback;
+  return Math.max(min, Math.min(max, numberValue));
+}
+
+function applyAvatarViewSettingsToUrl(runtimeUrl) {
+  const settings = state.avatar.viewSettings || DEFAULT_AVATAR_VIEW_SETTINGS;
+  runtimeUrl.searchParams.set("projection", settings.projection);
+  runtimeUrl.searchParams.set("camera_distance", settings.cameraDistance.toFixed(2));
+  runtimeUrl.searchParams.set("camera_fov", String(Math.round(settings.cameraFov)));
+  runtimeUrl.searchParams.set("ortho_width", settings.orthographicWidth.toFixed(2));
+  runtimeUrl.searchParams.set("avatar_height", settings.avatarHeight.toFixed(2));
+  runtimeUrl.searchParams.set("light_height", settings.lightHeight.toFixed(2));
+}
+
+function initAvatarViewControls() {
+  syncAvatarViewControls(state.avatar.viewSettings);
+  $("avatarProjectionSelect").addEventListener("change", applyAvatarViewSettingsFromControls);
+  for (const id of [
+    "avatarCameraDistanceSlider",
+    "avatarCameraFovSlider",
+    "avatarOrthoWidthSlider",
+    "avatarHeightSlider",
+    "avatarLightHeightSlider",
+  ]) {
+    $(id).addEventListener("input", applyAvatarViewSettingsFromControls);
+  }
+  $("avatarViewResetButton").addEventListener("click", () => {
+    state.avatar.viewSettings = { ...DEFAULT_AVATAR_VIEW_SETTINGS };
+    saveAvatarViewSettings(state.avatar.viewSettings);
+    syncAvatarViewControls(state.avatar.viewSettings);
+    sendAvatarViewConfig();
+  });
+}
+
+function applyAvatarViewSettingsFromControls() {
+  state.avatar.viewSettings = normalizeAvatarViewSettings({
+    projection: $("avatarProjectionSelect").value,
+    cameraDistance: $("avatarCameraDistanceSlider").value,
+    cameraFov: $("avatarCameraFovSlider").value,
+    orthographicWidth: $("avatarOrthoWidthSlider").value,
+    avatarHeight: $("avatarHeightSlider").value,
+    lightHeight: $("avatarLightHeightSlider").value,
+  });
+  saveAvatarViewSettings(state.avatar.viewSettings);
+  syncAvatarViewControls(state.avatar.viewSettings);
+  sendAvatarViewConfig();
+}
+
+function syncAvatarViewControls(settings) {
+  const viewSettings = normalizeAvatarViewSettings(settings);
+  $("avatarProjectionSelect").value = viewSettings.projection;
+  $("avatarCameraDistanceSlider").value = viewSettings.cameraDistance.toFixed(2);
+  $("avatarCameraFovSlider").value = String(Math.round(viewSettings.cameraFov));
+  $("avatarOrthoWidthSlider").value = viewSettings.orthographicWidth.toFixed(2);
+  $("avatarHeightSlider").value = viewSettings.avatarHeight.toFixed(2);
+  $("avatarLightHeightSlider").value = viewSettings.lightHeight.toFixed(2);
+  text("avatarCameraDistanceReadout", viewSettings.cameraDistance.toFixed(2));
+  text("avatarCameraFovReadout", `${Math.round(viewSettings.cameraFov)} deg`);
+  text("avatarOrthoWidthReadout", viewSettings.orthographicWidth.toFixed(2));
+  text("avatarHeightReadout", viewSettings.avatarHeight.toFixed(2));
+  text("avatarLightHeightReadout", viewSettings.lightHeight.toFixed(2));
+  $("avatarCameraFovRow").classList.toggle("is-hidden", viewSettings.projection !== "perspective");
+  $("avatarOrthoWidthRow").classList.toggle("is-hidden", viewSettings.projection !== "orthographic");
+}
+
+function sendAvatarViewConfig() {
+  state.avatar.lastConfigKey = "";
+  if (!state.avatar.url) return;
+  const nextUrl = avatarRuntimeUrl(state.avatar.url, "");
+  state.avatar.url = nextUrl;
+  text("avatarUrl", nextUrl);
+  postAvatarConfig(nextUrl);
 }
 
 function moduleStatusLine(moduleStatus) {
@@ -676,5 +802,6 @@ $("ttsAppVolumeSlider").addEventListener("input", () => {
 });
 $("ttsVolumeApplyButton").addEventListener("click", applyTtsVolume);
 $("ttsVolumePreviewButton").addEventListener("click", previewTtsVolume);
+initAvatarViewControls();
 refresh();
 setInterval(refresh, 1000);
