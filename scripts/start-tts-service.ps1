@@ -13,7 +13,11 @@ param(
     [string]$VoiceName = "",
     [string]$Rate = "",
     [string]$Volume = "",
+    [string]$AppVolume = "",
+    [string]$AppVolumeFile = "",
     [string]$OutputAudioDir = "",
+    [string]$RuntimeStatusFile = "",
+    [string]$ShutdownToken = "",
     [switch]$Once,
     [switch]$HealthJson,
     [switch]$ListVoices,
@@ -62,8 +66,26 @@ if ([string]::IsNullOrWhiteSpace($Rate)) {
 if ([string]::IsNullOrWhiteSpace($Volume)) {
     $Volume = [Environment]::GetEnvironmentVariable("TTS_VOLUME", "Process")
 }
+if ([string]::IsNullOrWhiteSpace($AppVolume)) {
+    $AppVolume = [Environment]::GetEnvironmentVariable("TTS_APP_VOLUME", "Process")
+}
+if ([string]::IsNullOrWhiteSpace($AppVolumeFile)) {
+    $AppVolumeFile = [Environment]::GetEnvironmentVariable("TTS_SERVICE_APP_VOLUME_FILE", "Process")
+}
 if ([string]::IsNullOrWhiteSpace($OutputAudioDir)) {
     $OutputAudioDir = [Environment]::GetEnvironmentVariable("TTS_OUTPUT_AUDIO_DIR", "Process")
+}
+if ([string]::IsNullOrWhiteSpace($RuntimeStatusFile)) {
+    $RuntimeStatusFile = [Environment]::GetEnvironmentVariable(
+        "TTS_SERVICE_RUNTIME_STATUS_FILE",
+        "Process"
+    )
+}
+if ([string]::IsNullOrWhiteSpace($ShutdownToken)) {
+    $ShutdownToken = [Environment]::GetEnvironmentVariable(
+        "TTS_SERVICE_SHUTDOWN_TOKEN",
+        "Process"
+    )
 }
 
 if ([string]::IsNullOrWhiteSpace($PollInterval)) {
@@ -96,16 +118,30 @@ if ([string]::IsNullOrWhiteSpace($Rate)) {
 if ([string]::IsNullOrWhiteSpace($Volume)) {
     $Volume = "100"
 }
+if ([string]::IsNullOrWhiteSpace($AppVolume)) {
+    $AppVolume = "1.0"
+}
 if ([string]::IsNullOrWhiteSpace($OutputAudioDir)) {
     $OutputAudioDir = ".cache\tts_service\audio_output"
 }
+if ([string]::IsNullOrWhiteSpace($RuntimeStatusFile)) {
+    $RuntimeStatusFile = Join-Path $SwordStatusDir "runtime\tts_service.json"
+}
 if ($Engine -eq "noop") {
     $Player = "noop"
+}
+if (-not $DryRun -and $Source -eq "http") {
+    Assert-SwordPortsAvailable -TcpPorts @([int]$HttpPort)
 }
 
 $resolvedSwordStatusDir = Resolve-SwordPath -Path $SwordStatusDir -BasePath $repoRoot
 $resolvedOutputStatusDir = Resolve-SwordPath -Path $OutputStatusDir -BasePath $repoRoot
 $resolvedOutputAudioDir = Resolve-SwordPath -Path $OutputAudioDir -BasePath $repoRoot
+$resolvedRuntimeStatusFile = Resolve-SwordPath -Path $RuntimeStatusFile -BasePath $repoRoot
+if ([string]::IsNullOrWhiteSpace($AppVolumeFile)) {
+    $AppVolumeFile = Join-Path $resolvedOutputStatusDir "app_volume.json"
+}
+$resolvedAppVolumeFile = Resolve-SwordPath -Path $AppVolumeFile -BasePath $repoRoot
 
 $command = @(
     "python",
@@ -124,7 +160,13 @@ $command = @(
     "--rate",
     $Rate,
     "--volume",
-    $Volume
+    $Volume,
+    "--app-volume",
+    $AppVolume,
+    "--app-volume-file",
+    $resolvedAppVolumeFile,
+    "--runtime-status-file",
+    $resolvedRuntimeStatusFile
 )
 
 if ($Source -eq "http") {
@@ -136,6 +178,9 @@ if ($Source -eq "http") {
         "--http-chunk-max-chars",
         $HttpChunkMaxChars
     )
+    if (-not [string]::IsNullOrWhiteSpace($ShutdownToken)) {
+        $command += @("--shutdown-token", $ShutdownToken)
+    }
 }
 else {
     $command += @(
@@ -168,5 +213,5 @@ Invoke-WithModuleStatus `
     -StatusDir $SwordStatusDir `
     -ModuleName "tts_service" `
     -ModuleLabel "TTS service" `
-    -Detail "source=$Source engine=$Engine player=$Player status=$(Split-Path -Leaf $resolvedOutputStatusDir)" `
+    -Detail "source=$Source engine=$Engine player=$Player app_volume=$AppVolume status=$(Split-Path -Leaf $resolvedOutputStatusDir)" `
     -DryRun:$DryRun

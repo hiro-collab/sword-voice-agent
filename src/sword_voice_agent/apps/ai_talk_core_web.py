@@ -8,6 +8,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -120,6 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--runtime-status-file",
+        default="",
+        help="Optional ai_talk_core runtime status JSON file for integration supervisors.",
+    )
 
     gate_group = parser.add_mutually_exclusive_group()
     gate_group.add_argument(
@@ -153,8 +159,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_ai_talk_core_app(ai_talk_core_root: Path) -> Any:
-    """Import ai_talk_core's Flask app factory from a repository checkout."""
+def load_ai_talk_core_module(ai_talk_core_root: Path) -> Any:
+    """Import ai_talk_core's Flask app module from a repository checkout."""
     app_py = ai_talk_core_root / "src" / "web" / "app.py"
     if not app_py.exists():
         raise RuntimeError(f"ai_talk_core web app not found: {app_py}")
@@ -162,8 +168,27 @@ def load_ai_talk_core_app(ai_talk_core_root: Path) -> Any:
     root_text = str(ai_talk_core_root)
     if root_text not in sys.path:
         sys.path.insert(0, root_text)
-    module = importlib.import_module("src.web.app")
-    return module.create_app()
+    return importlib.import_module("src.web.app")
+
+
+def create_ai_talk_core_app(
+    module: Any,
+    *,
+    host: str,
+    port: int,
+    runtime_status_writer: Any,
+    started_at: str,
+) -> Any:
+    """Create the ai_talk_core Flask app while tolerating older checkouts."""
+    try:
+        return module.create_app(
+            host=host,
+            port=port,
+            runtime_status_writer=runtime_status_writer,
+            started_at=started_at,
+        )
+    except TypeError:
+        return module.create_app()
 
 
 def install_default_injection(app: Any, defaults: AiTalkCoreWebDefaults) -> None:
@@ -202,6 +227,11 @@ def install_native_startup_redirect(
 def load_ai_talk_core_app_with_optional_preset(
     ai_talk_core_root: Path,
     profile_name: str | None,
+    *,
+    host: str,
+    port: int,
+    runtime_status_writer: Any,
+    started_at: str,
 ) -> Any:
     """Load ai_talk_core while setting its native preset env when requested."""
     previous = os.environ.get(AI_TALK_CORE_WEB_PRESET_ENV)
@@ -210,12 +240,39 @@ def load_ai_talk_core_app_with_optional_preset(
             os.environ[AI_TALK_CORE_WEB_PRESET_ENV] = profile_name
         else:
             os.environ.pop(AI_TALK_CORE_WEB_PRESET_ENV, None)
-        return load_ai_talk_core_app(ai_talk_core_root)
+        module = load_ai_talk_core_module(ai_talk_core_root)
+        return create_ai_talk_core_app(
+            module,
+            host=host,
+            port=port,
+            runtime_status_writer=runtime_status_writer,
+            started_at=started_at,
+        )
     finally:
         if previous is None:
             os.environ.pop(AI_TALK_CORE_WEB_PRESET_ENV, None)
         else:
             os.environ[AI_TALK_CORE_WEB_PRESET_ENV] = previous
+
+
+def load_ai_talk_core_app(
+    ai_talk_core_root: Path,
+    profile_name: str | None = None,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    runtime_status_writer: Any = None,
+    started_at: str = "",
+) -> Any:
+    """Compatibility wrapper for tests and older integration call sites."""
+    return load_ai_talk_core_app_with_optional_preset(
+        ai_talk_core_root,
+        profile_name,
+        host=host,
+        port=port,
+        runtime_status_writer=runtime_status_writer,
+        started_at=started_at,
+    )
 
 
 def run(args: argparse.Namespace) -> int:
@@ -230,16 +287,78 @@ def run(args: argparse.Namespace) -> int:
         native_profile and should_use_native_profile(defaults)
     )
     native_env_profile = native_profile if native_defaults_enabled else None
-    app = load_ai_talk_core_app_with_optional_preset(
+    started_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    runtime_status_file = getattr(args, "runtime_status_file", "")
+    module = load_ai_talk_core_module(ai_talk_core_root) if runtime_status_file else None
+    runtime_status_writer = build_runtime_status_writer(
+        module,
+        runtime_status_file=runtime_status_file,
+        host=args.host,
+        port=args.port,
+        started_at=started_at,
+    )
+    if module is not None:
+        install_shutdown_signal_handlers(module, runtime_status_writer)
+    app = load_ai_talk_core_app(
         ai_talk_core_root,
         native_env_profile,
+        host=args.host,
+        port=args.port,
+        runtime_status_writer=runtime_status_writer,
+        started_at=started_at,
     )
     if native_defaults_enabled and defaults != AiTalkCoreWebDefaults():
         install_native_startup_redirect(app, native_profile, defaults)
     elif native_profile is None:
         install_default_injection(app, defaults)
-    app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
+    if runtime_status_writer is not None:
+        runtime_status_writer.write("running")
+    final_state = "stopped"
+    final_extra: dict[str, object] = {}
+    try:
+        app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
+    except KeyboardInterrupt:
+        final_state = "stopped"
+        raise
+    except BaseException as exc:
+        final_state = "error"
+        final_extra = {
+            "error_type": exc.__class__.__name__,
+            "error": str(exc),
+        }
+        raise
+    finally:
+        if runtime_status_writer is not None:
+            runtime_status_writer.write(final_state, **final_extra)
     return 0
+
+
+def build_runtime_status_writer(
+    module: Any,
+    *,
+    runtime_status_file: str,
+    host: str,
+    port: int,
+    started_at: str,
+) -> Any:
+    """Build ai_talk_core RuntimeStatusWriter when the checkout supports it."""
+    if not runtime_status_file:
+        return None
+    writer_type = getattr(module, "RuntimeStatusWriter", None)
+    if writer_type is None:
+        return None
+    return writer_type(
+        Path(runtime_status_file).expanduser().resolve(),
+        host=host,
+        port=port,
+        started_at=started_at,
+    )
+
+
+def install_shutdown_signal_handlers(module: Any, runtime_status_writer: Any) -> None:
+    installer = getattr(module, "install_shutdown_signal_handlers", None)
+    if runtime_status_writer is not None and callable(installer):
+        installer(runtime_status_writer)
 
 
 def main() -> int:

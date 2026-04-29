@@ -122,6 +122,52 @@ class GestureUdpTest(TestCase):
         self.assertEqual(response["diagnostic"]["type"], "gesture_status")
         self.assertNotIn("voice_control_command", response)
 
+    def test_accepts_gesture_edge_as_low_latency_command(self) -> None:
+        gate = GestureInputGate(activation_delay_s=0.0)
+        controller = VoiceTurnController()
+        active_payload = {
+            "type": "gesture_edge",
+            "event": "gesture_active",
+            "timestamp": 10.0,
+            "turn_id": "turn-from-publisher",
+            "target_gesture": "sword_sign",
+            "current_active": True,
+            "confidence": 0.91,
+            "frame_id": 42,
+            "detected_at": 10.0,
+            "sent_at": 10.01,
+        }
+        released_payload = {
+            **active_payload,
+            "event": "gesture_released",
+            "timestamp": 11.0,
+            "current_active": False,
+        }
+
+        active = build_udp_gesture_response(
+            json.dumps(active_payload).encode("utf-8"),
+            gate,
+            turn_controller=controller,
+        )
+        released = build_udp_gesture_response(
+            json.dumps(released_payload).encode("utf-8"),
+            gate,
+            turn_controller=controller,
+        )
+
+        self.assertTrue(active["voice_state"]["mic_enabled"])
+        self.assertEqual(
+            active["voice_control_command"]["action"],
+            "start_recording",
+        )
+        self.assertEqual(active["voice_control_command"]["turn_id"], "turn-from-publisher")
+        self.assertFalse(released["voice_state"]["mic_enabled"])
+        self.assertEqual(
+            released["voice_control_command"]["action"],
+            "stop_recording",
+        )
+        self.assertEqual(released["voice_control_command"]["turn_id"], "turn-from-publisher")
+
     def test_formats_udp_receiver_debug_line(self) -> None:
         response = {
             "voice_state": {

@@ -7,6 +7,15 @@ const state = {
     difyKey: "",
     ttsKey: "",
   },
+  avatar: {
+    url: "",
+    lastKey: "",
+    lastSentAt: null,
+    popup: null,
+  },
+  ttsVolume: {
+    dirty: false,
+  },
 };
 const AUTH_STORAGE_KEY = "swordVoiceAgentAuthToken";
 
@@ -111,6 +120,9 @@ function formatStoredEvent(event) {
   if (event.type === "tts.state") {
     return `tts${turn}: ${data.phase || "-"}`;
   }
+  if (event.type && event.type.startsWith("ai_core.")) {
+    return `${event.type}${turn}`;
+  }
   return `${event.type}${turn}`;
 }
 
@@ -120,6 +132,7 @@ function renderStatus(payload) {
   const voice = payload.voice || {};
   const dify = payload.dify || {};
   const tts = payload.tts || {};
+  const avatar = payload.avatar || {};
   const inputGate = payload.input_gate || {};
   const files = payload.files || {};
 
@@ -198,10 +211,17 @@ function renderStatus(payload) {
   );
   text("ttsEngine", tts.engine || "-");
   text("ttsPlayer", tts.player || "-");
+  text("ttsAppVolume", formatAppVolume(tts.app_volume));
+  text("ttsVolume", tts.volume === null || tts.volume === undefined ? "-" : tts.volume);
+  text("ttsRate", tts.rate === null || tts.rate === undefined ? "-" : tts.rate);
   text("ttsVoice", tts.voice_name || "(default)");
   text("ttsUpdated", formatTime(tts.updated_at));
   text("ttsRequest", short(tts.request_id || tts.message_id || tts.conversation_id || tts.turn_id || ""));
   text("ttsError", short(tts.error || "", 72));
+  updateTtsVolumeControl(tts);
+
+  const avatarEvent = buildAvatarState({ gesture, voice, dify, tts, inputGate });
+  updateAvatarBridge(avatar, avatarEvent);
 
   collectEvents(gesture, voice, dify, tts);
   renderEvents();
@@ -241,6 +261,160 @@ function ttsPanelState(phase) {
   if (phase === "error") return "bad";
   if (phase === "speaking" || phase === "completed" || phase === "skipped") return "ok";
   return "warn";
+}
+
+function formatAppVolume(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) return "-";
+  return `${Math.round(numberValue * 100)}%`;
+}
+
+function updateTtsVolumeControl(tts) {
+  const slider = $("ttsAppVolumeSlider");
+  const button = $("ttsVolumeApplyButton");
+  const previewButton = $("ttsVolumePreviewButton");
+  const available = Boolean(tts.app_volume_available || tts.volume_url || tts.app_volume_file);
+  const previewAvailable = Boolean(tts.volume_preview_url);
+  slider.disabled = !available;
+  button.disabled = !available || !state.ttsVolume.dirty;
+  previewButton.disabled = !previewAvailable;
+  if (!state.ttsVolume.dirty) {
+    const appVolume = Number(tts.app_volume);
+    slider.value = Number.isFinite(appVolume) ? String(Math.round(appVolume * 100)) : "100";
+    text("ttsVolumeApplyState", available ? `${slider.value}%` : "-");
+  }
+}
+
+function updateAvatarBridge(avatar, avatarEvent) {
+  const url = avatarRuntimeUrl(avatar.url || "", avatar.model_url || "");
+  const ready = Boolean(avatar.available);
+  const frame = $("avatarFrame");
+  const bridgeEnabled = Boolean(url);
+  setPanel(
+    "avatarPanel",
+    ready ? "ok" : bridgeEnabled ? "warn" : "bad",
+    "avatarState",
+    ready ? "ready" : bridgeEnabled ? "offline" : "missing"
+  );
+  text("avatarUrl", url);
+  text("avatarPhase", avatarEvent.phase);
+  text("avatarBridge", bridgeEnabled ? "enabled" : "disabled");
+
+  if (url && state.avatar.url !== url) {
+    state.avatar.url = url;
+    state.avatar.lastKey = "";
+    frame.src = url;
+  } else if (!url && state.avatar.url) {
+    state.avatar.url = "";
+    state.avatar.lastKey = "";
+    frame.removeAttribute("src");
+  }
+
+  if (!url) {
+    text("avatarLastSent", "sent: -");
+    text("avatarLastTurn", "turn: -");
+    return;
+  }
+
+  postAvatarState(url, avatarEvent);
+  text("avatarLastSent", state.avatar.lastSentAt ? `sent: ${state.avatar.lastSentAt.toLocaleTimeString("ja-JP", { hour12: false })}` : "sent: -");
+  text("avatarLastTurn", `turn: ${shortTurn(avatarEvent.turn_id)}`);
+}
+
+function buildAvatarState({ gesture, voice, dify, tts, inputGate }) {
+  const now = Date.now() / 1000;
+  const ttsPhase = tts.phase || "";
+  const difyAge = dify.updated_at ? now - Number(dify.updated_at) : Number.POSITIVE_INFINITY;
+  const voiceAge = voice.updated_at ? now - Number(voice.updated_at) : Number.POSITIVE_INFINITY;
+  const inputGateState = inputGatePayload(inputGate);
+  let phase = "idle";
+  let emotion = "neutral";
+
+  if (ttsPhase === "error" || (dify.available && dify.skipped)) {
+    phase = "error";
+    emotion = "troubled";
+  } else if (ttsPhase === "speaking" || (dify.available && dify.answer && difyAge < 12)) {
+    phase = "speaking";
+    emotion = "happy";
+  } else if (voice.available && voice.command && voiceAge < 12) {
+    phase = "thinking";
+    emotion = "serious";
+  } else if (gesture.raw_active || gesture.mic_enabled || inputGateState.input_enabled || inputGateState.mic_enabled) {
+    phase = "listening";
+    emotion = "serious";
+  }
+
+  return {
+    type: "avatar_state",
+    phase,
+    emotion,
+    gesture: gesture.raw_active ? "sword_sign" : "none",
+    speech: {
+      state: ttsPhase || phase,
+      source: "console_status",
+      volume: speechVolume(tts),
+    },
+    turn_id: dify.turn_id || tts.turn_id || voice.turn_id || gesture.turn_id || undefined,
+    text: dify.answer || voice.command || undefined,
+    timestamp: Date.now(),
+  };
+}
+
+function speechVolume(tts) {
+  const appVolume = Number(tts.app_volume);
+  if (Number.isFinite(appVolume)) return Math.max(0, Math.min(1, appVolume));
+  const sapiVolume = Number(tts.volume);
+  if (Number.isFinite(sapiVolume)) return Math.max(0, Math.min(1, sapiVolume / 100));
+  return 0;
+}
+
+function postAvatarState(url, event) {
+  const eventKey = JSON.stringify({
+    url,
+    phase: event.phase,
+    emotion: event.emotion,
+    gesture: event.gesture,
+    speech: event.speech || {},
+    turn_id: event.turn_id || "",
+    text: event.text || "",
+  });
+  if (eventKey === state.avatar.lastKey) return;
+  state.avatar.lastKey = eventKey;
+  state.avatar.lastSentAt = new Date();
+
+  const targetOrigin = originFromUrl(url);
+  const frameWindow = $("avatarFrame").contentWindow;
+  if (frameWindow) {
+    frameWindow.postMessage(event, targetOrigin);
+  }
+  if (state.avatar.popup && !state.avatar.popup.closed) {
+    state.avatar.popup.postMessage(event, targetOrigin);
+  }
+}
+
+function originFromUrl(url) {
+  try {
+    return new URL(url, window.location.href).origin;
+  } catch {
+    return "*";
+  }
+}
+
+function avatarRuntimeUrl(url, modelUrl = "") {
+  if (!url) return "";
+  try {
+    const runtimeUrl = new URL(url, window.location.href);
+    if (modelUrl && !runtimeUrl.searchParams.has("model")) {
+      runtimeUrl.searchParams.set("model", modelUrl);
+    }
+    if (!runtimeUrl.searchParams.has("events")) {
+      runtimeUrl.searchParams.set("events", new URL("/api/events", window.location.href).toString());
+    }
+    return runtimeUrl.toString();
+  } catch {
+    return url;
+  }
 }
 
 function moduleStatusLine(moduleStatus) {
@@ -311,6 +485,7 @@ async function refresh() {
       setPanel("voicePanel", "bad", "voiceState", "auth");
       setPanel("difyPanel", "bad", "difyState", "auth");
       setPanel("ttsPanel", "bad", "ttsState", "auth");
+      setPanel("avatarPanel", "bad", "avatarState", "auth");
       addEvent("auth-required", "auth token is required for /api/status");
       return;
     }
@@ -322,6 +497,7 @@ async function refresh() {
     setPanel("voicePanel", "bad", "voiceState", "error");
     setPanel("difyPanel", "bad", "difyState", "error");
     setPanel("ttsPanel", "bad", "ttsState", "error");
+    setPanel("avatarPanel", "bad", "avatarState", "error");
     addEvent(`error:${Date.now()}`, `console refresh failed: ${error.message}`);
   }
 }
@@ -348,6 +524,79 @@ async function clearStatus() {
   }
 }
 
+async function applyTtsVolume() {
+  const slider = $("ttsAppVolumeSlider");
+  const appVolume = currentTtsSliderVolume();
+  $("ttsVolumeApplyButton").disabled = true;
+  text("ttsVolumeApplyState", "反映中...");
+  try {
+    const response = await fetch("/api/tts/volume", {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(),
+      },
+      body: JSON.stringify({ app_volume: appVolume }),
+    });
+    if (response.status === 401) {
+      text("ttsVolumeApplyState", "auth required");
+      addEvent("auth-required-tts-volume", "auth token is required for TTS volume");
+      return;
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    state.ttsVolume.dirty = false;
+    text("ttsVolumeApplyState", formatAppVolume(payload.app_volume));
+    if (!$("ttsVolumePreviewButton").disabled) {
+      await previewTtsVolume();
+    }
+    await refresh();
+  } catch (error) {
+    text("ttsVolumeApplyState", `error: ${error.message}`);
+    state.ttsVolume.dirty = true;
+    $("ttsVolumeApplyButton").disabled = false;
+  }
+}
+
+function currentTtsSliderVolume() {
+  const slider = $("ttsAppVolumeSlider");
+  return Math.max(0, Math.min(100, Number(slider.value))) / 100;
+}
+
+async function previewTtsVolume() {
+  const previewButton = $("ttsVolumePreviewButton");
+  const appVolume = currentTtsSliderVolume();
+  const wasDisabled = previewButton.disabled;
+  if (wasDisabled) return;
+  previewButton.disabled = true;
+  text("ttsVolumeApplyState", "試聴中...");
+  try {
+    const response = await fetch("/api/tts/volume/preview", {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(),
+      },
+      body: JSON.stringify({ app_volume: appVolume }),
+    });
+    if (response.status === 401) {
+      text("ttsVolumeApplyState", "auth required");
+      addEvent("auth-required-tts-preview", "auth token is required for TTS volume preview");
+      return;
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    const previewVolume = payload.preview_volume ?? appVolume;
+    text("ttsVolumeApplyState", `試聴 ${formatAppVolume(previewVolume)}`);
+  } catch (error) {
+    text("ttsVolumeApplyState", `preview error: ${error.message}`);
+  } finally {
+    previewButton.disabled = wasDisabled;
+  }
+}
+
 $("authTokenInput").value = sessionStorage.getItem(AUTH_STORAGE_KEY) || "";
 $("saveTokenButton").addEventListener("click", () => {
   const token = $("authTokenInput").value.trim();
@@ -362,5 +611,20 @@ $("saveTokenButton").addEventListener("click", () => {
 });
 $("refreshButton").addEventListener("click", refresh);
 $("clearStatusButton").addEventListener("click", clearStatus);
+$("avatarFrame").addEventListener("load", () => {
+  state.avatar.lastKey = "";
+});
+$("avatarOpenButton").addEventListener("click", () => {
+  if (!state.avatar.url) return;
+  state.avatar.popup = window.open(state.avatar.url, "swordVoiceAvatar");
+  state.avatar.lastKey = "";
+});
+$("ttsAppVolumeSlider").addEventListener("input", () => {
+  state.ttsVolume.dirty = true;
+  text("ttsVolumeApplyState", `${$("ttsAppVolumeSlider").value}%`);
+  $("ttsVolumeApplyButton").disabled = false;
+});
+$("ttsVolumeApplyButton").addEventListener("click", applyTtsVolume);
+$("ttsVolumePreviewButton").addEventListener("click", previewTtsVolume);
 refresh();
 setInterval(refresh, 1000);

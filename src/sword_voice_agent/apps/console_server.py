@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -9,6 +10,7 @@ import os
 from pathlib import Path
 import time
 from typing import Any
+from urllib import error as urlerror, request as urlrequest
 from urllib.parse import parse_qs, urlparse
 
 from sword_voice_agent.adapters.ai_talk_core import resolve_ai_talk_core_web_token
@@ -17,11 +19,14 @@ from sword_voice_agent.adapters.auth import (
     headers_authorized,
     require_auth_token_for_bind,
     resolve_auth_token,
+    validate_http_url,
 )
 from sword_voice_agent.adapters.console_status import (
     ConsoleStatusConfig,
     build_console_status,
+    read_console_events_after,
     redact_event,
+    resolve_tts_app_volume_file,
 )
 from sword_voice_agent.adapters.rate_limit import (
     FixedWindowRateLimiter,
@@ -34,6 +39,10 @@ STATIC_DIR = Path(__file__).resolve().parents[1] / "web"
 DEFAULT_API_RATE_LIMIT_PER_MINUTE = 120
 DEFAULT_EVENT_STREAM_LIMIT = 40
 MAX_EVENT_STREAM_LIMIT = 200
+CORS_ALLOW_HEADERS = (
+    "Authorization, X-Sword-Agent-Token, Last-Event-ID, Content-Type, Accept"
+)
+CORS_ALLOW_METHODS = "GET, POST, OPTIONS"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,6 +76,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory containing latest_tts_state.json from tts_service.",
     )
     parser.add_argument(
+        "--tts-app-volume-file",
+        default=os.environ.get("TTS_SERVICE_APP_VOLUME_FILE", ""),
+        help="JSON file read by tts_service for runtime app volume.",
+    )
+    parser.add_argument(
+        "--tts-volume-url",
+        default=os.environ.get("TTS_VOLUME_URL", ""),
+        help="Optional tts-service /api/volume URL. Falls back to --tts-app-volume-file if unreachable.",
+    )
+    parser.add_argument(
+        "--tts-volume-preview-url",
+        default=os.environ.get("TTS_VOLUME_PREVIEW_URL", ""),
+        help="Optional tts-service /api/volume/preview URL used for app volume preview tones.",
+    )
+    parser.add_argument("--tts-volume-timeout", type=float, default=1.5)
+    parser.add_argument(
         "--input-gate-url",
         default=os.environ.get("AI_TALK_CORE_INPUT_GATE_URL", ""),
         help="Optional ai_talk_core input gate API URL for status polling.",
@@ -78,6 +103,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional Dify API base URL for readiness status.",
     )
     parser.add_argument("--dify-timeout", type=float, default=1.5)
+    parser.add_argument(
+        "--avatar-url",
+        default=os.environ.get("AVATAR_SERVICE_URL", ""),
+        help="Optional avatar-service URL for readiness status and browser bridge.",
+    )
+    parser.add_argument(
+        "--avatar-model-url",
+        default=os.environ.get("AVATAR_MODEL_URL", ""),
+        help="Optional VRM model URL passed to avatar-service as the model query parameter.",
+    )
+    parser.add_argument("--avatar-timeout", type=float, default=1.5)
     parser.add_argument(
         "--auth-token",
         default=None,
@@ -108,6 +144,12 @@ def make_handler(
     class ConsoleRequestHandler(BaseHTTPRequestHandler):
         server_version = "SwordVoiceConsole/0.1"
 
+        def do_OPTIONS(self) -> None:
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.send_cors_headers()
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+
         def do_GET(self) -> None:
             parsed_url = urlparse(self.path)
             path = parsed_url.path
@@ -133,6 +175,23 @@ def make_handler(
                     return
                 self.send_event_stream(parse_qs(parsed_url.query))
                 return
+            if path == "/api/tts/volume":
+                if not self.check_api_rate_limit():
+                    return
+                if not headers_authorized(self.headers, auth_token):
+                    self.send_json(
+                        {"ok": False, "error": "unauthorized"},
+                        status=HTTPStatus.UNAUTHORIZED,
+                    )
+                    return
+                try:
+                    self.send_json(read_tts_app_volume(config))
+                except ValueError as exc:
+                    self.send_json(
+                        {"ok": False, "error": str(exc)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                return
             if path == "/":
                 self.send_static("index.html")
                 return
@@ -140,6 +199,12 @@ def make_handler(
 
         def do_POST(self) -> None:
             path = urlparse(self.path).path
+            if path == "/api/tts/volume":
+                self.handle_tts_volume_post()
+                return
+            if path == "/api/tts/volume/preview":
+                self.handle_tts_volume_preview_post()
+                return
             if path != "/api/status/clear":
                 self.send_json(
                     {"ok": False, "error": "not_found"},
@@ -163,6 +228,62 @@ def make_handler(
             StatusStore(config.status_dir).clear()
             self.send_json({"ok": True, "cleared": True})
 
+        def handle_tts_volume_post(self) -> None:
+            if not self.check_api_rate_limit():
+                return
+            if not headers_authorized(self.headers, auth_token):
+                self.send_json(
+                    {"ok": False, "error": "unauthorized"},
+                    status=HTTPStatus.UNAUTHORIZED,
+                )
+                return
+            try:
+                payload = self.read_json_body()
+                app_volume = validate_app_volume(payload.get("app_volume"))
+                self.send_json(write_tts_app_volume(config, app_volume))
+            except ValueError as exc:
+                self.send_json(
+                    {"ok": False, "error": str(exc)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+
+        def handle_tts_volume_preview_post(self) -> None:
+            if not self.check_api_rate_limit():
+                return
+            if not headers_authorized(self.headers, auth_token):
+                self.send_json(
+                    {"ok": False, "error": "unauthorized"},
+                    status=HTTPStatus.UNAUTHORIZED,
+                )
+                return
+            try:
+                payload = self.read_json_body()
+                app_volume = validate_app_volume(payload.get("app_volume"))
+                self.send_json(preview_tts_app_volume(config, app_volume))
+            except ValueError as exc:
+                self.send_json(
+                    {"ok": False, "error": str(exc)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+
+        def read_json_body(self, max_body_bytes: int = 100_000) -> dict[str, Any]:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError as exc:
+                raise ValueError("invalid Content-Length") from exc
+            if length < 1:
+                raise ValueError("empty request body")
+            if length > max_body_bytes:
+                raise ValueError("request body too large")
+            raw = self.rfile.read(length)
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("invalid JSON body") from exc
+            if not isinstance(payload, dict):
+                raise ValueError("JSON body must be an object")
+            return payload
+
         def log_message(self, format: str, *args: Any) -> None:
             print(
                 f"{self.address_string()} - - {format % args}",
@@ -177,11 +298,18 @@ def make_handler(
         ) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
+            self.send_cors_headers()
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def send_cors_headers(self) -> None:
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
+            self.send_header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
+            self.send_header("Access-Control-Max-Age", "600")
 
         def send_event_stream(self, query: dict[str, list[str]]) -> None:
             if config.status_dir is None:
@@ -191,7 +319,6 @@ def make_handler(
                 )
                 return
 
-            store = StatusStore(config.status_dir)
             once = parse_boolish(first_query_value(query, "once"))
             limit = bounded_int(
                 first_query_value(query, "limit"),
@@ -212,13 +339,18 @@ def make_handler(
             sent_event_ids: set[str] = set()
 
             self.send_response(HTTPStatus.OK)
+            self.send_cors_headers()
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "close" if once else "keep-alive")
             self.end_headers()
 
             while True:
-                events = store.read_events_after(last_event_id, limit=limit)
+                events = read_console_events_after(
+                    config,
+                    last_event_id,
+                    limit=limit,
+                )
                 for event in events:
                     event_id = str(event.get("event_id") or "")
                     if event_id and event_id in sent_event_ids:
@@ -363,11 +495,20 @@ def run_server(args: argparse.Namespace) -> ThreadingHTTPServer:
         else None,
         status_dir=Path(args.status_dir) if args.status_dir else None,
         tts_status_dir=Path(args.tts_status_dir) if args.tts_status_dir else None,
+        tts_app_volume_file=Path(args.tts_app_volume_file)
+        if args.tts_app_volume_file
+        else None,
+        tts_volume_url=args.tts_volume_url or None,
+        tts_volume_preview_url=args.tts_volume_preview_url or None,
+        tts_volume_timeout_s=args.tts_volume_timeout,
         input_gate_url=args.input_gate_url or None,
         input_gate_token=resolve_ai_talk_core_web_token(),
         input_gate_timeout_s=args.input_gate_timeout,
         dify_base_url=args.dify_base_url or None,
         dify_timeout_s=args.dify_timeout,
+        avatar_url=args.avatar_url or None,
+        avatar_model_url=args.avatar_model_url or None,
+        avatar_timeout_s=args.avatar_timeout,
         redact_sensitive=args.redact_sensitive,
     )
     return ThreadingHTTPServer(
@@ -382,6 +523,213 @@ def run_server(args: argparse.Namespace) -> ThreadingHTTPServer:
 
 def env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def read_tts_app_volume(config: ConsoleStatusConfig) -> dict[str, Any]:
+    if config.tts_volume_url:
+        try:
+            return proxy_tts_app_volume(config, method="GET")
+        except ValueError as exc:
+            payload = read_tts_app_volume_file(config)
+            payload["volume_url"] = config.tts_volume_url
+            payload["volume_url_error"] = str(exc)
+            return payload
+    return read_tts_app_volume_file(config)
+
+
+def read_tts_app_volume_file(config: ConsoleStatusConfig) -> dict[str, Any]:
+    path = resolve_tts_app_volume_file(config)
+    if path is None:
+        raise ValueError("tts_app_volume_file_not_configured")
+    payload: dict[str, Any] = {
+        "ok": True,
+        "app_volume": 1.0,
+        "app_volume_file": str(path),
+        "exists": False,
+        "updated_at": None,
+    }
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return payload
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read tts app volume: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("tts app volume payload must be an object")
+    payload["app_volume"] = app_volume_from_payload(raw, default=1.0)
+    payload["exists"] = True
+    payload["updated_at"] = raw.get("updated_at")
+    return payload
+
+
+def write_tts_app_volume(config: ConsoleStatusConfig, app_volume: float) -> dict[str, Any]:
+    if config.tts_volume_url:
+        try:
+            return proxy_tts_app_volume(
+                config,
+                method="POST",
+                payload={"app_volume": app_volume},
+            )
+        except ValueError as exc:
+            payload = write_tts_app_volume_file(config, app_volume)
+            payload["volume_url"] = config.tts_volume_url
+            payload["volume_url_error"] = str(exc)
+            return payload
+    return write_tts_app_volume_file(config, app_volume)
+
+
+def preview_tts_app_volume(
+    config: ConsoleStatusConfig,
+    app_volume: float,
+) -> dict[str, Any]:
+    if not config.tts_volume_preview_url:
+        raise ValueError("tts_volume_preview_url_not_configured")
+    try:
+        preview_url = validate_http_url(
+            config.tts_volume_preview_url,
+            label="TTS_VOLUME_PREVIEW_URL",
+        )
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+
+    req = urlrequest.Request(
+        preview_url,
+        data=json.dumps({"app_volume": app_volume}, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=config.tts_volume_timeout_s) as response:
+            body = response.read().decode("utf-8")
+    except urlerror.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8")
+        except OSError:
+            detail = ""
+        raise ValueError(f"tts volume preview API HTTP {exc.code}: {detail}") from exc
+    except (urlerror.URLError, TimeoutError, OSError) as exc:
+        raise ValueError(f"tts volume preview API unreachable: {exc}") from exc
+
+    try:
+        response_payload = json.loads(body) if body else {}
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"tts volume preview API returned invalid JSON: {exc}") from exc
+    if not isinstance(response_payload, dict):
+        raise ValueError("tts volume preview API payload must be an object")
+    response_payload.setdefault("ok", True)
+    response_payload["volume_preview_url"] = preview_url
+    if "app_volume" in response_payload:
+        response_payload["app_volume"] = validate_app_volume(
+            response_payload["app_volume"]
+        )
+    if "preview_volume" in response_payload:
+        response_payload["preview_volume"] = validate_app_volume(
+            response_payload["preview_volume"]
+        )
+    return response_payload
+
+
+def write_tts_app_volume_file(
+    config: ConsoleStatusConfig,
+    app_volume: float,
+) -> dict[str, Any]:
+    path = resolve_tts_app_volume_file(config)
+    if path is None:
+        raise ValueError("tts_app_volume_file_not_configured")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    payload = {
+        "app_volume": app_volume,
+        "updated_at": updated_at,
+    }
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    tmp_path.replace(path)
+    return {
+        "ok": True,
+        "app_volume": app_volume,
+        "app_volume_file": str(path),
+        "exists": True,
+        "updated_at": updated_at,
+    }
+
+
+def proxy_tts_app_volume(
+    config: ConsoleStatusConfig,
+    *,
+    method: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not config.tts_volume_url:
+        raise ValueError("tts_volume_url_not_configured")
+    try:
+        volume_url = validate_http_url(config.tts_volume_url, label="TTS_VOLUME_URL")
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+
+    data = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urlrequest.Request(
+        volume_url,
+        data=data,
+        method=method,
+        headers=headers,
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=config.tts_volume_timeout_s) as response:
+            body = response.read().decode("utf-8")
+    except urlerror.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8")
+        except OSError:
+            detail = ""
+        raise ValueError(f"tts volume API HTTP {exc.code}: {detail}") from exc
+    except (urlerror.URLError, TimeoutError, OSError) as exc:
+        raise ValueError(f"tts volume API unreachable: {exc}") from exc
+
+    try:
+        response_payload = json.loads(body) if body else {}
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"tts volume API returned invalid JSON: {exc}") from exc
+    if not isinstance(response_payload, dict):
+        raise ValueError("tts volume API payload must be an object")
+    response_payload.setdefault("ok", True)
+    response_payload["volume_url"] = volume_url
+    if "app_volume" in response_payload:
+        response_payload["app_volume"] = validate_app_volume(
+            response_payload["app_volume"]
+        )
+    return response_payload
+
+
+def validate_app_volume(value: Any) -> float:
+    try:
+        app_volume = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("app_volume must be a number between 0.0 and 1.0") from exc
+    if not 0.0 <= app_volume <= 1.0:
+        raise ValueError("app_volume must be between 0.0 and 1.0")
+    return app_volume
+
+
+def app_volume_from_payload(payload: dict[str, Any], *, default: float) -> float:
+    if payload.get("muted") is True:
+        return 0.0
+    for key in ("app_volume", "volume", "value"):
+        if key in payload:
+            return validate_app_volume(payload[key])
+    if "app_volume_percent" in payload:
+        return validate_app_volume(float(payload["app_volume_percent"]) / 100.0)
+    return default
 
 
 def main(argv: list[str] | None = None) -> int:

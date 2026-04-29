@@ -32,9 +32,11 @@ notepad .env
 |---|---|---:|---|
 | `AI_TALK_CORE_ROOT` | `..\ai_talk_core` | 必須 | 検証用 `ai_talk_core` clone の場所。相対パスは `<repo_root>` 基準です。 |
 | `MEDIAPIPE_SWORD_SIGN_ROOT` | `..\mediapipe-sword-sign` | 必須 | 検証用 `mediapipe-sword-sign` clone の場所。 |
-| `TTS_SERVICE_ROOT` | `..\tts-service` | TTS使用時 | 検証用 `tts-service` clone の場所。TTSを使わない場合は未使用です。 |
+| `TTS_SERVICE_ROOT` | `..\tts-service` | 既定使用 | 検証用 `tts-service` clone の場所。TTSを使わない場合は `start-full-stack.ps1 -DisableTts` を使います。 |
+| `AVATAR_SERVICE_ROOT` | `..\avatar-service` | 既定使用 | 検証用 `avatar-service` clone の場所。Avatarを使わない場合は `start-full-stack.ps1 -DisableAvatar` を使います。 |
+| `SYSTEM_HOUSE_RENDERER_ROOT` | `..\SystemHouseRenderer` | 可視化使用時 | `/api/events` を house trace として描画する検証用 clone の場所。 |
 
-`..\ai_talk_core`、`..\mediapipe-sword-sign`、`..\tts-service` は、外側の `<workspace>\sword-voice-agent` 直下に置く検証用 clone です。開発用 clone と分けておくと、外部モジュールを並行開発していても本プロジェクトの検証が安定します。
+`..\ai_talk_core`、`..\mediapipe-sword-sign`、`..\tts-service`、`..\avatar-service`、`..\SystemHouseRenderer` は、外側の `<workspace>\sword-voice-agent` 直下に置く検証用 clone です。開発用 clone と分けておくと、外部モジュールを並行開発していても本プロジェクトの検証が安定します。
 
 ### ai_talk_core
 
@@ -42,6 +44,7 @@ notepad .env
 |---|---|---:|---|
 | `AI_TALK_CORE_INPUT_GATE_URL` | `http://127.0.0.1:8000/api/input-gate` | 必須 | `ai_talk_core` の入力ゲートAPI。`http://` の場合は loopback のみ許可します。 |
 | `AI_TALK_CORE_WEB_TOKEN` | 空、または任意の長い文字列 | 任意 | `ai_talk_core` local API 用トークン。空なら `start-full-stack.ps1` が一時トークンを生成して各プロセスへ共有します。個別起動では同じ値を各 PowerShell に読み込ませます。 |
+| `AI_TALK_CORE_RUNTIME_STATUS_FILE` | `.cache\sword_voice_agent\runtime\ai_talk_core.json` | 任意 | `ai_talk_core` のPID、health URL、shutdown URLを書き出すruntime status。`stop-full-stack.ps1` が協調停止に使います。 |
 
 ### mediapipe-sword-sign
 
@@ -51,6 +54,13 @@ notepad .env
 | `MEDIAPIPE_SWORD_SIGN_MODEL_SHA256` | 空、または期待するSHA-256 | 任意 | 外部から受け取ったモデルを使う場合の検証用hash。 |
 | `MEDIAPIPE_SWORD_SIGN_ALLOW_UNTRUSTED_MODEL` | `0` | 任意 | `1` にするとhash未検証モデルの読み込みを許可します。通常は `0` のままにします。 |
 | `MEDIAPIPE_SWORD_SIGN_HEARTBEAT_EVERY` | `1s` | 任意 | MediaPipe publisher からの診断 heartbeat 間隔。`0` / `off` / `none` で無効化できます。 |
+| `MEDIAPIPE_SWORD_SIGN_LATENCY_PROFILE` | 空、または `low` | 任意 | publisher 側の低遅延 preset。対応版の `mediapipe-sword-sign` で `--latency-profile` に渡します。 |
+| `MEDIAPIPE_SWORD_SIGN_STATE_EVERY` | 空、または `off` | 任意 | 通常 `gesture_state` 送信間隔。edge中心で見る場合は `off`。 |
+| `MEDIAPIPE_SWORD_SIGN_EDGE_ONLY` | `0` | 任意 | `1` にすると publisher に `--edge-only` を渡し、`gesture_edge` 中心で送ります。 |
+| `MEDIAPIPE_SWORD_SIGN_RUNTIME_STATUS_FILE` | `.cache\sword_voice_agent\runtime\mediapipe_udp_publisher.json` | 任意 | publisher のPID、control HTTP URL、停止方法を書き出すruntime status。 |
+| `MEDIAPIPE_SWORD_SIGN_CONTROL_HTTP_HOST` | `127.0.0.1` | 任意 | publisher の `/health` と `POST /shutdown` を出すcontrol HTTP bind host。 |
+| `MEDIAPIPE_SWORD_SIGN_CONTROL_HTTP_PORT` | `18765` | 任意 | control HTTP port。strict portなので使用中なら起動前に止めます。 |
+| `MEDIAPIPE_SWORD_SIGN_CONTROL_TOKEN` | 空、または任意の長い文字列 | 任意 | loopback以外へcontrol HTTPをbindする場合のshutdown token。 |
 
 ### Dify
 
@@ -70,17 +80,41 @@ notepad .env
 | `TTS_HTTP_HOST` | `127.0.0.1` | HTTP TTS使用時 | `tts-service` HTTP source の bind host。 |
 | `TTS_HTTP_PORT` | `8765` | HTTP TTS使用時 | `tts-service` HTTP source の port。 |
 | `TTS_HTTP_CHUNK_MAX_CHARS` | `80` | HTTP TTS使用時 | streaming delta をTTS requestへ切り出す最大文字数。句点・改行でも切り出します。 |
-| `TTS_HTTP_CHUNK_URL` | `http://127.0.0.1:8765/api/tts/chunk` | HTTP TTS使用時 | Dify watcher が streaming delta をPOSTするURL。`start-full-stack.ps1 -EnableTts` では自動生成します。 |
+| `TTS_HTTP_CHUNK_URL` | `http://127.0.0.1:8765/api/tts/chunk` | HTTP TTS使用時 | Dify watcher が streaming delta をPOSTするURL。`start-full-stack.ps1` では自動生成します。 |
+| `TTS_VOLUME_URL` | `http://127.0.0.1:8765/api/volume` | HTTP TTS使用時 | 統合コンソールの音量UIが優先して使う `tts-service` volume API。到達しない場合は `app_volume.json` へフォールバックします。 |
+| `TTS_VOLUME_PREVIEW_URL` | `http://127.0.0.1:8765/api/volume/preview` | HTTP TTS使用時 | 統合コンソールの音量UIから確認音を鳴らす `tts-service` preview API。 |
 | `TTS_HTTP_TIMEOUT_S` | `0.75` | HTTP TTS使用時 | Dify watcher からTTS HTTP sourceへの1回のPOST timeout。 |
 | `TTS_ENGINE` | `windows-sapi` | TTS使用時 | TTSエンジン。`windows-sapi` または `noop`。`noop` は音声生成せず status 連携だけ確認します。 |
 | `TTS_PLAYER` | `speaker` | TTS使用時 | 再生先。`speaker` / `file` / `noop`。`file` は音声ファイル出力、`noop` は再生なしです。 |
 | `TTS_POLL_INTERVAL` | `1.0` | 任意 | Dify応答ファイルを監視する間隔、秒。 |
 | `TTS_VOICE_NAME` | 空、またはSAPI音声名 | 任意 | Windows SAPI の音声名。空なら既定音声です。 |
 | `TTS_RATE` | `0` | 任意 | Windows SAPI の読み上げ速度。 |
-| `TTS_VOLUME` | `100` | 任意 | Windows SAPI の音量。 |
+| `TTS_VOLUME` | `100` | 任意 | Windows SAPI へ渡す合成時音量。 |
+| `TTS_APP_VOLUME` | `1.0` | 任意 | tts-service 側だけに掛ける実行時音量。`0.0` から `1.0`。 |
+| `TTS_SERVICE_APP_VOLUME_FILE` | `.cache\tts_service\app_volume.json` | 任意 | 統合コンソールと tts-service watcher が共有する音量JSON。 |
 | `TTS_OUTPUT_AUDIO_DIR` | `.cache\tts_service\audio_output` | 任意 | `TTS_PLAYER=file` の出力先。 |
+| `TTS_SERVICE_RUNTIME_STATUS_FILE` | `.cache\sword_voice_agent\runtime\tts_service.json` | 任意 | `tts-service` のPID、health URL、shutdown URLを書き出すruntime status。 |
+| `TTS_SERVICE_SHUTDOWN_TOKEN` | 空、または任意の長い文字列 | 任意 | loopback以外へHTTP sourceをbindする場合のshutdown token。 |
 
-`tts-service` は Dify応答の読み上げ用モジュールです。TTSは実際に音が出るため、まとめて起動では既定OFFです。使う場合だけ `start-full-stack.ps1 -EnableTts`、または個別に `start-tts-service.ps1` を起動します。
+`tts-service` は Dify応答の読み上げ用モジュールです。まとめて起動では既定ONです。音を出したくない確認では `-TtsEngine noop`、TTS自体を起動しない場合は `-DisableTts` を指定します。
+
+統合コンソールのTTSカードでは `app_volume` を表示し、スライダーから `TTS_VOLUME_URL` の `/api/volume` を更新します。APIへ到達できない場合は従来通り `app_volume.json` を更新し、tts-service watcher は次の読み上げまたは volume 監視ループで反映します。HTTP TTS使用時は `TTS_VOLUME_PREVIEW_URL` にもPOSTし、現在のスライダー値で短い確認音を鳴らせます。
+
+### avatar-service
+
+| 項目 | 例 | 必須 | 説明 |
+|---|---|---:|---|
+| `AVATAR_SERVICE_URL` | `http://127.0.0.1:5173` | Avatar使用時 | Three.js + VRM avatar runtime のURL。統合コンソールはこのURLをiframeに読み込み、`avatar_state` を `postMessage` します。 |
+| `AVATAR_MODEL_URL` | 空、または `/models/Nutachisan.vrm` | 任意 | avatar-service 起動URLに `model` パラメータとして付けるVRM URL。空、または存在しない `/models/default.vrm` の場合は `avatar-service\public\models` 内のVRMを自動選択します。 |
+| `AVATAR_SERVICE_RUNTIME_STATUS_FILE` | `.cache\sword_voice_agent\runtime\avatar_service.json` | 任意 | avatar-service dev server のPIDと停止コマンドを書き出すruntime status。 |
+
+`avatar-service` は Dify/TTS と同じく、まとめて起動では既定ONです。統合コンソールは `idle` / `listening` / `thinking` / `speaking` / `error` を現在のstatusから推定し、avatar runtime の `window.postMessage({ type: "avatar_state", ... })` 契約に合わせて送ります。iframe URLには `events=/api/events` と `model=AVATAR_MODEL_URL` を付けるため、avatar-service 側のSSE購読とVRM自動ロードも同時に使えます。
+
+### SystemHouseRenderer
+
+| 項目 | 例 | 必須 | 説明 |
+|---|---|---:|---|
+| `SYSTEM_HOUSE_RENDERER_RUNTIME_STATUS_FILE` | `.cache\sword_voice_agent\runtime\system_house_renderer.json` | 任意 | `render-system-house.ps1` 実行時の短命CLI status JSON。 |
 
 ### セキュリティと表示
 
@@ -157,6 +191,12 @@ cd <repo_root>
 .\scripts\start-full-stack.ps1 -Preview -SuppressProtobufWarnings
 ```
 
+1つのターミナルにまとめて起動したい場合は supervisor 起動を使います。各モジュールの標準出力・標準エラーを `[tts_service] ...` のようなprefix付きで同じ画面に集約し、`Ctrl+C` で `stop-full-stack.ps1 -Force` による協調停止を実行します。
+
+```powershell
+.\scripts\start-full-stack-supervisor.ps1 -Preview -SuppressProtobufWarnings
+```
+
 Dify watcher を起動する場合、`DIFY_BASE_URL` が `localhost` / `127.0.0.1` なら、起動前に Docker engine と Dify API の到達性を確認します。Docker Desktop が起動していなければ自動起動し、Dify API が応答するまで待ちます。Dify コンテナが停止している場合は、ここで止まるので Docker Desktop 側で Dify を起動してください。
 
 この起動方法では、`ai_talk_core` Web UI の統合向け初期設定として、次のチェックが最初から入ります。
@@ -180,7 +220,7 @@ GET http://127.0.0.1:8790/api/events
 GET http://127.0.0.1:8790/api/events?once=1
 ```
 
-`/api/events` は `events.jsonl` を投影元にし、`event_id` を SSE の `id`、イベント種別を SSE の `event` として送ります。外部 bind 時は `/api/status` と同じ認証 token が必要です。
+`/api/events` は sword 側の `events.jsonl`、`ai_talk_core/.cache/events.jsonl`、`tts-service` の `events.jsonl` を投影元にし、`event_id` を SSE の `id`、イベント種別を SSE の `event` として送ります。avatar-service など別ポートのブラウザruntimeから読めるように CORS を許可します。外部 bind 時は `/api/status` と同じ認証 token が必要です。
 
 ## 動作確認チェックリスト
 
@@ -191,7 +231,8 @@ GET http://127.0.0.1:8790/api/events?once=1
 - `MediaPipe UDP publisher`
 - `Dify API`
 - `Dify watcher`
-- `TTS service` は `-EnableTts` 指定時のみ緑になります
+- `TTS service` は既定で緑になります。`-DisableTts` 指定時のみ未使用です
+- `Avatar service` は既定で緑になります。`-DisableAvatar` 指定時のみ未使用です
 - `Integration console`
 
 その後、刀印を出した状態で短く発話します。正常なら次の流れになります。
@@ -216,7 +257,12 @@ Dify: ready -> answer 更新
 | `-SkipMediapipe` | カメラ送信を起動しない |
 | `-SkipDifyWatch` | Dify watcher を起動しない |
 | `-SkipConsole` | 統合コンソールを起動しない |
-| `-EnableTts` | tts-service watcher を起動してDify応答を読み上げる |
+| `-Background` | モジュールごとのPowerShell窓を開かず、隠しプロセスとして起動して `.cache\sword_voice_agent\logs` に出力 |
+| `start-full-stack-supervisor.ps1` | 別窓を開かず、1つのターミナルに全モジュールのログをprefix付きで集約。`Ctrl+C` で協調停止 |
+| `-EnableTts` | 互換用。現在はTTSが既定ONのため通常は不要 |
+| `-DisableTts` | tts-service watcher を起動しない |
+| `-EnableAvatar` | 互換用。現在はAvatarが既定ONのため通常は不要 |
+| `-DisableAvatar` | avatar-service を起動しない |
 | `-SkipDockerCheck` | Docker Desktop / Dify API の起動前チェックを省略 |
 | `-NoStartDockerDesktop` | Docker Desktop を自動起動せず、未起動ならエラーにする |
 | `-NoAiTalkCoreIntegrationDefaults` | `ai_talk_core` Web UI の統合向けチェックを入れない |
@@ -228,13 +274,22 @@ Dify: ready -> answer 更新
 | `-GestureMinConfidence <number>` | この起動だけ receiver の最小 confidence を上書き |
 | `-GestureActivationDelay <seconds>` | この起動だけ録音開始までの継続秒数を上書き |
 | `-GestureReleaseDelay <seconds>` | この起動だけ録音停止までの猶予秒数を上書き |
+| `-MediapipeLatencyProfile <name>` | 対応版 publisher の `--latency-profile` を上書き |
+| `-MediapipeStateEvery <interval>` | 対応版 publisher の `--state-every` を上書き。`off` で edge 中心 |
+| `-MediapipeEdgeOnly` | 対応版 publisher に `--edge-only` を渡す |
 | `-TtsEngine windows-sapi\|noop` | TTSエンジンを上書き |
 | `-TtsPlayer speaker\|file\|noop` | TTSの再生先を上書き |
 | `-TtsVoiceName <name>` | Windows SAPI音声名を上書き |
+| `-TtsVolume <number>` | この起動だけTTS音量を上書き |
+| `-TtsAppVolume <number>` | この起動だけtts-service app volumeを上書き。`0.0` から `1.0` |
+| `-TtsAppVolumeFile <path>` | 統合コンソールとtts-serviceが共有するapp volume JSONを上書き |
+| `-TtsVolumeUrl <url>` | 統合コンソールから使う `tts-service` `/api/volume` を上書き |
 | `-TtsPollInterval <seconds>` | TTS watcherの監視間隔を上書き |
 | `-TtsSource http\|status-file` | TTS入力方式を上書き。既定は `http` |
 | `-TtsHttpPort <port>` | HTTP TTS source の port を上書き |
 | `-TtsHttpChunkMaxChars <number>` | HTTP TTS source の chunk 最大文字数を上書き |
+| `-AvatarPort <port>` | avatar-service の Vite port を上書き |
+| `-AvatarModelUrl <url>` | avatar-service に渡す `model` URLを上書き |
 
 統合コンソール上段の `Dify API` も緑になっていることを確認してください。`Dify watcher` が緑でも、`Dify API` が緑でない場合は Docker Desktop または Dify コンテナがまだ準備できていません。
 
@@ -244,17 +299,46 @@ Dify: ready -> answer 更新
 .\scripts\start-full-stack.ps1 -Preview -GestureActivationDelay 0.1 -GestureMinConfidence 0.7
 ```
 
+対応版 `mediapipe-sword-sign` で低遅延 edge 中心に寄せる例:
+
+```powershell
+.\scripts\start-full-stack.ps1 -MediapipeLatencyProfile low -MediapipeEdgeOnly -GestureActivationDelay 0.1 -GestureReleaseDelay 0.1
+```
+
 TTSも含めて試す例。既定では Dify streaming delta を `tts-service` の HTTP source に直接流します。
 
 ```powershell
-.\scripts\start-full-stack.ps1 -Preview -EnableTts
+.\scripts\start-full-stack.ps1 -Preview
 ```
 
 音を出さずにTTS連携だけ確認する例:
 
 ```powershell
-.\scripts\start-full-stack.ps1 -EnableTts -TtsEngine noop
+.\scripts\start-full-stack.ps1 -TtsEngine noop
 ```
+
+Avatarも含めて起動する例。既定で avatar-service を起動し、統合コンソールから `avatar_state` を送ります。
+
+```powershell
+.\scripts\start-full-stack.ps1
+.\scripts\start-full-stack.ps1 -TtsEngine noop
+```
+
+TTSまたはAvatarを起動しない例:
+
+```powershell
+.\scripts\start-full-stack.ps1 -DisableTts
+.\scripts\start-full-stack.ps1 -DisableAvatar
+```
+
+複数のPowerShell窓を開きたくない場合:
+
+```powershell
+.\scripts\start-full-stack.ps1 -Background
+Get-Content .cache\sword_voice_agent\logs\avatar_service.err.log -Wait
+```
+
+`-Background` では各モジュールを隠しプロセスとして起動し、標準出力と標準エラーを `.cache\sword_voice_agent\logs` に分けて保存します。停止は `stop-full-stack.ps1` を使います。
 
 ## 個別に起動する
 
@@ -267,8 +351,15 @@ TTSも含めて試す例。既定では Dify streaming delta を `tts-service` �
 | `.\scripts\start-mediapipe-udp.ps1` | mediapipe-sword-sign UDP publisher |
 | `.\scripts\start-dify-watch.ps1` | ai_talk_core handoff -> Dify watcher |
 | `.\scripts\start-tts-service.ps1` | Dify応答 -> tts-service watcher |
+| `.\scripts\start-avatar-service.ps1` | Three.js + VRM avatar runtime |
 | `.\scripts\start-console.ps1` | 統合コンソール |
+| `.\scripts\start-full-stack-supervisor.ps1` | 1ターミナル集約 supervisor 起動 |
+| `.\scripts\render-system-house.ps1` | `/api/events` -> SystemHouseRenderer trace |
 | `.\scripts\start-demo-udp.ps1` | デモ用 gesture UDP sender |
+| `.\scripts\stop-full-stack.ps1` | 残った統合プロセスを検出して停止 |
+
+`start-avatar-service.ps1` は指定portを固定するため、5173が使用中の場合は別portへ自動退避せずエラーにします。古い avatar-service の PowerShell を閉じるか、`start-full-stack.ps1 -AvatarPort 5174` のように console 側へ渡すportも含めて明示的に変えてください。
+各起動スクリプトは必要なTCP/UDP portを起動前に確認します。使用中の場合はPIDと確認コマンドを表示します。`stop-full-stack.ps1` はポートを使っているだけのプロセスは停止せず、このスタック固有のコマンドラインに一致したプロセスだけを停止対象にします。
 
 例:
 
@@ -332,6 +423,15 @@ Dify watcher から HTTP TTS source へ直接流す場合:
 .\scripts\start-dify-watch.ps1 -TtsChunkUrl http://127.0.0.1:8765/api/tts/chunk
 ```
 
+`/api/events` を SystemHouseRenderer で trace 表示する場合:
+
+```powershell
+.\scripts\render-system-house.ps1
+.\scripts\render-system-house.ps1 -TurnId <turn-id>
+```
+
+既定では `http://127.0.0.1:8790/api/events?once=1` を `sword-events` アダプタへ渡し、`out\sword-trace\index.html` を生成します。
+
 `ai_talk_core` を単体既定値に近い状態で起動したい場合:
 
 ```powershell
@@ -347,6 +447,15 @@ Dify watcher から HTTP TTS source へ直接流す場合:
 ## 停止する
 
 起動した各 PowerShell ウィンドウで `Ctrl+C` を押します。
+
+強制終了などでプロセスが残った場合:
+
+```powershell
+.\scripts\stop-full-stack.ps1
+.\scripts\stop-full-stack.ps1 -Force
+```
+
+既定では対象プロセスを表示して確認してから停止します。`-Force` は確認なしで停止します。`-DryRun` を付けると停止せず対象だけ確認できます。対応モジュールでは runtime status の `shutdown_url` または avatar-service の `dev-server.mjs stop` を先に使い、通常終了を待ってから残ったプロセスだけをフォールバック停止します。ポートを使っているだけの別プロセスは診断表示だけで、停止対象にはしません。
 
 古い status 表示を消したい場合:
 

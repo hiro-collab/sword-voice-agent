@@ -238,6 +238,29 @@ h2 {
   align-items: baseline;
 }
 
+.volume-control {
+  display: grid;
+  grid-template-columns: 92px minmax(120px, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 14px;
+}
+
+.volume-control label {
+  margin: 0;
+}
+
+.volume-control input[type="range"] {
+  width: 100%;
+}
+
+.volume-control span {
+  grid-column: 2 / 5;
+  color: var(--muted);
+  font-size: 12px;
+  min-height: 16px;
+}
+
 dt {
   color: var(--muted);
   font-size: 12px;
@@ -252,7 +275,7 @@ dd {
 
 .work-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(360px, 0.9fr);
   gap: 16px;
 }
 
@@ -293,6 +316,16 @@ pre,
   min-height: 220px;
   background: #f7fbf8;
   border-color: #cfe7dc;
+}
+
+.avatar-frame {
+  display: block;
+  width: 100%;
+  height: 360px;
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #101624;
 }
 
 .usage-row {

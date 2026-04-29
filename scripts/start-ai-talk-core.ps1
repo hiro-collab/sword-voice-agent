@@ -3,6 +3,7 @@ param(
     [string]$HostName = "127.0.0.1",
     [int]$Port = 8000,
     [string]$StatusDir = ".cache\sword_voice_agent",
+    [string]$RuntimeStatusFile = "",
     [switch]$NoIntegrationDefaults,
     [switch]$NoRecordGateAuto,
     [switch]$NoSaveHandoff,
@@ -17,6 +18,19 @@ Import-SwordEnv -EnvPath $EnvPath
 Set-SwordAiTalkCoreWebTokenDefault -Generate | Out-Null
 $repoRoot = Get-SwordRepoRoot
 $aiTalkCoreRoot = Assert-EnvPath -Name "AI_TALK_CORE_ROOT"
+if (-not $DryRun) {
+    Assert-SwordPortsAvailable -TcpPorts @($Port)
+}
+if ([string]::IsNullOrWhiteSpace($RuntimeStatusFile)) {
+    $RuntimeStatusFile = [Environment]::GetEnvironmentVariable(
+        "AI_TALK_CORE_RUNTIME_STATUS_FILE",
+        "Process"
+    )
+}
+if ([string]::IsNullOrWhiteSpace($RuntimeStatusFile)) {
+    $RuntimeStatusFile = Join-Path $StatusDir "runtime\ai_talk_core.json"
+}
+$resolvedRuntimeStatusFile = Resolve-SwordPath -Path $RuntimeStatusFile -BasePath $repoRoot
 $pythonPathItems = @(
     (Join-Path $repoRoot "src"),
     $aiTalkCoreRoot
@@ -34,7 +48,9 @@ $command = @(
     "--host",
     $HostName,
     "--port",
-    [string]$Port
+    [string]$Port,
+    "--runtime-status-file",
+    $resolvedRuntimeStatusFile
 )
 $venvPython = Join-Path $aiTalkCoreRoot ".venv\Scripts\python.exe"
 if (Test-Path -LiteralPath $venvPython) {

@@ -46,7 +46,7 @@ param(
     [string]$AvatarHost = "127.0.0.1",
     [string]$AvatarPort = "5173",
     [string]$AvatarModelUrl = "",
-    [switch]$Background,
+    [int]$StartupDelayMilliseconds = 250,
     [switch]$DryRun
 )
 
@@ -54,18 +54,26 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "common.ps1")
 
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $utf8NoBom
+[Console]::InputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
+
 $repoRoot = Get-SwordRepoRoot
 $resolvedEnvPath = Resolve-SwordPath -Path $EnvPath
 Import-SwordEnv -EnvPath $resolvedEnvPath
 Set-SwordAiTalkCoreWebTokenDefault -Generate | Out-Null
+
 if ($EnableTts -and $DisableTts) {
     throw "Use either -EnableTts or -DisableTts, not both."
 }
 if ($EnableAvatar -and $DisableAvatar) {
     throw "Use either -EnableAvatar or -DisableAvatar, not both."
 }
+
 $ttsEnabled = -not $DisableTts
 $avatarEnabled = -not $DisableAvatar
+
 Assert-EnvPath -Name "AI_TALK_CORE_ROOT" | Out-Null
 if (-not $SkipMediapipe) {
     Assert-EnvPath -Name "MEDIAPIPE_SWORD_SIGN_ROOT" | Out-Null
@@ -81,8 +89,6 @@ if (-not $SkipDifyWatch) {
     $difyBaseUrl = Assert-EnvValue -Name "DIFY_BASE_URL"
     Assert-EnvValue -Name "DIFY_API_KEY" | Out-Null
 }
-
-$shell = (Get-Process -Id $PID).Path
 
 if ([string]::IsNullOrWhiteSpace($TtsVolumeUrl)) {
     $TtsVolumeUrl = [Environment]::GetEnvironmentVariable("TTS_VOLUME_URL", "Process")
@@ -114,6 +120,7 @@ if ([string]::IsNullOrWhiteSpace($MediapipeControlHttpPort)) {
 if ([string]::IsNullOrWhiteSpace($MediapipeControlHttpPort)) {
     $MediapipeControlHttpPort = "18765"
 }
+
 if (-not $DryRun) {
     $tcpPorts = @()
     if (-not $SkipAiTalkCore) {
@@ -131,20 +138,14 @@ if (-not $DryRun) {
     if (-not $SkipConsole) {
         $tcpPorts += 8790
     }
-    $udpPorts = @(8765)
-    $tcpCheckPorts = @($tcpPorts | Select-Object -Unique)
-    $udpCheckPorts = @($udpPorts | Select-Object -Unique)
     Assert-SwordPortsAvailable `
-        -TcpPorts $tcpCheckPorts `
-        -UdpPorts $udpCheckPorts
+        -TcpPorts @($tcpPorts | Select-Object -Unique) `
+        -UdpPorts @(8765)
 }
 
 if ($DryRun) {
-    Write-Host "[dry-run] no PowerShell windows will be opened"
-    Write-Host "Run again without -DryRun to start the stack."
-    if (-not $SkipDifyWatch -and -not $SkipDockerCheck -and (Test-SwordLoopbackUrl -Url $difyBaseUrl)) {
-        Write-Host "[dry-run] Docker Desktop and Dify API will be checked before starting Dify watcher."
-    }
+    Write-Host "[dry-run] no supervisor child processes will be started"
+    Write-Host "Run again without -DryRun to start the stack in this terminal."
 }
 elseif (-not $SkipDifyWatch -and -not $SkipDockerCheck -and (Test-SwordLoopbackUrl -Url $difyBaseUrl)) {
     if (-not (Test-SwordHttpReachable -Url $difyBaseUrl)) {
@@ -166,58 +167,28 @@ elseif (-not $SkipDifyWatch -and -not $SkipDockerCheck -and (Test-SwordLoopbackU
     }
 }
 
-function Start-SwordWindow {
+$shell = (Get-Process -Id $PID).Path
+
+function New-SupervisorScriptCommand {
     param(
-        [Parameter(Mandatory = $true)][string]$Title,
         [Parameter(Mandatory = $true)][string]$ScriptName,
         [string[]]$ExtraArgs = @()
     )
 
-    $scriptPath = Join-Path $PSScriptRoot $ScriptName
-    $arguments = @(
+    return @(
+        $shell,
+        "-NoLogo",
+        "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
         "-File",
-        $scriptPath,
+        (Join-Path $PSScriptRoot $ScriptName),
         "-EnvPath",
         $resolvedEnvPath
     ) + $ExtraArgs
-    if (-not $Background) {
-        $arguments = @("-NoExit") + $arguments
-    }
-
-    if ($DryRun) {
-        Write-Host "[$Title]"
-        $previewCommand = @($shell) + $arguments
-        Write-Host (Format-CommandLine -Command $previewCommand)
-        return
-    }
-
-    if ($Background) {
-        $logDir = Resolve-SwordPath -Path ".cache\sword_voice_agent\logs"
-        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-        $safeTitle = $Title -replace "[^A-Za-z0-9_-]", "_"
-        $stdoutPath = Join-Path $logDir "$safeTitle.out.log"
-        $stderrPath = Join-Path $logDir "$safeTitle.err.log"
-        Start-Process `
-            -FilePath $shell `
-            -ArgumentList $arguments `
-            -WorkingDirectory $repoRoot `
-            -WindowStyle Hidden `
-            -RedirectStandardOutput $stdoutPath `
-            -RedirectStandardError $stderrPath
-        Write-Host "[$Title] background logs: $stdoutPath / $stderrPath"
-        return
-    }
-
-    Start-Process `
-        -FilePath $shell `
-        -ArgumentList $arguments `
-        -WorkingDirectory $repoRoot `
-        -WindowStyle Normal
 }
 
-function Get-TtsWindowArgs {
+function Get-TtsSupervisorArgs {
     $ttsArgs = @("-Source", $TtsSource)
     if ($TtsSource -eq "http") {
         $ttsArgs += @(
@@ -253,25 +224,7 @@ function Get-TtsWindowArgs {
     return $ttsArgs
 }
 
-function Start-TtsServiceWindow {
-    Start-SwordWindow `
-        -Title "tts_service" `
-        -ScriptName "start-tts-service.ps1" `
-        -ExtraArgs (Get-TtsWindowArgs)
-}
-
-function Start-AvatarServiceWindow {
-    Start-SwordWindow `
-        -Title "avatar_service" `
-        -ScriptName "start-avatar-service.ps1" `
-        -ExtraArgs @(
-            "-HostName",
-            $AvatarHost,
-            "-Port",
-            $AvatarPort
-        )
-}
-
+$moduleCommands = @()
 if (-not $SkipAiTalkCore) {
     $aiTalkCoreArgs = @()
     if ($NoAiTalkCoreIntegrationDefaults) {
@@ -283,10 +236,10 @@ if (-not $SkipAiTalkCore) {
     if ($NoSaveHandoff) {
         $aiTalkCoreArgs += "-NoSaveHandoff"
     }
-    Start-SwordWindow `
-        -Title "ai_talk_core" `
-        -ScriptName "start-ai-talk-core.ps1" `
-        -ExtraArgs $aiTalkCoreArgs
+    $moduleCommands += [pscustomobject]@{
+        Name = "ai_talk_core"
+        Command = New-SupervisorScriptCommand -ScriptName "start-ai-talk-core.ps1" -ExtraArgs $aiTalkCoreArgs
+    }
 }
 
 $gestureArgs = @()
@@ -299,10 +252,10 @@ if (-not [string]::IsNullOrWhiteSpace($GestureActivationDelay)) {
 if (-not [string]::IsNullOrWhiteSpace($GestureReleaseDelay)) {
     $gestureArgs += @("-ReleaseDelay", $GestureReleaseDelay)
 }
-Start-SwordWindow `
-    -Title "gesture_udp_receiver" `
-    -ScriptName "start-gesture-udp.ps1" `
-    -ExtraArgs $gestureArgs
+$moduleCommands += [pscustomobject]@{
+    Name = "gesture_udp_receiver"
+    Command = New-SupervisorScriptCommand -ScriptName "start-gesture-udp.ps1" -ExtraArgs $gestureArgs
+}
 
 if (-not $SkipMediapipe) {
     $mediaArgs = @()
@@ -324,23 +277,25 @@ if (-not $SkipMediapipe) {
     if (-not [string]::IsNullOrWhiteSpace($MediapipeControlHttpPort)) {
         $mediaArgs += @("-ControlHttpPort", $MediapipeControlHttpPort)
     }
-    Start-SwordWindow `
-        -Title "mediapipe_udp_publisher" `
-        -ScriptName "start-mediapipe-udp.ps1" `
-        -ExtraArgs $mediaArgs
+    $moduleCommands += [pscustomobject]@{
+        Name = "mediapipe_udp_publisher"
+        Command = New-SupervisorScriptCommand -ScriptName "start-mediapipe-udp.ps1" -ExtraArgs $mediaArgs
+    }
 }
 
 if ($ttsEnabled -and $TtsSource -eq "http") {
-    Start-TtsServiceWindow
+    $moduleCommands += [pscustomobject]@{
+        Name = "tts_service"
+        Command = New-SupervisorScriptCommand -ScriptName "start-tts-service.ps1" -ExtraArgs (Get-TtsSupervisorArgs)
+    }
 }
 
 if (-not $SkipDifyWatch) {
     $difyWatchArgs = @("-ResponseMode", $DifyResponseMode)
     if ($ttsEnabled -and $TtsSource -eq "http") {
-        $ttsChunkUrl = "http://${TtsHttpHost}:$TtsHttpPort/api/tts/chunk"
         $difyWatchArgs += @(
             "-TtsChunkUrl",
-            $ttsChunkUrl,
+            "http://${TtsHttpHost}:$TtsHttpPort/api/tts/chunk",
             "-TtsHttpTimeout",
             $TtsHttpTimeout
         )
@@ -351,27 +306,32 @@ if (-not $SkipDifyWatch) {
     else {
         $difyWatchArgs += @("-ShortAsciiMaxChars", [string]$ShortAsciiMaxChars)
     }
-    Start-SwordWindow `
-        -Title "dify_watch" `
-        -ScriptName "start-dify-watch.ps1" `
-        -ExtraArgs $difyWatchArgs
+    $moduleCommands += [pscustomobject]@{
+        Name = "dify_watch"
+        Command = New-SupervisorScriptCommand -ScriptName "start-dify-watch.ps1" -ExtraArgs $difyWatchArgs
+    }
 }
 
 if ($ttsEnabled -and $TtsSource -ne "http") {
-    Start-TtsServiceWindow
+    $moduleCommands += [pscustomobject]@{
+        Name = "tts_service"
+        Command = New-SupervisorScriptCommand -ScriptName "start-tts-service.ps1" -ExtraArgs (Get-TtsSupervisorArgs)
+    }
 }
 
 if ($avatarEnabled) {
-    Start-AvatarServiceWindow
+    $moduleCommands += [pscustomobject]@{
+        Name = "avatar_service"
+        Command = New-SupervisorScriptCommand `
+            -ScriptName "start-avatar-service.ps1" `
+            -ExtraArgs @("-HostName", $AvatarHost, "-Port", $AvatarPort)
+    }
 }
 
 if (-not $SkipConsole) {
     $consoleArgs = @()
     if ($avatarEnabled) {
-        $consoleArgs += @(
-            "-AvatarUrl",
-            "http://${AvatarHost}:$AvatarPort"
-        )
+        $consoleArgs += @("-AvatarUrl", "http://${AvatarHost}:$AvatarPort")
     }
     if (-not [string]::IsNullOrWhiteSpace($AvatarModelUrl)) {
         $consoleArgs += @("-AvatarModelUrl", $AvatarModelUrl)
@@ -385,17 +345,178 @@ if (-not $SkipConsole) {
     if ($ttsEnabled -and -not [string]::IsNullOrWhiteSpace($TtsVolumePreviewUrl)) {
         $consoleArgs += @("-TtsVolumePreviewUrl", $TtsVolumePreviewUrl)
     }
-    Start-SwordWindow `
-        -Title "console" `
-        -ScriptName "start-console.ps1" `
-        -ExtraArgs $consoleArgs
+    $moduleCommands += [pscustomobject]@{
+        Name = "console"
+        Command = New-SupervisorScriptCommand -ScriptName "start-console.ps1" -ExtraArgs $consoleArgs
+    }
 }
 
-Write-Host "Open ai_talk_core Web UI: http://127.0.0.1:8000"
-if ($avatarEnabled) {
-    Write-Host "Open Avatar service: http://${AvatarHost}:$AvatarPort"
+if ($DryRun) {
+    foreach ($moduleCommand in $moduleCommands) {
+        Write-Host "[$($moduleCommand.Name)]"
+        Write-Host (Format-CommandLine -Command $moduleCommand.Command)
+    }
+    return
 }
-Write-Host "Open Sword Voice Agent console: http://127.0.0.1:8790"
-if ($Background) {
-    Write-Host "Stop background stack: .\scripts\stop-full-stack.ps1 -Force"
+
+function Start-SupervisedProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string[]]$Command
+    )
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Command[0]
+    if ($Command.Count -gt 1) {
+        foreach ($argument in $Command[1..($Command.Count - 1)]) {
+            $startInfo.ArgumentList.Add($argument)
+        }
+    }
+    $startInfo.WorkingDirectory = $repoRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = $utf8NoBom
+    $startInfo.StandardErrorEncoding = $utf8NoBom
+    $startInfo.CreateNoWindow = $true
+    $startInfo.Environment["PYTHONUTF8"] = "1"
+    $startInfo.Environment["PYTHONIOENCODING"] = "utf-8"
+    $startInfo.Environment["NO_COLOR"] = "1"
+    $startInfo.Environment["FORCE_COLOR"] = "0"
+    $startInfo.Environment["TERM"] = "dumb"
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $process.EnableRaisingEvents = $true
+
+    if (-not $process.Start()) {
+        throw "failed to start $Name"
+    }
+
+    $stdoutEvent = Register-ObjectEvent `
+        -InputObject $process `
+        -EventName OutputDataReceived `
+        -MessageData @{ Prefix = $Name; Stream = "stdout" } `
+        -Action {
+            $line = $EventArgs.Data
+            if ($null -ne $line) {
+                $cleanLine = [regex]::Replace($line, "`e\[[0-?]*[ -/]*[@-~]", "")
+                [Console]::Out.WriteLine("[{0}] {1}", $Event.MessageData.Prefix, $cleanLine)
+            }
+        }
+    $stderrEvent = Register-ObjectEvent `
+        -InputObject $process `
+        -EventName ErrorDataReceived `
+        -MessageData @{ Prefix = $Name; Stream = "stderr" } `
+        -Action {
+            $line = $EventArgs.Data
+            if ($null -ne $line) {
+                $cleanLine = [regex]::Replace($line, "`e\[[0-?]*[ -/]*[@-~]", "")
+                [Console]::Error.WriteLine("[{0}] {1}", $Event.MessageData.Prefix, $cleanLine)
+            }
+        }
+
+    $process.BeginOutputReadLine()
+    $process.BeginErrorReadLine()
+    Write-Host "[$Name] started PID $($process.Id)"
+
+    return [pscustomobject]@{
+        Name = $Name
+        Process = $process
+        StdoutEvent = $stdoutEvent
+        StderrEvent = $stderrEvent
+        NotifiedExit = $false
+    }
 }
+
+function Stop-SupervisedEvents {
+    param(
+        [object[]]$Children
+    )
+
+    foreach ($child in $Children) {
+        foreach ($subscription in @($child.StdoutEvent, $child.StderrEvent)) {
+            if ($null -ne $subscription) {
+                Unregister-Event -SubscriptionId $subscription.Id -ErrorAction SilentlyContinue
+                Remove-Job -Id $subscription.Id -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+function Invoke-SupervisorStackStop {
+    Write-Host "Stopping stack..."
+    $stopArgs = @(
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        (Join-Path $PSScriptRoot "stop-full-stack.ps1"),
+        "-EnvPath",
+        $resolvedEnvPath,
+        "-Force"
+    )
+    & $shell @stopArgs
+}
+
+$children = @()
+$script:shutdownStarted = $false
+$script:exitCode = 0
+
+try {
+    foreach ($moduleCommand in $moduleCommands) {
+        $children += Start-SupervisedProcess `
+            -Name $moduleCommand.Name `
+            -Command $moduleCommand.Command
+        if ($StartupDelayMilliseconds -gt 0) {
+            Start-Sleep -Milliseconds $StartupDelayMilliseconds
+        }
+    }
+
+    Write-Host "Open ai_talk_core Web UI: http://127.0.0.1:8000"
+    if ($avatarEnabled) {
+        Write-Host "Open Avatar service: http://${AvatarHost}:$AvatarPort"
+    }
+    Write-Host "Open Sword Voice Agent console: http://127.0.0.1:8790"
+    Write-Host "Press Ctrl+C to stop the full stack."
+
+    while ($true) {
+        $running = 0
+        foreach ($child in $children) {
+            if ($child.Process.HasExited) {
+                if (-not $child.NotifiedExit) {
+                    $child.NotifiedExit = $true
+                    $code = $child.Process.ExitCode
+                    Write-Host "[$($child.Name)] exited code=$code"
+                    if ($code -ne 0 -and -not $script:shutdownStarted) {
+                        $script:exitCode = $code
+                        $script:shutdownStarted = $true
+                        Invoke-SupervisorStackStop
+                    }
+                }
+            }
+            else {
+                $running += 1
+            }
+        }
+
+        if ($running -eq 0) {
+            break
+        }
+        Start-Sleep -Milliseconds 500
+    }
+}
+catch [System.Management.Automation.PipelineStoppedException] {
+    Write-Host "Ctrl+C received; requesting cooperative stack shutdown..."
+}
+finally {
+    if (-not $script:shutdownStarted) {
+        $liveChildren = @($children | Where-Object { -not $_.Process.HasExited })
+        if ($liveChildren.Count -gt 0) {
+            $script:shutdownStarted = $true
+            Invoke-SupervisorStackStop
+        }
+    }
+    Stop-SupervisedEvents -Children $children
+}
+
+exit $script:exitCode

@@ -12,6 +12,7 @@ from sword_voice_agent.adapters.console_status import (
     fetch_dify_api,
     fetch_input_gate,
     normalize_module_statuses,
+    read_console_events,
 )
 
 
@@ -151,6 +152,7 @@ class ConsoleStatusTest(TestCase):
                 ConsoleStatusConfig(
                     ai_talk_core_root=root,
                     status_dir=status_dir,
+                    tts_status_dir=None,
                 )
             )
 
@@ -230,6 +232,7 @@ class ConsoleStatusTest(TestCase):
                 ConsoleStatusConfig(
                     ai_talk_core_root=root,
                     status_dir=status_dir,
+                    tts_status_dir=None,
                 )
             )
 
@@ -270,7 +273,42 @@ class ConsoleStatusTest(TestCase):
             self.assertEqual(modules["gesture_udp_receiver"]["detail"], "127.0.0.1:8765")
             self.assertEqual(modules["dify_api"]["state"], "missing")
             self.assertEqual(modules["tts_service"]["state"], "missing")
+            self.assertEqual(modules["avatar_service"]["state"], "missing")
             self.assertEqual(modules["console"]["state"], "running")
+
+    def test_merges_ai_talk_core_events(self) -> None:
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            events_dir = root / ".cache"
+            events_dir.mkdir(parents=True)
+            (events_dir / "events.jsonl").write_text(
+                json.dumps(
+                    {
+                        "turn_id": "turn-1",
+                        "event": "stt_final",
+                        "timestamp_wall": "2026-04-29T01:02:03Z",
+                        "timestamp_monotonic": 12.3,
+                        "source": "web",
+                        "payload": {"chunk_count": 2},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            events = read_console_events(
+                ConsoleStatusConfig(
+                    ai_talk_core_root=root,
+                    status_dir=None,
+                    tts_status_dir=None,
+                ),
+                limit=10,
+            )
+
+            self.assertEqual(events[0]["type"], "ai_core.stt_final")
+            self.assertEqual(events[0]["turn_id"], "turn-1")
+            self.assertEqual(events[0]["payload"]["chunk_count"], 2)
 
     def test_includes_tts_status(self) -> None:
         with workspace_tempdir() as tmp:
@@ -291,6 +329,10 @@ class ConsoleStatusTest(TestCase):
                         "player": "noop",
                         "voice_name": "test voice",
                         "poll_interval": 0.2,
+                        "volume": 80,
+                        "rate": -1,
+                        "app_volume": 0.25,
+                        "app_volume_file": str(tts_status_dir / "app_volume.json"),
                         "text_hash": "hash-1",
                         "error": None,
                     },
@@ -316,6 +358,107 @@ class ConsoleStatusTest(TestCase):
             self.assertEqual(status["tts"]["player"], "noop")
             self.assertEqual(status["tts"]["voice_name"], "test voice")
             self.assertEqual(status["tts"]["poll_interval"], 0.2)
+            self.assertEqual(status["tts"]["volume"], 80)
+            self.assertEqual(status["tts"]["rate"], -1)
+            self.assertEqual(status["tts"]["app_volume"], 0.25)
+            self.assertEqual(
+                status["tts"]["app_volume_file"],
+                str(tts_status_dir / "app_volume.json"),
+            )
+
+    def test_includes_tts_app_volume_file_without_latest_state(self) -> None:
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            tts_status_dir = root / ".cache" / "tts_service"
+            tts_status_dir.mkdir(parents=True)
+            (tts_status_dir / "app_volume.json").write_text(
+                json.dumps({"app_volume": 0.4}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            status = build_console_status(
+                ConsoleStatusConfig(
+                    ai_talk_core_root=root,
+                    tts_status_dir=tts_status_dir,
+                )
+            )
+
+            self.assertFalse(status["tts"]["available"])
+            self.assertEqual(status["tts"]["app_volume"], 0.4)
+            self.assertTrue(status["tts"]["app_volume_file_exists"])
+
+    @patch("sword_voice_agent.adapters.console_status.request.urlopen")
+    def test_includes_tts_volume_api_when_configured(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = (
+            b'{"ok":true,"app_volume":0.42,"app_volume_file":"memory"}'
+        )
+        urlopen.return_value = response
+
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+
+            status = build_console_status(
+                ConsoleStatusConfig(
+                    ai_talk_core_root=root,
+                    tts_status_dir=root / ".cache" / "tts_service",
+                    tts_volume_url="http://127.0.0.1:8765/api/volume",
+                    tts_volume_preview_url="http://127.0.0.1:8765/api/volume/preview",
+                )
+            )
+
+        self.assertEqual(status["tts"]["app_volume"], 0.42)
+        self.assertEqual(
+            status["tts"]["volume_url"],
+            "http://127.0.0.1:8765/api/volume",
+        )
+        self.assertEqual(
+            status["tts"]["volume_preview_url"],
+            "http://127.0.0.1:8765/api/volume/preview",
+        )
+        self.assertTrue(status["tts"]["app_volume_available"])
+        self.assertFalse(status["tts"]["app_volume_file_exists"])
+
+    def test_merges_tts_service_events(self) -> None:
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            tts_status_dir = root / ".cache" / "tts_service"
+            tts_status_dir.mkdir(parents=True)
+            (tts_status_dir / "events.jsonl").write_text(
+                json.dumps(
+                    {
+                        "phase": "speaking",
+                        "updated_at": "2026-04-29T01:02:03Z",
+                        "request_id": "req-1",
+                        "turn_id": "turn-1",
+                        "engine": "noop",
+                        "player": "noop",
+                        "app_volume": 0.35,
+                        "volume": 70,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            events = read_console_events(
+                ConsoleStatusConfig(
+                    ai_talk_core_root=root,
+                    status_dir=None,
+                    tts_status_dir=tts_status_dir,
+                ),
+                limit=5,
+            )
+
+            self.assertEqual(events[0]["type"], "tts.state")
+            self.assertEqual(events[0]["turn_id"], "turn-1")
+            self.assertEqual(events[0]["payload"]["phase"], "speaking")
+            self.assertEqual(events[0]["payload"]["volume"], 70)
+            self.assertEqual(events[0]["payload"]["app_volume"], 0.35)
 
     def test_dify_api_module_uses_reachability(self) -> None:
         modules = normalize_module_statuses(
@@ -334,6 +477,45 @@ class ConsoleStatusTest(TestCase):
         by_name = {item["name"]: item for item in modules}
         self.assertEqual(by_name["dify_api"]["state"], "running")
         self.assertEqual(by_name["dify_api"]["detail"], "http://localhost:8080/v1")
+
+    def test_avatar_module_uses_reachability(self) -> None:
+        modules = normalize_module_statuses(
+            {},
+            input_gate={"available": False},
+            avatar={
+                "available": True,
+                "url": "http://127.0.0.1:5173",
+                "status": 200,
+                "error": None,
+            },
+            timestamp=10.0,
+            stale_after_s=6.0,
+        )
+
+        by_name = {item["name"]: item for item in modules}
+        self.assertEqual(by_name["avatar_service"]["state"], "running")
+        self.assertEqual(by_name["avatar_service"]["detail"], "http://127.0.0.1:5173")
+
+    @patch("sword_voice_agent.adapters.console_status.request.urlopen")
+    def test_avatar_status_includes_model_url(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b""
+        response.__enter__.return_value.status = 200
+        urlopen.return_value = response
+
+        status = build_console_status(
+            ConsoleStatusConfig(
+                ai_talk_core_root=Path("."),
+                avatar_url="http://127.0.0.1:5173",
+                avatar_model_url="/models/default.vrm",
+            )
+        )
+
+        self.assertTrue(status["avatar"]["available"])
+        self.assertEqual(status["avatar"]["model_url"], "/models/default.vrm")
 
     def test_dify_api_module_reports_unreachable_endpoint(self) -> None:
         modules = normalize_module_statuses(

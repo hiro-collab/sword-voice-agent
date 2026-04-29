@@ -10,6 +10,13 @@ param(
     [switch]$SkipModelPrecheck,
     [switch]$PrecheckOnly,
     [string]$HeartbeatEvery = "",
+    [string]$LatencyProfile = "",
+    [string]$StateEvery = "",
+    [string]$RuntimeStatusFile = "",
+    [string]$ControlHttpHost = "",
+    [string]$ControlHttpPort = "",
+    [string]$ControlToken = "",
+    [switch]$EdgeOnly,
     [switch]$Preview,
     [switch]$SuppressProtobufWarnings,
     [string[]]$PublisherArgs = @(),
@@ -56,11 +63,69 @@ if ([string]::IsNullOrWhiteSpace($HeartbeatEvery)) {
         "Process"
     )
 }
+if ([string]::IsNullOrWhiteSpace($LatencyProfile)) {
+    $LatencyProfile = [Environment]::GetEnvironmentVariable(
+        "MEDIAPIPE_SWORD_SIGN_LATENCY_PROFILE",
+        "Process"
+    )
+}
+if ([string]::IsNullOrWhiteSpace($StateEvery)) {
+    $StateEvery = [Environment]::GetEnvironmentVariable(
+        "MEDIAPIPE_SWORD_SIGN_STATE_EVERY",
+        "Process"
+    )
+}
+if ([string]::IsNullOrWhiteSpace($RuntimeStatusFile)) {
+    $RuntimeStatusFile = [Environment]::GetEnvironmentVariable(
+        "MEDIAPIPE_SWORD_SIGN_RUNTIME_STATUS_FILE",
+        "Process"
+    )
+}
+if ([string]::IsNullOrWhiteSpace($ControlHttpHost)) {
+    $ControlHttpHost = [Environment]::GetEnvironmentVariable(
+        "MEDIAPIPE_SWORD_SIGN_CONTROL_HTTP_HOST",
+        "Process"
+    )
+}
+if ([string]::IsNullOrWhiteSpace($ControlHttpPort)) {
+    $ControlHttpPort = [Environment]::GetEnvironmentVariable(
+        "MEDIAPIPE_SWORD_SIGN_CONTROL_HTTP_PORT",
+        "Process"
+    )
+}
+if ([string]::IsNullOrWhiteSpace($ControlToken)) {
+    $ControlToken = [Environment]::GetEnvironmentVariable(
+        "MEDIAPIPE_SWORD_SIGN_CONTROL_TOKEN",
+        "Process"
+    )
+}
+if (-not $EdgeOnly) {
+    $edgeOnlyValue = [Environment]::GetEnvironmentVariable(
+        "MEDIAPIPE_SWORD_SIGN_EDGE_ONLY",
+        "Process"
+    )
+    if ($edgeOnlyValue -match "^(1|true|yes|on)$") {
+        $EdgeOnly = $true
+    }
+}
 if ([string]::IsNullOrWhiteSpace($HeartbeatEvery)) {
     $HeartbeatEvery = "1s"
 }
+if ([string]::IsNullOrWhiteSpace($RuntimeStatusFile)) {
+    $RuntimeStatusFile = Join-Path $StatusDir "runtime\mediapipe_udp_publisher.json"
+}
+if ([string]::IsNullOrWhiteSpace($ControlHttpHost)) {
+    $ControlHttpHost = "127.0.0.1"
+}
+if ([string]::IsNullOrWhiteSpace($ControlHttpPort)) {
+    $ControlHttpPort = "18765"
+}
+if (-not $DryRun -and -not $PrecheckOnly) {
+    Assert-SwordPortsAvailable -TcpPorts @([int]$ControlHttpPort)
+}
 
 $resolvedModelPath = Resolve-SwordPath -Path $ModelPath -BasePath $mediapipeRoot
+$resolvedRuntimeStatusFile = Resolve-SwordPath -Path $RuntimeStatusFile -BasePath (Get-SwordRepoRoot)
 $modelHash = ""
 if (-not $DryRun -and -not $SkipModelPrecheck) {
     Write-Host "[mediapipe model precheck]"
@@ -129,7 +194,7 @@ if (-not $DryRun -and -not $SkipModelPrecheck) {
     if ($healthExitCode -ne 0) {
         throw "MediaPipe health check failed with exit code $healthExitCode."
     }
-    if ($PrecheckOnly) {
+if ($PrecheckOnly) {
         Write-Host "precheck_only: ok"
         return
     }
@@ -153,7 +218,13 @@ $command = @(
     "--debug-every",
     [string]$DebugEvery,
     "--heartbeat-every",
-    $HeartbeatEvery
+    $HeartbeatEvery,
+    "--runtime-status-file",
+    $resolvedRuntimeStatusFile,
+    "--control-http-host",
+    $ControlHttpHost,
+    "--control-http-port",
+    $ControlHttpPort
 )
 
 if (-not [string]::IsNullOrWhiteSpace($ModelSha256)) {
@@ -167,6 +238,18 @@ if ($Preview) {
 }
 if ($SuppressProtobufWarnings) {
     $command += "--suppress-protobuf-warnings"
+}
+if (-not [string]::IsNullOrWhiteSpace($LatencyProfile)) {
+    $command += @("--latency-profile", $LatencyProfile)
+}
+if (-not [string]::IsNullOrWhiteSpace($StateEvery)) {
+    $command += @("--state-every", $StateEvery)
+}
+if ($EdgeOnly) {
+    $command += "--edge-only"
+}
+if (-not [string]::IsNullOrWhiteSpace($ControlToken)) {
+    $command += @("--control-token", $ControlToken)
 }
 if ($PublisherArgs.Count -gt 0) {
     $command += $PublisherArgs

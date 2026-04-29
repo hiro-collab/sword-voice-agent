@@ -105,6 +105,61 @@ function Set-SwordAiTalkCoreWebTokenDefault {
     return ""
 }
 
+function Resolve-SwordAvatarModelUrl {
+    param(
+        [string]$ModelUrl = ""
+    )
+
+    $fallback = "/models/default.vrm"
+    $trimmed = if ([string]::IsNullOrWhiteSpace($ModelUrl)) { "" } else { $ModelUrl.Trim() }
+    if (-not [string]::IsNullOrWhiteSpace($trimmed) -and $trimmed -ne $fallback) {
+        return $trimmed
+    }
+
+    $avatarRootValue = [Environment]::GetEnvironmentVariable("AVATAR_SERVICE_ROOT", "Process")
+    if ([string]::IsNullOrWhiteSpace($avatarRootValue)) {
+        if ($trimmed) {
+            return $trimmed
+        }
+        return $fallback
+    }
+
+    $avatarRoot = Resolve-SwordPath -Path $avatarRootValue
+    $modelsDir = Join-Path $avatarRoot "public\models"
+    if (-not (Test-Path -LiteralPath $modelsDir -PathType Container)) {
+        if ($trimmed) {
+            return $trimmed
+        }
+        return $fallback
+    }
+
+    $defaultModelPath = Join-Path $modelsDir "default.vrm"
+    if (Test-Path -LiteralPath $defaultModelPath -PathType Leaf) {
+        return $fallback
+    }
+
+    $models = @(
+        Get-ChildItem `
+            -LiteralPath $modelsDir `
+            -Filter "*.vrm" `
+            -File `
+            -ErrorAction SilentlyContinue |
+        Sort-Object Name
+    )
+    if ($models.Count -eq 0) {
+        if ($trimmed) {
+            return $trimmed
+        }
+        return $fallback
+    }
+
+    $selected = "/models/$([System.Uri]::EscapeDataString($models[0].Name))"
+    if ($trimmed -eq $fallback) {
+        Write-Warning "AVATAR_MODEL_URL points to $fallback, but default.vrm was not found. Using $selected."
+    }
+    return $selected
+}
+
 function Format-CommandLine {
     param(
         [Parameter(Mandatory = $true)][string[]]$Command
@@ -118,6 +173,170 @@ function Format-CommandLine {
             $_
         }
     }) -join " "
+}
+
+function Get-SwordProcessDetail {
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId
+    )
+
+    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    return [pscustomobject]@{
+        PID = $ProcessId
+        ProcessName = if ($process) { $process.ProcessName } else { "" }
+        CommandLine = if ($cim) { $cim.CommandLine } else { "" }
+        ParentProcessId = if ($cim) { $cim.ParentProcessId } else { $null }
+    }
+}
+
+function Test-SwordProtectedProcess {
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [string]$ProcessName = ""
+    )
+
+    if ($ProcessId -le 4) {
+        return $true
+    }
+    $protectedNames = @(
+        "Idle",
+        "System",
+        "Secure System",
+        "Registry",
+        "smss",
+        "csrss",
+        "wininit",
+        "services",
+        "lsass",
+        "Memory Compression"
+    )
+    return $ProcessName -in $protectedNames
+}
+
+function Get-SwordPortUsers {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet("TCP", "UDP")][string]$Protocol,
+        [Parameter(Mandatory = $true)][int[]]$Ports
+    )
+
+    $records = @()
+    foreach ($port in $Ports) {
+        if ($Protocol -eq "TCP") {
+            $listeners = Get-NetTCPConnection `
+                -LocalPort $port `
+                -State Listen `
+                -ErrorAction SilentlyContinue
+        }
+        else {
+            $listeners = Get-NetUDPEndpoint `
+                -LocalPort $port `
+                -ErrorAction SilentlyContinue
+        }
+        foreach ($listener in @($listeners)) {
+            $detail = Get-SwordProcessDetail -ProcessId ([int]$listener.OwningProcess)
+            $records += [pscustomobject]@{
+                Protocol = $Protocol
+                LocalAddress = $listener.LocalAddress
+                LocalPort = $listener.LocalPort
+                PID = $detail.PID
+                ProcessName = $detail.ProcessName
+                CommandLine = $detail.CommandLine
+            }
+        }
+    }
+    return $records
+}
+
+function Show-SwordPortConflictHelp {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Conflicts,
+        [string]$StopScript = ".\scripts\stop-full-stack.ps1 -Force"
+    )
+
+    Write-Host "Required port is already in use." -ForegroundColor Yellow
+    $Conflicts |
+        Select-Object Protocol, LocalAddress, LocalPort, PID, ProcessName |
+        Format-Table -AutoSize |
+        Out-String |
+        Write-Host
+
+    Write-Host "The port user is shown for diagnosis only." -ForegroundColor Yellow
+    Write-Host "If it is a stale Sword Voice Agent process, run:"
+    Write-Host "  $StopScript"
+    foreach ($conflict in @($Conflicts | Sort-Object PID -Unique)) {
+        if (Test-SwordProtectedProcess `
+                -ProcessId ([int]$conflict.PID) `
+                -ProcessName ([string]$conflict.ProcessName)) {
+            Write-Host "  # PID $($conflict.PID) $($conflict.ProcessName) is a protected Windows process; inspect the port manually."
+            continue
+        }
+        Write-Host "  # Inspect PID $($conflict.PID): Get-CimInstance Win32_Process -Filter `"ProcessId = $($conflict.PID)`" | Select-Object ProcessId,CommandLine"
+    }
+}
+
+function Assert-SwordPortsAvailable {
+    param(
+        [int[]]$TcpPorts = @(),
+        [int[]]$UdpPorts = @(),
+        [string]$StopScript = ".\scripts\stop-full-stack.ps1 -Force"
+    )
+
+    $conflicts = @()
+    if ($TcpPorts.Count -gt 0) {
+        $conflicts += Get-SwordPortUsers -Protocol TCP -Ports $TcpPorts
+    }
+    if ($UdpPorts.Count -gt 0) {
+        $conflicts += Get-SwordPortUsers -Protocol UDP -Ports $UdpPorts
+    }
+    if ($conflicts.Count -eq 0) {
+        return
+    }
+
+    Show-SwordPortConflictHelp -Conflicts $conflicts -StopScript $StopScript
+    throw "required port is already in use"
+}
+
+function Get-SwordDescendantProcessIds {
+    param(
+        [Parameter(Mandatory = $true)][int[]]$RootProcessIds
+    )
+
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $childrenByParent = @{}
+    foreach ($process in $all) {
+        $parent = [int]$process.ParentProcessId
+        if (-not $childrenByParent.ContainsKey($parent)) {
+            $childrenByParent[$parent] = @()
+        }
+        $childrenByParent[$parent] += [int]$process.ProcessId
+    }
+
+    $seen = @{}
+    $queue = [System.Collections.Generic.Queue[int]]::new()
+    foreach ($rootProcessId in $RootProcessIds) {
+        if (Test-SwordProtectedProcess -ProcessId $rootProcessId) {
+            continue
+        }
+        $queue.Enqueue($rootProcessId)
+    }
+    while ($queue.Count -gt 0) {
+        $queuedProcessId = $queue.Dequeue()
+        $detail = Get-SwordProcessDetail -ProcessId $queuedProcessId
+        if (Test-SwordProtectedProcess `
+                -ProcessId $queuedProcessId `
+                -ProcessName ([string]$detail.ProcessName)) {
+            continue
+        }
+        if ($seen.ContainsKey($queuedProcessId)) {
+            continue
+        }
+        $seen[$queuedProcessId] = $true
+        foreach ($childProcessId in @($childrenByParent[$queuedProcessId])) {
+            $queue.Enqueue($childProcessId)
+        }
+    }
+    return @($seen.Keys | ForEach-Object { [int]$_ })
 }
 
 function Write-SwordModuleStatus {

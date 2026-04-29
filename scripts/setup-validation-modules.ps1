@@ -3,6 +3,8 @@ param(
     [string]$AiTalkCoreRepoUrl = "https://github.com/hiro-collab/ai_talk_core.git",
     [string]$MediapipeSwordSignRepoUrl = "https://github.com/hiro-collab/mediapipe-sword-sign.git",
     [string]$TtsServiceRepoUrl = "https://github.com/hiro-collab/tts-service.git",
+    [string]$AvatarServiceRepoUrl = "https://github.com/hiro-collab/avatar-service.git",
+    [string]$SystemHouseRendererRepoUrl = "https://github.com/hiro-collab/SystemHouseRenderer.git",
     [string]$EnvPath = ".env",
     [switch]$UpdateEnv,
     [switch]$NoPull,
@@ -125,6 +127,20 @@ function Update-ValidationEnv {
     $lines = Set-EnvLine -Lines $lines -Name "AI_TALK_CORE_ROOT" -Value "..\ai_talk_core"
     $lines = Set-EnvLine -Lines $lines -Name "MEDIAPIPE_SWORD_SIGN_ROOT" -Value "..\mediapipe-sword-sign"
     $lines = Set-EnvLine -Lines $lines -Name "TTS_SERVICE_ROOT" -Value "..\tts-service"
+    $lines = Set-EnvLine -Lines $lines -Name "AVATAR_SERVICE_ROOT" -Value "..\avatar-service"
+    $lines = Set-EnvLine -Lines $lines -Name "SYSTEM_HOUSE_RENDERER_ROOT" -Value "..\SystemHouseRenderer"
+    $lines = Set-EnvLine -Lines $lines -Name "AI_TALK_CORE_RUNTIME_STATUS_FILE" -Value ".cache\sword_voice_agent\runtime\ai_talk_core.json"
+    $lines = Set-EnvLine -Lines $lines -Name "MEDIAPIPE_SWORD_SIGN_RUNTIME_STATUS_FILE" -Value ".cache\sword_voice_agent\runtime\mediapipe_udp_publisher.json"
+    $lines = Set-EnvLine -Lines $lines -Name "MEDIAPIPE_SWORD_SIGN_CONTROL_HTTP_HOST" -Value "127.0.0.1"
+    $lines = Set-EnvLine -Lines $lines -Name "MEDIAPIPE_SWORD_SIGN_CONTROL_HTTP_PORT" -Value "18765"
+    $lines = Set-EnvLine -Lines $lines -Name "MEDIAPIPE_SWORD_SIGN_CONTROL_TOKEN" -Value ""
+    $lines = Set-EnvLine -Lines $lines -Name "TTS_VOLUME_URL" -Value "http://127.0.0.1:8765/api/volume"
+    $lines = Set-EnvLine -Lines $lines -Name "TTS_VOLUME_PREVIEW_URL" -Value "http://127.0.0.1:8765/api/volume/preview"
+    $lines = Set-EnvLine -Lines $lines -Name "TTS_SERVICE_RUNTIME_STATUS_FILE" -Value ".cache\sword_voice_agent\runtime\tts_service.json"
+    $lines = Set-EnvLine -Lines $lines -Name "TTS_SERVICE_SHUTDOWN_TOKEN" -Value ""
+    $lines = Set-EnvLine -Lines $lines -Name "AVATAR_MODEL_URL" -Value ""
+    $lines = Set-EnvLine -Lines $lines -Name "AVATAR_SERVICE_RUNTIME_STATUS_FILE" -Value ".cache\sword_voice_agent\runtime\avatar_service.json"
+    $lines = Set-EnvLine -Lines $lines -Name "SYSTEM_HOUSE_RENDERER_RUNTIME_STATUS_FILE" -Value ".cache\sword_voice_agent\runtime\system_house_renderer.json"
 
     if ($DryRun) {
         Write-Host "Set validation module roots in $resolvedEnvPath"
@@ -137,6 +153,8 @@ New-Item -ItemType Directory -Force -Path $WorkspaceRoot | Out-Null
 Ensure-ValidationClone -Name "ai_talk_core" -RepoUrl $AiTalkCoreRepoUrl
 Ensure-ValidationClone -Name "mediapipe-sword-sign" -RepoUrl $MediapipeSwordSignRepoUrl
 Ensure-ValidationClone -Name "tts-service" -RepoUrl $TtsServiceRepoUrl
+Ensure-ValidationClone -Name "avatar-service" -RepoUrl $AvatarServiceRepoUrl
+Ensure-ValidationClone -Name "SystemHouseRenderer" -RepoUrl $SystemHouseRendererRepoUrl
 
 if ($UpdateEnv) {
     Update-ValidationEnv
@@ -146,3 +164,5 @@ Write-Host "validation module roots:"
 Write-Host "AI_TALK_CORE_ROOT=..\ai_talk_core"
 Write-Host "MEDIAPIPE_SWORD_SIGN_ROOT=..\mediapipe-sword-sign"
 Write-Host "TTS_SERVICE_ROOT=..\tts-service"
+Write-Host "AVATAR_SERVICE_ROOT=..\avatar-service"
+Write-Host "SYSTEM_HOUSE_RENDERER_ROOT=..\SystemHouseRenderer"

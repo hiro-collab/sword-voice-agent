@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -13,7 +14,6 @@ from sword_voice_agent.adapters.ai_talk_core import (
     get_handoff_json_path,
     get_handoff_text_path,
 )
-from sword_voice_agent.adapters.dify import validate_base_url
 from sword_voice_agent.adapters.status_store import StatusStore
 from sword_voice_agent.protocol.messages import now_timestamp
 
@@ -26,6 +26,7 @@ EXPECTED_MODULES = (
     ("dify_api", "Dify API"),
     ("dify_watcher", "Dify watcher"),
     ("tts_service", "TTS service"),
+    ("avatar_service", "Avatar service"),
     ("console", "Integration console"),
 )
 
@@ -37,11 +38,18 @@ class ConsoleStatusConfig:
     gesture_status_json: Path | None = None
     status_dir: Path | None = Path(".cache/sword_voice_agent")
     tts_status_dir: Path | None = Path(".cache/tts_service")
+    tts_app_volume_file: Path | None = None
+    tts_volume_url: str | None = None
+    tts_volume_preview_url: str | None = None
+    tts_volume_timeout_s: float = 1.5
     input_gate_url: str | None = None
     input_gate_token: str | None = None
     input_gate_timeout_s: float = 1.5
     dify_base_url: str | None = None
     dify_timeout_s: float = 1.5
+    avatar_url: str | None = None
+    avatar_model_url: str | None = None
+    avatar_timeout_s: float = 1.5
     module_stale_after_s: float = 6.0
     redact_sensitive: bool = False
 
@@ -71,11 +79,13 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
         if config.tts_status_dir is not None
         else empty_file_state()
     )
+    tts_volume_json = read_tts_volume_state(config)
     conversation_id = read_text_file(
         cache_dir / f"{config.source}_dify_conversation_id.txt"
     )
     input_gate = fetch_input_gate(config)
     dify_api = fetch_dify_api(config)
+    avatar = fetch_avatar_service(config)
     store_gesture = (
         read_json_file(status_store.latest_gesture_path)
         if status_store is not None
@@ -93,7 +103,7 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
         if config.gesture_status_json is not None
         else empty_file_state()
     )
-    events = status_store.read_events(limit=40) if status_store is not None else []
+    events = read_console_events(config, limit=40)
     module_statuses = (
         status_store.read_module_statuses() if status_store is not None else {}
     )
@@ -120,6 +130,7 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
             "gesture": gesture["exists"] and not gesture.get("error"),
             "input_gate": None if not config.input_gate_url else input_gate["available"],
             "tts": tts_json["exists"] and not tts_json.get("error"),
+            "avatar": avatar["available"],
         },
         "gesture": normalize_gesture_status(gesture),
         "gesture_diagnostic": normalize_gesture_diagnostic(store_gesture_diagnostic),
@@ -129,13 +140,21 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
             store_voice_turn_json,
         ),
         "dify": normalize_dify_status(dify_json, dify_text, conversation_id),
-        "tts": normalize_tts_status(tts_json),
+        "tts": normalize_tts_status(
+            tts_json,
+            tts_volume_json,
+            app_volume_file=resolve_tts_app_volume_file(config),
+            volume_url=config.tts_volume_url,
+            volume_preview_url=config.tts_volume_preview_url,
+        ),
+        "avatar": avatar,
         "dify_api": dify_api,
         "input_gate": input_gate,
         "modules": normalize_module_statuses(
             module_statuses,
             input_gate=input_gate,
             dify_api=dify_api,
+            avatar=avatar,
             timestamp=timestamp,
             stale_after_s=config.module_stale_after_s,
         ),
@@ -147,6 +166,7 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
             "dify_text": strip_payload(dify_text),
             "conversation_id": strip_payload(conversation_id),
             "tts_json": strip_payload(tts_json),
+            "tts_volume_json": strip_payload(tts_volume_json),
             "gesture_json": strip_payload(gesture),
             "status_dify_json": strip_payload(store_dify_json),
             "status_gesture_json": strip_payload(store_gesture),
@@ -184,6 +204,9 @@ def redact_console_status(status: Mapping[str, Any]) -> dict[str, Any]:
         "turn_id",
         "text_hash",
         "watching",
+        "app_volume_file",
+        "volume_url",
+        "volume_preview_url",
     ):
         tts[key] = _redact_scalar(tts.get(key))
 
@@ -192,6 +215,10 @@ def redact_console_status(status: Mapping[str, Any]) -> dict[str, Any]:
 
     dify_api = _mapping_mutable(redacted.get("dify_api"))
     dify_api["url"] = _redact_scalar(dify_api.get("url"))
+
+    avatar = _mapping_mutable(redacted.get("avatar"))
+    avatar["url"] = _redact_scalar(avatar.get("url"))
+    avatar["model_url"] = _redact_scalar(avatar.get("model_url"))
 
     for module in _list_of_mappings(redacted.get("modules")):
         module["detail"] = _redact_scalar(module.get("detail"))
@@ -244,6 +271,20 @@ def redact_event(event: Mapping[str, Any]) -> dict[str, Any]:
                 }
             }
         )
+    elif item.get("type") == "tts.state":
+        redacted_payload.update(
+            {
+                "phase": data.get("phase"),
+                "service": data.get("service"),
+                "engine": data.get("engine"),
+                "player": data.get("player"),
+                "volume": data.get("volume"),
+                "rate": data.get("rate"),
+                "app_volume": data.get("app_volume"),
+                "app_volume_file": _redact_scalar(data.get("app_volume_file")),
+                "error": data.get("error"),
+            }
+        )
     item["payload"] = redacted_payload
     item.pop("data", None)
     return item
@@ -254,6 +295,7 @@ def normalize_module_statuses(
     *,
     input_gate: Mapping[str, Any],
     dify_api: Mapping[str, Any] | None = None,
+    avatar: Mapping[str, Any] | None = None,
     timestamp: float,
     stale_after_s: float,
 ) -> list[dict[str, Any]]:
@@ -283,6 +325,18 @@ def normalize_module_statuses(
                 age = 0.0
                 error_text = str(dify_api.get("error") or "not reachable")
                 detail = f"{dify_api.get('url')} / {error_text}"
+        elif name == "avatar_service" and avatar is not None:
+            if avatar.get("available"):
+                state = "running"
+                updated_at = timestamp
+                age = 0.0
+                detail = str(avatar.get("url") or detail or "reachable")
+            elif avatar.get("url"):
+                state = "error"
+                updated_at = timestamp
+                age = 0.0
+                error_text = str(avatar.get("error") or "not reachable")
+                detail = f"{avatar.get('url')} / {error_text}"
         elif name == "console":
             state = "running"
             updated_at = timestamp
@@ -502,8 +556,23 @@ def normalize_dify_status(
     }
 
 
-def normalize_tts_status(tts_json: Mapping[str, Any]) -> dict[str, Any]:
+def normalize_tts_status(
+    tts_json: Mapping[str, Any],
+    tts_volume_json: Mapping[str, Any] | None = None,
+    *,
+    app_volume_file: Path | None = None,
+    volume_url: str | None = None,
+    volume_preview_url: str | None = None,
+) -> dict[str, Any]:
     payload = mapping(tts_json.get("payload"))
+    volume_payload = mapping(tts_volume_json.get("payload")) if tts_volume_json is not None else {}
+    app_volume = app_volume_from_payload(volume_payload)
+    if app_volume is None:
+        app_volume = float_or_none(payload.get("app_volume"))
+    app_volume_file_value = str(payload.get("app_volume_file") or "")
+    if not app_volume_file_value and app_volume_file is not None:
+        app_volume_file_value = str(app_volume_file)
+    tts_volume_from_api = bool(tts_volume_json and tts_volume_json.get("source") == "api")
     return {
         "available": bool(tts_json.get("exists")) and not tts_json.get("error"),
         "updated_at": tts_json.get("mtime"),
@@ -519,9 +588,87 @@ def normalize_tts_status(tts_json: Mapping[str, Any]) -> dict[str, Any]:
         "player": str(payload.get("player") or ""),
         "voice_name": str(payload.get("voice_name") or ""),
         "poll_interval": float_or_none(payload.get("poll_interval")),
+        "volume": int_or_none(payload.get("volume")),
+        "rate": int_or_none(payload.get("rate")),
+        "app_volume": app_volume,
+        "app_volume_file": app_volume_file_value,
+        "volume_url": volume_url or "",
+        "volume_preview_url": volume_preview_url or "",
+        "app_volume_file_exists": bool(
+            tts_volume_json and tts_volume_json.get("exists") and not tts_volume_from_api
+        ),
+        "app_volume_available": app_volume is not None
+        or bool(volume_url)
+        or bool(app_volume_file_value),
         "text_hash": str(payload.get("text_hash") or ""),
         "error": str(payload.get("error") or ""),
     }
+
+
+def resolve_tts_app_volume_file(config: ConsoleStatusConfig) -> Path | None:
+    if config.tts_app_volume_file is not None:
+        return config.tts_app_volume_file
+    if config.tts_status_dir is None:
+        return None
+    return config.tts_status_dir / "app_volume.json"
+
+
+def read_tts_volume_state(config: ConsoleStatusConfig) -> dict[str, Any]:
+    if config.tts_volume_url:
+        api_state = read_tts_volume_api(config)
+        if api_state["exists"] and not api_state.get("error"):
+            return api_state
+        file_state = read_json_file(resolve_tts_app_volume_file(config))
+        if file_state["exists"] and not file_state.get("error"):
+            file_state["volume_url"] = config.tts_volume_url
+            file_state["volume_url_error"] = api_state.get("error")
+            return file_state
+        return api_state
+    return read_json_file(resolve_tts_app_volume_file(config))
+
+
+def read_tts_volume_api(config: ConsoleStatusConfig) -> dict[str, Any]:
+    state = {
+        "path": config.tts_volume_url,
+        "exists": False,
+        "mtime": None,
+        "size": None,
+        "error": None,
+        "source": "api",
+    }
+    if not config.tts_volume_url:
+        return state
+    try:
+        volume_url = validate_http_url(config.tts_volume_url, label="TTS_VOLUME_URL")
+    except ValueError as exc:
+        state["error"] = str(exc)
+        return state
+
+    req = request.Request(
+        url=volume_url,
+        method="GET",
+        headers={"Accept": "application/json"},
+    )
+    try:
+        with request.urlopen(req, timeout=config.tts_volume_timeout_s) as response:
+            body = response.read().decode("utf-8")
+    except (error.HTTPError, error.URLError, TimeoutError, OSError) as exc:
+        state["error"] = str(exc)
+        return state
+
+    try:
+        payload = json.loads(body) if body else {}
+    except json.JSONDecodeError as exc:
+        state["error"] = f"invalid JSON: {exc}"
+        return state
+    if not isinstance(payload, Mapping):
+        state["error"] = "TTS volume API payload must be an object"
+        return state
+
+    state["exists"] = True
+    state["payload"] = dict(payload)
+    state["payload"]["volume_url"] = volume_url
+    return state
 
 
 def fetch_input_gate(config: ConsoleStatusConfig) -> dict[str, Any]:
@@ -582,13 +729,25 @@ def fetch_dify_api(config: ConsoleStatusConfig) -> dict[str, Any]:
     return fetch_http_reachability(
         config.dify_base_url,
         timeout_s=config.dify_timeout_s,
+        label="DIFY_BASE_URL",
     )
+
+
+def fetch_avatar_service(config: ConsoleStatusConfig) -> dict[str, Any]:
+    result = fetch_http_reachability(
+        config.avatar_url,
+        timeout_s=config.avatar_timeout_s,
+        label="AVATAR_SERVICE_URL",
+    )
+    result["model_url"] = config.avatar_model_url
+    return result
 
 
 def fetch_http_reachability(
     url: str | None,
     *,
     timeout_s: float,
+    label: str,
 ) -> dict[str, Any]:
     if not url:
         return {
@@ -598,7 +757,7 @@ def fetch_http_reachability(
             "error": None,
         }
     try:
-        request_url = validate_base_url(url)
+        request_url = validate_http_url(url, label=label)
     except ValueError as exc:
         return {
             "available": False,
@@ -641,6 +800,150 @@ def fetch_http_reachability(
         }
 
 
+def read_console_events(config: ConsoleStatusConfig, *, limit: int = 40) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    if config.status_dir is not None:
+        merged.extend(StatusStore(config.status_dir).read_events(limit=limit))
+    merged.extend(read_ai_talk_core_events(config.ai_talk_core_root, limit=limit))
+    if config.tts_status_dir is not None:
+        merged.extend(read_tts_service_events(config.tts_status_dir, limit=limit))
+    merged.sort(key=lambda event: float_or_none(event.get("timestamp")) or 0.0)
+    return merged[-max(1, limit) :]
+
+
+def read_console_events_after(
+    config: ConsoleStatusConfig,
+    event_id: str | None,
+    *,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    events = read_console_events(config, limit=limit)
+    if not event_id:
+        return events
+    for index, event in enumerate(events):
+        if str(event.get("event_id") or "") == event_id:
+            return events[index + 1 :]
+    return events
+
+
+def read_ai_talk_core_events(
+    ai_talk_core_root: Path,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    path = ai_talk_core_root / ".cache" / "events.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return []
+
+    events: list[dict[str, Any]] = []
+    for line in lines[-max(1, limit) :]:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, Mapping):
+            events.append(normalize_ai_talk_core_event(payload))
+    return events
+
+
+def normalize_ai_talk_core_event(payload: Mapping[str, Any]) -> dict[str, Any]:
+    event_name = str(payload.get("event") or "event")
+    timestamp = timestamp_from_ai_core_event(payload)
+    turn_id = str(payload.get("turn_id") or "")
+    monotonic = payload.get("timestamp_monotonic")
+    event_id = f"ai_core:{turn_id}:{event_name}:{monotonic or timestamp}"
+    return {
+        "event_id": event_id,
+        "type": f"ai_core.{event_name}",
+        "timestamp": timestamp,
+        "source": f"ai_talk_core:{payload.get('source') or 'core'}",
+        "turn_id": turn_id or None,
+        "payload": dict(mapping(payload.get("payload"))),
+    }
+
+
+def read_tts_service_events(
+    tts_status_dir: Path,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    path = tts_status_dir / "events.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return []
+
+    events: list[dict[str, Any]] = []
+    for line in lines[-max(1, limit) :]:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, Mapping):
+            events.append(normalize_tts_service_event(payload))
+    return events
+
+
+def normalize_tts_service_event(payload: Mapping[str, Any]) -> dict[str, Any]:
+    if payload.get("type") == "tts_event":
+        event_name = str(payload.get("event") or "event")
+        timestamp = timestamp_from_tts_event(payload)
+        request_id = str(payload.get("request_id") or "")
+        turn_id = str(payload.get("turn_id") or "")
+        event_id = f"tts:event:{event_name}:{request_id}:{timestamp}"
+        return {
+            "event_id": event_id,
+            "type": f"tts.{event_name}",
+            "timestamp": timestamp,
+            "source": "tts_service",
+            "turn_id": turn_id or None,
+            "payload": dict(payload),
+        }
+
+    phase = str(payload.get("phase") or "")
+    timestamp = timestamp_from_tts_event(payload)
+    request_id = str(payload.get("request_id") or "")
+    turn_id = str(payload.get("turn_id") or "")
+    event_id = f"tts:state:{phase}:{request_id}:{timestamp}"
+    return {
+        "event_id": event_id,
+        "type": "tts.state",
+        "timestamp": timestamp,
+        "source": "tts_service",
+        "turn_id": turn_id or None,
+        "payload": dict(payload),
+    }
+
+
+def timestamp_from_ai_core_event(payload: Mapping[str, Any]) -> float:
+    wall = payload.get("timestamp_wall")
+    if isinstance(wall, str) and wall.strip():
+        try:
+            return datetime.fromisoformat(wall.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
+    monotonic = float_or_none(payload.get("timestamp_monotonic"))
+    return monotonic if monotonic is not None else 0.0
+
+
+def timestamp_from_tts_event(payload: Mapping[str, Any]) -> float:
+    for key in ("wall_time", "updated_at"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                pass
+    monotonic = float_or_none(payload.get("monotonic_time") or payload.get("perf_counter"))
+    return monotonic if monotonic is not None else 0.0
+
+
 def mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
@@ -666,3 +969,29 @@ def float_or_none(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def int_or_none(value: object) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def app_volume_from_payload(payload: Mapping[str, Any]) -> float | None:
+    if payload.get("muted") is True:
+        return 0.0
+    for key in ("app_volume", "volume", "value"):
+        value = float_or_none(payload.get(key))
+        if value is not None:
+            return clamp_app_volume(value)
+    percent = float_or_none(payload.get("app_volume_percent"))
+    if percent is not None:
+        return clamp_app_volume(percent / 100.0)
+    return None
+
+
+def clamp_app_volume(value: float) -> float:
+    return max(0.0, min(1.0, value))

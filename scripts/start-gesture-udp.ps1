@@ -53,6 +53,9 @@ if ([string]::IsNullOrWhiteSpace($ActivationDelay)) {
 if ([string]::IsNullOrWhiteSpace($ReleaseDelay)) {
     $ReleaseDelay = "0.5"
 }
+if (-not $DryRun) {
+    Assert-SwordPortsAvailable -UdpPorts @($Port)
+}
 
 $resolvedStatusDir = Resolve-SwordPath -Path $StatusDir
 $command = @(

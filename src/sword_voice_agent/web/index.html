@@ -100,10 +100,32 @@
             <dl class="metrics">
               <div><dt>engine</dt><dd id="ttsEngine">-</dd></div>
               <div><dt>player</dt><dd id="ttsPlayer">-</dd></div>
+              <div><dt>app vol</dt><dd id="ttsAppVolume">-</dd></div>
+              <div><dt>volume</dt><dd id="ttsVolume">-</dd></div>
+              <div><dt>rate</dt><dd id="ttsRate">-</dd></div>
               <div><dt>voice</dt><dd id="ttsVoice">-</dd></div>
               <div><dt>updated</dt><dd id="ttsUpdated">-</dd></div>
               <div><dt>request</dt><dd id="ttsRequest">-</dd></div>
               <div><dt>error</dt><dd id="ttsError">-</dd></div>
+            </dl>
+            <div class="volume-control">
+              <label for="ttsAppVolumeSlider">app volume</label>
+              <input id="ttsAppVolumeSlider" type="range" min="0" max="100" step="1" disabled />
+              <button id="ttsVolumePreviewButton" class="button secondary" type="button" disabled>試聴</button>
+              <button id="ttsVolumeApplyButton" class="button secondary" type="button" disabled>反映</button>
+              <span id="ttsVolumeApplyState">-</span>
+            </div>
+          </article>
+
+          <article class="status-panel" data-state="unknown" id="avatarPanel">
+            <div class="panel-head">
+              <span class="panel-title">Avatar</span>
+              <span id="avatarState" class="state-pill">unknown</span>
+            </div>
+            <dl class="metrics">
+              <div><dt>phase</dt><dd id="avatarPhase">-</dd></div>
+              <div><dt>bridge</dt><dd id="avatarBridge">-</dd></div>
+              <div><dt>url</dt><dd id="avatarUrl">-</dd></div>
             </dl>
           </article>
         </section>
@@ -133,6 +155,23 @@
             <div class="usage-row">
               <span id="messageId">message: -</span>
               <span id="difyUpdated">updated: -</span>
+            </div>
+          </article>
+
+          <article class="work-panel avatar-detail">
+            <div class="section-head">
+              <h2>Avatar Runtime</h2>
+              <button id="avatarOpenButton" class="button secondary" type="button">別窓</button>
+            </div>
+            <iframe
+              id="avatarFrame"
+              class="avatar-frame"
+              title="Avatar service"
+              sandbox="allow-scripts allow-same-origin allow-forms"
+            ></iframe>
+            <div class="usage-row">
+              <span id="avatarLastSent">sent: -</span>
+              <span id="avatarLastTurn">turn: -</span>
             </div>
           </article>
         </section>

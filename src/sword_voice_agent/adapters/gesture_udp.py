@@ -18,9 +18,11 @@ from sword_voice_agent.adapters.rate_limit import (
 )
 from sword_voice_agent.core.input_gate import GestureInputGate
 from sword_voice_agent.core.turn_controller import VoiceTurnController
-from sword_voice_agent.protocol.messages import ProtocolError, now_timestamp
+from sword_voice_agent.protocol.messages import ProtocolError, VoicePhase, VoiceState, now_timestamp
 
 DEFAULT_RATE_LIMIT_PER_MINUTE = 6000
+GESTURE_EDGE_ACTIVE = "gesture_active"
+GESTURE_EDGE_RELEASED = "gesture_released"
 
 
 def build_udp_gesture_response(
@@ -43,12 +45,84 @@ def build_udp_gesture_response(
             "timestamp": now_timestamp(),
             "diagnostic": dict(sanitized_payload),
         }
+    if message_type == "gesture_edge":
+        return build_gesture_edge_response(
+            sanitized_payload,
+            voice_state_sink=voice_state_sink,
+            turn_controller=turn_controller,
+        )
     return build_gesture_response(
         sanitized_payload,
         gate,
         voice_state_sink=voice_state_sink,
         turn_controller=turn_controller,
     )
+
+
+def build_gesture_edge_response(
+    payload: Mapping[str, Any],
+    *,
+    voice_state_sink: VoiceStateSink | None = None,
+    turn_controller: VoiceTurnController | None = None,
+) -> dict[str, Any]:
+    event_name = str(payload.get("event") or "")
+    if event_name not in {GESTURE_EDGE_ACTIVE, GESTURE_EDGE_RELEASED}:
+        raise ProtocolError("gesture_edge requires gesture_active or gesture_released event")
+
+    active = event_name == GESTURE_EDGE_ACTIVE
+    timestamp = _float_payload_value(payload.get("timestamp"), default=now_timestamp())
+    confidence = _float_payload_value(payload.get("confidence"), default=0.0)
+    turn_id = _optional_text(payload.get("turn_id"))
+    voice_state = VoiceState(
+        phase=VoicePhase.ARMED if active else VoicePhase.IDLE,
+        mic_enabled=active,
+        recording=active,
+        timestamp=timestamp,
+        reason=event_name,
+    )
+    response_payload: dict[str, Any] = {
+        "ok": True,
+        "voice_state": voice_state.to_dict(),
+        "gate_decision": {
+            "timestamp": timestamp,
+            "gesture_name": str(payload.get("target_gesture") or "sword_sign"),
+            "raw_active": bool(payload.get("current_active", active)),
+            "confidence": confidence,
+            "mic_enabled": active,
+            "changed": True,
+            "reason": event_name,
+            "source_event": "gesture_edge",
+            "frame_id": payload.get("frame_id"),
+            "detected_at": payload.get("detected_at"),
+            "sent_at": payload.get("sent_at"),
+        },
+    }
+    if turn_controller is not None:
+        command = dict(turn_controller.update(voice_state).to_dict())
+        if turn_id:
+            command["turn_id"] = turn_id
+        response_payload["voice_control_command"] = command
+    if voice_state_sink is not None:
+        response_payload["input_gate_response"] = dict(
+            voice_state_sink.send_voice_state(voice_state)
+        )
+    return response_payload
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _float_payload_value(value: object, *, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 class GestureUdpReceiver:
