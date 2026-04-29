@@ -10,6 +10,7 @@ const state = {
   avatar: {
     url: "",
     lastKey: "",
+    lastConfigKey: "",
     lastSentAt: null,
     popup: null,
   },
@@ -18,6 +19,7 @@ const state = {
   },
 };
 const AUTH_STORAGE_KEY = "swordVoiceAgentAuthToken";
+const AVATAR_BACKGROUND_COLOR = "#070b12";
 
 const $ = (id) => document.getElementById(id);
 
@@ -304,22 +306,25 @@ function updateAvatarBridge(avatar, avatarEvent) {
   if (url && state.avatar.url !== url) {
     state.avatar.url = url;
     state.avatar.lastKey = "";
+    state.avatar.lastConfigKey = "";
     frame.src = url;
   } else if (!url && state.avatar.url) {
     state.avatar.url = "";
     state.avatar.lastKey = "";
+    state.avatar.lastConfigKey = "";
     frame.removeAttribute("src");
   }
 
   if (!url) {
-    text("avatarLastSent", "sent: -");
-    text("avatarLastTurn", "turn: -");
+    text("avatarLastSent", "-");
+    text("avatarLastTurn", "-");
     return;
   }
 
+  postAvatarConfig(url);
   postAvatarState(url, avatarEvent);
-  text("avatarLastSent", state.avatar.lastSentAt ? `sent: ${state.avatar.lastSentAt.toLocaleTimeString("ja-JP", { hour12: false })}` : "sent: -");
-  text("avatarLastTurn", `turn: ${shortTurn(avatarEvent.turn_id)}`);
+  text("avatarLastSent", state.avatar.lastSentAt ? state.avatar.lastSentAt.toLocaleTimeString("ja-JP", { hour12: false }) : "-");
+  text("avatarLastTurn", shortTurn(avatarEvent.turn_id));
 }
 
 function buildAvatarState({ gesture, voice, dify, tts, inputGate }) {
@@ -349,6 +354,7 @@ function buildAvatarState({ gesture, voice, dify, tts, inputGate }) {
     type: "avatar_state",
     phase,
     emotion,
+    posture: avatarPostureForPhase(phase, { gesture, tts, inputGate }),
     gesture: gesture.raw_active ? "sword_sign" : "none",
     speech: {
       state: ttsPhase || phase,
@@ -359,6 +365,25 @@ function buildAvatarState({ gesture, voice, dify, tts, inputGate }) {
     text: dify.answer || voice.command || undefined,
     timestamp: Date.now(),
   };
+}
+
+function avatarPostureForPhase(phase, { gesture, tts, inputGate }) {
+  const ttsPhase = tts.phase || "";
+  const inputGateState = inputGatePayload(inputGate);
+  const activeListening = Boolean(gesture.raw_active || gesture.mic_enabled || inputGateState.input_enabled || inputGateState.mic_enabled);
+  if (phase === "speaking" || ttsPhase === "speaking") {
+    return { preset: "speaking", intensity: 0.42, source: "console_status" };
+  }
+  if (phase === "thinking") {
+    return { preset: "thinking", intensity: 0.38, source: "console_status" };
+  }
+  if (phase === "listening") {
+    return { preset: activeListening ? "attentive" : "lean_forward", intensity: 0.36, source: "console_status" };
+  }
+  if (phase === "error") {
+    return { preset: "lean_back", intensity: 0.46, source: "console_status" };
+  }
+  return { preset: "neutral", intensity: 0.22, source: "console_status" };
 }
 
 function speechVolume(tts) {
@@ -374,6 +399,7 @@ function postAvatarState(url, event) {
     url,
     phase: event.phase,
     emotion: event.emotion,
+    posture: event.posture || {},
     gesture: event.gesture,
     speech: event.speech || {},
     turn_id: event.turn_id || "",
@@ -390,6 +416,25 @@ function postAvatarState(url, event) {
   }
   if (state.avatar.popup && !state.avatar.popup.closed) {
     state.avatar.popup.postMessage(event, targetOrigin);
+  }
+}
+
+function postAvatarConfig(url) {
+  const config = {
+    type: "avatar_config",
+    background: AVATAR_BACKGROUND_COLOR,
+  };
+  const configKey = JSON.stringify({ url, background: config.background });
+  if (configKey === state.avatar.lastConfigKey) return;
+  state.avatar.lastConfigKey = configKey;
+
+  const targetOrigin = originFromUrl(url);
+  const frameWindow = $("avatarFrame").contentWindow;
+  if (frameWindow) {
+    frameWindow.postMessage(config, targetOrigin);
+  }
+  if (state.avatar.popup && !state.avatar.popup.closed) {
+    state.avatar.popup.postMessage(config, targetOrigin);
   }
 }
 
@@ -410,6 +455,9 @@ function avatarRuntimeUrl(url, modelUrl = "") {
     }
     if (!runtimeUrl.searchParams.has("events")) {
       runtimeUrl.searchParams.set("events", new URL("/api/events", window.location.href).toString());
+    }
+    if (!runtimeUrl.searchParams.has("background") && !runtimeUrl.searchParams.has("bg")) {
+      runtimeUrl.searchParams.set("background", AVATAR_BACKGROUND_COLOR);
     }
     return runtimeUrl.toString();
   } catch {
@@ -613,11 +661,13 @@ $("refreshButton").addEventListener("click", refresh);
 $("clearStatusButton").addEventListener("click", clearStatus);
 $("avatarFrame").addEventListener("load", () => {
   state.avatar.lastKey = "";
+  state.avatar.lastConfigKey = "";
 });
 $("avatarOpenButton").addEventListener("click", () => {
   if (!state.avatar.url) return;
   state.avatar.popup = window.open(state.avatar.url, "swordVoiceAvatar");
   state.avatar.lastKey = "";
+  state.avatar.lastConfigKey = "";
 });
 $("ttsAppVolumeSlider").addEventListener("input", () => {
   state.ttsVolume.dirty = true;

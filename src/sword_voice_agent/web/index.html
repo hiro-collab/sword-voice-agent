@@ -7,6 +7,15 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <div class="avatar-backdrop" aria-hidden="true">
+      <iframe
+        id="avatarFrame"
+        class="avatar-frame"
+        title="Avatar service"
+        sandbox="allow-scripts allow-same-origin allow-forms"
+      ></iframe>
+      <div class="avatar-shade"></div>
+    </div>
     <div class="app-shell">
       <header class="topbar">
         <div>
@@ -125,8 +134,13 @@
             <dl class="metrics">
               <div><dt>phase</dt><dd id="avatarPhase">-</dd></div>
               <div><dt>bridge</dt><dd id="avatarBridge">-</dd></div>
+              <div><dt>sent</dt><dd id="avatarLastSent">-</dd></div>
+              <div><dt>turn</dt><dd id="avatarLastTurn">-</dd></div>
               <div><dt>url</dt><dd id="avatarUrl">-</dd></div>
             </dl>
+            <div class="panel-actions">
+              <button id="avatarOpenButton" class="button secondary" type="button">別窓</button>
+            </div>
           </article>
         </section>
 
@@ -155,23 +169,6 @@
             <div class="usage-row">
               <span id="messageId">message: -</span>
               <span id="difyUpdated">updated: -</span>
-            </div>
-          </article>
-
-          <article class="work-panel avatar-detail">
-            <div class="section-head">
-              <h2>Avatar Runtime</h2>
-              <button id="avatarOpenButton" class="button secondary" type="button">別窓</button>
-            </div>
-            <iframe
-              id="avatarFrame"
-              class="avatar-frame"
-              title="Avatar service"
-              sandbox="allow-scripts allow-same-origin allow-forms"
-            ></iframe>
-            <div class="usage-row">
-              <span id="avatarLastSent">sent: -</span>
-              <span id="avatarLastTurn">turn: -</span>
             </div>
           </article>
         </section>
