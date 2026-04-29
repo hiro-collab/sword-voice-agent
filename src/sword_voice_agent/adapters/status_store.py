@@ -28,6 +28,10 @@ class StatusStore:
         return self.root / "latest_gesture.json"
 
     @property
+    def latest_gesture_diagnostic_path(self) -> Path:
+        return self.root / "latest_gesture_diagnostic.json"
+
+    @property
     def latest_voice_turn_path(self) -> Path:
         return self.root / "latest_voice_turn.json"
 
@@ -44,13 +48,33 @@ class StatusStore:
         return self.root / "events.jsonl"
 
     def write_latest_gesture(self, payload: Mapping[str, Any]) -> None:
+        response = _mapping(payload.get("response"))
+        diagnostic = _mapping(response.get("diagnostic"))
+        if diagnostic:
+            previous = self.read_json(self.latest_gesture_diagnostic_path)
+            should_append = _diagnostic_event_key(previous) != _diagnostic_event_key(payload)
+            self.write_json(self.latest_gesture_diagnostic_path, payload)
+            if should_append:
+                self.append_event(
+                    "gesture.diagnostic",
+                    source="gesture_udp_receiver",
+                    payload={
+                        "diagnostic_type": diagnostic.get("type"),
+                        "status": diagnostic.get("status"),
+                        "frame_id": diagnostic.get("frame_id"),
+                        "fps": diagnostic.get("fps"),
+                        "hand_detected": diagnostic.get("hand_detected"),
+                        "primary_gesture": diagnostic.get("primary_gesture"),
+                    },
+                )
+            return
+
         previous = self.read_json(self.latest_gesture_path)
         should_append = (
             _gesture_event_key(previous) != _gesture_event_key(payload)
             or _voice_command_action(payload) != "none"
         )
         self.write_json(self.latest_gesture_path, payload)
-        response = _mapping(payload.get("response"))
         command = _mapping(response.get("voice_control_command"))
         voice_state = _mapping(response.get("voice_state"))
         command_turn_id = _optional_text(command.get("turn_id"))
@@ -188,6 +212,7 @@ class StatusStore:
     def clear(self) -> None:
         for path in (
             self.latest_gesture_path,
+            self.latest_gesture_diagnostic_path,
             self.latest_voice_turn_path,
             self.latest_dify_response_path,
             self.events_path,
@@ -216,6 +241,20 @@ class StatusStore:
                 continue
             if isinstance(payload, dict):
                 events.append(payload)
+        return events
+
+    def read_events_after(
+        self,
+        event_id: str | None,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        events = self.read_events(limit=limit)
+        if not event_id:
+            return events
+        for index, event in enumerate(events):
+            if str(event.get("event_id") or "") == event_id:
+                return events[index + 1 :]
         return events
 
     def read_json(self, path: Path) -> dict[str, Any] | None:
@@ -275,3 +314,24 @@ def _voice_command_action(payload: Mapping[str, Any]) -> str:
     response = _mapping(payload.get("response"))
     command = _mapping(response.get("voice_control_command"))
     return str(command.get("action", "none"))
+
+
+def _diagnostic_event_key(payload: Mapping[str, Any] | None) -> tuple[object, ...] | None:
+    if payload is None:
+        return None
+    response = _mapping(payload.get("response"))
+    diagnostic = _mapping(response.get("diagnostic"))
+    if not diagnostic:
+        return None
+    sword = _mapping(diagnostic.get("sword_sign"))
+    camera = _mapping(diagnostic.get("camera"))
+    return (
+        diagnostic.get("type"),
+        diagnostic.get("status"),
+        diagnostic.get("frame_id"),
+        diagnostic.get("hand_detected"),
+        diagnostic.get("primary_gesture"),
+        sword.get("active"),
+        sword.get("confidence"),
+        camera.get("opened"),
+    )

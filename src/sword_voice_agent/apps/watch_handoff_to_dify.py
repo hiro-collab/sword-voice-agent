@@ -6,15 +6,18 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import time
-from typing import Any
+from typing import Any, Callable
+from urllib import error, request
 
 from sword_voice_agent.adapters.ai_talk_core import (
     AiTalkCoreHandoffError,
     get_handoff_json_path,
 )
-from sword_voice_agent.adapters.dify import DifyClient, DifyClientError
-from sword_voice_agent.adapters.status_store import StatusStore
+from sword_voice_agent.adapters.auth import validate_http_url
+from sword_voice_agent.adapters.dify import DifyClient, DifyClientError, DifyStreamEvent
+from sword_voice_agent.adapters.status_store import StatusStore, redacted_text
 from sword_voice_agent.apps.send_handoff_to_dify import (
     load_handoff_from_args,
     parse_context_pairs,
@@ -23,6 +26,9 @@ from sword_voice_agent.apps.send_handoff_to_dify import (
 
 
 NO_SPEECH_PLACEHOLDER = "音声を認識できませんでした。"
+SHORT_ASCII_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z'-]*")
+STRIPPABLE_ASCII_PUNCTUATION = " \t\r\n.,!?;:\"'`“”‘’()[]{}<>"
+RESPONSE_MODES = {"blocking", "streaming"}
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Which handoff field to send as the Dify query.",
     )
     parser.add_argument("--user", default=os.environ.get("DIFY_USER", "local-user"))
+    parser.add_argument(
+        "--response-mode",
+        choices=sorted(RESPONSE_MODES),
+        default=default_response_mode(),
+        help="Dify response mode. streaming emits first-token timing events.",
+    )
     parser.add_argument("--conversation-id", default="")
     parser.add_argument(
         "--conversation-id-file",
@@ -108,6 +120,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for latest status snapshots and events.jsonl.",
     )
     parser.add_argument(
+        "--tts-chunk-url",
+        default=os.environ.get("TTS_HTTP_CHUNK_URL", ""),
+        help=(
+            "Optional tts-service /api/tts/chunk URL. In streaming mode, "
+            "Dify answer deltas are posted here for lower TTS latency."
+        ),
+    )
+    parser.add_argument(
+        "--tts-http-timeout-s",
+        type=float,
+        default=default_tts_http_timeout_s(),
+        help="Timeout for each local TTS chunk POST.",
+    )
+    parser.add_argument(
         "--poll-interval-s",
         type=float,
         default=0.5,
@@ -127,6 +153,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--send-no-speech",
         action="store_true",
         help=f"Send the ai_talk_core no-speech placeholder to Dify instead of skipping it.",
+    )
+    parser.add_argument(
+        "--skip-short-ascii",
+        action="store_true",
+        help=(
+            "Skip suspicious short ASCII-only one-word STT results, such as "
+            "'inverse', which are common silence/noise hallucinations in Japanese use."
+        ),
+    )
+    parser.add_argument(
+        "--short-ascii-max-chars",
+        type=int,
+        default=16,
+        help="Maximum token length for --skip-short-ascii.",
     )
     parser.add_argument(
         "--dry-run",
@@ -178,6 +218,7 @@ def process_handoff(
     args: argparse.Namespace,
     *,
     client: DifyClient | None = None,
+    on_stream_event: Callable[[DifyStreamEvent], None] | None = None,
 ) -> dict[str, Any]:
     handoff = load_handoff_from_args(args)
     conversation_id = resolve_conversation_id(args)
@@ -200,25 +241,64 @@ def process_handoff(
         },
         "request": agent_request.to_dict(),
         "response": None,
+        "response_mode": args.response_mode,
         "skipped": False,
     }
 
     if should_skip_request(agent_request.text, args):
         result["skipped"] = True
-        result["skip_reason"] = "no_speech_placeholder"
+        result["skip_reason"] = skip_reason_for_request(agent_request.text, args)
         return result
 
     if args.dry_run:
         return result
 
     dify_client = client or DifyClient.from_env()
-    response = dify_client.send_chat_message(agent_request)
+    if args.response_mode == "streaming":
+        response = dify_client.send_chat_message_streaming(
+            agent_request,
+            on_event=on_stream_event,
+        )
+    else:
+        response = dify_client.send_chat_message(agent_request)
     result["response"] = response.to_dict()
     return result
 
 
 def should_skip_request(text: str, args: argparse.Namespace) -> bool:
-    return not args.send_no_speech and text.strip() == NO_SPEECH_PLACEHOLDER
+    return skip_reason_for_request(text, args) is not None
+
+
+def skip_reason_for_request(text: str, args: argparse.Namespace) -> str | None:
+    if not args.send_no_speech and text.strip() == NO_SPEECH_PLACEHOLDER:
+        return "no_speech_placeholder"
+    if args.skip_short_ascii and is_suspect_short_ascii_stt(
+        text,
+        max_chars=args.short_ascii_max_chars,
+    ):
+        return "short_ascii_stt_suspect"
+    return None
+
+
+def is_suspect_short_ascii_stt(text: str, *, max_chars: int = 16) -> bool:
+    token = text.strip(STRIPPABLE_ASCII_PUNCTUATION)
+    if not token or len(token) > max(1, max_chars):
+        return False
+    if any(character.isspace() for character in token):
+        return False
+    return bool(SHORT_ASCII_TOKEN_PATTERN.fullmatch(token))
+
+
+def default_response_mode() -> str:
+    value = os.environ.get("DIFY_RESPONSE_MODE", "blocking").strip().lower()
+    return value if value in RESPONSE_MODES else "blocking"
+
+
+def default_tts_http_timeout_s() -> float:
+    try:
+        return max(0.05, float(os.environ.get("TTS_HTTP_TIMEOUT_S", "0.75")))
+    except ValueError:
+        return 0.75
 
 
 def load_latest_turn_id(status_dir: str | Path) -> str | None:
@@ -328,14 +408,243 @@ def run_once(
     *,
     client: DifyClient | None = None,
 ) -> dict[str, Any]:
-    result = process_handoff(args, client=client)
+    status_store = StatusStore(args.status_dir) if args.status_dir else None
+    turn_id = load_latest_turn_id(args.status_dir) if args.status_dir else None
+    stream_handlers: list[Callable[[DifyStreamEvent], None]] = []
+    stream_status_writer = (
+        DifyStreamStatusWriter(status_store, turn_id=turn_id)
+        if status_store is not None
+        else None
+    )
+    if stream_status_writer is not None:
+        stream_handlers.append(stream_status_writer)
+    tts_forwarder = TtsStreamForwarder.from_args(
+        args,
+        store=status_store,
+        turn_id=turn_id,
+    )
+    if tts_forwarder is not None:
+        stream_handlers.append(tts_forwarder)
+    result = process_handoff(
+        args,
+        client=client,
+        on_stream_event=dispatch_stream_event(stream_handlers),
+    )
     save_result_outputs(args, result)
-    if args.status_dir:
-        StatusStore(args.status_dir).write_latest_dify_response(
+    for stream_handler in stream_handlers:
+        finish = getattr(stream_handler, "finish", None)
+        if callable(finish):
+            finish(result)
+    if status_store is not None:
+        status_store.write_latest_dify_response(
             result,
-            turn_id=load_latest_turn_id(args.status_dir),
+            turn_id=turn_id,
         )
     return result
+
+
+def dispatch_stream_event(
+    handlers: list[Callable[[DifyStreamEvent], None]],
+) -> Callable[[DifyStreamEvent], None] | None:
+    if not handlers:
+        return None
+
+    def dispatch(event: DifyStreamEvent) -> None:
+        for handler in handlers:
+            handler(event)
+
+    return dispatch
+
+
+class DifyStreamStatusWriter:
+    def __init__(self, store: StatusStore, *, turn_id: str | None = None) -> None:
+        self.store = store
+        self.turn_id = turn_id
+        self.first_token_seen = False
+        self.done_seen = False
+
+    def __call__(self, event: DifyStreamEvent) -> None:
+        if event.answer_delta and not self.first_token_seen:
+            self.first_token_seen = True
+            self.store.append_event(
+                "dify.first_token",
+                source="watch_handoff_to_dify",
+                turn_id=self.turn_id,
+                payload=stream_event_payload(event),
+            )
+        if event.is_message_end and not self.done_seen:
+            self.done_seen = True
+            self.store.append_event(
+                "dify.done",
+                source="watch_handoff_to_dify",
+                turn_id=self.turn_id,
+                payload=stream_event_payload(event),
+            )
+
+    def finish(self, result: dict[str, Any]) -> None:
+        response = result.get("response")
+        if (
+            self.done_seen
+            or result.get("response_mode") != "streaming"
+            or result.get("skipped")
+            or not isinstance(response, dict)
+        ):
+            return
+        raw = response.get("raw")
+        streaming = raw.get("_streaming") if isinstance(raw, dict) else {}
+        self.store.append_event(
+            "dify.done",
+            source="watch_handoff_to_dify",
+            turn_id=self.turn_id,
+            payload={
+                "event": "stream_completed",
+                "elapsed_s": (
+                    streaming.get("completed_elapsed_s")
+                    if isinstance(streaming, dict)
+                    else None
+                ),
+                "answer_delta_present": False,
+                "conversation_id": redacted_text(
+                    response.get("conversation_id", "")
+                    if isinstance(response, dict)
+                    else ""
+                ),
+                "conversation_id_present": bool(
+                    response.get("conversation_id") if isinstance(response, dict) else ""
+                ),
+                "message_id": (
+                    response.get("message_id") if isinstance(response, dict) else None
+                ),
+            },
+        )
+
+
+def stream_event_payload(event: DifyStreamEvent) -> dict[str, Any]:
+    return {
+        "event": event.event,
+        "elapsed_s": event.elapsed_s,
+        "answer_delta_present": bool(event.answer_delta),
+        "answer_delta": redacted_text(event.answer_delta),
+        "conversation_id": redacted_text(event.conversation_id or ""),
+        "conversation_id_present": bool(event.conversation_id),
+        "message_id": event.message_id,
+        "task_id": event.task_id,
+    }
+
+
+class TtsStreamForwarder:
+    def __init__(
+        self,
+        chunk_url: str,
+        *,
+        timeout_s: float,
+        store: StatusStore | None = None,
+        turn_id: str | None = None,
+    ) -> None:
+        self.chunk_url = validate_http_url(chunk_url, label="--tts-chunk-url")
+        self.timeout_s = max(0.05, timeout_s)
+        self.store = store
+        self.turn_id = turn_id
+        self.final_sent = False
+        self.error_count = 0
+
+    @classmethod
+    def from_args(
+        cls,
+        args: argparse.Namespace,
+        *,
+        store: StatusStore | None = None,
+        turn_id: str | None = None,
+    ) -> "TtsStreamForwarder | None":
+        chunk_url = str(getattr(args, "tts_chunk_url", "") or "").strip()
+        if not chunk_url:
+            return None
+        return cls(
+            chunk_url,
+            timeout_s=float(getattr(args, "tts_http_timeout_s", 0.75)),
+            store=store,
+            turn_id=turn_id,
+        )
+
+    def __call__(self, event: DifyStreamEvent) -> None:
+        if event.answer_delta:
+            self.post(tts_chunk_payload(event, turn_id=self.turn_id))
+        if event.is_message_end and not self.final_sent:
+            self.final_sent = True
+            self.post(tts_chunk_payload(event, turn_id=self.turn_id, final=True))
+
+    def finish(self, result: dict[str, Any]) -> None:
+        response = result.get("response")
+        if (
+            self.final_sent
+            or result.get("response_mode") != "streaming"
+            or result.get("skipped")
+            or not isinstance(response, dict)
+        ):
+            return
+        self.final_sent = True
+        self.post(
+            {
+                "event": "message_end",
+                "final": True,
+                "turn_id": self.turn_id,
+                "message_id": response.get("message_id"),
+                "conversation_id": response.get("conversation_id"),
+            }
+        )
+
+    def post(self, payload: dict[str, Any]) -> None:
+        clean_payload = {
+            key: value
+            for key, value in payload.items()
+            if value is not None and value != ""
+        }
+        body = json.dumps(clean_payload, ensure_ascii=False).encode("utf-8")
+        req = request.Request(
+            self.chunk_url,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with request.urlopen(req, timeout=self.timeout_s) as response:
+                response.read()
+        except (error.HTTPError, error.URLError, TimeoutError, OSError) as exc:
+            self.record_error(str(exc))
+
+    def record_error(self, message: str) -> None:
+        self.error_count += 1
+        if self.error_count != 1 or self.store is None:
+            return
+        self.store.append_event(
+            "tts.forward_error",
+            source="watch_handoff_to_dify",
+            turn_id=self.turn_id,
+            payload={
+                "chunk_url": self.chunk_url,
+                "error": message[:240],
+            },
+        )
+
+
+def tts_chunk_payload(
+    event: DifyStreamEvent,
+    *,
+    turn_id: str | None,
+    final: bool = False,
+) -> dict[str, Any]:
+    return {
+        "event": event.event,
+        "delta": event.answer_delta,
+        "final": final,
+        "turn_id": turn_id,
+        "message_id": event.message_id,
+        "conversation_id": event.conversation_id,
+        "elapsed_s": event.elapsed_s,
+    }
 
 
 def run_watch(args: argparse.Namespace) -> None:

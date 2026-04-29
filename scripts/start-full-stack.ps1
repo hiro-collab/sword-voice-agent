@@ -6,6 +6,7 @@ param(
     [switch]$SkipMediapipe,
     [switch]$SkipDifyWatch,
     [switch]$SkipConsole,
+    [switch]$EnableTts,
     [switch]$SkipDockerCheck,
     [switch]$NoStartDockerDesktop,
     [int]$DockerWaitSeconds = 120,
@@ -13,6 +14,23 @@ param(
     [switch]$NoAiTalkCoreIntegrationDefaults,
     [switch]$NoRecordGateAuto,
     [switch]$NoSaveHandoff,
+    [switch]$NoSkipShortAscii,
+    [int]$ShortAsciiMaxChars = 16,
+    [ValidateSet("blocking", "streaming")]
+    [string]$DifyResponseMode = "streaming",
+    [string]$GestureMinConfidence = "",
+    [string]$GestureActivationDelay = "",
+    [string]$GestureReleaseDelay = "",
+    [ValidateSet("status-file", "http")]
+    [string]$TtsSource = "http",
+    [string]$TtsEngine = "",
+    [string]$TtsPlayer = "",
+    [string]$TtsVoiceName = "",
+    [string]$TtsPollInterval = "",
+    [string]$TtsHttpHost = "127.0.0.1",
+    [string]$TtsHttpPort = "8765",
+    [string]$TtsHttpChunkMaxChars = "80",
+    [string]$TtsHttpTimeout = "0.75",
     [switch]$DryRun
 )
 
@@ -27,6 +45,9 @@ Set-SwordAiTalkCoreWebTokenDefault -Generate | Out-Null
 Assert-EnvPath -Name "AI_TALK_CORE_ROOT" | Out-Null
 if (-not $SkipMediapipe) {
     Assert-EnvPath -Name "MEDIAPIPE_SWORD_SIGN_ROOT" | Out-Null
+}
+if ($EnableTts) {
+    Assert-EnvPath -Name "TTS_SERVICE_ROOT" | Out-Null
 }
 $difyBaseUrl = ""
 if (-not $SkipDifyWatch) {
@@ -95,6 +116,40 @@ function Start-SwordWindow {
         -WindowStyle Normal
 }
 
+function Get-TtsWindowArgs {
+    $ttsArgs = @("-Source", $TtsSource)
+    if ($TtsSource -eq "http") {
+        $ttsArgs += @(
+            "-HttpHost",
+            $TtsHttpHost,
+            "-HttpPort",
+            $TtsHttpPort,
+            "-HttpChunkMaxChars",
+            $TtsHttpChunkMaxChars
+        )
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TtsEngine)) {
+        $ttsArgs += @("-Engine", $TtsEngine)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TtsPlayer)) {
+        $ttsArgs += @("-Player", $TtsPlayer)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TtsVoiceName)) {
+        $ttsArgs += @("-VoiceName", $TtsVoiceName)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TtsPollInterval)) {
+        $ttsArgs += @("-PollInterval", $TtsPollInterval)
+    }
+    return $ttsArgs
+}
+
+function Start-TtsServiceWindow {
+    Start-SwordWindow `
+        -Title "tts_service" `
+        -ScriptName "start-tts-service.ps1" `
+        -ExtraArgs (Get-TtsWindowArgs)
+}
+
 if (-not $SkipAiTalkCore) {
     $aiTalkCoreArgs = @()
     if ($NoAiTalkCoreIntegrationDefaults) {
@@ -112,7 +167,20 @@ if (-not $SkipAiTalkCore) {
         -ExtraArgs $aiTalkCoreArgs
 }
 
-Start-SwordWindow -Title "gesture_udp_receiver" -ScriptName "start-gesture-udp.ps1"
+$gestureArgs = @()
+if (-not [string]::IsNullOrWhiteSpace($GestureMinConfidence)) {
+    $gestureArgs += @("-MinConfidence", $GestureMinConfidence)
+}
+if (-not [string]::IsNullOrWhiteSpace($GestureActivationDelay)) {
+    $gestureArgs += @("-ActivationDelay", $GestureActivationDelay)
+}
+if (-not [string]::IsNullOrWhiteSpace($GestureReleaseDelay)) {
+    $gestureArgs += @("-ReleaseDelay", $GestureReleaseDelay)
+}
+Start-SwordWindow `
+    -Title "gesture_udp_receiver" `
+    -ScriptName "start-gesture-udp.ps1" `
+    -ExtraArgs $gestureArgs
 
 if (-not $SkipMediapipe) {
     $mediaArgs = @()
@@ -128,8 +196,35 @@ if (-not $SkipMediapipe) {
         -ExtraArgs $mediaArgs
 }
 
+if ($EnableTts -and $TtsSource -eq "http") {
+    Start-TtsServiceWindow
+}
+
 if (-not $SkipDifyWatch) {
-    Start-SwordWindow -Title "dify_watch" -ScriptName "start-dify-watch.ps1"
+    $difyWatchArgs = @("-ResponseMode", $DifyResponseMode)
+    if ($EnableTts -and $TtsSource -eq "http") {
+        $ttsChunkUrl = "http://${TtsHttpHost}:$TtsHttpPort/api/tts/chunk"
+        $difyWatchArgs += @(
+            "-TtsChunkUrl",
+            $ttsChunkUrl,
+            "-TtsHttpTimeout",
+            $TtsHttpTimeout
+        )
+    }
+    if ($NoSkipShortAscii) {
+        $difyWatchArgs += "-NoSkipShortAscii"
+    }
+    else {
+        $difyWatchArgs += @("-ShortAsciiMaxChars", [string]$ShortAsciiMaxChars)
+    }
+    Start-SwordWindow `
+        -Title "dify_watch" `
+        -ScriptName "start-dify-watch.ps1" `
+        -ExtraArgs $difyWatchArgs
+}
+
+if ($EnableTts -and $TtsSource -ne "http") {
+    Start-TtsServiceWindow
 }
 
 if (-not $SkipConsole) {

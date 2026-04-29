@@ -103,6 +103,52 @@ class ConsoleServerTest(TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def test_events_endpoint_streams_existing_events_once(self) -> None:
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            status_dir = root / ".cache" / "sword_voice_agent"
+            status_dir.mkdir(parents=True)
+            event = {
+                "event_id": "evt-1",
+                "type": "dify.first_token",
+                "timestamp": 1.0,
+                "source": "test",
+                "turn_id": "turn-1",
+                "payload": {"elapsed_s": 0.2},
+            }
+            (status_dir / "events.jsonl").write_text(
+                json.dumps(event, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            args = build_parser().parse_args(
+                [
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "0",
+                    "--ai-talk-core-root",
+                    str(FIXTURES / "ai_talk_core_root"),
+                    "--status-dir",
+                    str(status_dir),
+                ]
+            )
+            server = run_server(args)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                url = f"http://127.0.0.1:{server.server_port}/api/events?once=1"
+                with request.urlopen(url, timeout=2) as response:
+                    body = response.read().decode("utf-8")
+                    content_type = response.headers["Content-Type"]
+                self.assertIn("text/event-stream", content_type)
+                self.assertIn("id: evt-1", body)
+                self.assertIn("event: dify.first_token", body)
+                self.assertIn('"turn_id":"turn-1"', body)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
 
 @contextmanager
 def workspace_tempdir():

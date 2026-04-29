@@ -12,6 +12,8 @@ from sword_voice_agent.adapters.ai_talk_core import (
 )
 from sword_voice_agent.adapters.dify import DifyClient, DifyClientError
 
+RESPONSE_MODES = {"blocking", "streaming"}
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -40,6 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Which handoff field to send as the Dify query.",
     )
     parser.add_argument("--user", default=os.environ.get("DIFY_USER", "local-user"))
+    parser.add_argument(
+        "--response-mode",
+        choices=sorted(RESPONSE_MODES),
+        default=default_response_mode(),
+        help="Dify response mode. Use streaming to aggregate SSE chunks.",
+    )
     parser.add_argument("--conversation-id", default="")
     parser.add_argument(
         "--context",
@@ -113,6 +121,11 @@ def parse_context_pairs(pairs: list[str]) -> dict[str, str]:
     return context
 
 
+def default_response_mode() -> str:
+    value = os.environ.get("DIFY_RESPONSE_MODE", "blocking").strip().lower()
+    return value if value in RESPONSE_MODES else "blocking"
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     handoff = load_handoff_from_args(args)
     agent_request = handoff.to_agent_request(
@@ -125,9 +138,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if args.dry_run:
         return {"request": agent_request.to_dict(), "response": None}
 
-    response = DifyClient.from_env().send_chat_message(agent_request)
+    client = DifyClient.from_env()
+    if args.response_mode == "streaming":
+        response = client.send_chat_message_streaming(agent_request)
+    else:
+        response = client.send_chat_message(agent_request)
     return {
         "request": agent_request.to_dict(),
+        "response_mode": args.response_mode,
         "response": response.to_dict(),
     }
 

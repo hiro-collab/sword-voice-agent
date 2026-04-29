@@ -25,6 +25,7 @@ EXPECTED_MODULES = (
     ("mediapipe_udp_publisher", "MediaPipe UDP publisher"),
     ("dify_api", "Dify API"),
     ("dify_watcher", "Dify watcher"),
+    ("tts_service", "TTS service"),
     ("console", "Integration console"),
 )
 
@@ -35,6 +36,7 @@ class ConsoleStatusConfig:
     source: str = "web"
     gesture_status_json: Path | None = None
     status_dir: Path | None = Path(".cache/sword_voice_agent")
+    tts_status_dir: Path | None = Path(".cache/tts_service")
     input_gate_url: str | None = None
     input_gate_token: str | None = None
     input_gate_timeout_s: float = 1.5
@@ -64,6 +66,11 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
     if store_dify_json["exists"] and not store_dify_json.get("error"):
         dify_json = store_dify_json
     dify_text = read_text_file(cache_dir / f"{config.source}_dify_latest.txt")
+    tts_json = (
+        read_json_file(config.tts_status_dir / "latest_tts_state.json")
+        if config.tts_status_dir is not None
+        else empty_file_state()
+    )
     conversation_id = read_text_file(
         cache_dir / f"{config.source}_dify_conversation_id.txt"
     )
@@ -71,6 +78,11 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
     dify_api = fetch_dify_api(config)
     store_gesture = (
         read_json_file(status_store.latest_gesture_path)
+        if status_store is not None
+        else empty_file_state()
+    )
+    store_gesture_diagnostic = (
+        read_json_file(status_store.latest_gesture_diagnostic_path)
         if status_store is not None
         else empty_file_state()
     )
@@ -99,6 +111,7 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
                 else None
             ),
             "status_dir": str(config.status_dir) if config.status_dir else None,
+            "tts_status_dir": str(config.tts_status_dir) if config.tts_status_dir else None,
         },
         "health": {
             "handoff": handoff_json["exists"] and not handoff_json.get("error"),
@@ -106,14 +119,17 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
             "dify_api": dify_api["available"],
             "gesture": gesture["exists"] and not gesture.get("error"),
             "input_gate": None if not config.input_gate_url else input_gate["available"],
+            "tts": tts_json["exists"] and not tts_json.get("error"),
         },
         "gesture": normalize_gesture_status(gesture),
+        "gesture_diagnostic": normalize_gesture_diagnostic(store_gesture_diagnostic),
         "voice": normalize_voice_status(
             handoff_json,
             handoff_text,
             store_voice_turn_json,
         ),
         "dify": normalize_dify_status(dify_json, dify_text, conversation_id),
+        "tts": normalize_tts_status(tts_json),
         "dify_api": dify_api,
         "input_gate": input_gate,
         "modules": normalize_module_statuses(
@@ -130,9 +146,11 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
             "dify_json": strip_payload(dify_json),
             "dify_text": strip_payload(dify_text),
             "conversation_id": strip_payload(conversation_id),
+            "tts_json": strip_payload(tts_json),
             "gesture_json": strip_payload(gesture),
             "status_dify_json": strip_payload(store_dify_json),
             "status_gesture_json": strip_payload(store_gesture),
+            "status_gesture_diagnostic_json": strip_payload(store_gesture_diagnostic),
             "status_voice_turn_json": strip_payload(store_voice_turn_json),
         },
     }
@@ -157,6 +175,17 @@ def redact_console_status(status: Mapping[str, Any]) -> dict[str, Any]:
     dify = _mapping_mutable(redacted.get("dify"))
     for key in ("request_text", "turn_id", "answer", "conversation_id", "message_id"):
         dify[key] = _redact_scalar(dify.get(key))
+
+    tts = _mapping_mutable(redacted.get("tts"))
+    for key in (
+        "request_id",
+        "message_id",
+        "conversation_id",
+        "turn_id",
+        "text_hash",
+        "watching",
+    ):
+        tts[key] = _redact_scalar(tts.get(key))
 
     input_gate = _mapping_mutable(redacted.get("input_gate"))
     input_gate["url"] = _redact_scalar(input_gate.get("url"))
@@ -377,6 +406,37 @@ def normalize_gesture_status(state: Mapping[str, Any]) -> dict[str, Any]:
         "action": command.get("action", "none"),
         "turn_id": str(command.get("turn_id") or ""),
         "input_gate_ok": input_gate.get("ok"),
+        "hand_detected": None,
+        "primary_gesture": None,
+        "best_confidence": None,
+        "fps": None,
+        "frame_id": None,
+        "camera_opened": None,
+    }
+
+
+def normalize_gesture_diagnostic(state: Mapping[str, Any]) -> dict[str, Any]:
+    payload = mapping(state.get("payload"))
+    response = mapping(payload.get("response"))
+    diagnostic = mapping(response.get("diagnostic"))
+    sword = mapping(diagnostic.get("sword_sign"))
+    best = mapping(diagnostic.get("best_gesture"))
+    camera = mapping(diagnostic.get("camera"))
+    return {
+        "available": bool(state.get("exists")) and not state.get("error"),
+        "updated_at": state.get("mtime"),
+        "sequence": payload.get("sequence"),
+        "from": payload.get("from"),
+        "diagnostic_type": diagnostic.get("type"),
+        "diagnostic_status": diagnostic.get("status"),
+        "raw_active": bool(sword.get("active", False)),
+        "confidence": float_or_none(sword.get("confidence")),
+        "hand_detected": diagnostic.get("hand_detected"),
+        "primary_gesture": diagnostic.get("primary_gesture") or best.get("name"),
+        "best_confidence": float_or_none(best.get("confidence")),
+        "fps": float_or_none(diagnostic.get("fps")),
+        "frame_id": diagnostic.get("frame_id"),
+        "camera_opened": camera.get("opened"),
     }
 
 
@@ -417,6 +477,7 @@ def normalize_dify_status(
     raw = mapping(response.get("raw"))
     metadata = mapping(raw.get("metadata"))
     usage = mapping(metadata.get("usage"))
+    streaming = mapping(raw.get("_streaming"))
     return {
         "available": bool(dify_json.get("exists")) and not dify_json.get("error"),
         "updated_at": dify_json.get("mtime"),
@@ -435,8 +496,31 @@ def normalize_dify_status(
             "total_tokens": usage.get("total_tokens"),
             "total_price": usage.get("total_price"),
             "currency": usage.get("currency"),
-            "latency": usage.get("latency"),
+            "latency": usage.get("latency") or streaming.get("completed_elapsed_s"),
+            "first_token_latency": streaming.get("first_token_elapsed_s"),
         },
+    }
+
+
+def normalize_tts_status(tts_json: Mapping[str, Any]) -> dict[str, Any]:
+    payload = mapping(tts_json.get("payload"))
+    return {
+        "available": bool(tts_json.get("exists")) and not tts_json.get("error"),
+        "updated_at": tts_json.get("mtime"),
+        "phase": str(payload.get("phase", "")),
+        "service": str(payload.get("service") or ""),
+        "request_id": str(payload.get("request_id") or ""),
+        "message_id": str(payload.get("message_id") or ""),
+        "conversation_id": str(payload.get("conversation_id") or ""),
+        "turn_id": str(payload.get("turn_id") or ""),
+        "source": str(payload.get("source") or ""),
+        "watching": str(payload.get("watching") or ""),
+        "engine": str(payload.get("engine") or ""),
+        "player": str(payload.get("player") or ""),
+        "voice_name": str(payload.get("voice_name") or ""),
+        "poll_interval": float_or_none(payload.get("poll_interval")),
+        "text_hash": str(payload.get("text_hash") or ""),
+        "error": str(payload.get("error") or ""),
     }
 
 

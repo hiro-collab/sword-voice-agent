@@ -107,6 +107,66 @@ class ConsoleStatusTest(TestCase):
             self.assertEqual(status["gesture"]["turn_id"], "turn-1")
             self.assertEqual(status["voice"]["turn_id"], "turn-1")
 
+    def test_builds_status_from_gesture_diagnostic_payload(self) -> None:
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            status_dir = root / ".cache" / "sword_voice_agent"
+            status_dir.mkdir(parents=True)
+            (status_dir / "latest_gesture_diagnostic.json").write_text(
+                json.dumps(
+                    {
+                        "type": "gesture_receiver_status",
+                        "timestamp": 1.0,
+                        "sequence": 3,
+                        "from": "127.0.0.1:55218",
+                        "response": {
+                            "type": "gesture_diagnostic_response",
+                            "diagnostic": {
+                                "type": "gesture_status",
+                                "status": "running",
+                                "frame_id": 42,
+                                "fps": 29.5,
+                                "hand_detected": True,
+                                "primary_gesture": "sword_sign",
+                                "sword_sign": {
+                                    "active": True,
+                                    "confidence": 0.91,
+                                },
+                                "best_gesture": {
+                                    "name": "sword_sign",
+                                    "confidence": 0.91,
+                                },
+                                "camera": {
+                                    "opened": True,
+                                },
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            status = build_console_status(
+                ConsoleStatusConfig(
+                    ai_talk_core_root=root,
+                    status_dir=status_dir,
+                )
+            )
+
+            self.assertTrue(status["gesture_diagnostic"]["available"])
+            self.assertEqual(
+                status["gesture_diagnostic"]["diagnostic_type"],
+                "gesture_status",
+            )
+            self.assertTrue(status["gesture_diagnostic"]["raw_active"])
+            self.assertEqual(status["gesture_diagnostic"]["confidence"], 0.91)
+            self.assertEqual(status["gesture_diagnostic"]["fps"], 29.5)
+            self.assertEqual(
+                status["gesture_diagnostic"]["primary_gesture"],
+                "sword_sign",
+            )
+
     def test_includes_status_store_events(self) -> None:
         with workspace_tempdir() as tmp:
             root = Path(tmp)
@@ -118,6 +178,26 @@ class ConsoleStatusTest(TestCase):
             )
             status_dir = root / ".cache" / "sword_voice_agent"
             status_dir.mkdir(parents=True)
+            tts_status_dir = root / ".cache" / "tts_service"
+            tts_status_dir.mkdir(parents=True)
+            (tts_status_dir / "latest_tts_state.json").write_text(
+                json.dumps(
+                    {
+                        "phase": "completed",
+                        "request_id": "req-1",
+                        "message_id": "msg-1",
+                        "conversation_id": "conv-1",
+                        "service": "running",
+                        "engine": "noop",
+                        "player": "noop",
+                        "voice_name": "test voice",
+                        "poll_interval": 0.2,
+                        "text_hash": "hash-1",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
             (status_dir / "events.jsonl").write_text(
                 json.dumps(
                     {
@@ -189,7 +269,53 @@ class ConsoleStatusTest(TestCase):
             self.assertEqual(modules["gesture_udp_receiver"]["state"], "stale")
             self.assertEqual(modules["gesture_udp_receiver"]["detail"], "127.0.0.1:8765")
             self.assertEqual(modules["dify_api"]["state"], "missing")
+            self.assertEqual(modules["tts_service"]["state"], "missing")
             self.assertEqual(modules["console"]["state"], "running")
+
+    def test_includes_tts_status(self) -> None:
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            tts_status_dir = root / ".cache" / "tts_service"
+            tts_status_dir.mkdir(parents=True)
+            (tts_status_dir / "latest_tts_state.json").write_text(
+                json.dumps(
+                    {
+                        "phase": "speaking",
+                        "request_id": "req-1",
+                        "message_id": "msg-1",
+                        "conversation_id": "conv-1",
+                        "source": "sword_status_store",
+                        "watching": str(root / ".cache" / "sword_voice_agent" / "latest_dify_response.json"),
+                        "service": "running",
+                        "engine": "noop",
+                        "player": "noop",
+                        "voice_name": "test voice",
+                        "poll_interval": 0.2,
+                        "text_hash": "hash-1",
+                        "error": None,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            status = build_console_status(
+                ConsoleStatusConfig(
+                    ai_talk_core_root=root,
+                    tts_status_dir=tts_status_dir,
+                )
+            )
+
+            self.assertTrue(status["health"]["tts"])
+            self.assertTrue(status["tts"]["available"])
+            self.assertEqual(status["tts"]["phase"], "speaking")
+            self.assertEqual(status["tts"]["request_id"], "req-1")
+            self.assertEqual(status["tts"]["source"], "sword_status_store")
+            self.assertEqual(status["tts"]["service"], "running")
+            self.assertEqual(status["tts"]["engine"], "noop")
+            self.assertEqual(status["tts"]["player"], "noop")
+            self.assertEqual(status["tts"]["voice_name"], "test voice")
+            self.assertEqual(status["tts"]["poll_interval"], 0.2)
 
     def test_dify_api_module_uses_reachability(self) -> None:
         modules = normalize_module_statuses(
@@ -306,6 +432,22 @@ class ConsoleStatusTest(TestCase):
             )
             status_dir = root / ".cache" / "sword_voice_agent"
             status_dir.mkdir(parents=True)
+            tts_status_dir = root / ".cache" / "tts_service"
+            tts_status_dir.mkdir(parents=True)
+            (tts_status_dir / "latest_tts_state.json").write_text(
+                json.dumps(
+                    {
+                        "phase": "completed",
+                        "request_id": "req-1",
+                        "message_id": "msg-1",
+                        "conversation_id": "conv-1",
+                        "watching": str(root / ".cache" / "sword_voice_agent" / "latest_dify_response.json"),
+                        "text_hash": "hash-1",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
             (status_dir / "events.jsonl").write_text(
                 json.dumps(
                     {
@@ -330,6 +472,7 @@ class ConsoleStatusTest(TestCase):
                 ConsoleStatusConfig(
                     ai_talk_core_root=root,
                     status_dir=status_dir,
+                    tts_status_dir=tts_status_dir,
                     redact_sensitive=True,
                 )
             )
@@ -340,6 +483,11 @@ class ConsoleStatusTest(TestCase):
             self.assertEqual(status["voice"]["command"], "[redacted]")
             self.assertEqual(status["dify"]["answer"], "[redacted]")
             self.assertEqual(status["dify"]["conversation_id"], "[redacted]")
+            self.assertEqual(status["tts"]["request_id"], "[redacted]")
+            self.assertEqual(status["tts"]["message_id"], "[redacted]")
+            self.assertEqual(status["tts"]["conversation_id"], "[redacted]")
+            self.assertEqual(status["tts"]["text_hash"], "[redacted]")
+            self.assertEqual(status["tts"]["watching"], "[redacted]")
             self.assertEqual(status["events"][0]["turn_id"], "[redacted]")
             self.assertEqual(status["events"][0]["payload"]["response_text"], "[redacted]")
 

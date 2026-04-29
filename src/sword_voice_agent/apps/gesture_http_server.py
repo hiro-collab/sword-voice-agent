@@ -8,6 +8,7 @@ from sword_voice_agent.adapters.gesture_http import (
     DEFAULT_RATE_LIMIT_PER_MINUTE,
     create_server,
 )
+from sword_voice_agent.apps.gesture_options import env_float
 from sword_voice_agent.core.input_gate import GestureInputGate
 from sword_voice_agent.core.turn_controller import VoiceTurnController
 
@@ -17,9 +18,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--gesture-name", default="sword_sign")
-    parser.add_argument("--min-confidence", type=float, default=0.8)
-    parser.add_argument("--activation-delay", type=float, default=0.3)
-    parser.add_argument("--release-delay", type=float, default=0.5)
+    parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=env_float("SWORD_VOICE_AGENT_MIN_CONFIDENCE", 0.8),
+    )
+    parser.add_argument(
+        "--activation-delay",
+        type=float,
+        default=env_float("SWORD_VOICE_AGENT_ACTIVATION_DELAY", 0.3),
+    )
+    parser.add_argument(
+        "--release-delay",
+        type=float,
+        default=env_float("SWORD_VOICE_AGENT_RELEASE_DELAY", 0.5),
+    )
     parser.add_argument(
         "--input-gate-url",
         default=None,

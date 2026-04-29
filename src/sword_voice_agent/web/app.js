@@ -5,6 +5,7 @@ const state = {
     gestureKey: "",
     voiceKey: "",
     difyKey: "",
+    ttsKey: "",
   },
 };
 const AUTH_STORAGE_KEY = "swordVoiceAgentAuthToken";
@@ -89,17 +90,36 @@ function formatStoredEvent(event) {
     const decision = response.gate_decision || {};
     return `gesture${turn}: ${command.action || "none"} / ${decision.reason || "stable"}`;
   }
+  if (event.type === "gesture.diagnostic") {
+    const kind = data.diagnostic_type || "diagnostic";
+    const status = data.status || "-";
+    const fps = data.fps === null || data.fps === undefined ? "" : ` fps=${Number(data.fps).toFixed(1)}`;
+    return `gesture ${kind}: ${status}${fps}`;
+  }
   if (event.type === "dify.response") {
     if (data.skipped) return `dify${turn}: skipped ${data.skip_reason || ""}`;
     return `dify${turn}: ${short(data.response_text || "", 96)}`;
+  }
+  if (event.type === "dify.first_token") {
+    const elapsed = data.elapsed_s === null || data.elapsed_s === undefined ? "" : ` ${Number(data.elapsed_s).toFixed(2)}s`;
+    return `dify${turn}: first token${elapsed}`;
+  }
+  if (event.type === "dify.done") {
+    const elapsed = data.elapsed_s === null || data.elapsed_s === undefined ? "" : ` ${Number(data.elapsed_s).toFixed(2)}s`;
+    return `dify${turn}: done${elapsed}`;
+  }
+  if (event.type === "tts.state") {
+    return `tts${turn}: ${data.phase || "-"}`;
   }
   return `${event.type}${turn}`;
 }
 
 function renderStatus(payload) {
   const gesture = payload.gesture || {};
+  const gestureDiagnostic = payload.gesture_diagnostic || {};
   const voice = payload.voice || {};
   const dify = payload.dify || {};
+  const tts = payload.tts || {};
   const inputGate = payload.input_gate || {};
   const files = payload.files || {};
 
@@ -108,15 +128,19 @@ function renderStatus(payload) {
   state.storeEvents = Array.isArray(payload.events) ? payload.events : [];
   renderModules(Array.isArray(payload.modules) ? payload.modules : []);
 
-  const gestureActive = Boolean(gesture.raw_active);
-  const gestureReady = Boolean(gesture.available);
+  const gestureActive = Boolean(gesture.raw_active || gestureDiagnostic.raw_active);
+  const gestureReady = Boolean(gesture.available || gestureDiagnostic.available);
+  const gestureConfidence = gesture.confidence ?? gestureDiagnostic.confidence;
   setPanel(
     "gesturePanel",
     gestureReady ? (gestureActive ? "ok" : "warn") : "bad",
     "gestureState",
     gestureReady ? (gestureActive ? "detected" : "idle") : "missing"
   );
-  text("gestureConfidence", gesture.confidence === null || gesture.confidence === undefined ? "-" : gesture.confidence.toFixed(3));
+  text("gestureConfidence", gestureConfidence === null || gestureConfidence === undefined ? "-" : Number(gestureConfidence).toFixed(3));
+  text("gestureHand", gestureDiagnostic.hand_detected === null || gestureDiagnostic.hand_detected === undefined ? "-" : String(Boolean(gestureDiagnostic.hand_detected)));
+  text("gesturePrimary", gestureDiagnostic.primary_gesture || "-");
+  text("gestureFps", gestureDiagnostic.fps === null || gestureDiagnostic.fps === undefined ? "-" : Number(gestureDiagnostic.fps).toFixed(1));
   text("gestureMic", gesture.mic_enabled ? "enabled" : "disabled");
   text("gestureAction", gesture.action || "-");
   text("gestureTurn", shortTurn(gesture.turn_id));
@@ -155,14 +179,31 @@ function renderStatus(payload) {
   const usage = dify.usage || {};
   text("difyTokens", usage.total_tokens ?? "-");
   text("difyCost", usage.total_price ? `$${usage.total_price}` : "-");
-  text("difyLatency", usage.latency ? `${Number(usage.latency).toFixed(2)}s` : "-");
+  const firstTokenLatency = usage.first_token_latency ? `first ${Number(usage.first_token_latency).toFixed(2)}s` : "";
+  const totalLatency = usage.latency ? `total ${Number(usage.latency).toFixed(2)}s` : "";
+  text("difyLatency", [firstTokenLatency, totalLatency].filter(Boolean).join(" / ") || "-");
   text("difyTurn", shortTurn(dify.turn_id));
   text("difyAnswer", dify.answer);
   text("conversationId", dify.conversation_id ? `conversation ${dify.conversation_id}` : "-");
   text("messageId", dify.message_id ? `message ${dify.message_id}` : "message: -");
   text("difyUpdated", `updated ${formatTime(dify.updated_at)}`);
 
-  collectEvents(gesture, voice, dify);
+  const ttsReady = Boolean(tts.available);
+  const ttsPhase = tts.phase || "";
+  setPanel(
+    "ttsPanel",
+    ttsReady ? ttsPanelState(ttsPhase) : "bad",
+    "ttsState",
+    ttsReady ? ttsPhase || "ready" : "missing"
+  );
+  text("ttsEngine", tts.engine || "-");
+  text("ttsPlayer", tts.player || "-");
+  text("ttsVoice", tts.voice_name || "(default)");
+  text("ttsUpdated", formatTime(tts.updated_at));
+  text("ttsRequest", short(tts.request_id || tts.message_id || tts.conversation_id || tts.turn_id || ""));
+  text("ttsError", short(tts.error || "", 72));
+
+  collectEvents(gesture, voice, dify, tts);
   renderEvents();
 }
 
@@ -196,6 +237,12 @@ function moduleStateForPanel(stateName) {
   return "bad";
 }
 
+function ttsPanelState(phase) {
+  if (phase === "error") return "bad";
+  if (phase === "speaking" || phase === "completed" || phase === "skipped") return "ok";
+  return "warn";
+}
+
 function moduleStatusLine(moduleStatus) {
   const parts = [];
   if (moduleStatus.updated_at) {
@@ -220,7 +267,7 @@ function shortTurn(turnId) {
   return value ? value.slice(0, 8) : "-";
 }
 
-function collectEvents(gesture, voice, dify) {
+function collectEvents(gesture, voice, dify, tts) {
   const gestureKey = `${gesture.sequence || ""}:${gesture.updated_at || ""}:${gesture.action || ""}`;
   if (gestureKey && gestureKey !== state.previous.gestureKey && gesture.available) {
     state.previous.gestureKey = gestureKey;
@@ -239,6 +286,13 @@ function collectEvents(gesture, voice, dify) {
     const label = dify.skipped ? `dify skipped: ${dify.skip_reason || "unknown"}` : `dify response: ${short(dify.answer, 92)}`;
     addEvent(difyKey, label);
   }
+
+  const ttsKey = `${tts.updated_at || ""}:${tts.phase || ""}:${tts.request_id || ""}:${tts.error || ""}`;
+  if (ttsKey && ttsKey !== state.previous.ttsKey && tts.available) {
+    state.previous.ttsKey = ttsKey;
+    const label = tts.phase === "error" ? `tts error: ${short(tts.error, 92)}` : `tts ${tts.phase || "updated"}`;
+    addEvent(ttsKey, label);
+  }
 }
 
 function authHeaders() {
@@ -256,6 +310,7 @@ async function refresh() {
       setPanel("inputGatePanel", "bad", "inputGateState", "auth");
       setPanel("voicePanel", "bad", "voiceState", "auth");
       setPanel("difyPanel", "bad", "difyState", "auth");
+      setPanel("ttsPanel", "bad", "ttsState", "auth");
       addEvent("auth-required", "auth token is required for /api/status");
       return;
     }
@@ -266,6 +321,7 @@ async function refresh() {
     setPanel("inputGatePanel", "bad", "inputGateState", "error");
     setPanel("voicePanel", "bad", "voiceState", "error");
     setPanel("difyPanel", "bad", "difyState", "error");
+    setPanel("ttsPanel", "bad", "ttsState", "error");
     addEvent(`error:${Date.now()}`, `console refresh failed: ${error.message}`);
   }
 }

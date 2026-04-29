@@ -2,6 +2,7 @@ param(
     [string]$WorkspaceRoot = "",
     [string]$AiTalkCoreRepoUrl = "https://github.com/hiro-collab/ai_talk_core.git",
     [string]$MediapipeSwordSignRepoUrl = "https://github.com/hiro-collab/mediapipe-sword-sign.git",
+    [string]$TtsServiceRepoUrl = "https://github.com/hiro-collab/tts-service.git",
     [string]$EnvPath = ".env",
     [switch]$UpdateEnv,
     [switch]$NoPull,
@@ -123,6 +124,7 @@ function Update-ValidationEnv {
     })
     $lines = Set-EnvLine -Lines $lines -Name "AI_TALK_CORE_ROOT" -Value "..\ai_talk_core"
     $lines = Set-EnvLine -Lines $lines -Name "MEDIAPIPE_SWORD_SIGN_ROOT" -Value "..\mediapipe-sword-sign"
+    $lines = Set-EnvLine -Lines $lines -Name "TTS_SERVICE_ROOT" -Value "..\tts-service"
 
     if ($DryRun) {
         Write-Host "Set validation module roots in $resolvedEnvPath"
@@ -134,6 +136,7 @@ function Update-ValidationEnv {
 New-Item -ItemType Directory -Force -Path $WorkspaceRoot | Out-Null
 Ensure-ValidationClone -Name "ai_talk_core" -RepoUrl $AiTalkCoreRepoUrl
 Ensure-ValidationClone -Name "mediapipe-sword-sign" -RepoUrl $MediapipeSwordSignRepoUrl
+Ensure-ValidationClone -Name "tts-service" -RepoUrl $TtsServiceRepoUrl
 
 if ($UpdateEnv) {
     Update-ValidationEnv
@@ -142,3 +145,4 @@ if ($UpdateEnv) {
 Write-Host "validation module roots:"
 Write-Host "AI_TALK_CORE_ROOT=..\ai_talk_core"
 Write-Host "MEDIAPIPE_SWORD_SIGN_ROOT=..\mediapipe-sword-sign"
+Write-Host "TTS_SERVICE_ROOT=..\tts-service"

@@ -61,6 +61,35 @@ class StatusStoreTest(TestCase):
             self.assertEqual(events[0]["payload"]["conversation_id"], "[redacted]")
             self.assertTrue(events[0]["payload"]["conversation_id_present"])
 
+    def test_writes_gesture_diagnostic_event(self) -> None:
+        with workspace_tempdir() as tmp:
+            store = StatusStore(tmp)
+            store.write_latest_gesture(
+                {
+                    "type": "gesture_receiver_status",
+                    "timestamp": 1.0,
+                    "sequence": 3,
+                    "from": "127.0.0.1:50000",
+                    "response": {
+                        "type": "gesture_diagnostic_response",
+                        "diagnostic": {
+                            "type": "gesture_status",
+                            "status": "running",
+                            "frame_id": 10,
+                            "fps": 30.0,
+                            "hand_detected": True,
+                            "primary_gesture": "sword_sign",
+                        },
+                    },
+                }
+            )
+
+            self.assertTrue(store.latest_gesture_diagnostic_path.exists())
+            events = store.read_events()
+            self.assertEqual(events[0]["type"], "gesture.diagnostic")
+            self.assertEqual(events[0]["payload"]["diagnostic_type"], "gesture_status")
+            self.assertEqual(events[0]["payload"]["fps"], 30.0)
+
     def test_writes_dify_response_event_with_explicit_turn_id(self) -> None:
         with workspace_tempdir() as tmp:
             store = StatusStore(tmp)
@@ -111,6 +140,7 @@ class StatusStoreTest(TestCase):
             store.clear()
 
             self.assertFalse(store.latest_gesture_path.exists())
+            self.assertFalse(store.latest_gesture_diagnostic_path.exists())
             self.assertFalse(store.latest_voice_turn_path.exists())
             self.assertFalse(store.latest_dify_response_path.exists())
             self.assertFalse(store.events_path.exists())

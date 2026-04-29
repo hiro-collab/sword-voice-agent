@@ -96,6 +96,32 @@ class GestureUdpTest(TestCase):
         self.assertTrue(response["voice_state"]["mic_enabled"])
         self.assertNotIn("secret", json.dumps(response, ensure_ascii=False))
 
+    def test_accepts_gesture_status_as_diagnostic_datagram(self) -> None:
+        gate = GestureInputGate(activation_delay_s=0.0)
+        payload = {
+            "type": "gesture_status",
+            "source": "mediapipe_sword_sign",
+            "status": "running",
+            "frame_id": 42,
+            "fps": 30.0,
+            "hand_detected": True,
+            "primary_gesture": "sword_sign",
+            "sword_sign": {
+                "active": True,
+                "confidence": 0.95,
+            },
+        }
+
+        response = build_udp_gesture_response(
+            json.dumps(payload).encode("utf-8"),
+            gate,
+            turn_controller=VoiceTurnController(),
+        )
+
+        self.assertEqual(response["type"], "gesture_diagnostic_response")
+        self.assertEqual(response["diagnostic"]["type"], "gesture_status")
+        self.assertNotIn("voice_control_command", response)
+
     def test_formats_udp_receiver_debug_line(self) -> None:
         response = {
             "voice_state": {
@@ -133,6 +159,23 @@ class GestureUdpTest(TestCase):
         self.assertIn("action=start_recording", line)
         self.assertIn("input_gate=ok", line)
         self.assertIn("input_gate_enabled=1", line)
+
+    def test_formats_udp_receiver_diagnostic_debug_line(self) -> None:
+        response = {
+            "type": "gesture_diagnostic_response",
+            "diagnostic": {
+                "type": "gesture_heartbeat",
+                "status": "sending",
+                "frame_id": 9,
+                "fps": 29.5,
+            },
+        }
+
+        line = format_debug_line(response, ("127.0.0.1", 55218), sequence=3)
+
+        self.assertIn("diagnostic=gesture_heartbeat", line)
+        self.assertIn("status=sending", line)
+        self.assertIn("frame=9", line)
 
     def test_writes_receiver_status_json(self) -> None:
         response = {

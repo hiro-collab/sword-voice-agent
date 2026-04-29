@@ -15,6 +15,7 @@ from sword_voice_agent.adapters.auth import (
 from sword_voice_agent.adapters.gesture_udp import GestureUdpReceiver
 from sword_voice_agent.adapters.gesture_udp import DEFAULT_RATE_LIMIT_PER_MINUTE
 from sword_voice_agent.adapters.status_store import StatusStore
+from sword_voice_agent.apps.gesture_options import env_float
 from sword_voice_agent.core.input_gate import GestureInputGate
 from sword_voice_agent.core.turn_controller import VoiceTurnController
 from sword_voice_agent.protocol.messages import ProtocolError, now_timestamp
@@ -26,6 +27,17 @@ def format_debug_line(
     *,
     sequence: int,
 ) -> str:
+    diagnostic = _mapping(response.get("diagnostic"))
+    if diagnostic:
+        return (
+            "[gesture-udp] "
+            f"seq={sequence} "
+            f"from={address[0]}:{address[1]} "
+            f"diagnostic={diagnostic.get('type', '')} "
+            f"status={diagnostic.get('status', '')} "
+            f"frame={diagnostic.get('frame_id', '')} "
+            f"fps={_float_value(diagnostic.get('fps')):.3f}"
+        )
     decision = _mapping(response.get("gate_decision"))
     voice_state = _mapping(response.get("voice_state"))
     command = _mapping(response.get("voice_control_command"))
@@ -116,9 +128,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--gesture-name", default="sword_sign")
-    parser.add_argument("--min-confidence", type=float, default=0.8)
-    parser.add_argument("--activation-delay", type=float, default=0.3)
-    parser.add_argument("--release-delay", type=float, default=0.5)
+    parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=env_float("SWORD_VOICE_AGENT_MIN_CONFIDENCE", 0.8),
+    )
+    parser.add_argument(
+        "--activation-delay",
+        type=float,
+        default=env_float("SWORD_VOICE_AGENT_ACTIVATION_DELAY", 0.3),
+    )
+    parser.add_argument(
+        "--release-delay",
+        type=float,
+        default=env_float("SWORD_VOICE_AGENT_RELEASE_DELAY", 0.5),
+    )
     parser.add_argument(
         "--input-gate-url",
         default=None,

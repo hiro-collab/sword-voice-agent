@@ -7,8 +7,9 @@ import json
 import mimetypes
 import os
 from pathlib import Path
+import time
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from sword_voice_agent.adapters.ai_talk_core import resolve_ai_talk_core_web_token
 from sword_voice_agent.adapters.auth import (
@@ -20,6 +21,7 @@ from sword_voice_agent.adapters.auth import (
 from sword_voice_agent.adapters.console_status import (
     ConsoleStatusConfig,
     build_console_status,
+    redact_event,
 )
 from sword_voice_agent.adapters.rate_limit import (
     FixedWindowRateLimiter,
@@ -30,6 +32,8 @@ from sword_voice_agent.adapters.status_store import StatusStore
 
 STATIC_DIR = Path(__file__).resolve().parents[1] / "web"
 DEFAULT_API_RATE_LIMIT_PER_MINUTE = 120
+DEFAULT_EVENT_STREAM_LIMIT = 40
+MAX_EVENT_STREAM_LIMIT = 200
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,6 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--status-dir",
         default=".cache/sword_voice_agent",
         help="Directory for latest status snapshots and events.jsonl.",
+    )
+    parser.add_argument(
+        "--tts-status-dir",
+        default=os.environ.get("TTS_OUTPUT_STATUS_DIR", ".cache/tts_service"),
+        help="Directory containing latest_tts_state.json from tts_service.",
     )
     parser.add_argument(
         "--input-gate-url",
@@ -100,7 +109,8 @@ def make_handler(
         server_version = "SwordVoiceConsole/0.1"
 
         def do_GET(self) -> None:
-            path = urlparse(self.path).path
+            parsed_url = urlparse(self.path)
+            path = parsed_url.path
             if path == "/api/status":
                 if not self.check_api_rate_limit():
                     return
@@ -111,6 +121,17 @@ def make_handler(
                     )
                     return
                 self.send_json(build_console_status(config))
+                return
+            if path == "/api/events":
+                if not self.check_api_rate_limit():
+                    return
+                if not headers_authorized(self.headers, auth_token):
+                    self.send_json(
+                        {"ok": False, "error": "unauthorized"},
+                        status=HTTPStatus.UNAUTHORIZED,
+                    )
+                    return
+                self.send_event_stream(parse_qs(parsed_url.query))
                 return
             if path == "/":
                 self.send_static("index.html")
@@ -162,6 +183,71 @@ def make_handler(
             self.end_headers()
             self.wfile.write(body)
 
+        def send_event_stream(self, query: dict[str, list[str]]) -> None:
+            if config.status_dir is None:
+                self.send_json(
+                    {"ok": False, "error": "status_dir_not_configured"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            store = StatusStore(config.status_dir)
+            once = parse_boolish(first_query_value(query, "once"))
+            limit = bounded_int(
+                first_query_value(query, "limit"),
+                default=DEFAULT_EVENT_STREAM_LIMIT,
+                minimum=1,
+                maximum=MAX_EVENT_STREAM_LIMIT,
+            )
+            poll_interval = bounded_float(
+                first_query_value(query, "poll_interval"),
+                default=0.25,
+                minimum=0.05,
+                maximum=5.0,
+            )
+            last_event_id = (
+                first_query_value(query, "after")
+                or self.headers.get("Last-Event-ID", "")
+            ).strip()
+            sent_event_ids: set[str] = set()
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close" if once else "keep-alive")
+            self.end_headers()
+
+            while True:
+                events = store.read_events_after(last_event_id, limit=limit)
+                for event in events:
+                    event_id = str(event.get("event_id") or "")
+                    if event_id and event_id in sent_event_ids:
+                        continue
+                    if event_id:
+                        sent_event_ids.add(event_id)
+                        last_event_id = event_id
+                    output_event = redact_event(event) if config.redact_sensitive else event
+                    if not self.write_sse_event(output_event):
+                        return
+                if once:
+                    self.close_connection = True
+                    return
+                try:
+                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+                time.sleep(poll_interval)
+
+        def write_sse_event(self, event: dict[str, Any]) -> bool:
+            body = format_sse_event(event).encode("utf-8")
+            try:
+                self.wfile.write(body)
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return False
+            return True
+
         def check_api_rate_limit(self) -> bool:
             try:
                 rate_limiter.check(self.client_address[0])
@@ -207,6 +293,59 @@ def is_within_static_dir(path: Path) -> bool:
     return True
 
 
+def format_sse_event(event: dict[str, Any]) -> str:
+    event_id = str(event.get("event_id") or "").replace("\n", "")
+    event_type = str(event.get("type") or "message").replace("\n", "")
+    data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+    lines: list[str] = []
+    if event_id:
+        lines.append(f"id: {event_id}")
+    if event_type:
+        lines.append(f"event: {event_type}")
+    for data_line in data.splitlines() or [""]:
+        lines.append(f"data: {data_line}")
+    lines.append("")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def first_query_value(query: dict[str, list[str]], name: str) -> str:
+    values = query.get(name) or []
+    return values[0] if values else ""
+
+
+def parse_boolish(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def bounded_int(
+    value: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def bounded_float(
+    value: str,
+    *,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
 def run_server(args: argparse.Namespace) -> ThreadingHTTPServer:
     if not args.ai_talk_core_root:
         raise ValueError(
@@ -223,6 +362,7 @@ def run_server(args: argparse.Namespace) -> ThreadingHTTPServer:
         if args.gesture_status_json
         else None,
         status_dir=Path(args.status_dir) if args.status_dir else None,
+        tts_status_dir=Path(args.tts_status_dir) if args.tts_status_dir else None,
         input_gate_url=args.input_gate_url or None,
         input_gate_token=resolve_ai_talk_core_web_token(),
         input_gate_timeout_s=args.input_gate_timeout,

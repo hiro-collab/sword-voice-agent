@@ -45,6 +45,9 @@
             </div>
             <dl class="metrics">
               <div><dt>confidence</dt><dd id="gestureConfidence">-</dd></div>
+              <div><dt>hand</dt><dd id="gestureHand">-</dd></div>
+              <div><dt>primary</dt><dd id="gesturePrimary">-</dd></div>
+              <div><dt>fps</dt><dd id="gestureFps">-</dd></div>
               <div><dt>mic gate</dt><dd id="gestureMic">-</dd></div>
               <div><dt>action</dt><dd id="gestureAction">-</dd></div>
               <div><dt>turn</dt><dd id="gestureTurn">-</dd></div>
@@ -86,6 +89,21 @@
               <div><dt>cost</dt><dd id="difyCost">-</dd></div>
               <div><dt>latency</dt><dd id="difyLatency">-</dd></div>
               <div><dt>turn</dt><dd id="difyTurn">-</dd></div>
+            </dl>
+          </article>
+
+          <article class="status-panel" data-state="unknown" id="ttsPanel">
+            <div class="panel-head">
+              <span class="panel-title">TTS</span>
+              <span id="ttsState" class="state-pill">unknown</span>
+            </div>
+            <dl class="metrics">
+              <div><dt>engine</dt><dd id="ttsEngine">-</dd></div>
+              <div><dt>player</dt><dd id="ttsPlayer">-</dd></div>
+              <div><dt>voice</dt><dd id="ttsVoice">-</dd></div>
+              <div><dt>updated</dt><dd id="ttsUpdated">-</dd></div>
+              <div><dt>request</dt><dd id="ttsRequest">-</dd></div>
+              <div><dt>error</dt><dd id="ttsError">-</dd></div>
             </dl>
           </article>
         </section>

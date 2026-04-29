@@ -18,7 +18,7 @@ from sword_voice_agent.adapters.rate_limit import (
 )
 from sword_voice_agent.core.input_gate import GestureInputGate
 from sword_voice_agent.core.turn_controller import VoiceTurnController
-from sword_voice_agent.protocol.messages import ProtocolError
+from sword_voice_agent.protocol.messages import ProtocolError, now_timestamp
 
 DEFAULT_RATE_LIMIT_PER_MINUTE = 6000
 
@@ -35,8 +35,16 @@ def build_udp_gesture_response(
         raise ProtocolError("UDP datagram must contain a JSON object")
     if not payload_authorized(payload, auth_token):
         raise ProtocolError("unauthorized gesture datagram")
+    sanitized_payload = strip_payload_auth(payload)
+    message_type = sanitized_payload.get("type")
+    if message_type in {"gesture_status", "gesture_heartbeat"}:
+        return {
+            "type": "gesture_diagnostic_response",
+            "timestamp": now_timestamp(),
+            "diagnostic": dict(sanitized_payload),
+        }
     return build_gesture_response(
-        strip_payload_auth(payload),
+        sanitized_payload,
         gate,
         voice_state_sink=voice_state_sink,
         turn_controller=turn_controller,

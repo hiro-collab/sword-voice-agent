@@ -3,6 +3,7 @@ param(
     [string]$HostName = "127.0.0.1",
     [int]$Port = 8790,
     [string]$StatusDir = ".cache\sword_voice_agent",
+    [string]$TtsStatusDir = "",
     [string]$InputGateUrl = "",
     [string]$DifyBaseUrl = "",
     [switch]$DryRun
@@ -27,6 +28,12 @@ if ([string]::IsNullOrWhiteSpace($InputGateUrl)) {
 if ([string]::IsNullOrWhiteSpace($DifyBaseUrl)) {
     $DifyBaseUrl = [Environment]::GetEnvironmentVariable("DIFY_BASE_URL", "Process")
 }
+if ([string]::IsNullOrWhiteSpace($TtsStatusDir)) {
+    $TtsStatusDir = [Environment]::GetEnvironmentVariable("TTS_OUTPUT_STATUS_DIR", "Process")
+}
+if ([string]::IsNullOrWhiteSpace($TtsStatusDir)) {
+    $TtsStatusDir = ".cache\tts_service"
+}
 
 $command = @(
     "python",
@@ -39,7 +46,9 @@ $command = @(
     "--ai-talk-core-root",
     $aiTalkCoreRoot,
     "--status-dir",
-    (Resolve-SwordPath -Path $StatusDir)
+    (Resolve-SwordPath -Path $StatusDir),
+    "--tts-status-dir",
+    (Resolve-SwordPath -Path $TtsStatusDir)
 )
 
 if (-not [string]::IsNullOrWhiteSpace($InputGateUrl)) {
