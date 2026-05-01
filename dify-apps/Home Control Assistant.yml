@@ -1,0 +1,475 @@
+app:
+  description: ''
+  icon: 🤖
+  icon_background: '#FFEAD5'
+  icon_type: emoji
+  mode: advanced-chat
+  name: Home Control Assistant
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/openai:0.3.8@592c8252795b5f75807de2d609a03196ed02596b409f7642b4a07548c7ff57ef
+    version: null
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        file_upload_limit: 20
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        sourceType: start
+        targetType: llm
+      id: 1777639512329-llm
+      selected: false
+      source: '1777639512329'
+      sourceHandle: source
+      target: llm
+      targetHandle: target
+      type: custom
+    - data:
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: 1777639789436-source-1777641577256-target
+      selected: false
+      source: '1777639789436'
+      sourceHandle: source
+      target: '1777641577256'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: code
+        targetType: answer
+      id: 1777641577256-source-answer-target
+      source: '1777641577256'
+      sourceHandle: source
+      target: answer
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: llm
+        targetType: code
+      id: llm-source-1777642160512-target
+      source: llm
+      sourceHandle: source
+      target: '1777642160512'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: code
+        targetType: if-else
+      id: 1777642160512-source-1777643000001-target
+      source: '1777642160512'
+      sourceHandle: source
+      target: '1777643000001'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: if-else
+        targetType: http-request
+      id: 1777643000001-true-1777639789436-target
+      source: '1777643000001'
+      sourceHandle: 'true'
+      target: '1777639789436'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: if-else
+        targetType: answer
+      id: 1777643000001-false-1777643000002-target
+      source: '1777643000001'
+      sourceHandle: 'false'
+      target: '1777643000002'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        selected: false
+        title: ユーザー入力
+        type: start
+        variables: []
+      height: 73
+      id: '1777639512329'
+      position:
+        x: -103.40170454775819
+        y: 261
+      positionAbsolute:
+        x: -103.40170454775819
+        y: 261
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        memory:
+          query_prompt_template: '{{#sys.query#}}
+
+
+            {{#sys.files#}}'
+          role_prefix:
+            assistant: ''
+            user: ''
+          window:
+            enabled: false
+            size: 10
+        model:
+          completion_params:
+            temperature: 0.7
+          mode: chat
+          name: gpt-4o-mini
+          provider: langgenius/openai/openai
+        prompt_template:
+        - id: 2b9813d7-d2d6-4a82-95e2-2d7463d52928
+          role: system
+          text: 'ユーザー発話を家電操作IDに分類してください。
+
+            出力は次のいずれか1つだけ。説明文は禁止。
+
+
+            light_on
+
+            light_off
+
+            fan_on
+
+            fan_off
+
+            aircon_on
+
+            aircon_off
+
+            door_open
+
+            door_close
+
+            door_stop
+
+            vacuum_start
+
+            vacuum_return
+
+            vacuum_pause
+
+            none
+
+
+            ユーザー発話:
+
+            {{#sys.query#}}
+
+            '
+        selected: false
+        title: LLM
+        type: llm
+        vision:
+          enabled: false
+      height: 88
+      id: llm
+      position:
+        x: 158.70538128948192
+        y: 282
+      positionAbsolute:
+        x: 158.70538128948192
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        answer: '{{#1777641577256.answer#}}'
+        selected: false
+        title: 回答
+        type: answer
+        variables: []
+      height: 102
+      id: answer
+      position:
+        x: 1432.3194829134995
+        y: 294.8115819604356
+      positionAbsolute:
+        x: 1432.3194829134995
+        y: 294.8115819604356
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data:
+          - id: key-value-115
+            key: ''
+            type: text
+            value: "{\n  \"source\": \"dify\",\n  \"user_text\": \"{{#sys.query#}}\"\
+              \n}\n"
+          type: json
+        headers: 'Authorization:Bearer local-test-token
+
+          Content-Type:application/json'
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 3
+          retry_enabled: true
+          retry_interval: 100
+        selected: false
+        ssl_verify: true
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: HTTP リクエスト
+        type: http-request
+        url: http://host.docker.internal:8787/actions/{{#1777642160512.action_id#}}/execute
+        variables: []
+      height: 172
+      id: '1777639789436'
+      position:
+        x: 848.4435985707184
+        y: 294.8115819604356
+      positionAbsolute:
+        x: 848.4435985707184
+        y: 294.8115819604356
+      selected: true
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def _loads(value):
+              if isinstance(value, dict):
+                  return value
+              try:
+                  parsed = json.loads(value or "{}")
+              except Exception:
+                  return {}
+              if isinstance(parsed, str):
+                  try:
+                      parsed = json.loads(parsed)
+                  except Exception:
+                      return {}
+              return parsed if isinstance(parsed, dict) else {}
+
+          def main(body: str) -> dict:
+              data = _loads(body)
+              answer = data.get("speak") or data.get("message")
+              if not answer:
+                  answer = "操作結果を読み取れませんでした。"
+              return {"answer": answer}
+        code_language: python3
+        outputs:
+          answer:
+            children: null
+            type: string
+        selected: false
+        title: 結果成形
+        type: code
+        variables:
+        - value_selector:
+          - '1777639789436'
+          - body
+          value_type: string
+          variable: body
+      height: 52
+      id: '1777641577256'
+      position:
+        x: 1159.467239509933
+        y: 294.8115819604356
+      positionAbsolute:
+        x: 1159.467239509933
+        y: 294.8115819604356
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import re
+
+          ALLOWED_ACTIONS = {
+              "light_on",
+              "light_off",
+              "fan_on",
+              "fan_off",
+              "aircon_on",
+              "aircon_off",
+              "door_open",
+              "door_close",
+              "door_stop",
+              "vacuum_start",
+              "vacuum_return",
+              "vacuum_pause",
+              "none",
+          }
+
+          ACTION_RE = re.compile(
+              r"(light_on|light_off|fan_on|fan_off|aircon_on|aircon_off|door_open|door_close|door_stop|vacuum_start|vacuum_return|vacuum_pause|none)"
+          )
+
+          def main(text: str) -> dict:
+              raw = (text or "").strip().lower()
+              match = ACTION_RE.search(raw)
+              action_id = match.group(1) if match else "none"
+              if action_id not in ALLOWED_ACTIONS:
+                  action_id = "none"
+              return {
+                  "action_id": action_id,
+                  "is_action": action_id != "none",
+              }
+        code_language: python3
+        outputs:
+          action_id:
+            children: null
+            type: string
+          is_action:
+            children: null
+            type: boolean
+        selected: false
+        title: action_id整形
+        type: code
+        variables:
+        - value_selector:
+          - llm
+          - text
+          value_type: string
+          variable: text
+      height: 52
+      id: '1777642160512'
+      position:
+        x: 423.48766427847227
+        y: 299.06258400608385
+      positionAbsolute:
+        x: 423.48766427847227
+        y: 299.06258400608385
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: contains
+            id: 1777643000101
+            value: _
+            varType: string
+            variable_selector:
+            - '1777642160512'
+            - action_id
+          id: 'true'
+          logical_operator: and
+        desc: ''
+        selected: false
+        title: 操作可否
+        type: if-else
+      height: 126
+      id: '1777643000001'
+      position:
+        x: 634
+        y: 299
+      positionAbsolute:
+        x: 634
+        y: 299
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        answer: 対応していない操作です。
+        selected: false
+        title: 未対応回答
+        type: answer
+        variables: []
+      height: 102
+      id: '1777643000002'
+      position:
+        x: 848
+        y: 520
+      positionAbsolute:
+        x: 848
+        y: 520
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    viewport:
+      x: 206.77985070860223
+      y: -3.5245749506912034
+      zoom: 0.7578582832551995
+  rag_pipeline_variables: []
