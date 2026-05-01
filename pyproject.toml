@@ -33,3 +33,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 sword_voice_agent = ["web/*.html", "web/*.css", "web/*.js"]
+
+[tool.uv]
+cache-dir = ".uv-cache"
