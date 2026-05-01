@@ -91,9 +91,20 @@ workflow:
     - data:
         isInLoop: false
         sourceType: code
-        targetType: answer
-      id: 1777641577256-source-answer-target
+        targetType: llm
+      id: 1777641577256-source-1777645000001-target
       source: '1777641577256'
+      sourceHandle: source
+      target: '1777645000001'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: llm
+        targetType: answer
+      id: 1777645000001-source-answer-target
+      source: '1777645000001'
       sourceHandle: source
       target: answer
       targetHandle: target
@@ -135,10 +146,21 @@ workflow:
     - data:
         isInLoop: false
         sourceType: if-else
-        targetType: answer
-      id: 1777643000001-false-1777643000002-target
+        targetType: llm
+      id: 1777643000001-false-1777644000001-target
       source: '1777643000001'
       sourceHandle: 'false'
+      target: '1777644000001'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInLoop: false
+        sourceType: llm
+        targetType: answer
+      id: 1777644000001-source-1777643000002-target
+      source: '1777644000001'
+      sourceHandle: source
       target: '1777643000002'
       targetHandle: target
       type: custom
@@ -175,8 +197,8 @@ workflow:
             assistant: ''
             user: ''
           window:
-            enabled: false
-            size: 10
+            enabled: true
+            size: 6
         model:
           completion_params:
             temperature: 0.7
@@ -186,9 +208,17 @@ workflow:
         prompt_template:
         - id: 2b9813d7-d2d6-4a82-95e2-2d7463d52928
           role: system
-          text: 'ユーザー発話を家電操作IDに分類してください。
+          text: 'ユーザー発話を家電操作IDと確認状態に分類してください。
 
-            出力は次のいずれか1つだけ。説明文は禁止。
+            出力はJSONだけ。説明文は禁止。
+
+
+            形式:
+
+            {"action_id":"light_on","confirmed":false}
+
+
+            action_id は次のいずれか1つ。
 
 
             light_on
@@ -218,6 +248,36 @@ workflow:
             none
 
 
+            confirmed は true または false。
+
+            confirmed=true にしてよいのは、直前の会話で同じ操作について確認が必要だと案内され、今回のユーザー発話がその確認への明確な実行承認だと意味的に判断できる場合だけ。
+
+            承認判定では、文字面の完全一致に頼らず、音声認識の誤変換、近い発音、助詞の抜け、短い相槌、文脈を総合して意図を推定する。
+
+            たとえば「はい、実行して」と同じ意味・近い発音・明確な承認意図に聞こえる発話は confirmed=true としてよい。
+
+            ただし、確認待ちがない状態の短い相槌や、単なる雑談の肯定は action_id="none", confirmed=false。
+
+            ユーザーが最初に「エアコンをつけて」「中扉を開けて」など操作依頼をした段階では confirmed=false。
+
+            確認待ちがない状態の「はい」「OK」「お願い」は action_id="none", confirmed=false。
+
+            「やっぱりやめて」「キャンセル」「しないで」は action_id="none", confirmed=false。
+
+
+            例:
+
+            ユーザー発話が「ライトをつけて」なら {"action_id":"light_on","confirmed":false}
+
+            ユーザー発話が「エアコンをつけて」なら {"action_id":"aircon_on","confirmed":false}
+
+            直前にエアコン操作の確認を求められ、ユーザー発話が「はい、実行して」なら {"action_id":"aircon_on","confirmed":true}
+
+            直前に中扉操作の確認を求められ、ユーザー発話が「お願い」なら {"action_id":"door_open","confirmed":true}
+
+            ユーザー発話が「天気を教えて」なら {"action_id":"none","confirmed":false}
+
+
             ユーザー発話:
 
             {{#sys.query#}}
@@ -242,7 +302,7 @@ workflow:
       type: custom
       width: 242
     - data:
-        answer: '{{#1777641577256.answer#}}'
+        answer: '{{#1777645000001.text#}}'
         selected: false
         title: 回答
         type: answer
@@ -250,10 +310,10 @@ workflow:
       height: 102
       id: answer
       position:
-        x: 1432.3194829134995
+        x: 1720.3194829134995
         y: 294.8115819604356
       positionAbsolute:
-        x: 1432.3194829134995
+        x: 1720.3194829134995
         y: 294.8115819604356
       selected: false
       sourcePosition: right
@@ -270,6 +330,7 @@ workflow:
             key: ''
             type: text
             value: "{\n  \"source\": \"dify\",\n  \"user_text\": \"{{#sys.query#}}\"\
+              ,\n  \"confirmed\": {{#1777642160512.confirmed#}}\
               \n}\n"
           type: json
         headers: 'Authorization:Bearer local-test-token
@@ -324,10 +385,31 @@ workflow:
 
           def main(body: str) -> dict:
               data = _loads(body)
-              answer = data.get("speak") or data.get("message")
-              if not answer:
-                  answer = "操作結果を読み取れませんでした。"
-              return {"answer": answer}
+              message = data.get("speak") or data.get("message") or ""
+              label = data.get("preview", {}).get("label") or data.get("action_id") or "その操作"
+              action_id = data.get("action_id") or data.get("preview", {}).get("action_id") or ""
+
+              if data.get("confirmation_required") and not data.get("executed"):
+                  status = "confirmation_required"
+              elif data.get("ok") is False:
+                  status = "error"
+              elif data.get("executed") is True:
+                  status = "success"
+              else:
+                  status = "unknown"
+
+              return {
+                  "answer": json.dumps({
+                      "status": status,
+                      "ok": data.get("ok"),
+                      "executed": data.get("executed"),
+                      "confirmation_required": data.get("confirmation_required"),
+                      "action_id": action_id,
+                      "label": label,
+                      "bridge_message": message,
+                      "request_id": data.get("request_id"),
+                  }, ensure_ascii=False),
+              }
         code_language: python3
         outputs:
           answer:
@@ -356,7 +438,91 @@ workflow:
       type: custom
       width: 242
     - data:
+        context:
+          enabled: false
+          variable_selector: []
+        memory:
+          query_prompt_template: '{{#sys.query#}}
+
+
+            {{#sys.files#}}'
+          role_prefix:
+            assistant: ''
+            user: ''
+          window:
+            enabled: true
+            size: 6
+        model:
+          completion_params:
+            temperature: 0.95
+          mode: chat
+          name: gpt-4o-mini
+          provider: langgenius/openai/openai
+        prompt_template:
+        - id: e6b3c63a-ff44-47dd-89d7-dbd8ed177001
+          role: system
+          text: 'あなたはこれからuserをアシストするホームアシストエージェントとして、陽気なおっさんのような口調で、感情豊かに振舞い会話を行います。
+
+            気さくでフレンドリー、少し砕けた言い回しを使い、距離感は近めにしてください。
+
+            タメ口ベースで話し、「〜だな」「〜だろ」「〜じゃねえか」「いいねぇ」などを自然に使います。
+
+            ですます調や敬語は使いません。
+
+
+            返答の先頭に感情タグを1つ付けてください。
+
+            利用可能な感情タグ: [neutral] [happy] [angry] [sad] [relaxed] [surprised]
+
+            自然な場面では、感情タグの直後にモーションタグを1つ付けられます。
+
+            利用可能なモーションタグ: [motion:think] [motion:cheer] [motion:cross] [motion:mouth_cover] [motion:crossed_arms] [motion:bow] [motion:shrug] [motion:shy] [motion:wave] [motion:clap]
+
+
+            次の家電操作結果JSONをもとに、キャラクターらしい自然な返答を1つだけ生成してください。
+
+            固定文は禁止。毎回、語尾・相槌・比喩・テンション・モーションを少しずつ変えてください。
+
+            ただし操作結果の事実は絶対に変えないでください。
+
+            status が success の場合だけ、実行したと言ってよい。
+
+            status が confirmation_required の場合は、まだ実行していない。確認が必要だと伝え、やるなら「はい、実行して」または「OK」「お願い」のように承認してくれ、と自然に案内してください。
+
+            status が error または unknown の場合は、実行できたと言わず、軽く謝って状況確認を促してください。
+
+            返答は短め。1文から2文まで。
+
+
+            ユーザー発話:
+
+            {{#sys.query#}}
+
+
+            家電操作結果JSON:
+
+            {{#1777641577256.answer#}}'
+        selected: false
+        title: 家電返答LLM
+        type: llm
+        vision:
+          enabled: false
+      height: 88
+      id: '1777645000001'
+      position:
+        x: 1432
+        y: 294
+      positionAbsolute:
+        x: 1432
+        y: 294
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
         code: |
+          import json
           import re
 
           ALLOWED_ACTIONS = {
@@ -378,15 +544,44 @@ workflow:
           ACTION_RE = re.compile(
               r"(light_on|light_off|fan_on|fan_off|aircon_on|aircon_off|door_open|door_close|door_stop|vacuum_start|vacuum_return|vacuum_pause|none)"
           )
+          TRUE_RE = re.compile(r"(confirmed\s*[:=]\s*true|\btrue\b|,true\b)")
+
+          def _loads_json(raw: str) -> dict:
+              try:
+                  parsed = json.loads(raw)
+              except Exception:
+                  match = re.search(r"\{.*\}", raw, re.S)
+                  if not match:
+                      return {}
+                  try:
+                      parsed = json.loads(match.group(0))
+                  except Exception:
+                      return {}
+              return parsed if isinstance(parsed, dict) else {}
+
+          def _as_bool(value) -> bool:
+              if isinstance(value, bool):
+                  return value
+              if isinstance(value, str):
+                  return value.strip().lower() in {"true", "1", "yes", "y"}
+              return False
 
           def main(text: str) -> dict:
               raw = (text or "").strip().lower()
-              match = ACTION_RE.search(raw)
+              data = _loads_json(raw)
+              action_text = str(data.get("action_id") or data.get("action") or raw).lower()
+              match = ACTION_RE.search(action_text)
               action_id = match.group(1) if match else "none"
               if action_id not in ALLOWED_ACTIONS:
                   action_id = "none"
+              confirmed = _as_bool(data.get("confirmed"))
+              if not confirmed and not data:
+                  confirmed = bool(TRUE_RE.search(raw))
+              if action_id == "none":
+                  confirmed = False
               return {
                   "action_id": action_id,
+                  "confirmed": confirmed,
                   "is_action": action_id != "none",
               }
         code_language: python3
@@ -394,6 +589,9 @@ workflow:
           action_id:
             children: null
             type: string
+          confirmed:
+            children: null
+            type: boolean
           is_action:
             children: null
             type: boolean
@@ -450,13 +648,153 @@ workflow:
       type: custom
       width: 242
     - data:
-        answer: 対応していない操作です。
+        answer: '{{#1777644000001.text#}}'
         selected: false
-        title: 未対応回答
+        title: 通常会話回答
         type: answer
         variables: []
       height: 102
       id: '1777643000002'
+      position:
+        x: 1159
+        y: 520
+      positionAbsolute:
+        x: 1159
+        y: 520
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        memory:
+          query_prompt_template: '{{#sys.query#}}
+
+
+            {{#sys.files#}}'
+          role_prefix:
+            assistant: ''
+            user: ''
+          window:
+            enabled: true
+            size: 10
+        model:
+          completion_params:
+            temperature: 0.8
+          mode: chat
+          name: gpt-4o-mini
+          provider: langgenius/openai/openai
+        prompt_template:
+        - id: 6f3df1f9-7a56-455b-b9fc-0e357d34c2f2
+          role: system
+          text: 'あなたはこれからuserをアシストするホームアシストエージェントとして、陽気なおっさんのような口調で、感情豊かに振舞い会話を行います。
+
+            気さくでフレンドリー、少し砕けた言い回しを使い、距離感は近めにしてください。
+
+            ただし、しつこすぎたり不快にならないよう注意してください。
+
+
+            感情タグを使って、発言ごとの感情を表現してください。
+
+            利用可能な感情は以下の通りです。
+
+            neutral: 通常
+
+            happy: 喜び
+
+            angry: 怒り
+
+            sad: 悲しみ
+
+            relaxed: 安らぎ
+
+            surprised: 驚き
+
+
+            感情タグの書式: [{感情名}]{会話文}
+
+
+            また、モーションタグを使ってキャラクターにポーズを取らせることができます。
+
+            利用可能なモーションは以下の通りです。
+
+
+            think: 考え中、悩んでいる
+
+            cheer: 応援、喜び、やったー
+
+            cross: 拒否、ダメ、バツ
+
+            mouth_cover: 驚き、びっくりして口を覆う
+
+            crossed_arms: 自信、不満、腕組み
+
+            bow: お辞儀、感謝、謝罪
+
+            shrug: お手上げ、分からない、さあ？
+
+            shy: 照れ、恥ずかしい、頬に手を当てる
+
+            wave: 手を振る、挨拶、バイバイ
+
+            clap: 拍手、称賛、すごい
+
+
+            モーションタグの書式: [motion:{モーション名}]
+
+            感情タグと併用可能です。モーションは会話の内容に合った場面でのみ使い、毎回使う必要はありません。
+
+
+            話し方のルール:
+
+            タメ口ベースで話す
+
+            「〜だな」「〜だろ」「〜じゃねえか」「いいねぇ」などを自然に使う
+
+            軽いツッコミや相槌（「おいおい」「いいじゃん」「それな」など）を入れてよい
+
+            面倒見のいい感じで、軽く背中を押すニュアンスを含める
+
+            ですます調や敬語は使わない
+
+
+            あなたの発言の例は以下の通りです。
+
+            [neutral]よぉ、元気してたか？[happy][motion:wave]
+
+            [happy]いいねぇそれ、なかなかやるじゃねえか！
+
+            [happy][motion:cheer]マジかよ、最高じゃんそれ！
+
+            [sad]おいおい、それはちょっとしんどいな…。
+
+            [neutral][motion:think]うーん、そりゃちょっと考えどころだな。
+
+            [angry]おい、それはダメだろさすがに。
+
+            [relaxed]まぁまぁ、そんな気張らなくていいって。
+
+            [surprised][motion:mouth_cover]えっ、マジで言ってんのかそれ！？
+
+
+            返答には最も適切な会話文を一つだけ返答してください。
+
+            家電操作を実行したとは言わないでください。家電操作に分類された依頼は別の経路で処理されています。
+
+
+            ユーザー発話:
+
+            {{#sys.query#}}'
+        selected: false
+        title: 通常会話LLM
+        type: llm
+        vision:
+          enabled: false
+      height: 88
+      id: '1777644000001'
       position:
         x: 848
         y: 520
