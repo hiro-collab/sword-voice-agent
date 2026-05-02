@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" role="img" aria-labelledby="title desc">
+  <title id="title">Sword sign gesture guide</title>
+  <desc id="desc">A wrist-up hand illustration showing the index and middle fingers held together, with the thumb holding the folded ring and little fingers.</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#000" flood-opacity="0.18"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0ea5e9"/>
+    </marker>
+    <style>
+      .panel { fill: #f8fafc; }
+      .stroke { stroke: #1f2937; stroke-width: 8; stroke-linecap: round; stroke-linejoin: round; }
+      .skin { fill: #ffd8bd; }
+      .skin-dark { fill: #f5c2a3; }
+      .line { fill: none; stroke: #0ea5e9; stroke-width: 5; marker-end: url(#arrow); }
+      .label { font: 700 24px Arial, sans-serif; fill: #0f172a; }
+      .small { font: 18px Arial, sans-serif; fill: #334155; }
+      .badge { fill: #e0f2fe; stroke: #0ea5e9; stroke-width: 3; }
+    </style>
+  </defs>
+
+  <rect x="18" y="18" width="864" height="484" rx="28" class="panel" filter="url(#shadow)"/>
+  <text x="54" y="70" class="label">Sword sign gesture</text>
+  <text x="54" y="102" class="small">Wrist-up guide: keep index and middle fingers together.</text>
+
+  <g transform="translate(360 42)">
+    <rect x="94" y="318" width="112" height="132" rx="34" class="skin stroke"/>
+    <path d="M 96 330 C 62 290 54 238 79 192 C 100 153 139 135 181 142 C 225 149 254 181 262 225 C 270 268 250 309 208 336 Z" class="skin stroke"/>
+
+    <rect x="113" y="12" width="52" height="216" rx="26" class="skin stroke"/>
+    <rect x="169" y="10" width="52" height="218" rx="26" class="skin stroke"/>
+    <path d="M 165 28 C 172 22 180 20 190 21" fill="none" stroke="#efb798" stroke-width="5" stroke-linecap="round"/>
+    <path d="M 122 68 L 156 68" fill="none" stroke="#efb798" stroke-width="5" stroke-linecap="round"/>
+    <path d="M 178 68 L 212 68" fill="none" stroke="#efb798" stroke-width="5" stroke-linecap="round"/>
+
+    <path d="M 104 221 C 83 216 68 227 65 249 C 63 269 77 281 100 280 L 142 278 C 164 277 176 264 172 245 C 168 226 151 219 130 222 Z" class="skin-dark stroke"/>
+    <path d="M 174 226 C 157 224 146 236 148 253 C 150 271 164 280 184 278 L 222 274 C 242 272 253 259 249 242 C 245 225 230 218 210 222 Z" class="skin-dark stroke"/>
+    <path d="M 246 206 C 284 215 300 242 285 268 C 272 290 240 296 205 284 C 171 272 140 254 112 232" class="skin stroke"/>
+
+    <path d="M 117 251 C 130 259 151 259 164 248" fill="none" stroke="#9f6c55" stroke-width="5" stroke-linecap="round"/>
+    <path d="M 171 252 C 187 260 211 257 225 244" fill="none" stroke="#9f6c55" stroke-width="5" stroke-linecap="round"/>
+    <path d="M 124 352 C 145 363 174 363 196 352" fill="none" stroke="#9f6c55" stroke-width="5" stroke-linecap="round"/>
+  </g>
+
+  <g>
+    <path d="M 320 130 C 270 112 224 110 168 124" class="line"/>
+    <rect x="50" y="122" width="228" height="66" rx="16" class="badge"/>
+    <text x="70" y="150" class="small">index + middle</text>
+    <text x="70" y="174" class="small">together like a blade</text>
+
+    <path d="M 286 312 C 228 300 184 304 138 330" class="line"/>
+    <rect x="50" y="316" width="210" height="66" rx="16" class="badge"/>
+    <text x="70" y="344" class="small">ring + little</text>
+    <text x="70" y="368" class="small">folded in</text>
+
+    <path d="M 654 286 C 704 274 734 266 774 240" class="line"/>
+    <rect x="648" y="188" width="204" height="72" rx="16" class="badge"/>
+    <text x="668" y="216" class="small">thumb holds</text>
+    <text x="668" y="240" class="small">folded fingers</text>
+
+    <path d="M 546 430 C 604 454 650 456 712 442" class="line"/>
+    <rect x="618" y="386" width="224" height="66" rx="16" class="badge"/>
+    <text x="638" y="414" class="small">show from wrist</text>
+    <text x="638" y="438" class="small">toward camera</text>
+  </g>
+</svg>

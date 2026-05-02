@@ -10,6 +10,12 @@
 
 ![Projection Visual system example](docs/images/projection-visual-system-example.png)
 
+## 刀印ジェスチャー
+
+刀印は、人差し指と中指をそろえて伸ばし、薬指と小指を折って親指で押さえる手形を目安にしています。カメラには手首から先が見えるように出し、`Projection Visual` の `Gesture Sensor` / `STT Engine` HUDで `Sword` の confidence と active 状態を確認します。
+
+![Sword sign gesture guide](docs/images/sword-sign-gesture.svg)
+
 ## 関連モジュール
 
 | モジュール | 役割 | Git URL |
