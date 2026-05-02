@@ -30,13 +30,13 @@ notepad .env
 
 | 項目 | 例 | 必須 | 説明 |
 |---|---|---:|---|
-| `AI_TALK_CORE_ROOT` | `..\ai_talk_core` | 必須 | 検証用 `ai_talk_core` clone の場所。相対パスは `<repo_root>` 基準です。 |
+| `AI_TALK_CORE_ROOT` | `..\ai-talk-core` | 必須 | 検証用 `ai_talk_core` clone の場所。相対パスは `<repo_root>` 基準です。 |
 | `MEDIAPIPE_SWORD_SIGN_ROOT` | `..\mediapipe-sword-sign` | 必須 | 検証用 `mediapipe-sword-sign` clone の場所。 |
 | `TTS_SERVICE_ROOT` | `..\tts-service` | 既定使用 | 検証用 `tts-service` clone の場所。TTSを使わない場合は `start-full-stack.ps1 -DisableTts` を使います。 |
 | `AVATAR_SERVICE_ROOT` | `..\avatar-service` | 既定使用 | 検証用 `avatar-service` clone の場所。Avatarを使わない場合は `start-full-stack.ps1 -DisableAvatar` を使います。 |
-| `SYSTEM_HOUSE_RENDERER_ROOT` | `..\SystemHouseRenderer` | 可視化使用時 | `/api/events` を house trace として描画する検証用 clone の場所。 |
+| `SYSTEM_HOUSE_RENDERER_ROOT` | `..\system-house-renderer` | 可視化使用時 | `/api/events` を house trace として描画する検証用 clone の場所。 |
 
-`..\ai_talk_core`、`..\mediapipe-sword-sign`、`..\tts-service`、`..\avatar-service`、`..\SystemHouseRenderer` は、外側の `<workspace>\sword-voice-agent` 直下に置く検証用 clone です。開発用 clone と分けておくと、外部モジュールを並行開発していても本プロジェクトの検証が安定します。
+`..\ai-talk-core`、`..\mediapipe-sword-sign`、`..\tts-service`、`..\avatar-service`、`..\system-house-renderer` は、外側の `<workspace>\sword-voice-agent` 直下に置く検証用 clone です。開発用 clone と分けておくと、外部モジュールを並行開発していても本プロジェクトの検証が安定します。
 
 ### ai_talk_core
 

@@ -1,10 +1,10 @@
 param(
     [string]$WorkspaceRoot = "",
-    [string]$AiTalkCoreRepoUrl = "https://github.com/hiro-collab/ai_talk_core.git",
+    [string]$AiTalkCoreRepoUrl = "https://github.com/hiro-collab/ai-talk-core.git",
     [string]$MediapipeSwordSignRepoUrl = "https://github.com/hiro-collab/mediapipe-sword-sign.git",
     [string]$TtsServiceRepoUrl = "https://github.com/hiro-collab/tts-service.git",
     [string]$AvatarServiceRepoUrl = "https://github.com/hiro-collab/avatar-service.git",
-    [string]$SystemHouseRendererRepoUrl = "https://github.com/hiro-collab/SystemHouseRenderer.git",
+    [string]$SystemHouseRendererRepoUrl = "https://github.com/hiro-collab/system-house-renderer.git",
     [string]$EnvPath = ".env",
     [switch]$UpdateEnv,
     [switch]$NoPull,
@@ -124,11 +124,11 @@ function Update-ValidationEnv {
     else {
         Get-Content -LiteralPath (Join-Path (Get-SwordRepoRoot) ".env.example")
     })
-    $lines = Set-EnvLine -Lines $lines -Name "AI_TALK_CORE_ROOT" -Value "..\ai_talk_core"
+    $lines = Set-EnvLine -Lines $lines -Name "AI_TALK_CORE_ROOT" -Value "..\ai-talk-core"
     $lines = Set-EnvLine -Lines $lines -Name "MEDIAPIPE_SWORD_SIGN_ROOT" -Value "..\mediapipe-sword-sign"
     $lines = Set-EnvLine -Lines $lines -Name "TTS_SERVICE_ROOT" -Value "..\tts-service"
     $lines = Set-EnvLine -Lines $lines -Name "AVATAR_SERVICE_ROOT" -Value "..\avatar-service"
-    $lines = Set-EnvLine -Lines $lines -Name "SYSTEM_HOUSE_RENDERER_ROOT" -Value "..\SystemHouseRenderer"
+    $lines = Set-EnvLine -Lines $lines -Name "SYSTEM_HOUSE_RENDERER_ROOT" -Value "..\system-house-renderer"
     $lines = Set-EnvLine -Lines $lines -Name "AI_TALK_CORE_RUNTIME_STATUS_FILE" -Value ".cache\sword_voice_agent\runtime\ai_talk_core.json"
     $lines = Set-EnvLine -Lines $lines -Name "MEDIAPIPE_SWORD_SIGN_RUNTIME_STATUS_FILE" -Value ".cache\sword_voice_agent\runtime\mediapipe_udp_publisher.json"
     $lines = Set-EnvLine -Lines $lines -Name "MEDIAPIPE_SWORD_SIGN_CONTROL_HTTP_HOST" -Value "127.0.0.1"
@@ -150,19 +150,19 @@ function Update-ValidationEnv {
 }
 
 New-Item -ItemType Directory -Force -Path $WorkspaceRoot | Out-Null
-Ensure-ValidationClone -Name "ai_talk_core" -RepoUrl $AiTalkCoreRepoUrl
+Ensure-ValidationClone -Name "ai-talk-core" -RepoUrl $AiTalkCoreRepoUrl
 Ensure-ValidationClone -Name "mediapipe-sword-sign" -RepoUrl $MediapipeSwordSignRepoUrl
 Ensure-ValidationClone -Name "tts-service" -RepoUrl $TtsServiceRepoUrl
 Ensure-ValidationClone -Name "avatar-service" -RepoUrl $AvatarServiceRepoUrl
-Ensure-ValidationClone -Name "SystemHouseRenderer" -RepoUrl $SystemHouseRendererRepoUrl
+Ensure-ValidationClone -Name "system-house-renderer" -RepoUrl $SystemHouseRendererRepoUrl
 
 if ($UpdateEnv) {
     Update-ValidationEnv
 }
 
 Write-Host "validation module roots:"
-Write-Host "AI_TALK_CORE_ROOT=..\ai_talk_core"
+Write-Host "AI_TALK_CORE_ROOT=..\ai-talk-core"
 Write-Host "MEDIAPIPE_SWORD_SIGN_ROOT=..\mediapipe-sword-sign"
 Write-Host "TTS_SERVICE_ROOT=..\tts-service"
 Write-Host "AVATAR_SERVICE_ROOT=..\avatar-service"
-Write-Host "SYSTEM_HOUSE_RENDERER_ROOT=..\SystemHouseRenderer"
+Write-Host "SYSTEM_HOUSE_RENDERER_ROOT=..\system-house-renderer"
