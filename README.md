@@ -272,6 +272,10 @@ Voice: ready -> transcript/command 更新
 Dify: ready -> answer 更新
 ```
 
+Home Assistant 側のアクションに接続しておくと、Dify の tool side effect としてライト、扇風機、ドアなどの家電操作結果もHUDへ流せます。Projection Visual では `Pipeline Trace` と `Home Assistant` 欄で、どの命令が実行されたかを確認できます。
+
+![Home control appliance example](docs/images/home-control-appliance-example.png)
+
 `ai_talk_core` の local API は `X-AI-Core-Token` を要求します。`start-full-stack.ps1` でまとめて起動した場合は、起動スクリプトが `AI_TALK_CORE_WEB_TOKEN` を各プロセスへ共有します。個別起動で `Input Gate` が更新されない場合は、同じ `AI_TALK_CORE_WEB_TOKEN` を各PowerShellに読み込ませてください。
 
 よく使うオプション:
