@@ -1,5 +1,7 @@
 param(
     [string]$EnvPath = ".env",
+    [Alias("Input")]
+    [string]$TopologyInput = "",
     [string]$Runtime = "",
     [ValidateSet("auto", "generic", "sword-events")]
     [string]$RuntimeAdapter = "sword-events",
@@ -33,7 +35,18 @@ if (-not (Test-Path -LiteralPath $rendererRoot)) {
 }
 $rendererRoot = (Resolve-Path -LiteralPath $rendererRoot).Path
 
-if ([string]::IsNullOrWhiteSpace($Runtime)) {
+if (
+    -not [string]::IsNullOrWhiteSpace($TopologyInput) -and
+    [string]::IsNullOrWhiteSpace($Runtime) -and
+    -not $PSBoundParameters.ContainsKey("Mode")
+) {
+    $Mode = "overview"
+}
+
+if (
+    [string]::IsNullOrWhiteSpace($TopologyInput) -and
+    [string]::IsNullOrWhiteSpace($Runtime)
+) {
     $Runtime = "http://127.0.0.1:8790/api/events?once=1"
 }
 if ([string]::IsNullOrWhiteSpace($RuntimeStatusFile)) {
@@ -53,10 +66,6 @@ $command = @(
     "-m",
     "system_house_renderer",
     "map",
-    "--runtime",
-    $Runtime,
-    "--runtime-adapter",
-    $RuntimeAdapter,
     "--mode",
     $Mode,
     "--detail-level",
@@ -68,6 +77,19 @@ $command = @(
     "--runtime-status-file",
     $resolvedRuntimeStatusFile
 )
+
+if (-not [string]::IsNullOrWhiteSpace($TopologyInput)) {
+    $command += @("--input", (Resolve-SwordPath -Path $TopologyInput))
+}
+
+if (-not [string]::IsNullOrWhiteSpace($Runtime)) {
+    $command += @(
+        "--runtime",
+        $Runtime,
+        "--runtime-adapter",
+        $RuntimeAdapter
+    )
+}
 
 if (-not [string]::IsNullOrWhiteSpace($TurnId)) {
     $command += @("--turn-id", $TurnId)

@@ -1,0 +1,528 @@
+{
+  "system": {
+    "id": "sword-voice-agent-system",
+    "name": "Sword Voice Agent System"
+  },
+  "components": [
+    {
+      "id": "operator",
+      "label": "Operator",
+      "kind": "input",
+      "summary": "Person who speaks while using the sword-sign gesture."
+    },
+    {
+      "id": "camera_mic",
+      "label": "Camera and microphone",
+      "kind": "input",
+      "summary": "Local camera frames and microphone audio for gesture and voice capture."
+    },
+    {
+      "id": "mediapipe_publisher",
+      "label": "MediaPipe sword sign",
+      "kind": "tool",
+      "summary": "Detects sword-sign state and publishes gesture JSON over local transport."
+    },
+    {
+      "id": "gesture_receiver",
+      "label": "Gesture UDP receiver",
+      "kind": "tool",
+      "summary": "Receives gesture payloads, validates them, and writes voice-control status events."
+    },
+    {
+      "id": "input_gate",
+      "label": "Input gate",
+      "kind": "condition",
+      "summary": "Turns ai_talk_core recording on only while the sword gesture is active."
+    },
+    {
+      "id": "ai_talk_core",
+      "label": "ai_talk_core",
+      "kind": "tool",
+      "summary": "Owns recording, STT, transcript storage, and handoff JSON generation."
+    },
+    {
+      "id": "dify_watch",
+      "label": "Dify watcher",
+      "kind": "tool",
+      "summary": "Watches ai_talk_core handoff output, filters suspicious STT, calls Dify, and emits status events."
+    },
+    {
+      "id": "dify_home_control_app",
+      "label": "Dify Home Control app",
+      "kind": "external",
+      "summary": "Dify advanced-chat workflow that classifies home-control intent and generates the response."
+    },
+    {
+      "id": "home_control_bridge",
+      "label": "Home Control bridge",
+      "kind": "tool",
+      "summary": "Local allowlisted HTTP bridge for Home Assistant actions and optional UDP event notifications."
+    },
+    {
+      "id": "home_assistant",
+      "label": "Home Assistant",
+      "kind": "external",
+      "summary": "Home Assistant REST API executes configured script actions for devices."
+    },
+    {
+      "id": "home_devices",
+      "label": "Home devices",
+      "kind": "output",
+      "summary": "Lights, air conditioner, fan, door, vacuum, and other allowed local devices."
+    },
+    {
+      "id": "tts_service",
+      "label": "tts-service",
+      "kind": "tool",
+      "summary": "Receives Dify streaming deltas or latest response files and prepares speech."
+    },
+    {
+      "id": "tts_engine",
+      "label": "Local TTS engine",
+      "kind": "external",
+      "summary": "Windows SAPI, VOICEVOX, or another configured synthesizer/player boundary."
+    },
+    {
+      "id": "speaker",
+      "label": "Speaker",
+      "kind": "output",
+      "summary": "Local audio output for synthesized speech."
+    },
+    {
+      "id": "console",
+      "label": "Integration console",
+      "kind": "output",
+      "summary": "Local web console on port 8790; exposes status JSON and /api/events SSE."
+    },
+    {
+      "id": "avatar_service",
+      "label": "Avatar service",
+      "kind": "output",
+      "summary": "Three.js VRM runtime that reacts to avatar_state messages and SSE events."
+    },
+    {
+      "id": "aituber_kit",
+      "label": "AITuber Kit",
+      "kind": "output",
+      "summary": "Optional presentation surface used by the home-control stack and direct_send experiments."
+    },
+    {
+      "id": "touchdesigner_controller",
+      "label": "TD control GUI",
+      "kind": "tool",
+      "summary": "Home Control / MediaPipe / TouchDesigner GUI and API on port 8788."
+    },
+    {
+      "id": "touchdesigner",
+      "label": "TouchDesigner",
+      "kind": "output",
+      "summary": "Visual stage receiving UDP cues from the controller or bridge."
+    },
+    {
+      "id": "system_house_renderer",
+      "label": "SystemHouseRenderer",
+      "kind": "output",
+      "summary": "Short-lived renderer that turns topology and /api/events traces into house-map artifacts."
+    }
+  ],
+  "variables": [
+    {
+      "id": "gesture_state",
+      "name": "gesture_state",
+      "authority": "mediapipe_publisher",
+      "writes": ["mediapipe_publisher"],
+      "reads": ["gesture_receiver", "console", "avatar_service"],
+      "storage": "event payload / gesture_latest.json",
+      "description": "Current sword-sign detection state and confidence."
+    },
+    {
+      "id": "voice_state",
+      "name": "voice_state",
+      "authority": "input_gate",
+      "writes": ["gesture_receiver", "input_gate"],
+      "reads": ["ai_talk_core", "console"],
+      "storage": "latest voice turn status",
+      "description": "Whether microphone capture should be enabled for the current gesture."
+    },
+    {
+      "id": "turn_id",
+      "name": "turn_id",
+      "authority": "gesture_receiver",
+      "writes": ["gesture_receiver"],
+      "reads": ["dify_watch", "tts_service", "console", "avatar_service", "system_house_renderer"],
+      "storage": "status events and trace payloads",
+      "description": "Correlation key for one gesture-gated voice turn."
+    },
+    {
+      "id": "handoff_json",
+      "name": "handoff_json",
+      "authority": "ai_talk_core",
+      "writes": ["ai_talk_core"],
+      "reads": ["dify_watch"],
+      "storage": "ai_talk_core .cache/codex web_latest.json",
+      "description": "Transcript, command, and agent request context produced from STT."
+    },
+    {
+      "id": "dify_response",
+      "name": "dify_response",
+      "authority": "dify_home_control_app",
+      "writes": ["dify_home_control_app", "dify_watch"],
+      "reads": ["tts_service", "console", "avatar_service"],
+      "storage": "latest_dify_response.json and /api/events",
+      "description": "Final answer text and streaming deltas; body text is redacted in trace views."
+    },
+    {
+      "id": "home_action_request",
+      "name": "home_action_request",
+      "authority": "home_control_bridge",
+      "writes": ["dify_home_control_app", "home_control_bridge"],
+      "reads": ["home_assistant", "touchdesigner_controller"],
+      "storage": "bridge request/response and audit log",
+      "description": "Allowlisted action_id, confirmation flag, execution result, and bridge message."
+    },
+    {
+      "id": "tts_state",
+      "name": "tts_state",
+      "authority": "tts_service",
+      "writes": ["tts_service"],
+      "reads": ["console", "avatar_service"],
+      "storage": "latest_tts_state.json and tts_service events",
+      "description": "TTS queue, phase, app volume, and playback state."
+    },
+    {
+      "id": "avatar_state",
+      "name": "avatar_state",
+      "authority": "console",
+      "writes": ["console", "avatar_service"],
+      "reads": ["avatar_service", "aituber_kit"],
+      "storage": "postMessage payload and browser runtime state",
+      "description": "Avatar phase, emotion, gesture, posture, and speech cue."
+    },
+    {
+      "id": "runtime_events",
+      "name": "runtime_events",
+      "authority": "console",
+      "writes": ["gesture_receiver", "dify_watch", "tts_service", "console"],
+      "reads": ["system_house_renderer", "avatar_service"],
+      "storage": "/api/events SSE and events.jsonl",
+      "description": "Sanitized event stream used for trace and tour rendering."
+    }
+  ],
+  "stateMachines": [
+    {
+      "id": "voice_turn",
+      "name": "Voice turn",
+      "states": ["idle", "listening", "thinking", "speaking", "error"],
+      "transitions": [
+        { "from": "idle", "to": "listening", "trigger": "sword_sign active", "authority": "input_gate" },
+        { "from": "listening", "to": "thinking", "trigger": "gesture released and handoff saved", "authority": "ai_talk_core" },
+        { "from": "thinking", "to": "speaking", "trigger": "Dify first answer delta", "authority": "dify_watch" },
+        { "from": "speaking", "to": "idle", "trigger": "TTS completed", "authority": "tts_service" },
+        { "from": "*", "to": "error", "trigger": "adapter error", "authority": "failing module" }
+      ]
+    },
+    {
+      "id": "home_action",
+      "name": "Home action",
+      "states": ["none", "classified", "confirmation_required", "executed", "failed"],
+      "transitions": [
+        { "from": "none", "to": "classified", "trigger": "Dify action_id != none", "authority": "dify_home_control_app" },
+        { "from": "classified", "to": "confirmation_required", "trigger": "bridge requires confirmation", "authority": "home_control_bridge" },
+        { "from": "confirmation_required", "to": "executed", "trigger": "confirmed true", "authority": "home_control_bridge" },
+        { "from": "classified", "to": "executed", "trigger": "safe action executed", "authority": "home_control_bridge" },
+        { "from": "classified", "to": "failed", "trigger": "bridge or Home Assistant error", "authority": "home_control_bridge" }
+      ]
+    },
+    {
+      "id": "avatar_phase",
+      "name": "Avatar phase",
+      "states": ["idle", "listening", "thinking", "speaking", "error"],
+      "transitions": [
+        { "from": "idle", "to": "listening", "trigger": "voice_state mic_enabled", "authority": "console" },
+        { "from": "listening", "to": "thinking", "trigger": "handoff/dify event", "authority": "console" },
+        { "from": "thinking", "to": "speaking", "trigger": "tts_state speaking", "authority": "tts_service" },
+        { "from": "speaking", "to": "idle", "trigger": "tts_state completed", "authority": "tts_service" }
+      ]
+    }
+  ],
+  "flows": [
+    {
+      "id": "operator_to_camera_mic",
+      "from": "operator",
+      "to": "camera_mic",
+      "kind": "data",
+      "label": "gesture and voice"
+    },
+    {
+      "id": "camera_mic_to_mediapipe",
+      "from": "camera_mic",
+      "to": "mediapipe_publisher",
+      "kind": "data",
+      "label": "camera frames"
+    },
+    {
+      "id": "camera_mic_to_ai_talk_core",
+      "from": "camera_mic",
+      "to": "ai_talk_core",
+      "kind": "data",
+      "label": "microphone audio"
+    },
+    {
+      "id": "mediapipe_to_gesture_receiver",
+      "from": "mediapipe_publisher",
+      "to": "gesture_receiver",
+      "kind": "data",
+      "label": "gesture JSON",
+      "transport": "UDP",
+      "protocol": "JSON",
+      "endpoint": "127.0.0.1:8765",
+      "payload": ["gesture_state", "confidence", "timestamp"],
+      "auth": "loopback / optional token when exposed",
+      "stateChanges": ["gesture_state updated"]
+    },
+    {
+      "id": "gesture_receiver_to_input_gate",
+      "from": "gesture_receiver",
+      "to": "input_gate",
+      "kind": "control",
+      "label": "voice state",
+      "transport": "in-process",
+      "payload": ["gesture_state"],
+      "stateChanges": ["voice_state decided"]
+    },
+    {
+      "id": "input_gate_to_ai_talk_core",
+      "from": "input_gate",
+      "to": "ai_talk_core",
+      "kind": "control",
+      "label": "record gate",
+      "transport": "HTTP",
+      "protocol": "POST JSON",
+      "endpoint": "http://127.0.0.1:8000/api/input-gate",
+      "payload": ["input_enabled", "mic_enabled", "reason", "timestamp"],
+      "auth": "X-AI-Core-Token when configured",
+      "stateChanges": ["ai_talk_core input gate toggled"]
+    },
+    {
+      "id": "ai_talk_core_to_dify_watch",
+      "from": "ai_talk_core",
+      "to": "dify_watch",
+      "kind": "data",
+      "label": "handoff JSON",
+      "transport": "file watch",
+      "payload": ["handoff_json", "turn_id", "transcript", "command"],
+      "auth": "local filesystem",
+      "stateChanges": ["handoff_json written"]
+    },
+    {
+      "id": "dify_watch_to_dify_app",
+      "from": "dify_watch",
+      "to": "dify_home_control_app",
+      "kind": "external",
+      "label": "chat message",
+      "transport": "HTTP",
+      "protocol": "Dify chat API / SSE",
+      "endpoint": "DIFY_BASE_URL /chat-messages",
+      "payload": ["query", "user", "conversation_id", "turn_id"],
+      "auth": "DIFY_API_KEY",
+      "stateChanges": ["thinking", "conversation updated"]
+    },
+    {
+      "id": "dify_app_to_home_control_bridge",
+      "from": "dify_home_control_app",
+      "to": "home_control_bridge",
+      "kind": "external",
+      "label": "allowlisted action",
+      "transport": "HTTP",
+      "protocol": "POST JSON",
+      "endpoint": "http://host.docker.internal:8787/actions/{action_id}/execute",
+      "payload": ["action_id", "confirmed", "user_text", "request_id"],
+      "auth": "HOME_CONTROL_API_TOKEN",
+      "stateChanges": ["home_action classified or executed"]
+    },
+    {
+      "id": "home_control_bridge_to_home_assistant",
+      "from": "home_control_bridge",
+      "to": "home_assistant",
+      "kind": "external",
+      "label": "script.turn_on",
+      "transport": "HTTP",
+      "protocol": "Home Assistant REST",
+      "endpoint": "/api/services/script/turn_on",
+      "payload": ["ha_script"],
+      "auth": "HOME_ASSISTANT_TOKEN",
+      "stateChanges": ["device script requested"]
+    },
+    {
+      "id": "home_assistant_to_devices",
+      "from": "home_assistant",
+      "to": "home_devices",
+      "kind": "control",
+      "label": "device action",
+      "transport": "Home Assistant integration",
+      "payload": ["script action"],
+      "auth": "Home Assistant integration authority",
+      "stateChanges": ["device state changed"]
+    },
+    {
+      "id": "home_control_bridge_to_touchdesigner_controller",
+      "from": "home_control_bridge",
+      "to": "touchdesigner_controller",
+      "kind": "data",
+      "label": "optional UDP cue",
+      "transport": "UDP",
+      "protocol": "JSON",
+      "endpoint": "127.0.0.1:7000 or configured port",
+      "payload": ["phase", "action_id", "label", "request_id"],
+      "auth": "local UDP only",
+      "stateChanges": ["stage cue emitted"]
+    },
+    {
+      "id": "touchdesigner_controller_to_touchdesigner",
+      "from": "touchdesigner_controller",
+      "to": "touchdesigner",
+      "kind": "control",
+      "label": "stage cue",
+      "transport": "UDP",
+      "protocol": "JSON",
+      "endpoint": "127.0.0.1:9001",
+      "payload": ["stage cue", "home control event"],
+      "auth": "local UDP only",
+      "stateChanges": ["TouchDesigner visual state updated"]
+    },
+    {
+      "id": "dify_app_to_tts_service",
+      "from": "dify_home_control_app",
+      "to": "tts_service",
+      "kind": "data",
+      "label": "answer deltas",
+      "transport": "HTTP",
+      "protocol": "POST JSON chunks",
+      "endpoint": "http://127.0.0.1:8765/api/tts/chunk",
+      "payload": ["delta", "final", "turn_id", "message_id"],
+      "auth": "loopback",
+      "stateChanges": ["tts_state preparing/speaking"]
+    },
+    {
+      "id": "tts_service_to_tts_engine",
+      "from": "tts_service",
+      "to": "tts_engine",
+      "kind": "external",
+      "label": "synthesis request",
+      "transport": "local adapter",
+      "protocol": "SAPI / VOICEVOX / file player",
+      "payload": ["text chunk", "voice", "volume"],
+      "auth": "local process authority",
+      "stateChanges": ["audio artifact created"]
+    },
+    {
+      "id": "tts_engine_to_speaker",
+      "from": "tts_engine",
+      "to": "speaker",
+      "kind": "data",
+      "label": "audio",
+      "transport": "OS audio",
+      "payload": ["PCM/audio artifact"],
+      "stateChanges": ["speaker output active"]
+    },
+    {
+      "id": "dify_watch_to_console",
+      "from": "dify_watch",
+      "to": "console",
+      "kind": "data",
+      "label": "status events",
+      "transport": "file append",
+      "protocol": "events.jsonl",
+      "payload": ["dify.first_token", "dify.done", "tts.forward_error"],
+      "auth": "local filesystem",
+      "stateChanges": ["runtime_events appended"]
+    },
+    {
+      "id": "gesture_receiver_to_console",
+      "from": "gesture_receiver",
+      "to": "console",
+      "kind": "data",
+      "label": "gesture status",
+      "transport": "file/status store",
+      "protocol": "JSON",
+      "payload": ["gesture_latest", "voice_state", "turn_id"],
+      "auth": "local filesystem",
+      "stateChanges": ["console status updated"]
+    },
+    {
+      "id": "tts_service_to_console",
+      "from": "tts_service",
+      "to": "console",
+      "kind": "data",
+      "label": "tts status",
+      "transport": "file/status store or HTTP",
+      "protocol": "JSON",
+      "endpoint": "latest_tts_state.json / /api/volume",
+      "payload": ["tts_state", "app_volume"],
+      "auth": "loopback or local filesystem",
+      "stateChanges": ["console TTS card updated"]
+    },
+    {
+      "id": "console_to_avatar_service",
+      "from": "console",
+      "to": "avatar_service",
+      "kind": "data",
+      "label": "avatar_state and events",
+      "transport": "browser postMessage / SSE",
+      "protocol": "avatar_state JSON",
+      "endpoint": "iframe + /api/events",
+      "payload": ["phase", "emotion", "gesture", "speech", "turn_id"],
+      "auth": "same local browser context",
+      "stateChanges": ["avatar_phase updated"]
+    },
+    {
+      "id": "dify_app_to_aituber_kit",
+      "from": "dify_home_control_app",
+      "to": "aituber_kit",
+      "kind": "data",
+      "label": "optional direct_send text",
+      "transport": "HTTP",
+      "protocol": "direct_send",
+      "endpoint": "http://127.0.0.1:3000/api/messages",
+      "payload": ["answer text", "clientId", "type"],
+      "auth": "local app endpoint",
+      "stateChanges": ["AITuber message queue updated"]
+    },
+    {
+      "id": "console_to_system_house_renderer",
+      "from": "console",
+      "to": "system_house_renderer",
+      "kind": "data",
+      "label": "/api/events trace",
+      "transport": "HTTP",
+      "protocol": "SSE snapshot",
+      "endpoint": "http://127.0.0.1:8790/api/events?once=1",
+      "payload": ["runtime_events", "turn_id", "event metadata"],
+      "auth": "SWORD_VOICE_AGENT_AUTH_TOKEN when configured",
+      "stateChanges": ["trace map generated"]
+    }
+  ],
+  "requirements": {
+    "requiredComponentKinds": [
+      "input",
+      "condition",
+      "tool",
+      "external",
+      "output"
+    ],
+    "requiredComponents": [
+      { "id": "mediapipe_publisher" },
+      { "id": "ai_talk_core" },
+      { "id": "dify_home_control_app" },
+      { "id": "tts_service" },
+      { "id": "console" },
+      { "id": "system_house_renderer" }
+    ],
+    "requiredFlows": [
+      { "from": "mediapipe_publisher", "to": "gesture_receiver" },
+      { "from": "input_gate", "to": "ai_talk_core" },
+      { "from": "dify_watch", "to": "dify_home_control_app" },
+      { "from": "console", "to": "system_house_renderer" }
+    ]
+  }
+}
