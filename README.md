@@ -4,6 +4,28 @@
 
 この README は、ローカル実行に必要な `.env` と PowerShell 起動スクリプトだけを扱います。
 
+## 統合表示例
+
+各モジュールを組み合わせると、Projection Visual 上でAITuber、ジェスチャー検出、Chrome Web Speech STT、Dify/Home Assistant の実行状況、TouchDesigner 連携状態をまとめて監視できます。
+
+![Projection Visual system example](docs/images/projection-visual-system-example.png)
+
+## 関連モジュール
+
+| モジュール | 役割 | Git URL |
+|---|---|---|
+| `sword-voice-agent` | ローカル統合、起動スクリプト、Dify/Home Assistant連携 | `https://github.com/hiro-collab/sword-voice-agent.git` |
+| `ai-talk-core` | STT/Whisper、入力ゲート、agent handoff | `https://github.com/hiro-collab/ai-talk-core.git` |
+| `aituber-kit` | Projection Visual、AITuber UI、Chrome Web Speech STT、Dify proxy | `https://github.com/hiro-collab/aituber-kit-sword-private.git` |
+| `mediapipe-sword-sign` | 刀印ジェスチャー検出、WebSocket/UDP配信 | `https://github.com/hiro-collab/mediapipe-sword-sign.git` |
+| `home-assistant-server` | Home Assistant bridge、家電操作API | `https://github.com/hiro-collab/home-assistant-server.git` |
+| `tts-service` | Dify応答のTTS化、VOICEVOX/Windows SAPI等の読み上げ連携 | `https://github.com/hiro-collab/tts-service.git` |
+| `avatar-service` | Three.js/VRM avatar runtime | `https://github.com/hiro-collab/avatar-service.git` |
+| `system-house-renderer` | システム構成・authority・イベントフローの可視化 | `https://github.com/hiro-collab/system-house-renderer.git` |
+| `touchdesigner-ai-controller` | TouchDesigner連携GUI、UDP control surface | `https://github.com/hiro-collab/touchdesigner-ai-controller.git` |
+
+`aituber-kit` の上流は `https://github.com/tegnike/aituber-kit.git` です。このシステム専用の調整は private fork 側の専用ブランチで管理します。
+
 ## 作業ルート
 
 この README の `<repo_root>` は、内側のリポジトリディレクトリです。
