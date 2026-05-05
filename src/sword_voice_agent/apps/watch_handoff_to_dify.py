@@ -29,6 +29,9 @@ NO_SPEECH_PLACEHOLDER = "音声を認識できませんでした。"
 SHORT_ASCII_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z'-]*")
 STRIPPABLE_ASCII_PUNCTUATION = " \t\r\n.,!?;:\"'`“”‘’()[]{}<>"
 RESPONSE_MODES = {"blocking", "streaming"}
+SPEECH_MARKER_PATTERN = re.compile(r"\[\[SPEECH:[A-Z0-9_-]+\]\]")
+SPEECH_END_CHARS = "。．.!?！？\n"
+SPEECH_SOFT_BREAK_CHARS = "、,， "
 
 
 @dataclass(frozen=True)
@@ -132,6 +135,26 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=default_tts_http_timeout_s(),
         help="Timeout for each local TTS chunk POST.",
+    )
+    parser.add_argument(
+        "--aituber-message-url",
+        default=os.environ.get("AITUBER_MESSAGE_URL", ""),
+        help=(
+            "Optional AITuberKit /api/messages URL. In streaming mode, Dify "
+            "answer text is split into speech-sized direct_send messages."
+        ),
+    )
+    parser.add_argument(
+        "--aituber-http-timeout-s",
+        type=float,
+        default=default_aituber_http_timeout_s(),
+        help="Timeout for each AITuberKit direct_send POST.",
+    )
+    parser.add_argument(
+        "--aituber-speech-max-chars",
+        type=int,
+        default=default_aituber_speech_max_chars(),
+        help="Flush an unfinished AITuber speech chunk after roughly this many characters.",
     )
     parser.add_argument(
         "--poll-interval-s",
@@ -301,6 +324,20 @@ def default_tts_http_timeout_s() -> float:
         return 0.75
 
 
+def default_aituber_http_timeout_s() -> float:
+    try:
+        return max(0.05, float(os.environ.get("AITUBER_HTTP_TIMEOUT_S", "0.75")))
+    except ValueError:
+        return 0.75
+
+
+def default_aituber_speech_max_chars() -> int:
+    try:
+        return max(8, int(os.environ.get("AITUBER_SPEECH_MAX_CHARS", "80")))
+    except ValueError:
+        return 80
+
+
 def load_latest_turn_id(status_dir: str | Path) -> str | None:
     path = StatusStore(status_dir).latest_voice_turn_path
     try:
@@ -425,6 +462,13 @@ def run_once(
     )
     if tts_forwarder is not None:
         stream_handlers.append(tts_forwarder)
+    aituber_forwarder = AituberSpeechForwarder.from_args(
+        args,
+        store=status_store,
+        turn_id=turn_id,
+    )
+    if aituber_forwarder is not None:
+        stream_handlers.append(aituber_forwarder)
     result = process_handoff(
         args,
         client=client,
@@ -636,6 +680,180 @@ class TtsStreamForwarder:
                 "error": message[:240],
             },
         )
+
+
+class AituberSpeechForwarder:
+    def __init__(
+        self,
+        message_url: str,
+        *,
+        timeout_s: float,
+        max_chars: int = 80,
+        store: StatusStore | None = None,
+        turn_id: str | None = None,
+    ) -> None:
+        self.message_url = validate_http_url(message_url, label="--aituber-message-url")
+        self.timeout_s = max(0.05, timeout_s)
+        self.max_chars = max(8, max_chars)
+        self.store = store
+        self.turn_id = turn_id
+        self.buffer = ""
+        self.done_seen = False
+        self.error_count = 0
+
+    @classmethod
+    def from_args(
+        cls,
+        args: argparse.Namespace,
+        *,
+        store: StatusStore | None = None,
+        turn_id: str | None = None,
+    ) -> "AituberSpeechForwarder | None":
+        message_url = str(getattr(args, "aituber_message_url", "") or "").strip()
+        if not message_url:
+            return None
+        return cls(
+            message_url,
+            timeout_s=float(getattr(args, "aituber_http_timeout_s", 0.75)),
+            max_chars=int(getattr(args, "aituber_speech_max_chars", 80)),
+            store=store,
+            turn_id=turn_id,
+        )
+
+    def __call__(self, event: DifyStreamEvent) -> None:
+        if event.answer_delta:
+            self.buffer += event.answer_delta
+            self.flush_ready(final=False)
+        if event.is_message_end and not self.done_seen:
+            self.done_seen = True
+            self.flush_ready(final=True)
+
+    def finish(self, result: dict[str, Any]) -> None:
+        if (
+            self.done_seen
+            or result.get("response_mode") != "streaming"
+            or result.get("skipped")
+        ):
+            return
+        self.done_seen = True
+        self.flush_ready(final=True)
+
+    def flush_ready(self, *, final: bool) -> None:
+        chunks, self.buffer = split_speech_chunks(
+            self.buffer,
+            final=final,
+            max_chars=self.max_chars,
+        )
+        for chunk in chunks:
+            self.post(chunk)
+
+    def post(self, message: str) -> None:
+        clean_message = clean_speech_message(message)
+        if not clean_message:
+            return
+        body = json.dumps({"messages": [clean_message]}, ensure_ascii=False).encode(
+            "utf-8"
+        )
+        req = request.Request(
+            self.message_url,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with request.urlopen(req, timeout=self.timeout_s) as response:
+                response.read()
+        except (error.HTTPError, error.URLError, TimeoutError, OSError) as exc:
+            self.record_error(str(exc))
+
+    def record_error(self, message: str) -> None:
+        self.error_count += 1
+        if self.error_count != 1 or self.store is None:
+            return
+        self.store.append_event(
+            "aituber.forward_error",
+            source="watch_handoff_to_dify",
+            turn_id=self.turn_id,
+            payload={
+                "message_url": redacted_text(self.message_url),
+                "message_url_present": bool(self.message_url),
+                "error": message[:240],
+            },
+        )
+
+
+def split_speech_chunks(
+    text: str,
+    *,
+    final: bool,
+    max_chars: int = 80,
+) -> tuple[list[str], str]:
+    remaining = text
+    chunks: list[str] = []
+
+    while remaining:
+        cut_at = first_speech_boundary(remaining)
+        if cut_at is None:
+            break
+        chunk = remaining[:cut_at].strip()
+        remaining = remaining[cut_at:].lstrip()
+        if clean_speech_message(chunk):
+            chunks.append(chunk)
+
+    if final:
+        chunk = remaining.strip()
+        if clean_speech_message(chunk):
+            chunks.append(chunk)
+        return chunks, ""
+
+    if len(visible_speech_text(remaining)) >= max(8, max_chars):
+        cut_at = soft_speech_boundary(remaining, max_chars=max_chars)
+        chunk = remaining[:cut_at].strip()
+        remaining = remaining[cut_at:].lstrip()
+        if clean_speech_message(chunk):
+            chunks.append(chunk)
+
+    return chunks, remaining
+
+
+def first_speech_boundary(text: str) -> int | None:
+    for index, character in enumerate(text):
+        if character in SPEECH_END_CHARS:
+            return index + 1
+    return None
+
+
+def soft_speech_boundary(text: str, *, max_chars: int) -> int:
+    visible_count = 0
+    best_cut = 0
+    for index, character in enumerate(text):
+        visible_count += 0 if character.isspace() else 1
+        if character in SPEECH_SOFT_BREAK_CHARS:
+            best_cut = index + 1
+        if visible_count >= max(8, max_chars):
+            return best_cut or index + 1
+    return len(text)
+
+
+def clean_speech_message(text: str) -> str:
+    cleaned = SPEECH_MARKER_PATTERN.sub("", text).strip()
+    visible = visible_speech_text(cleaned)
+    if not visible:
+        return ""
+    return cleaned
+
+
+def visible_speech_text(text: str) -> str:
+    without_markers = SPEECH_MARKER_PATTERN.sub("", text)
+    without_tags = re.sub(
+        r"\[(?:motion:[^\]\s]+|[A-Za-z_][A-Za-z0-9_-]*)\]",
+        "",
+        without_markers,
+    )
+    return re.sub(r"\s+", "", without_tags)
 
 
 def tts_chunk_payload(

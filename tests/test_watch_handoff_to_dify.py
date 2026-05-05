@@ -7,12 +7,15 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from sword_voice_agent.apps.watch_handoff_to_dify import (
+    AituberSpeechForwarder,
     TtsStreamForwarder,
     build_parser,
+    clean_speech_message,
     handoff_signature,
     is_suspect_short_ascii_stt,
     resolve_handoff_json_path,
     run_once,
+    split_speech_chunks,
 )
 from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreHandoffError
 from sword_voice_agent.adapters.dify import DifyStreamEvent
@@ -298,6 +301,89 @@ class WatchHandoffToDifyTest(TestCase):
         self.assertEqual([payload.get("delta") for payload in payloads[:2]], ["Dify", "応答です"])
         self.assertEqual(payloads[-1]["event"], "message_end")
         self.assertTrue(payloads[-1]["final"])
+
+    def test_split_speech_chunks_keeps_partial_until_sentence_end(self) -> None:
+        chunks, remainder = split_speech_chunks(
+            "[relaxed]ふん",
+            final=False,
+            max_chars=80,
+        )
+
+        self.assertEqual(chunks, [])
+        self.assertEqual(remainder, "[relaxed]ふん")
+
+        chunks, remainder = split_speech_chunks(
+            "[relaxed]ふんふん。[happy]よし、完了だぜ。",
+            final=False,
+            max_chars=80,
+        )
+
+        self.assertEqual(chunks, ["[relaxed]ふんふん。", "[happy]よし、完了だぜ。"])
+        self.assertEqual(remainder, "")
+
+    def test_clean_speech_message_removes_internal_speech_markers(self) -> None:
+        self.assertEqual(
+            clean_speech_message("[[SPEECH:ACK]][relaxed]ふんふん。"),
+            "[relaxed]ふんふん。",
+        )
+        self.assertEqual(clean_speech_message("[neutral]"), "")
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_dify.request.urlopen")
+    def test_aituber_forwarder_posts_sentence_sized_direct_send_messages(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+        urlopen.return_value = response
+        forwarder = AituberSpeechForwarder(
+            "http://127.0.0.1:3000/api/messages?clientId=client-1&type=direct_send",
+            timeout_s=0.1,
+        )
+
+        forwarder(
+            DifyStreamEvent(
+                event="message",
+                answer_delta="[relaxed]ふん",
+                message_id="msg-1",
+            )
+        )
+        self.assertEqual(urlopen.call_count, 0)
+
+        forwarder(
+            DifyStreamEvent(
+                event="message",
+                answer_delta="ふん。[happy]よし、完了だぜ。",
+                message_id="msg-1",
+            )
+        )
+
+        payloads = [
+            json.loads(call.args[0].data.decode("utf-8"))
+            for call in urlopen.call_args_list
+        ]
+        self.assertEqual(
+            [payload["messages"][0] for payload in payloads],
+            ["[relaxed]ふんふん。", "[happy]よし、完了だぜ。"],
+        )
+
+    def test_aituber_forward_error_redacts_message_url(self) -> None:
+        with workspace_tempdir() as tmp:
+            store = StatusStore(Path(tmp) / ".cache" / "sword_voice_agent")
+            forwarder = AituberSpeechForwarder(
+                "https://aituber.example.test/api/messages?token=secret",
+                timeout_s=0.1,
+                store=store,
+                turn_id="turn-1",
+            )
+
+            forwarder.record_error("connection failed")
+
+            events = store.read_events()
+            self.assertEqual(events[0]["type"], "aituber.forward_error")
+            self.assertEqual(events[0]["payload"]["message_url"], "[redacted]")
+            self.assertTrue(events[0]["payload"]["message_url_present"])
+            self.assertNotIn("secret", json.dumps(events, ensure_ascii=False))
 
     def test_run_once_skips_no_speech_placeholder_by_default(self) -> None:
         with workspace_tempdir() as tmp:

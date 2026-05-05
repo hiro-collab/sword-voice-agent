@@ -336,6 +336,9 @@ uv run predict.py
 | `DIFY_API_KEY` | `<dify_app_api_key>` | DifyアプリのAPIキー |
 | `DIFY_USER` | `local-user` | Dify conversationのuser識別子 |
 | `DIFY_RESPONSE_MODE` | `streaming` | `streaming` または `blocking` |
+| `AITUBER_MESSAGE_URL` | `http://127.0.0.1:3000/api/messages?clientId=<client_id>&type=direct_send` | Dify streaming応答をAITuberKitの発話キューへ送るURL。空なら無効 |
+| `AITUBER_HTTP_TIMEOUT_S` | `0.75` | AITuberKit direct_send POST timeout |
+| `AITUBER_SPEECH_MAX_CHARS` | `80` | 句点が来ないstreaming応答を発話キューへflushする目安文字数 |
 
 `DIFY_BASE_URL` が `localhost` / `127.0.0.1` の場合、起動前にDocker engineとDify APIの到達性を確認します。
 

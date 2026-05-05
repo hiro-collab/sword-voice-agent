@@ -7,6 +7,9 @@ param(
     [string]$StatusDir = ".cache\sword_voice_agent",
     [string]$TtsChunkUrl = "",
     [string]$TtsHttpTimeout = "",
+    [string]$AituberMessageUrl = "",
+    [string]$AituberHttpTimeout = "",
+    [int]$AituberSpeechMaxChars = 80,
     [switch]$NoSkipExisting,
     [switch]$NoSkipShortAscii,
     [int]$ShortAsciiMaxChars = 16,
@@ -31,6 +34,19 @@ if ([string]::IsNullOrWhiteSpace($TtsChunkUrl)) {
 if ([string]::IsNullOrWhiteSpace($TtsHttpTimeout)) {
     $TtsHttpTimeout = [Environment]::GetEnvironmentVariable("TTS_HTTP_TIMEOUT_S", "Process")
 }
+if ([string]::IsNullOrWhiteSpace($AituberMessageUrl)) {
+    $AituberMessageUrl = [Environment]::GetEnvironmentVariable("AITUBER_MESSAGE_URL", "Process")
+}
+if ([string]::IsNullOrWhiteSpace($AituberHttpTimeout)) {
+    $AituberHttpTimeout = [Environment]::GetEnvironmentVariable("AITUBER_HTTP_TIMEOUT_S", "Process")
+}
+$envAituberSpeechMaxChars = [Environment]::GetEnvironmentVariable("AITUBER_SPEECH_MAX_CHARS", "Process")
+if ($AituberSpeechMaxChars -eq 80 -and -not [string]::IsNullOrWhiteSpace($envAituberSpeechMaxChars)) {
+    $parsedAituberSpeechMaxChars = 0
+    if ([int]::TryParse($envAituberSpeechMaxChars, [ref]$parsedAituberSpeechMaxChars)) {
+        $AituberSpeechMaxChars = $parsedAituberSpeechMaxChars
+    }
+}
 
 $command = @(
     "python",
@@ -52,6 +68,15 @@ if (-not [string]::IsNullOrWhiteSpace($TtsChunkUrl)) {
 if (-not [string]::IsNullOrWhiteSpace($TtsHttpTimeout)) {
     $command += @("--tts-http-timeout-s", $TtsHttpTimeout)
 }
+if (-not [string]::IsNullOrWhiteSpace($AituberMessageUrl)) {
+    $command += @("--aituber-message-url", $AituberMessageUrl)
+}
+if (-not [string]::IsNullOrWhiteSpace($AituberHttpTimeout)) {
+    $command += @("--aituber-http-timeout-s", $AituberHttpTimeout)
+}
+if ($AituberSpeechMaxChars -gt 0) {
+    $command += @("--aituber-speech-max-chars", $AituberSpeechMaxChars)
+}
 if (-not $NoSkipExisting) {
     $command += "--skip-existing"
 }
@@ -68,5 +93,5 @@ Invoke-WithModuleStatus `
     -StatusDir $StatusDir `
     -ModuleName "dify_watcher" `
     -ModuleLabel "Dify watcher" `
-    -Detail "source=$Source field=$Field response_mode=$ResponseMode tts_chunk=$(-not [string]::IsNullOrWhiteSpace($TtsChunkUrl))" `
+    -Detail "source=$Source field=$Field response_mode=$ResponseMode tts_chunk=$(-not [string]::IsNullOrWhiteSpace($TtsChunkUrl)) aituber_stream=$(-not [string]::IsNullOrWhiteSpace($AituberMessageUrl))" `
     -DryRun:$DryRun
