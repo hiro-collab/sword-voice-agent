@@ -495,6 +495,7 @@ Write-NodeRunner -Path $script:NodeRunnerPath
 $originalConfigText = Read-Utf8File -Path $HomeAssistantConfigPath
 $results = New-Object System.Collections.Generic.List[object]
 $failed = $false
+$runError = $null
 $generatedConfigPaths = New-Object System.Collections.Generic.List[string]
 
 $utterLightOn = ConvertFrom-CodePoints @(0x30E9, 0x30A4, 0x30C8, 0x3092, 0x3064, 0x3051, 0x3066)
@@ -510,7 +511,7 @@ $phaseACases = @(
 )
 $phaseBCases = @(
     [pscustomobject]@{ Scenario = "confirmation_required"; Utterance = $utterLightOn; ExpectedStatuses = @("confirmation_required") },
-    [pscustomobject]@{ Scenario = "timeout_once"; Utterance = $utterLightOff; ExpectedStatuses = @("failed", "submitted") },
+    [pscustomobject]@{ Scenario = "timeout_once"; Utterance = $utterLightOff; ExpectedStatuses = @("failed", "submitted"); AllowedStatusSequences = @("failed", "failed,submitted") },
     [pscustomobject]@{ Scenario = "duplicate"; Utterance = $utterFanOn; ExpectedStatuses = @("duplicate") },
     [pscustomobject]@{ Scenario = "unsupported_action"; Utterance = $utterFanOff; ExpectedStatuses = @("failed") }
 )
@@ -538,6 +539,9 @@ try {
         Start-Sleep -Seconds $DelayBetweenCasesSeconds
     }
 }
+catch {
+    $runError = $_
+}
 finally {
     if (-not $KeepFaultConfig) {
         Write-Step "restore normal stack mode"
@@ -559,6 +563,10 @@ $summaryPath = Join-Path $CacheDir "fault-e2e-$RunStamp-results.json"
 
 Write-Step "summary: $summaryPath"
 $results | Select-Object case, status_ok, statuses, expected_statuses, attempts, query | Format-Table -AutoSize
+
+if ($null -ne $runError) {
+    throw "Fault E2E aborted: $($runError.Exception.Message)"
+}
 
 if ($failed) {
     throw "One or more fault E2E cases failed. See $summaryPath"
