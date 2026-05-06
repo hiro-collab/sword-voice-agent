@@ -686,6 +686,105 @@ function Format-CommandLine {
     }) -join " "
 }
 
+function Write-GuideItem {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Target,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+    Write-Host ("  {0}" -f $Name)
+    Write-Host ("    Target: {0}" -f $Target)
+    Write-Host ("    Use   : {0}" -f $Description)
+}
+
+function Write-StackEndpointGuide {
+    Write-Host ""
+    Write-Host "Home Control Stack is starting in this terminal."
+    Write-Host ""
+    Write-Host "Open in browser"
+    Write-Host "---------------"
+    if (-not $SkipAituber) {
+        Write-GuideItem `
+            -Name "AITuber Kit" `
+            -Target "http://127.0.0.1:$AituberPort" `
+            -Description "会話入力、AITuber Kit の通常画面。"
+        Write-GuideItem `
+            -Name "Projection Visual" `
+            -Target "http://127.0.0.1:$AituberPort/projection-visual" `
+            -Description "投影・配信用のキャラクター表示画面。普段見るメインの表示はこちら。"
+        Write-GuideItem `
+            -Name "AITuber Cube Vault" `
+            -Target "http://127.0.0.1:$AituberPort/cube-vault-background?fov=60&scale=1" `
+            -Description "AITuber のキューブ背景確認用。必要なときだけ開く。"
+    }
+    if (-not $SkipDify) {
+        Write-GuideItem `
+            -Name "Dify" `
+            -Target "http://127.0.0.1:$DifyPort" `
+            -Description "Dify のワークフロー編集・ログ確認画面。Dify 本体はこのスクリプトでは停止しない。"
+    }
+    if (-not $SkipTouchDesignerGui) {
+        Write-GuideItem `
+            -Name "TD Control GUI/API" `
+            -Target "http://127.0.0.1:$TouchDesignerGuiPort" `
+            -Description "スタック状態、TouchDesigner UDP 連携、MediaPipe 状態の確認画面。TouchDesigner 本体ではない。"
+    }
+
+    Write-Host ""
+    Write-Host "Local APIs and feeds"
+    Write-Host "--------------------"
+    if (-not $SkipHomeAssistantBridge) {
+        Write-GuideItem `
+            -Name "Home Assistant bridge health" `
+            -Target "http://127.0.0.1:$HomeAssistantBridgePort/health" `
+            -Description "家電操作ブリッジのヘルスチェック JSON。bind: $HomeAssistantBridgeHost"
+    }
+    if (-not $SkipMediapipe -and $mediapipeCameraHubLaunched) {
+        Write-GuideItem `
+            -Name "MediaPipe Camera Hub WebSocket" `
+            -Target "ws://127.0.0.1:$MediapipePort" `
+            -Description "ジェスチャー・カメラ状態の WebSocket。ブラウザで直接開く画面ではない。"
+        Write-GuideItem `
+            -Name "MediaPipe Browser Monitor" `
+            -Target (Join-Path $MediapipeRoot "apps\browser_camera_hub_viewer.html") `
+            -Description "Camera Hub を見るブラウザ GUI。開いたら WebSocket に ws://127.0.0.1:$MediapipePort を指定。"
+    }
+    elseif (-not $SkipMediapipe) {
+        Write-GuideItem `
+            -Name "MediaPipe WebSocket" `
+            -Target "ws://127.0.0.1:$MediapipePort" `
+            -Description "ジェスチャー状態の WebSocket。ブラウザで直接開く画面ではない。"
+    }
+    if (-not $SkipVoicevoxCheck -and -not $SkipAituber) {
+        Write-GuideItem `
+            -Name "VOICEVOX" `
+            -Target $VoicevoxUrl `
+            -Description "音声合成エンジンの API。画面というより AITuber Kit から使うサービス。"
+    }
+
+    Write-Host ""
+    Write-Host "Background links"
+    Write-Host "----------------"
+    if (-not $SkipDifyWatch) {
+        Write-GuideItem `
+            -Name "Dify watcher" `
+            -Target "no browser URL" `
+            -Description "Dify のストリームを AITuber の発話キューへ渡す常駐処理。"
+    }
+    Write-GuideItem `
+        -Name "TouchDesigner UDP receiver" `
+        -Target "127.0.0.1:9001" `
+        -Description "TouchDesigner 側が受け取る UDP 宛先。このスクリプトは TouchDesigner 本体を起動しない。"
+
+    Write-Host ""
+    Write-Host "Commands"
+    Write-Host "--------"
+    Write-Host "  Status : .\status-home-control-stack.bat"
+    Write-Host "  Stop   : Ctrl+C in this terminal, or .\stop-home-control-stack.bat"
+    Write-Host "  Note   : Dify is external; use the stop script with -StopDify only when you intend to stop Dify too."
+    Write-Host ""
+}
+
 function Invoke-External {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -1113,40 +1212,7 @@ try {
         Start-Sleep -Milliseconds 500
     }
 
-    Write-Host ""
-    Write-Host "Stack is starting in this terminal."
-    Write-Host "Home Assistant bridge: http://127.0.0.1:$HomeAssistantBridgePort/health (bind: $HomeAssistantBridgeHost)"
-    if (-not $SkipMediapipe -and $mediapipeCameraHubLaunched) {
-        Write-Host "MediaPipe Camera Hub:  ws://127.0.0.1:$MediapipePort"
-        if ($mediapipeMonitorGuiLaunched) {
-            Write-Host "MediaPipe Monitor GUI: launched; press Connect to inspect Camera Hub topics"
-        }
-    }
-    elseif (-not $SkipMediapipe) {
-        Write-Host "MediaPipe WebSocket:   ws://127.0.0.1:$MediapipePort"
-    }
-    Write-Host "AITuber Kit:           http://127.0.0.1:$AituberPort"
-    Write-Host "Projection Visual:     http://127.0.0.1:$AituberPort/projection-visual"
-    Write-Host "AITuber Cube Vault:    http://127.0.0.1:$AituberPort/cube-vault-background?fov=60&scale=1"
-    if (-not $SkipVoicevoxCheck -and -not $SkipAituber) {
-        Write-Host "VOICEVOX:              $VoicevoxUrl"
-    }
-    if (-not $SkipTouchDesignerGui) {
-        Write-Host "TD Control GUI/API:    http://127.0.0.1:$TouchDesignerGuiPort (bind: $TouchDesignerGuiHost)"
-    }
-    if (-not $SkipDifyWatch) {
-        Write-Host "Dify watcher:          AITuber stream queue enabled"
-    }
-    if (-not $SkipDify) {
-        Write-Host "Dify:                  http://127.0.0.1:$DifyPort"
-    }
-    Write-Host "TouchDesigner UDP:     127.0.0.1:9001 (receiver; not managed by this script)"
-    Write-Host ""
-    Write-Host "Press Ctrl+C to stop home_assistant_bridge, mediapipe, aituber_kit, dify_watcher, and TD Control GUI."
-    Write-Host "TouchDesigner is intentionally not started or stopped by this script."
-    Write-Host "Dify is not stopped automatically. Use stop script with -StopDify if needed."
-    Write-Host "Status: .\status-home-control-stack.bat"
-    Write-Host ""
+    Write-StackEndpointGuide
 
     while ($true) {
         $running = 0
