@@ -1,0 +1,1190 @@
+param(
+    [string]$WorkspaceRoot = "",
+    [string]$HomeAssistantServerRoot = "",
+    [string]$MediapipeRoot = "",
+    [string]$AituberRoot = "",
+    [string]$TouchDesignerGuiRoot = "",
+    [string]$DifyWatchRoot = "",
+    [string]$DifyDockerRoot = "C:\Users\kawai\works\dify\docker",
+    [int]$HomeAssistantBridgePort = 8787,
+    [string]$HomeAssistantBridgeHost = "127.0.0.1",
+    [string]$HomeControlConfigPath = "",
+    [int]$MediapipePort = 8765,
+    [int]$AituberPort = 3000,
+    [string]$AituberHost = "127.0.0.1",
+    [int]$TouchDesignerGuiPort = 8788,
+    [string]$TouchDesignerGuiHost = "127.0.0.1",
+    [int]$DifyPort = 8080,
+    [string]$VoicevoxUrl = "",
+    [ValidateSet("gui", "headless", "camera-hub")]
+    [string]$MediapipeMode = "camera-hub",
+    [switch]$SkipDify,
+    [switch]$SkipVoicevoxCheck,
+    [switch]$SkipHomeAssistantBridge,
+    [switch]$SkipMediapipe,
+    [switch]$SkipAituber,
+    [switch]$SkipDifyWatch,
+    [switch]$SkipTouchDesignerGui,
+    [switch]$StopExisting,
+    [switch]$EnableHomeControlFaultInjection,
+    [switch]$DryRun
+)
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $utf8NoBom
+[Console]::InputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
+
+. (Join-Path $PSScriptRoot "resolve-home-control-workspace.ps1")
+$WorkspaceRoot = Resolve-HomeControlWorkspaceRoot -WorkspaceRoot $WorkspaceRoot -ScriptRoot $PSScriptRoot
+
+if ([string]::IsNullOrWhiteSpace($HomeAssistantServerRoot)) {
+    $HomeAssistantServerRoot = Join-Path $WorkspaceRoot "home-assistant-server"
+}
+if ([string]::IsNullOrWhiteSpace($MediapipeRoot)) {
+    $MediapipeRoot = Join-Path $WorkspaceRoot "mediapipe-sword-sign"
+}
+if ([string]::IsNullOrWhiteSpace($AituberRoot)) {
+    $AituberRoot = Join-Path $WorkspaceRoot "aituber-kit"
+}
+if ([string]::IsNullOrWhiteSpace($TouchDesignerGuiRoot)) {
+    $TouchDesignerGuiRoot = Join-Path $WorkspaceRoot "touchdesigner-ai-controller"
+}
+if ([string]::IsNullOrWhiteSpace($DifyWatchRoot)) {
+    $DifyWatchRoot = Join-Path $WorkspaceRoot "sword-voice-agent"
+}
+if ([string]::IsNullOrWhiteSpace($HomeControlConfigPath)) {
+    $HomeControlConfigPath = Join-Path $HomeAssistantServerRoot "config\home-control.yaml"
+}
+$HomeControlConfigPath = (Resolve-Path -LiteralPath $HomeControlConfigPath).Path
+$TouchDesignerGuiToolsRoot = Join-Path $TouchDesignerGuiRoot "tools"
+$DifyWatchScript = Join-Path $DifyWatchRoot "scripts\start-dify-watch.ps1"
+$DifyWatchEnvPath = Join-Path $DifyWatchRoot ".env"
+
+$StateDir = Join-Path $WorkspaceRoot ".cache\home-control-stack"
+$LogDir = Join-Path $StateDir "logs"
+$PidFile = Join-Path $StateDir "pids.json"
+$StopScript = Join-Path $PSScriptRoot "stop-home-control-stack.ps1"
+$DifyWatchStatusDir = Join-Path $StateDir "dify-watcher"
+
+function Resolve-Tool {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if ($Name -eq "npm") {
+        $npmCmd = Get-Command "npm.cmd" -ErrorAction SilentlyContinue
+        if ($null -ne $npmCmd) {
+            return $npmCmd.Source
+        }
+    }
+    $command = Get-Command $Name -ErrorAction Stop
+    if ($command.Source -like "*.ps1") {
+        $cmdCommand = Get-Command "$Name.cmd" -ErrorAction SilentlyContinue
+        if ($null -ne $cmdCommand) {
+            return $cmdCommand.Source
+        }
+    }
+    return $command.Source
+}
+
+function Resolve-CurrentPowerShell {
+    $currentProcess = Get-Process -Id $PID -ErrorAction SilentlyContinue
+    if ($null -ne $currentProcess -and -not [string]::IsNullOrWhiteSpace($currentProcess.Path)) {
+        return $currentProcess.Path
+    }
+    $pwsh = Get-Command "pwsh" -ErrorAction SilentlyContinue
+    if ($null -ne $pwsh) {
+        return $pwsh.Source
+    }
+    return (Get-Command "powershell" -ErrorAction Stop).Source
+}
+
+function Assert-Directory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw "$Label directory not found: $Path"
+    }
+}
+
+function Test-HttpReachable {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [int]$TimeoutSeconds = 2
+    )
+    try {
+        Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec $TimeoutSeconds | Out-Null
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-DotEnvValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return ""
+    }
+    foreach ($line in Get-Content -LiteralPath $Path -Encoding UTF8) {
+        if ($line -match "^\s*#") {
+            continue
+        }
+        if ($line -match "^\s*$([regex]::Escape($Name))\s*=\s*(.*)\s*$") {
+            $value = $matches[1].Trim()
+            if (
+                $value.Length -ge 2 -and
+                (($value.StartsWith('"') -and $value.EndsWith('"')) -or
+                 ($value.StartsWith("'") -and $value.EndsWith("'")))
+            ) {
+                return $value.Substring(1, $value.Length - 2)
+            }
+            return $value
+        }
+    }
+    return ""
+}
+
+function Test-DockerDaemon {
+    param([Parameter(Mandatory = $true)][string]$DockerPath)
+    try {
+        $output = & $DockerPath info --format "{{.ServerVersion}}" 2>&1
+        $exitCode = $LASTEXITCODE
+        return [pscustomobject]@{
+            Ok = ($exitCode -eq 0)
+            ExitCode = $exitCode
+            Detail = (($output | Out-String).Trim())
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            Ok = $false
+            ExitCode = -1
+            Detail = $_.Exception.Message
+        }
+    }
+}
+
+function Assert-DockerDesktopReady {
+    param([Parameter(Mandatory = $true)][string]$DockerPath)
+    if ($DryRun) {
+        Write-Host "[docker] dry-run: Docker Desktop readiness check skipped."
+        return
+    }
+
+    $result = Test-DockerDaemon -DockerPath $DockerPath
+    if ($result.Ok) {
+        Write-Host "[docker] Docker daemon reachable: server $($result.Detail)"
+        return
+    }
+
+    $dockerDesktopProcess = @(Get-Process -Name "Docker Desktop" -ErrorAction SilentlyContinue)
+    $linuxPipe = "\\.\pipe\dockerDesktopLinuxEngine"
+    $pipeExists = Test-Path -LiteralPath $linuxPipe
+    $processState = if ($dockerDesktopProcess.Count -gt 0) { "running" } else { "not running" }
+    $pipeState = if ($pipeExists) { "exists" } else { "missing" }
+
+    throw @"
+Docker Desktop is not ready, so Dify cannot be started.
+
+Start Docker Desktop and wait until it says "Docker Desktop is running", then rerun:
+  .\start-home-control-stack.bat -StopExisting
+
+Diagnostics:
+  docker info: $($result.Detail)
+  Docker Desktop process: $processState
+  Linux engine pipe: $pipeState ($linuxPipe)
+
+If you already run Dify another way, start this script with -SkipDify.
+"@
+}
+
+function Assert-VoicevoxReady {
+    param([Parameter(Mandatory = $true)][string]$BaseUrl)
+    if ($DryRun) {
+        Write-Host "[voicevox] dry-run: VOICEVOX readiness check skipped."
+        return
+    }
+
+    $normalizedBaseUrl = $BaseUrl.TrimEnd("/")
+    $versionUrl = "$normalizedBaseUrl/version"
+    try {
+        $response = Invoke-WebRequest -Uri $versionUrl -UseBasicParsing -TimeoutSec 2
+        $version = ($response.Content | Out-String).Trim().Trim('"')
+        if ([string]::IsNullOrWhiteSpace($version)) {
+            Write-Host "[voicevox] reachable: $normalizedBaseUrl"
+        }
+        else {
+            Write-Host "[voicevox] reachable: $normalizedBaseUrl (version $version)"
+        }
+    }
+    catch {
+        $voicevoxProcesses = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.ProcessName -match "voicevox"
+        })
+        $processState = if ($voicevoxProcesses.Count -gt 0) { "running" } else { "not found" }
+        throw @"
+VOICEVOX is not reachable, so AITuber voice output will fail.
+
+Start VOICEVOX and wait until the engine is ready, then rerun:
+  .\start-home-control-stack.bat -StopExisting
+
+Diagnostics:
+  checked URL: $versionUrl
+  VOICEVOX process: $processState
+  error: $($_.Exception.Message)
+
+If you intentionally do not use VOICEVOX, start this script with -SkipVoicevoxCheck.
+"@
+    }
+}
+
+function Assert-HomeControlBridgeTokenConfigured {
+    param([Parameter(Mandatory = $true)][string]$EnvPath)
+    if ($DryRun) {
+        Write-Host "[home_assistant_bridge] dry-run: HOME_CONTROL_API_TOKEN check skipped."
+        return
+    }
+
+    $token = Get-DotEnvValue -Path $EnvPath -Name "HOME_CONTROL_API_TOKEN"
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        throw @"
+HOME_CONTROL_API_TOKEN is missing for home_assistant_bridge.
+
+Set a random 32+ character token in:
+  $EnvPath
+
+Then set the same value in the Dify app environment variable:
+  HOME_CONTROL_API_TOKEN
+
+This token is for Dify workflow HTTP nodes calling the local Home Assistant bridge.
+"@
+    }
+    if ($token.Trim().Length -lt 32) {
+        throw @"
+HOME_CONTROL_API_TOKEN is too short for home_assistant_bridge.
+
+Use a random 32+ character token in:
+  $EnvPath
+
+Then set the same value in the Dify app environment variable:
+  HOME_CONTROL_API_TOKEN
+"@
+    }
+    Write-Host "[home_assistant_bridge] HOME_CONTROL_API_TOKEN present in $EnvPath (value hidden)"
+}
+
+function Get-HomeControlFaultConfigSummary {
+    param([Parameter(Mandatory = $true)][string]$ConfigPath)
+    $summary = [ordered]@{
+        HasFaults = $false
+        Enabled = $false
+        RuleCount = 0
+    }
+    if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        return [pscustomobject]$summary
+    }
+
+    $inFaults = $false
+    foreach ($line in Get-Content -LiteralPath $ConfigPath -Encoding UTF8) {
+        if ($line -match "^\s*faults\s*:\s*$") {
+            $inFaults = $true
+            $summary.HasFaults = $true
+            continue
+        }
+        if ($inFaults -and $line -match "^\S") {
+            break
+        }
+        if (-not $inFaults) {
+            continue
+        }
+        if ($line -match "^\s+enabled\s*:\s*true\s*(#.*)?$") {
+            $summary.Enabled = $true
+        }
+        if ($line -match "^\s+scenario\s*:") {
+            $summary.RuleCount += 1
+        }
+    }
+    return [pscustomobject]$summary
+}
+
+function Report-HomeControlFaultInjectionStatus {
+    param(
+        [Parameter(Mandatory = $true)][string]$EnvPath,
+        [Parameter(Mandatory = $true)][string]$ConfigPath,
+        [switch]$FaultModeOverride
+    )
+    $mode = (Get-DotEnvValue -Path $EnvPath -Name "HOME_CONTROL_FAULT_MODE").Trim().ToLowerInvariant()
+    $modeEnabled = $FaultModeOverride -or (@("1", "true", "yes", "on") -contains $mode)
+    $summary = Get-HomeControlFaultConfigSummary -ConfigPath $ConfigPath
+
+    if (-not $modeEnabled) {
+        if ($summary.Enabled) {
+            Write-Host "[home_assistant_bridge] fault injection rules configured but HOME_CONTROL_FAULT_MODE is off"
+        }
+        else {
+            Write-Host "[home_assistant_bridge] fault injection disabled"
+        }
+        return
+    }
+
+    if (-not $summary.Enabled) {
+        Write-Warning @"
+HOME_CONTROL_FAULT_MODE is on, but fault injection is not enabled in config.
+
+Enable faults.enabled and add rules in:
+  $ConfigPath
+
+Fault injection requires both config faults.enabled=true and HOME_CONTROL_FAULT_MODE=1.
+"@
+        return
+    }
+
+    $source = if ($FaultModeOverride) { "process override" } else { "env file" }
+    Write-Host "[home_assistant_bridge] fault injection enabled: rules=$($summary.RuleCount) ($source)"
+}
+
+function Assert-DifyWatcherApiKeyReady {
+    param([Parameter(Mandatory = $true)][string]$EnvPath)
+    if ($DryRun) {
+        Write-Host "[dify] dry-run: DIFY_API_KEY check skipped."
+        return
+    }
+
+    $baseUrl = (Get-DotEnvValue -Path $EnvPath -Name "DIFY_BASE_URL").Trim()
+    $apiKey = (Get-DotEnvValue -Path $EnvPath -Name "DIFY_API_KEY").Trim()
+    if ([string]::IsNullOrWhiteSpace($baseUrl)) {
+        throw @"
+DIFY_BASE_URL is missing for dify_watcher.
+
+Set it in:
+  $EnvPath
+
+Example:
+  DIFY_BASE_URL=http://127.0.0.1:8080/v1
+"@
+    }
+    if ([string]::IsNullOrWhiteSpace($apiKey)) {
+        throw @"
+DIFY_API_KEY is missing for dify_watcher.
+
+Set the Dify app API key in:
+  $EnvPath
+
+Open Dify, select the Home Control Assistant app, then copy the app API key from API Access.
+"@
+    }
+
+    $parametersUrl = "$($baseUrl.TrimEnd('/'))/parameters"
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 12; $attempt++) {
+        try {
+            Invoke-WebRequest `
+                -Uri $parametersUrl `
+                -UseBasicParsing `
+                -TimeoutSec 5 `
+                -Headers @{ Authorization = "Bearer $apiKey" } | Out-Null
+            Write-Host "[dify] DIFY_API_KEY valid for $parametersUrl (value hidden)"
+            return
+        }
+        catch {
+            $lastError = $_
+            $statusCode = $null
+            if ($null -ne $_.Exception.Response) {
+                try {
+                    $statusCode = [int]$_.Exception.Response.StatusCode
+                }
+                catch {
+                    $statusCode = $null
+                }
+            }
+            if ($statusCode -eq 401 -or $statusCode -eq 403) {
+                throw @"
+DIFY_API_KEY is invalid for dify_watcher.
+
+Checked:
+  $parametersUrl
+
+Update DIFY_API_KEY in:
+  $EnvPath
+
+Open Dify, select the Home Control Assistant app, then copy the current app API key from API Access.
+This is different from HOME_CONTROL_API_TOKEN.
+"@
+            }
+            Start-Sleep -Seconds 1
+        }
+    }
+
+    throw @"
+Dify API key check could not reach Dify API.
+
+Checked:
+  $parametersUrl
+
+Last error:
+  $($lastError.Exception.Message)
+
+Check DIFY_BASE_URL in:
+  $EnvPath
+
+Expected format:
+  http://127.0.0.1:8080/v1
+"@
+}
+
+function Assert-AituberDifyApiKeyReady {
+    param([Parameter(Mandatory = $true)][string]$EnvPath)
+    if ($DryRun) {
+        Write-Host "[aituber_kit] dry-run: DIFY_API_KEY check skipped."
+        return
+    }
+
+    $selectedService = (Get-DotEnvValue -Path $EnvPath -Name "NEXT_PUBLIC_SELECT_AI_SERVICE").Trim().Trim('"')
+    $apiKey = (Get-DotEnvValue -Path $EnvPath -Name "DIFY_KEY").Trim()
+    if ([string]::IsNullOrWhiteSpace($apiKey)) {
+        $apiKey = (Get-DotEnvValue -Path $EnvPath -Name "DIFY_API_KEY").Trim()
+    }
+    $baseUrl = (Get-DotEnvValue -Path $EnvPath -Name "DIFY_API_URL").Trim()
+    if ([string]::IsNullOrWhiteSpace($baseUrl)) {
+        $baseUrl = (Get-DotEnvValue -Path $EnvPath -Name "DIFY_URL").Trim()
+    }
+
+    if ($selectedService -ne "dify" -and [string]::IsNullOrWhiteSpace($apiKey) -and [string]::IsNullOrWhiteSpace($baseUrl)) {
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($baseUrl)) {
+        throw @"
+AITuber Kit is configured for Dify, but DIFY_URL is missing.
+
+Set it in:
+  $EnvPath
+
+Example:
+  DIFY_URL=http://127.0.0.1:8080/v1
+"@
+    }
+    if ([string]::IsNullOrWhiteSpace($apiKey)) {
+        throw @"
+AITuber Kit is configured for Dify, but DIFY_API_KEY is missing.
+
+Set the Dify app API key in:
+  $EnvPath
+
+Open Dify, select the Home Control Assistant app, then copy the current app API key from API Access.
+This is different from HOME_CONTROL_API_TOKEN.
+"@
+    }
+
+    $parametersUrl = "$($baseUrl.TrimEnd('/'))/parameters"
+    try {
+        Invoke-WebRequest `
+            -Uri $parametersUrl `
+            -UseBasicParsing `
+            -TimeoutSec 5 `
+            -Headers @{ Authorization = "Bearer $apiKey" } | Out-Null
+        Write-Host "[aituber_kit] DIFY_API_KEY valid for $parametersUrl (value hidden)"
+    }
+    catch {
+        $statusCode = $null
+        if ($null -ne $_.Exception.Response) {
+            try {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            }
+            catch {
+                $statusCode = $null
+            }
+        }
+        if ($statusCode -eq 401 -or $statusCode -eq 403) {
+            throw @"
+AITuber Kit DIFY_API_KEY is invalid.
+
+Checked:
+  $parametersUrl
+
+Update DIFY_API_KEY in:
+  $EnvPath
+
+Open Dify, select the Home Control Assistant app, then copy the current app API key from API Access.
+This key is also used by /api/difyChat.
+"@
+        }
+        throw @"
+AITuber Kit Dify API key check could not reach Dify API.
+
+Checked:
+  $parametersUrl
+
+Last error:
+  $($_.Exception.Message)
+
+Check DIFY_URL in:
+  $EnvPath
+"@
+    }
+}
+
+function Get-ListeningPortOwner {
+    param([Parameter(Mandatory = $true)][int]$Port)
+    return @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+}
+
+function Get-ProcessCommandLine {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+    try {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        return [string]$process.CommandLine
+    }
+    catch {
+        return ""
+    }
+}
+
+function Get-PortConflicts {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$PortSpecs
+    )
+
+    $conflicts = @()
+    foreach ($spec in $PortSpecs) {
+        $owners = @(Get-ListeningPortOwner -Port ([int]$spec.Port))
+        foreach ($owner in $owners) {
+            $pidValue = [int]$owner.OwningProcess
+            if ($pidValue -le 0 -or $pidValue -eq $PID) {
+                continue
+            }
+            $process = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
+            $conflicts += [pscustomobject]@{
+                Label = [string]$spec.Label
+                Port = [int]$spec.Port
+                PID = $pidValue
+                ProcessName = if ($null -ne $process) { $process.ProcessName } else { "" }
+                CommandLine = Get-ProcessCommandLine -ProcessId $pidValue
+            }
+        }
+    }
+    return @(
+        $conflicts |
+            Sort-Object Port, PID -Unique
+    )
+}
+
+function Resolve-PortConflicts {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$PortSpecs
+    )
+
+    $conflicts = @(Get-PortConflicts -PortSpecs $PortSpecs)
+    if ($conflicts.Count -eq 0) {
+        return
+    }
+
+    Write-Host "Processes are already using required ports:"
+    $conflicts |
+        Select-Object Label, Port, PID, ProcessName, CommandLine |
+        Format-Table -AutoSize |
+        Out-String -Width 240 |
+        Write-Host
+
+    if ($DryRun) {
+        throw "Required ports are in use. DryRun will not stop existing processes."
+    }
+
+    $shouldStop = $StopExisting
+    if (-not $shouldStop) {
+        $answer = Read-Host "Stop these existing processes and continue? [y/N]"
+        $shouldStop = $answer -match "^(y|yes)$"
+    }
+    if (-not $shouldStop) {
+        throw "Canceled because required ports are in use."
+    }
+
+    $pids = @($conflicts | Select-Object -ExpandProperty PID -Unique | Sort-Object -Descending)
+    foreach ($pidValue in $pids) {
+        $process = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
+        if ($null -eq $process) {
+            continue
+        }
+        try {
+            Stop-Process -Id $pidValue -Force -ErrorAction Stop
+            Write-Host "stopped PID $pidValue $($process.ProcessName)"
+        }
+        catch {
+            Write-Warning "failed to stop PID $pidValue $($process.ProcessName): $($_.Exception.Message)"
+        }
+    }
+
+    Start-Sleep -Milliseconds 500
+    $remaining = @(Get-PortConflicts -PortSpecs $PortSpecs)
+    if ($remaining.Count -gt 0) {
+        $summary = @($remaining | ForEach-Object { "$($_.Label):$($_.Port) PID $($_.PID)" }) -join ", "
+        throw "Some required ports are still in use: $summary"
+    }
+}
+
+function Read-PidState {
+    if (-not (Test-Path -LiteralPath $PidFile -PathType Leaf)) {
+        return $null
+    }
+    try {
+        return Get-Content -LiteralPath $PidFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-RecordedProcessesAlive {
+    $state = Read-PidState
+    if ($null -eq $state -or $null -eq $state.processes) {
+        return $false
+    }
+    foreach ($entry in $state.processes) {
+        $pidValue = [int]$entry.pid
+        if ($null -ne (Get-Process -Id $pidValue -ErrorAction SilentlyContinue)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Save-PidState {
+    param([Parameter(Mandatory = $true)][object[]]$Children)
+    New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+    $state = [pscustomobject]@{
+        started_at = [DateTimeOffset]::Now.ToString("o")
+        workspace_root = $WorkspaceRoot
+        processes = @(
+            $Children | ForEach-Object {
+                [pscustomobject]@{
+                    name = $_.Name
+                    pid = $_.Process.Id
+                    working_directory = $_.WorkingDirectory
+                    command = $_.CommandLine
+                }
+            }
+        )
+    }
+    $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $PidFile -Encoding UTF8
+}
+
+function Format-CommandLine {
+    param([Parameter(Mandatory = $true)][string[]]$Command)
+    return ($Command | ForEach-Object {
+        if ($_ -match "[\s`"]") {
+            '"' + ($_ -replace '"', '\"') + '"'
+        }
+        else {
+            $_
+        }
+    }) -join " "
+}
+
+function Invoke-External {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$Arguments = @(),
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    Write-Host "[$Label] $(Format-CommandLine -Command (@($FilePath) + $Arguments))"
+    if ($DryRun) {
+        return
+    }
+    $process = Start-Process `
+        -FilePath $FilePath `
+        -ArgumentList $Arguments `
+        -WorkingDirectory $WorkingDirectory `
+        -NoNewWindow `
+        -Wait `
+        -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "$Label exited with code $($process.ExitCode)"
+    }
+}
+
+function New-ServiceSpec {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [hashtable]$Environment = @{}
+    )
+    return [pscustomobject]@{
+        Name = $Name
+        FilePath = $FilePath
+        Arguments = $Arguments
+        WorkingDirectory = $WorkingDirectory
+        Environment = $Environment
+    }
+}
+
+function Start-SupervisedProcess {
+    param([Parameter(Mandatory = $true)][object]$Spec)
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Spec.FilePath
+    $argumentListProperty = $startInfo.GetType().GetProperty("ArgumentList")
+    if ($null -ne $argumentListProperty) {
+        foreach ($argument in $Spec.Arguments) {
+            $startInfo.ArgumentList.Add($argument)
+        }
+    }
+    else {
+        $startInfo.Arguments = Format-CommandLine -Command $Spec.Arguments
+    }
+    $startInfo.WorkingDirectory = $Spec.WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = $utf8NoBom
+    $startInfo.StandardErrorEncoding = $utf8NoBom
+    $startInfo.CreateNoWindow = $true
+    $startInfo.Environment["PYTHONUTF8"] = "1"
+    $startInfo.Environment["PYTHONIOENCODING"] = "utf-8"
+    $startInfo.Environment["NO_COLOR"] = "1"
+    $startInfo.Environment["FORCE_COLOR"] = "0"
+    $startInfo.Environment["TERM"] = "dumb"
+    $startInfo.Environment["HOME_CONTROL_WORKSPACE_ROOT"] = $WorkspaceRoot
+    $startInfo.Environment["HOME_CONTROL_STACK_STATE_DIR"] = $StateDir
+    $startInfo.Environment["MEDIAPIPE_PORT"] = [string]$MediapipePort
+    $startInfo.Environment["TOUCHDESIGNER_GUI_PORT"] = [string]$TouchDesignerGuiPort
+    $startInfo.Environment["TOUCHDESIGNER_UDP_HOST"] = "127.0.0.1"
+    $startInfo.Environment["TOUCHDESIGNER_UDP_PORT"] = "9001"
+    foreach ($key in $Spec.Environment.Keys) {
+        $startInfo.Environment[$key] = [string]$Spec.Environment[$key]
+    }
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $process.EnableRaisingEvents = $true
+    if (-not $process.Start()) {
+        throw "failed to start $($Spec.Name)"
+    }
+
+    $stdoutEvent = Register-ObjectEvent `
+        -InputObject $process `
+        -EventName OutputDataReceived `
+        -MessageData @{ Prefix = $Spec.Name } `
+        -Action {
+            $line = $EventArgs.Data
+            if ($null -ne $line) {
+                $cleanLine = [regex]::Replace($line, "`e\[[0-?]*[ -/]*[@-~]", "")
+                [Console]::Out.WriteLine("[{0}] {1}", $Event.MessageData.Prefix, $cleanLine)
+            }
+        }
+    $stderrEvent = Register-ObjectEvent `
+        -InputObject $process `
+        -EventName ErrorDataReceived `
+        -MessageData @{ Prefix = $Spec.Name } `
+        -Action {
+            $line = $EventArgs.Data
+            if ($null -ne $line) {
+                $cleanLine = [regex]::Replace($line, "`e\[[0-?]*[ -/]*[@-~]", "")
+                [Console]::Error.WriteLine("[{0}] {1}", $Event.MessageData.Prefix, $cleanLine)
+            }
+        }
+
+    $process.BeginOutputReadLine()
+    $process.BeginErrorReadLine()
+    $commandLine = Format-CommandLine -Command (@($Spec.FilePath) + $Spec.Arguments)
+    Write-Host "[$($Spec.Name)] started PID $($process.Id)"
+
+    return [pscustomobject]@{
+        Name = $Spec.Name
+        Process = $process
+        StdoutEvent = $stdoutEvent
+        StderrEvent = $stderrEvent
+        WorkingDirectory = $Spec.WorkingDirectory
+        CommandLine = $commandLine
+        NotifiedExit = $false
+    }
+}
+
+function Stop-SupervisedEvents {
+    param([object[]]$Children)
+    foreach ($child in $Children) {
+        foreach ($subscription in @($child.StdoutEvent, $child.StderrEvent)) {
+            if ($null -ne $subscription) {
+                Unregister-Event -SubscriptionId $subscription.Id -ErrorAction SilentlyContinue
+                Remove-Job -Id $subscription.Id -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+function Stop-RecordedStack {
+    if (Test-Path -LiteralPath $StopScript -PathType Leaf) {
+        & $StopScript -WorkspaceRoot $WorkspaceRoot -Force
+    }
+}
+
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
+Assert-Directory -Path $HomeAssistantServerRoot -Label "home-assistant-server"
+Assert-Directory -Path $MediapipeRoot -Label "mediapipe-sword-sign"
+Assert-Directory -Path $AituberRoot -Label "aituber-kit"
+if (-not $SkipDifyWatch) {
+    Assert-Directory -Path $DifyWatchRoot -Label "sword-voice-agent"
+    if (-not (Test-Path -LiteralPath $DifyWatchScript -PathType Leaf)) {
+        throw "Dify watcher script not found: $DifyWatchScript"
+    }
+}
+if (-not $SkipTouchDesignerGui) {
+    Assert-Directory -Path $TouchDesignerGuiRoot -Label "touchdesigner-ai-controller"
+    Assert-Directory -Path $TouchDesignerGuiToolsRoot -Label "touchdesigner-ai-controller/tools"
+}
+
+if (-not $SkipVoicevoxCheck -and -not $SkipAituber -and [string]::IsNullOrWhiteSpace($VoicevoxUrl)) {
+    $VoicevoxUrl = Get-DotEnvValue -Path (Join-Path $AituberRoot ".env") -Name "VOICEVOX_SERVER_URL"
+    if ([string]::IsNullOrWhiteSpace($VoicevoxUrl)) {
+        $VoicevoxUrl = "http://127.0.0.1:50021"
+    }
+}
+
+if (Test-RecordedProcessesAlive) {
+    if ($DryRun) {
+        Write-Host "[dry-run] a previous home-control stack appears to be running; no stop was attempted."
+    }
+    elseif ($StopExisting) {
+        Stop-RecordedStack
+    }
+    else {
+        $answer = Read-Host "A previous home-control stack appears to be running. Stop it and continue? [y/N]"
+        if ($answer -match "^(y|yes)$") {
+            Stop-RecordedStack
+        }
+        else {
+            throw "Canceled because a previous home-control stack is still running."
+        }
+    }
+}
+
+if (-not $DryRun) {
+    $requiredPorts = @()
+    if (-not $SkipHomeAssistantBridge) {
+        $requiredPorts += [pscustomobject]@{
+            Label = "home-assistant-server"
+            Port = $HomeAssistantBridgePort
+        }
+    }
+    if (-not $SkipMediapipe) {
+        $requiredPorts += [pscustomobject]@{
+            Label = "mediapipe-sword-sign"
+            Port = $MediapipePort
+        }
+    }
+    if (-not $SkipAituber) {
+        $requiredPorts += [pscustomobject]@{
+            Label = "AITuber Kit"
+            Port = $AituberPort
+        }
+    }
+    if (-not $SkipTouchDesignerGui) {
+        $requiredPorts += [pscustomobject]@{
+            Label = "TouchDesigner control GUI"
+            Port = $TouchDesignerGuiPort
+        }
+    }
+    if ($requiredPorts.Count -gt 0) {
+        Resolve-PortConflicts -PortSpecs $requiredPorts
+    }
+}
+
+$uv = Resolve-Tool -Name "uv"
+$npm = Resolve-Tool -Name "npm"
+$node = $null
+if (-not $SkipTouchDesignerGui) {
+    $node = Resolve-Tool -Name "node"
+}
+$powerShell = $null
+if (-not $SkipDifyWatch) {
+    $powerShell = Resolve-CurrentPowerShell
+}
+$docker = $null
+if (-not $SkipDify) {
+    $docker = Resolve-Tool -Name "docker"
+}
+
+if (-not $SkipDify) {
+    Assert-DockerDesktopReady -DockerPath $docker
+}
+
+if (-not $SkipVoicevoxCheck -and -not $SkipAituber) {
+    Assert-VoicevoxReady -BaseUrl $VoicevoxUrl
+}
+
+if (-not $SkipHomeAssistantBridge) {
+    Assert-HomeControlBridgeTokenConfigured -EnvPath (Join-Path $HomeAssistantServerRoot ".env")
+    Report-HomeControlFaultInjectionStatus `
+        -EnvPath (Join-Path $HomeAssistantServerRoot ".env") `
+        -ConfigPath $HomeControlConfigPath `
+        -FaultModeOverride:$EnableHomeControlFaultInjection
+}
+
+if (-not $SkipDify) {
+    if (-not (Test-Path -LiteralPath $DifyDockerRoot -PathType Container)) {
+        throw "Dify docker directory not found: $DifyDockerRoot. Use -SkipDify to skip the Dify check/start."
+    }
+    $difyUrl = "http://127.0.0.1:$DifyPort"
+    if (Test-HttpReachable -Url $difyUrl) {
+        Write-Host "[dify] reachable: $difyUrl"
+    }
+    else {
+        Invoke-External `
+            -FilePath $docker `
+            -Arguments @("compose", "up", "-d") `
+            -WorkingDirectory $DifyDockerRoot `
+            -Label "dify"
+        Write-Host "[dify] started with docker compose. UI: $difyUrl"
+    }
+}
+
+if (-not $SkipDifyWatch) {
+    Assert-DifyWatcherApiKeyReady -EnvPath $DifyWatchEnvPath
+    Write-Host "[dify] Dify app env HOME_CONTROL_API_TOKEN must match home-assistant-server\.env (not readable from dify_watcher .env)"
+}
+
+if (-not $SkipAituber) {
+    Assert-AituberDifyApiKeyReady -EnvPath (Join-Path $AituberRoot ".env")
+}
+
+$specs = @()
+$mediapipeCameraHubLaunched = $false
+$mediapipeMonitorGuiLaunched = $false
+$mediapipeLegacyWebSocketLaunched = $false
+if (-not $SkipHomeAssistantBridge) {
+    $homeAssistantBridgeEnvironment = @{
+        HOME_CONTROL_CONFIG = $HomeControlConfigPath
+    }
+    if ($EnableHomeControlFaultInjection) {
+        $homeAssistantBridgeEnvironment["HOME_CONTROL_FAULT_MODE"] = "1"
+    }
+    $specs += New-ServiceSpec `
+        -Name "home_assistant_bridge" `
+        -FilePath $uv `
+        -Arguments @(
+            "run",
+            "--env-file",
+            ".env",
+            "uvicorn",
+            "home_control_bridge.main:app",
+            "--host",
+            $HomeAssistantBridgeHost,
+            "--port",
+            [string]$HomeAssistantBridgePort
+        ) `
+        -WorkingDirectory $HomeAssistantServerRoot `
+        -Environment $homeAssistantBridgeEnvironment
+}
+if (-not $SkipMediapipe) {
+    $cameraHubServerPath = Join-Path $MediapipeRoot "apps\serve_camera_hub.py"
+    $cameraHubGuiPath = Join-Path $MediapipeRoot "apps\camera_hub_gui.py"
+    $legacyWebSocketPath = Join-Path $MediapipeRoot "apps\serve_websocket.py"
+
+    if ($MediapipeMode -eq "camera-hub" -or $MediapipeMode -eq "gui") {
+        if (-not (Test-Path -LiteralPath $cameraHubServerPath -PathType Leaf)) {
+            throw "MediaPipe Camera Hub entrypoint not found: apps\serve_camera_hub.py"
+        }
+
+        $specs += New-ServiceSpec `
+            -Name "mediapipe_camera_hub" `
+            -FilePath $uv `
+            -Arguments @(
+                "run",
+                "python",
+                "apps\serve_camera_hub.py",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                [string]$MediapipePort,
+                "--gesture-every",
+                "0.1",
+                "--gesture-model-complexity",
+                "0"
+            ) `
+            -WorkingDirectory $MediapipeRoot
+        $mediapipeCameraHubLaunched = $true
+
+        if ($MediapipeMode -eq "gui" -and (Test-Path -LiteralPath $cameraHubGuiPath -PathType Leaf)) {
+            $specs += New-ServiceSpec `
+                -Name "mediapipe_camera_hub_gui" `
+                -FilePath $uv `
+                -Arguments @(
+                    "run",
+                    "python",
+                    "apps\camera_hub_gui.py"
+                ) `
+                -WorkingDirectory $MediapipeRoot
+            $mediapipeMonitorGuiLaunched = $true
+        }
+    }
+    else {
+        if (-not (Test-Path -LiteralPath $legacyWebSocketPath -PathType Leaf)) {
+            throw "No compatible MediaPipe entrypoint found. Missing: apps\serve_camera_hub.py and apps\serve_websocket.py"
+        }
+        $specs += New-ServiceSpec `
+            -Name "mediapipe_ws" `
+            -FilePath $uv `
+            -Arguments @(
+                "run",
+                "python",
+                "apps\serve_websocket.py",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                [string]$MediapipePort
+            ) `
+            -WorkingDirectory $MediapipeRoot
+        $mediapipeLegacyWebSocketLaunched = $true
+    }
+}
+if (-not $SkipAituber) {
+    $specs += New-ServiceSpec `
+        -Name "aituber_kit" `
+        -FilePath $npm `
+        -Arguments @(
+            "run",
+            "dev",
+            "--",
+            "--hostname",
+            $AituberHost,
+            "--port",
+            [string]$AituberPort
+        ) `
+        -WorkingDirectory $AituberRoot
+}
+if (-not $SkipDifyWatch) {
+    $specs += New-ServiceSpec `
+        -Name "dify_watcher" `
+        -FilePath $powerShell `
+        -Arguments @(
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $DifyWatchScript,
+            "-EnvPath",
+            $DifyWatchEnvPath,
+            "-StatusDir",
+            $DifyWatchStatusDir
+        ) `
+        -WorkingDirectory $DifyWatchRoot
+}
+if (-not $SkipTouchDesignerGui) {
+    $specs += New-ServiceSpec `
+        -Name "touchdesigner_control_gui" `
+        -FilePath $node `
+        -Arguments @(
+            "server.js",
+            "--workspace",
+            $WorkspaceRoot,
+            "--port",
+            [string]$TouchDesignerGuiPort,
+            "--host",
+            $TouchDesignerGuiHost
+        ) `
+        -WorkingDirectory $TouchDesignerGuiToolsRoot
+}
+
+if ($DryRun) {
+    foreach ($spec in $specs) {
+        Write-Host "[$($spec.Name)] $(Format-CommandLine -Command (@($spec.FilePath) + $spec.Arguments))"
+    }
+    return
+}
+
+$children = @()
+$shutdownStarted = $false
+$exitCode = 0
+
+try {
+    foreach ($spec in $specs) {
+        $children += Start-SupervisedProcess -Spec $spec
+        Save-PidState -Children $children
+        Start-Sleep -Milliseconds 500
+    }
+
+    Write-Host ""
+    Write-Host "Stack is starting in this terminal."
+    Write-Host "Home Assistant bridge: http://127.0.0.1:$HomeAssistantBridgePort/health (bind: $HomeAssistantBridgeHost)"
+    if (-not $SkipMediapipe -and $mediapipeCameraHubLaunched) {
+        Write-Host "MediaPipe Camera Hub:  ws://127.0.0.1:$MediapipePort"
+        if ($mediapipeMonitorGuiLaunched) {
+            Write-Host "MediaPipe Monitor GUI: launched; press Connect to inspect Camera Hub topics"
+        }
+    }
+    elseif (-not $SkipMediapipe) {
+        Write-Host "MediaPipe WebSocket:   ws://127.0.0.1:$MediapipePort"
+    }
+    Write-Host "AITuber Kit:           http://127.0.0.1:$AituberPort"
+    Write-Host "Projection Visual:     http://127.0.0.1:$AituberPort/projection-visual"
+    Write-Host "AITuber Cube Vault:    http://127.0.0.1:$AituberPort/cube-vault-background?fov=60&scale=1"
+    if (-not $SkipVoicevoxCheck -and -not $SkipAituber) {
+        Write-Host "VOICEVOX:              $VoicevoxUrl"
+    }
+    if (-not $SkipTouchDesignerGui) {
+        Write-Host "TD Control GUI/API:    http://127.0.0.1:$TouchDesignerGuiPort (bind: $TouchDesignerGuiHost)"
+    }
+    if (-not $SkipDifyWatch) {
+        Write-Host "Dify watcher:          AITuber stream queue enabled"
+    }
+    if (-not $SkipDify) {
+        Write-Host "Dify:                  http://127.0.0.1:$DifyPort"
+    }
+    Write-Host "TouchDesigner UDP:     127.0.0.1:9001 (receiver; not managed by this script)"
+    Write-Host ""
+    Write-Host "Press Ctrl+C to stop home_assistant_bridge, mediapipe, aituber_kit, dify_watcher, and TD Control GUI."
+    Write-Host "TouchDesigner is intentionally not started or stopped by this script."
+    Write-Host "Dify is not stopped automatically. Use stop script with -StopDify if needed."
+    Write-Host "Status: .\status-home-control-stack.bat"
+    Write-Host ""
+
+    while ($true) {
+        $running = 0
+        foreach ($child in $children) {
+            if ($child.Process.HasExited) {
+                if (-not $child.NotifiedExit) {
+                    $child.NotifiedExit = $true
+                    $code = $child.Process.ExitCode
+                    Write-Host "[$($child.Name)] exited code=$code"
+                    if ($code -ne 0 -and -not $shutdownStarted) {
+                        $exitCode = $code
+                        $shutdownStarted = $true
+                        Stop-RecordedStack
+                    }
+                }
+            }
+            else {
+                $running += 1
+            }
+        }
+        if ($running -eq 0) {
+            break
+        }
+        Start-Sleep -Milliseconds 500
+    }
+}
+catch [System.Management.Automation.PipelineStoppedException] {
+    Write-Host "Ctrl+C received; stopping stack..."
+}
+finally {
+    if (-not $shutdownStarted) {
+        $liveChildren = @($children | Where-Object { -not $_.Process.HasExited })
+        if ($liveChildren.Count -gt 0) {
+            $shutdownStarted = $true
+            Stop-RecordedStack
+        }
+    }
+    Stop-SupervisedEvents -Children $children
+}
+
+exit $exitCode

@@ -182,7 +182,59 @@ $env:AI_TALK_CORE_ROOT
 $env:DIFY_BASE_URL
 ```
 
-### 2. 統合スタックを起動する
+### 2. Home Control Stackを起動する
+
+Projection Visual、AITuber Kit、MediaPipe Camera Hub、Dify watcher、Home Assistant bridge、TouchDesigner control GUIをまとめて動かす現行の一括起動です。
+
+正本はこの統合リポジトリの `scripts\home-control-stack\` にあります。`<workspace>` 直下の `.bat` と `scripts\*.ps1` は互換用ショートカットです。
+
+```text
+<workspace>\
+  start-home-control-stack.bat
+  status-home-control-stack.bat
+  stop-home-control-stack.bat
+  scripts\
+    start-home-control-stack.ps1
+    status-home-control-stack.ps1
+    stop-home-control-stack.ps1
+    run-home-control-fault-e2e.ps1
+
+<workspace>\sword-voice-agent\scripts\home-control-stack\
+  start-home-control-stack.ps1
+  status-home-control-stack.ps1
+  stop-home-control-stack.ps1
+  run-home-control-fault-e2e.ps1
+  install-root-shortcuts.ps1
+```
+
+通常は `<workspace>` 直下から起動します。
+
+```powershell
+cd <workspace>
+.\start-home-control-stack.bat -StopExisting
+```
+
+状態確認と停止:
+
+```powershell
+.\status-home-control-stack.bat
+.\stop-home-control-stack.bat
+```
+
+失敗注入を含むDify/Home Controlの全パターン確認:
+
+```powershell
+.\scripts\run-home-control-fault-e2e.ps1 -NoOpenBrowser -DelayBetweenCasesSeconds 1
+```
+
+rootショートカットを作り直す場合:
+
+```powershell
+cd <repo_root>
+.\scripts\home-control-stack\install-root-shortcuts.ps1 -WorkspaceRoot ..
+```
+
+### 3. 旧full-stackを使う場合
 
 まず起動予定だけ確認します。
 
@@ -203,7 +255,9 @@ cd <repo_root>
 .\scripts\start-full-stack-supervisor.ps1 -Preview -SuppressProtobufWarnings
 ```
 
-### 3. Projection Visualを開く
+この旧full-stack系スクリプトは、`ai-talk-core`、UDP receiver、TTS service、Avatar serviceなどを個別に束ねる従来構成です。Home Control Stackの現行運用では、上の `start-home-control-stack.bat` を使います。
+
+### 4. Projection Visualを開く
 
 AITuber Kitを起動します。
 
@@ -220,7 +274,7 @@ http://127.0.0.1:3000/projection-visual
 
 Chromeのマイク権限を許可してください。
 
-### 4. 動作確認する
+### 5. 動作確認する
 
 起動後は、まずmodule cardを確認します。
 
@@ -253,7 +307,7 @@ sword-voice-agent console: http://127.0.0.1:8790
 Projection Visual:          http://127.0.0.1:3000/projection-visual
 ```
 
-### 5. 停止する
+### 6. 停止する
 
 起動したPowerShellウィンドウで `Ctrl+C` を押します。
 
