@@ -16,8 +16,11 @@ param(
     [string]$TouchDesignerGuiHost = "127.0.0.1",
     [int]$DifyPort = 8080,
     [string]$VoicevoxUrl = "",
-    [ValidateSet("gui", "headless", "camera-hub")]
+    [ValidateSet("gui", "headless", "camera-hub", "mediamtx")]
     [string]$MediapipeMode = "camera-hub",
+    [string]$MediapipeCameraName = "HD Pro Webcam C920",
+    [switch]$MediapipeNoBrowser,
+    [switch]$MediapipePythonGui,
     [switch]$SkipDify,
     [switch]$SkipVoicevoxCheck,
     [switch]$SkipHomeAssistantBridge,
@@ -739,7 +742,23 @@ function Write-StackEndpointGuide {
             -Target "http://127.0.0.1:$HomeAssistantBridgePort/health" `
             -Description "家電操作ブリッジのヘルスチェック JSON。bind: $HomeAssistantBridgeHost"
     }
-    if (-not $SkipMediapipe -and $mediapipeCameraHubLaunched) {
+    if (-not $SkipMediapipe -and $mediapipeMediaMtxStackLaunched) {
+        $browserMonitorPath = Join-Path $MediapipeRoot "apps\browser_camera_hub_viewer.html"
+        $browserMonitorUrl = "file:///$($browserMonitorPath -replace '\\','/')?mediaUrl=http%3A%2F%2F127.0.0.1%3A8889%2Fcam0%3Fcontrols%3Dfalse%26muted%3Dtrue%26autoplay%3Dtrue&wsUrl=ws%3A%2F%2F127.0.0.1%3A$MediapipePort"
+        Write-GuideItem `
+            -Name "MediaPipe Browser Monitor" `
+            -Target $browserMonitorUrl `
+            -Description "MediaMTX の映像と Camera Hub の topic を同時に見るブラウザ GUI。mediamtx モードでは自動で開く。"
+        Write-GuideItem `
+            -Name "MediaMTX video" `
+            -Target "http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true" `
+            -Description "MediaMTX が配信するカメラ映像。映像だけを切り分けたいときに見る。"
+        Write-GuideItem `
+            -Name "MediaPipe Camera Hub WebSocket" `
+            -Target "ws://127.0.0.1:$MediapipePort" `
+            -Description "ジェスチャー・カメラ状態の WebSocket。ブラウザで直接開く画面ではない。"
+    }
+    elseif (-not $SkipMediapipe -and $mediapipeCameraHubLaunched) {
         Write-GuideItem `
             -Name "MediaPipe Camera Hub WebSocket" `
             -Target "ws://127.0.0.1:$MediapipePort" `
@@ -1057,6 +1076,7 @@ if (-not $SkipAituber) {
 
 $specs = @()
 $mediapipeCameraHubLaunched = $false
+$mediapipeMediaMtxStackLaunched = $false
 $mediapipeMonitorGuiLaunched = $false
 $mediapipeLegacyWebSocketLaunched = $false
 if (-not $SkipHomeAssistantBridge) {
@@ -1086,9 +1106,43 @@ if (-not $SkipHomeAssistantBridge) {
 if (-not $SkipMediapipe) {
     $cameraHubServerPath = Join-Path $MediapipeRoot "apps\serve_camera_hub.py"
     $cameraHubGuiPath = Join-Path $MediapipeRoot "apps\camera_hub_gui.py"
+    $cameraHubStackPath = Join-Path $MediapipeRoot "scripts\camera_hub_stack.py"
     $legacyWebSocketPath = Join-Path $MediapipeRoot "apps\serve_websocket.py"
 
-    if ($MediapipeMode -eq "camera-hub" -or $MediapipeMode -eq "gui") {
+    if ($MediapipeMode -eq "mediamtx") {
+        if (-not (Test-Path -LiteralPath $cameraHubStackPath -PathType Leaf)) {
+            throw "MediaPipe MediaMTX stack entrypoint not found: scripts\camera_hub_stack.py"
+        }
+
+        $cameraHubStackArgs = @(
+            "run",
+            "python",
+            "scripts\camera_hub_stack.py",
+            "--camera-name",
+            $MediapipeCameraName,
+            "--hub-port",
+            [string]$MediapipePort
+        )
+        if ($StopExisting) {
+            $cameraHubStackArgs += "--force-stop-existing"
+        }
+        if ($MediapipeNoBrowser) {
+            $cameraHubStackArgs += "--no-browser"
+        }
+        if ($MediapipePythonGui) {
+            $cameraHubStackArgs += "--python-gui"
+            $mediapipeMonitorGuiLaunched = $true
+        }
+
+        $specs += New-ServiceSpec `
+            -Name "mediapipe_camera_hub_stack" `
+            -FilePath $uv `
+            -Arguments $cameraHubStackArgs `
+            -WorkingDirectory $MediapipeRoot
+        $mediapipeCameraHubLaunched = $true
+        $mediapipeMediaMtxStackLaunched = $true
+    }
+    elseif ($MediapipeMode -eq "camera-hub" -or $MediapipeMode -eq "gui") {
         if (-not (Test-Path -LiteralPath $cameraHubServerPath -PathType Leaf)) {
             throw "MediaPipe Camera Hub entrypoint not found: apps\serve_camera_hub.py"
         }

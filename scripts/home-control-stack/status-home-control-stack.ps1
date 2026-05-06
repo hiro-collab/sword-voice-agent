@@ -175,6 +175,9 @@ function Get-StatusText {
 
     $mediapipeEntry = $pidState["mediapipe_camera_hub"]
     if ($null -eq $mediapipeEntry) {
+        $mediapipeEntry = $pidState["mediapipe_camera_hub_stack"]
+    }
+    if ($null -eq $mediapipeEntry) {
         $mediapipeEntry = $pidState["mediapipe_ws"]
     }
     $mediapipeListen = Test-TcpListen -Port $MediapipePort

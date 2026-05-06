@@ -214,6 +214,19 @@ cd <workspace>
 .\start-home-control-stack.bat -StopExisting
 ```
 
+MediaPipe の Browser Monitor GUI も一緒に開き、MediaMTX 経由のカメラ映像まで確認したい場合は `mediamtx` モードを使います。
+
+```powershell
+cd <workspace>
+.\start-home-control-stack.bat -StopExisting -MediapipeMode mediamtx
+```
+
+このモードでは `mediapipe-sword-sign\scripts\camera_hub_stack.py` を起動し、MediaMTX、FFmpeg publish、Camera Hub、Browser Monitor をまとめて扱います。カメラ名が違う場合は次のように指定します。
+
+```powershell
+.\start-home-control-stack.bat -StopExisting -MediapipeMode mediamtx -MediapipeCameraName "HD Pro Webcam C920"
+```
+
 状態確認と停止:
 
 ```powershell
