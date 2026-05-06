@@ -89,6 +89,14 @@ workflow:
         - HOME_CONTROL_API_TOKEN
       value: ''
       value_type: secret
+    - description: Environment state server current snapshot endpoint.
+      id: 1ac5c01b-d1e0-4d5f-96b1-695964b8ec1a
+      name: ENVIRONMENT_STATE_URL
+      selector:
+        - env
+        - ENVIRONMENT_STATE_URL
+      value: http://host.docker.internal:8790/environment/current
+      value_type: string
   features:
     file_upload:
       allowed_file_extensions:
@@ -141,10 +149,22 @@ workflow:
       - data:
           isInLoop: false
           sourceType: start
-          targetType: llm
+          targetType: http-request
         id: 1777639512329-source-llm-target
         selected: false
         source: '1777639512329'
+        sourceHandle: source
+        target: hca_environment_state
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInLoop: false
+          sourceType: http-request
+          targetType: llm
+        id: hca_environment_state-source-llm-target
+        selected: false
+        source: hca_environment_state
         sourceHandle: source
         target: llm
         targetHandle: target
@@ -201,10 +221,22 @@ workflow:
       - data:
           isInLoop: false
           sourceType: assigner
-          targetType: http-request
-        id: hca_issue_start_assign-source-1777639789436-target
+          targetType: answer
+        id: hca_issue_start_assign-source-hca_pre_action_answer_1-target
         selected: false
         source: hca_issue_start_assign
+        sourceHandle: source
+        target: hca_pre_action_answer_1
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInLoop: false
+          sourceType: answer
+          targetType: http-request
+        id: hca_pre_action_answer_1-source-1777639789436-target
+        selected: false
+        source: hca_pre_action_answer_1
         sourceHandle: source
         target: '1777639789436'
         targetHandle: target
@@ -225,10 +257,22 @@ workflow:
       - data:
           isInLoop: false
           sourceType: code
-          targetType: llm
-        id: 1777641577256-source-1777645000001-target
+          targetType: http-request
+        id: 1777641577256-source-hca_environment_after_1-target
         selected: false
         source: '1777641577256'
+        sourceHandle: source
+        target: hca_environment_after_1
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInLoop: false
+          sourceType: http-request
+          targetType: llm
+        id: hca_environment_after_1-source-1777645000001-target
+        selected: false
+        source: hca_environment_after_1
         sourceHandle: source
         target: '1777645000001'
         targetHandle: target
@@ -309,10 +353,22 @@ workflow:
       - data:
           isInLoop: false
           sourceType: code
-          targetType: llm
-        id: hca_result_2-source-hca_decision_llm_2-target
+          targetType: http-request
+        id: hca_result_2-source-hca_environment_after_2-target
         selected: false
         source: hca_result_2
+        sourceHandle: source
+        target: hca_environment_after_2
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInLoop: false
+          sourceType: http-request
+          targetType: llm
+        id: hca_environment_after_2-source-hca_decision_llm_2-target
+        selected: false
+        source: hca_environment_after_2
         sourceHandle: source
         target: hca_decision_llm_2
         targetHandle: target
@@ -393,10 +449,22 @@ workflow:
       - data:
           isInLoop: false
           sourceType: code
-          targetType: llm
-        id: hca_result_3-source-hca_decision_llm_3-target
+          targetType: http-request
+        id: hca_result_3-source-hca_environment_after_3-target
         selected: false
         source: hca_result_3
+        sourceHandle: source
+        target: hca_environment_after_3
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInLoop: false
+          sourceType: http-request
+          targetType: llm
+        id: hca_environment_after_3-source-hca_decision_llm_3-target
+        selected: false
+        source: hca_environment_after_3
         sourceHandle: source
         target: hca_decision_llm_3
         targetHandle: target
@@ -530,6 +598,54 @@ workflow:
         type: custom
         width: 242
       - data:
+          selected: false
+          error_strategy: default-value
+          default_value:
+            - key: body
+              type: string
+              value: '{"schema_version":1,"available":false,"stale":true,"detail":"Environment state unavailable before intent classification.","appliances":{},"actions":[]}'
+            - key: status_code
+              type: number
+              value: 599
+          title: Environment state before intent
+          type: http-request
+          authorization:
+            config: null
+            type: no-auth
+          body:
+            data: []
+            type: none
+          headers: |-
+            Authorization:Bearer {{#env.HOME_CONTROL_API_TOKEN#}}
+
+            Accept:application/json
+          method: get
+          params: ''
+          retry_config:
+            max_retries: 0
+            retry_enabled: false
+            retry_interval: 0
+          ssl_verify: true
+          timeout:
+            max_connect_timeout: 1
+            max_read_timeout: 2
+            max_write_timeout: 1
+          url: '{{#env.ENVIRONMENT_STATE_URL#}}'
+          variables: []
+        height: 172
+        id: hca_environment_state
+        position:
+          x: 40
+          'y': 120
+        positionAbsolute:
+          x: 40
+          'y': 120
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+      - data:
           context:
             enabled: false
             variable_selector: []
@@ -554,7 +670,7 @@ workflow:
             - id: 2b9813d7-d2d6-4a82-95e2-2d7463d52928
               role: system
               text: >
-                ユーザー発話を家電操作IDと確認状態に分類し、HTTPリクエスト前に返す短い即時応答も作ってください。
+                ユーザー発話とEnvironment stateを読み、家電操作IDと確認状態に分類してください。HTTPリクエスト前に返す短い即時応答と、Home Assistant実行直前に返す一言も作ってください。
 
 
                 人格・口調:
@@ -569,7 +685,7 @@ workflow:
 
                 ですます調や敬語は使いません。
 
-                ただし、このノードの出力はJSONだけです。人格・口調は ack_text の短い相槌にだけ反映し、説明文は出さないでください。
+                ただし、このノードの出力はJSONだけです。人格・口調は ack_text と pre_action_text にだけ反映し、説明文は出さないでください。
 
 
                 出力はJSONだけ。説明文は禁止。
@@ -577,7 +693,7 @@ workflow:
 
                 形式:
 
-                {"action_id":"light_on","confirmed":false,"ack_text":"[neutral]了解。"}
+                {"action_id":"light_on","confirmed":false,"ack_text":"[neutral]了解。","pre_action_text":"[neutral]ライトをつけるか。わかった、やるよ。"}
 
 
                 action_id は次のいずれか1つ。
@@ -620,6 +736,15 @@ workflow:
                 「やっぱりやめて」「キャンセル」「しないで」は action_id="none", confirmed=false。
 
 
+                Environment stateの扱い:
+
+                - appliances / actions / aliases がある場合は、そのaction registryを優先する。
+
+                - 現在状態が明らかに stale / unavailable の場合は、状態断定を避け、ユーザー発話とaction registryを中心に分類する。
+
+                - Difyの issue_id と Home Assistant / Environment 側のIDはauthorityが違う。混ぜず、必要なら relation として扱う。
+
+
                 ack_text は、後続処理までの間をつなぐ短い相槌です。HTTPリクエストや通常回答の前に即時表示されます。
 
                 必ず感情タグを1つ先頭に付け、必要ならモーションタグを1つだけ続けます。
@@ -645,6 +770,14 @@ workflow:
 
                 家電操作では、まだ実行完了ではない短い反応にする。「確認するぞ。」のような事務的な言い方より、「はいよ。」「おう、見るぞ。」「まかせな。」「ちょい待ちな。」のように自然に受ける。
 
+                pre_action_text は、家電操作に分類された場合だけ入れる。これはHome Assistant実行直前にVoiceQueueへ入る一言。
+
+                pre_action_text は1文、12〜40文字程度。「中扉を閉めるか。わかった、やるよ。」のように、聞き取った操作を自然に受けて、これから実行に回す意思を言う。
+
+                pre_action_text でも実行完了とは言わない。「できた」「完了」「開けた」「閉めた」「消した」「つけた」などの完了断定は禁止。
+
+                action_id="none" では pre_action_text は "" にする。
+
                 「電気」「照明」「ライト」は light_on / light_off の対象として扱う。
 
                 「中扉」「扉」「ドア」は door_open / door_close / door_stop の対象として扱う。「開けて」「開いて」は door_open、「閉めて」「閉じて」「閉じ」は door_close、「止めて」「停止」は door_stop。
@@ -652,24 +785,29 @@ workflow:
 
                 例。ack_text は作風サンプルであり、実出力ではその場に合わせて新しく生成する:
 
-                ユーザー発話が「ライトをつけて」なら {"action_id":"light_on","confirmed":false,"ack_text":"[neutral]おう、見るぞ。"}
+                ユーザー発話が「ライトをつけて」なら {"action_id":"light_on","confirmed":false,"ack_text":"[neutral]おう、見るぞ。","pre_action_text":"[neutral]ライトをつけるか。わかった、やるよ。"}
 
-                ユーザー発話が「電気を消してください」なら {"action_id":"light_off","confirmed":false,"ack_text":"[neutral]はいよ。"}
+                ユーザー発話が「電気を消してください」なら {"action_id":"light_off","confirmed":false,"ack_text":"[neutral]はいよ。","pre_action_text":"[neutral]電気を消すか。任せとけ。"}
 
-                ユーザー発話が「部屋の照明をつけて」なら {"action_id":"light_on","confirmed":false,"ack_text":"[relaxed]まかせな。"}
+                ユーザー発話が「部屋の照明をつけて」なら {"action_id":"light_on","confirmed":false,"ack_text":"[relaxed]まかせな。","pre_action_text":"[neutral]照明をつけるか。やってみるぞ。"}
 
-                ユーザー発話が「エアコンをつけて」なら {"action_id":"aircon_on","confirmed":false,"ack_text":"[neutral]ちょい待ちな。"}
+                ユーザー発話が「エアコンをつけて」なら {"action_id":"aircon_on","confirmed":false,"ack_text":"[neutral]ちょい待ちな。","pre_action_text":"[neutral]エアコンをつけるか。進めるぞ。"}
 
-                ユーザー発話が「中扉を開けて」なら {"action_id":"door_open","confirmed":false,"ack_text":"[neutral]はいよ。"}
+                ユーザー発話が「中扉を開けて」なら {"action_id":"door_open","confirmed":false,"ack_text":"[neutral]はいよ。","pre_action_text":"[neutral]中扉を開けるか。わかった、やるよ。"}
 
-                ユーザー発話が「中扉を閉じて」なら {"action_id":"door_close","confirmed":false,"ack_text":"[neutral]おう、見るぞ。"}
+                ユーザー発話が「中扉を閉じて」なら {"action_id":"door_close","confirmed":false,"ack_text":"[neutral]おう、見るぞ。","pre_action_text":"[neutral]中扉を閉めるか。任せな。"}
 
-                ユーザー発話が「中扉を止めて」なら {"action_id":"door_stop","confirmed":false,"ack_text":"[neutral]まかせな。"}
+                ユーザー発話が「中扉を止めて」なら {"action_id":"door_stop","confirmed":false,"ack_text":"[neutral]まかせな。","pre_action_text":"[neutral]中扉を止めるか。すぐ回すぞ。"}
 
                 直前にエアコン操作の確認を求められ、ユーザー発話が「はい、実行して」なら
-                {"action_id":"aircon_on","confirmed":true,"ack_text":"[happy]了解、進めるぞ。"}
+                {"action_id":"aircon_on","confirmed":true,"ack_text":"[happy]了解、進めるぞ。","pre_action_text":"[happy]OK、続きやるぞ。"}
 
-                ユーザー発話が「天気を教えて」なら {"action_id":"none","confirmed":false,"ack_text":"[relaxed]ほうほう。"}
+                ユーザー発話が「天気を教えて」なら {"action_id":"none","confirmed":false,"ack_text":"[relaxed]ほうほう。","pre_action_text":""}
+
+
+                Environment state JSON:
+
+                {{#hca_environment_state.body#}}
 
 
                 ユーザー発話:
@@ -823,6 +961,11 @@ workflow:
                 HTTP結果JSON:
 
                 {{#1777641577256.answer#}}
+
+
+                実行後Environment state JSON:
+
+                {{#hca_environment_after_1.body#}}
           selected: false
           title: 家電返答・判定LLM 1
           type: llm
@@ -870,6 +1013,20 @@ workflow:
             TRUE_RE = re.compile(r"(confirmed\s*[:=]\s*true|\btrue\b|,true\b)")
             CONFIRM_RE = re.compile(r"(はい|ok|OK|お願い|実行|やって|頼む|いいよ|進めて)")
             UNRESOLVED = {"open", "retrying", "need_user", "failed"}
+            ACTION_LABELS = {
+                "light_on": "ライトをつける",
+                "light_off": "ライトを消す",
+                "fan_on": "扇風機をつける",
+                "fan_off": "扇風機を消す",
+                "aircon_on": "エアコンをつける",
+                "aircon_off": "エアコンを消す",
+                "door_open": "中扉を開ける",
+                "door_close": "中扉を閉める",
+                "door_stop": "中扉を止める",
+                "vacuum_start": "掃除機を動かす",
+                "vacuum_return": "掃除機を戻す",
+                "vacuum_pause": "掃除機を一時停止する",
+            }
 
 
             def _loads_json(raw: str) -> dict:
@@ -925,6 +1082,68 @@ workflow:
                         return "door_open"
 
                 return "none"
+
+
+            def _strip_tags(text: str) -> str:
+                return re.sub(r"\[[^\]]+\]", "", text or "").strip()
+
+
+            def _tag_prefix(text: str, default: str = "[neutral]") -> str:
+                match = re.match(
+                    r"^(\[(neutral|happy|angry|sad|relaxed|surprised)\](\[motion:(think|cheer|cross|mouth_cover|crossed_arms|bow|shrug|shy|wave|clap)\])?)",
+                    text or "",
+                )
+                return match.group(1) if match else default
+
+
+            def _fallback_pre_action_text(action_id: str, confirmed: bool = False) -> str:
+                if action_id == "none":
+                    return ""
+                if confirmed:
+                    return "[happy]OK、続きやるぞ。"
+                label = ACTION_LABELS.get(action_id, "その操作")
+                return f"[neutral]{label}か。わかった、やるよ。"
+
+
+            def _sanitize_pre_action_text(value: str, action_id: str, confirmed: bool = False) -> str:
+                if action_id == "none":
+                    return ""
+                pre_action_text = (value or "").strip()
+                spoken = _strip_tags(pre_action_text)
+                tag_re = re.compile(
+                    r"^\[(neutral|happy|angry|sad|relaxed|surprised)\](\[motion:(think|cheer|cross|mouth_cover|crossed_arms|bow|shrug|shy|wave|clap)\])?.+"
+                )
+                done_words = (
+                    "実行した",
+                    "実行しました",
+                    "できた",
+                    "できました",
+                    "完了",
+                    "済んだ",
+                    "開けた",
+                    "開けました",
+                    "閉めた",
+                    "閉めました",
+                    "消した",
+                    "消しました",
+                    "つけた",
+                    "つけました",
+                    "止めた",
+                    "止めました",
+                )
+                unsafe = (
+                    not pre_action_text
+                    or not tag_re.match(pre_action_text)
+                    or spoken.count("。") + spoken.count("！") + spoken.count("？") > 2
+                    or any(word in spoken for word in done_words)
+                )
+                if unsafe:
+                    return _fallback_pre_action_text(action_id, confirmed)
+                if len(spoken) > 40:
+                    prefix = _tag_prefix(pre_action_text)
+                    trimmed = spoken[:40].rstrip("、。,.!?！？ ")
+                    return prefix + (trimmed + "…" if trimmed else "")
+                return pre_action_text
 
 
             def main(
@@ -1012,6 +1231,12 @@ workflow:
                 if len(ack_text) > 80:
                     ack_text = ack_text[:77] + "..."
 
+                pre_action_text = _sanitize_pre_action_text(
+                    str(data.get("pre_action_text") or data.get("pre_execute_text") or "").strip(),
+                    action_id,
+                    confirmed,
+                )
+
                 issue_status_initial = "open" if is_action else (active_issue_status or "")
                 issue_summary = json.dumps(
                     {
@@ -1044,6 +1269,7 @@ workflow:
                     "confirmed": confirmed,
                     "is_action": is_action,
                     "ack_text": ack_text,
+                    "pre_action_text": pre_action_text,
                     "process_input": process_input,
                     "issue_id": issue_id,
                     "issue_status_initial": issue_status_initial,
@@ -1067,6 +1293,9 @@ workflow:
               children: null
               type: boolean
             ack_text:
+              children: null
+              type: string
+            pre_action_text:
               children: null
               type: string
             process_input:
@@ -1325,6 +1554,28 @@ workflow:
         type: custom
         width: 242
       - data:
+          answer: '{{#1777642160512.pre_action_text#}}'
+          desc: ''
+          isInIteration: false
+          isInLoop: false
+          selected: false
+          title: 実行前応答 1
+          type: answer
+          variables: []
+        height: 102
+        id: hca_pre_action_answer_1
+        position:
+          x: 1020
+          'y': 250
+        positionAbsolute:
+          x: 1020
+          'y': 250
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+      - data:
           selected: false
           error_strategy: default-value
           default_value:
@@ -1531,6 +1782,54 @@ workflow:
         positionAbsolute:
           x: 1540
           'y': 250
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+      - data:
+          selected: false
+          error_strategy: default-value
+          default_value:
+            - key: body
+              type: string
+              value: '{"schema_version":1,"available":false,"stale":true,"detail":"Environment state unavailable after attempt 1.","appliances":{},"actions":[]}'
+            - key: status_code
+              type: number
+              value: 599
+          title: Environment state after HA 1
+          type: http-request
+          authorization:
+            config: null
+            type: no-auth
+          body:
+            data: []
+            type: none
+          headers: |-
+            Authorization:Bearer {{#env.HOME_CONTROL_API_TOKEN#}}
+
+            Accept:application/json
+          method: get
+          params: ''
+          retry_config:
+            max_retries: 0
+            retry_enabled: false
+            retry_interval: 0
+          ssl_verify: true
+          timeout:
+            max_connect_timeout: 1
+            max_read_timeout: 2
+            max_write_timeout: 1
+          url: '{{#env.ENVIRONMENT_STATE_URL#}}'
+          variables: []
+        height: 172
+        id: hca_environment_after_1
+        position:
+          x: 1770
+          'y': 80
+        positionAbsolute:
+          x: 1770
+          'y': 80
         selected: false
         sourcePosition: right
         targetPosition: left
@@ -2458,6 +2757,54 @@ workflow:
         width: 242
       - data:
           selected: false
+          error_strategy: default-value
+          default_value:
+            - key: body
+              type: string
+              value: '{"schema_version":1,"available":false,"stale":true,"detail":"Environment state unavailable after attempt 2.","appliances":{},"actions":[]}'
+            - key: status_code
+              type: number
+              value: 599
+          title: Environment state after HA 2
+          type: http-request
+          authorization:
+            config: null
+            type: no-auth
+          body:
+            data: []
+            type: none
+          headers: |-
+            Authorization:Bearer {{#env.HOME_CONTROL_API_TOKEN#}}
+
+            Accept:application/json
+          method: get
+          params: ''
+          retry_config:
+            max_retries: 0
+            retry_enabled: false
+            retry_interval: 0
+          ssl_verify: true
+          timeout:
+            max_connect_timeout: 1
+            max_read_timeout: 2
+            max_write_timeout: 1
+          url: '{{#env.ENVIRONMENT_STATE_URL#}}'
+          variables: []
+        height: 172
+        id: hca_environment_after_2
+        position:
+          x: 3000
+          'y': 20
+        positionAbsolute:
+          x: 3000
+          'y': 20
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+      - data:
+          selected: false
           title: 家電返答・判定LLM 2
           type: llm
           context:
@@ -2570,6 +2917,11 @@ workflow:
                 HTTP結果JSON:
 
                 {{#hca_result_2.answer#}}
+
+
+                実行後Environment state JSON:
+
+                {{#hca_environment_after_2.body#}}
           vision:
             enabled: false
         height: 88
@@ -3396,6 +3748,54 @@ workflow:
         width: 242
       - data:
           selected: false
+          error_strategy: default-value
+          default_value:
+            - key: body
+              type: string
+              value: '{"schema_version":1,"available":false,"stale":true,"detail":"Environment state unavailable after attempt 3.","appliances":{},"actions":[]}'
+            - key: status_code
+              type: number
+              value: 599
+          title: Environment state after HA 3
+          type: http-request
+          authorization:
+            config: null
+            type: no-auth
+          body:
+            data: []
+            type: none
+          headers: |-
+            Authorization:Bearer {{#env.HOME_CONTROL_API_TOKEN#}}
+
+            Accept:application/json
+          method: get
+          params: ''
+          retry_config:
+            max_retries: 0
+            retry_enabled: false
+            retry_interval: 0
+          ssl_verify: true
+          timeout:
+            max_connect_timeout: 1
+            max_read_timeout: 2
+            max_write_timeout: 1
+          url: '{{#env.ENVIRONMENT_STATE_URL#}}'
+          variables: []
+        height: 172
+        id: hca_environment_after_3
+        position:
+          x: 4680
+          'y': -70
+        positionAbsolute:
+          x: 4680
+          'y': -70
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+      - data:
+          selected: false
           title: 家電返答・判定LLM 3
           type: llm
           context:
@@ -3508,6 +3908,11 @@ workflow:
                 HTTP結果JSON:
 
                 {{#hca_result_3.answer#}}
+
+
+                実行後Environment state JSON:
+
+                {{#hca_environment_after_3.body#}}
           vision:
             enabled: false
         height: 88

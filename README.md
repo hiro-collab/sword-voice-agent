@@ -184,7 +184,7 @@ $env:DIFY_BASE_URL
 
 ### 2. Home Control Stackを起動する
 
-Projection Visual、AITuber Kit、MediaPipe Camera Hub、Dify watcher、Home Assistant bridge、TouchDesigner control GUIをまとめて動かす現行の一括起動です。
+Projection Visual、AITuber Kit、MediaPipe Camera Hub、Dify watcher、Home Assistant bridge、Environment State Server、display-runtime GUIをまとめて動かす現行の一括起動です。
 
 正本はこの統合リポジトリの `scripts\home-control-stack\` にあります。`<workspace>` 直下の `.bat` と `scripts\*.ps1` は互換用ショートカットです。
 
@@ -232,6 +232,14 @@ cd <workspace>
 ```powershell
 .\status-home-control-stack.bat
 .\stop-home-control-stack.bat
+```
+
+Environment State Server は `http://127.0.0.1:8790` で起動します。Dify は `GET /environment/current` を Bearer token 付きで参照し、HUD/Cube/display-runtime はローカル限定の `GET /indicators/current` を参照する構成へ寄せます。Dify app 側の `ENVIRONMENT_STATE_URL` は `http://host.docker.internal:8790/environment/current` にしてください。トークンは既存の `HOME_CONTROL_API_TOKEN` を使います。
+
+Environment State Server 単体の疎通確認:
+
+```powershell
+.\sword-voice-agent\scripts\home-control-stack\check-environment-state-server.ps1
 ```
 
 失敗注入を含むDify/Home Controlの全パターン確認:

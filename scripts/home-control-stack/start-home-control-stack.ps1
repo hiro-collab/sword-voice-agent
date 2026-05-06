@@ -5,10 +5,12 @@ param(
     [string]$AituberRoot = "",
     [string]$TouchDesignerGuiRoot = "",
     [string]$DifyWatchRoot = "",
+    [string]$EnvironmentStateServerRoot = "",
     [string]$DifyDockerRoot = "C:\Users\kawai\works\dify\docker",
     [int]$HomeAssistantBridgePort = 8787,
     [string]$HomeAssistantBridgeHost = "127.0.0.1",
     [string]$HomeControlConfigPath = "",
+    [int]$EnvironmentStatePort = 8790,
     [int]$MediapipePort = 8765,
     [int]$AituberPort = 3000,
     [string]$AituberHost = "127.0.0.1",
@@ -24,6 +26,7 @@ param(
     [switch]$SkipDify,
     [switch]$SkipVoicevoxCheck,
     [switch]$SkipHomeAssistantBridge,
+    [switch]$SkipEnvironmentState,
     [switch]$SkipMediapipe,
     [switch]$SkipAituber,
     [switch]$SkipDifyWatch,
@@ -59,10 +62,14 @@ if ([string]::IsNullOrWhiteSpace($TouchDesignerGuiRoot)) {
 if ([string]::IsNullOrWhiteSpace($DifyWatchRoot)) {
     $DifyWatchRoot = Join-Path $WorkspaceRoot "sword-voice-agent"
 }
+if ([string]::IsNullOrWhiteSpace($EnvironmentStateServerRoot)) {
+    $EnvironmentStateServerRoot = Join-Path $WorkspaceRoot "environment-state-server"
+}
 if ([string]::IsNullOrWhiteSpace($HomeControlConfigPath)) {
     $HomeControlConfigPath = Join-Path $HomeAssistantServerRoot "config\home-control.yaml"
 }
 $HomeControlConfigPath = (Resolve-Path -LiteralPath $HomeControlConfigPath).Path
+$HomeAssistantEnvPath = Join-Path $HomeAssistantServerRoot ".env"
 $TouchDesignerGuiToolsRoot = Join-Path $TouchDesignerGuiRoot "tools"
 $DifyWatchScript = Join-Path $DifyWatchRoot "scripts\start-dify-watch.ps1"
 $DifyWatchEnvPath = Join-Path $DifyWatchRoot ".env"
@@ -281,6 +288,45 @@ Then set the same value in the Dify app environment variable:
 "@
     }
     Write-Host "[home_assistant_bridge] HOME_CONTROL_API_TOKEN present in $EnvPath (value hidden)"
+}
+
+function Assert-EnvironmentStateTokenConfigured {
+    param([Parameter(Mandatory = $true)][string]$EnvPath)
+    if ($DryRun) {
+        Write-Host "[environment_state_server] dry-run: API token check skipped."
+        return
+    }
+
+    $token = [Environment]::GetEnvironmentVariable("ENVIRONMENT_API_TOKEN")
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        $token = Get-DotEnvValue -Path $EnvPath -Name "ENVIRONMENT_API_TOKEN"
+    }
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        $token = [Environment]::GetEnvironmentVariable("HOME_CONTROL_API_TOKEN")
+    }
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        $token = Get-DotEnvValue -Path $EnvPath -Name "HOME_CONTROL_API_TOKEN"
+    }
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        throw @"
+ENVIRONMENT_API_TOKEN or HOME_CONTROL_API_TOKEN is missing for environment_state_server.
+
+Set ENVIRONMENT_API_TOKEN or reuse HOME_CONTROL_API_TOKEN in:
+  $EnvPath
+
+Dify should call GET /environment/current with:
+  Authorization: Bearer <token>
+"@
+    }
+    if ($token.Trim().Length -lt 32) {
+        throw @"
+Environment API token is too short.
+
+Use a random 32+ character token in ENVIRONMENT_API_TOKEN or HOME_CONTROL_API_TOKEN:
+  $EnvPath
+"@
+    }
+    Write-Host "[environment_state_server] API token present in $EnvPath or process env (value hidden)"
 }
 
 function Get-HomeControlFaultConfigSummary {
@@ -742,9 +788,22 @@ function Write-StackEndpointGuide {
             -Target "http://127.0.0.1:$HomeAssistantBridgePort/health" `
             -Description "家電操作ブリッジのヘルスチェック JSON。bind: $HomeAssistantBridgeHost"
     }
+    if (-not $SkipEnvironmentState) {
+        Write-GuideItem `
+            -Name "Environment current state" `
+            -Target "http://127.0.0.1:$EnvironmentStatePort/environment/current" `
+            -Description "Dify が参照する現在状態 API。Bearer token が必要。"
+        Write-GuideItem `
+            -Name "Environment indicators" `
+            -Target "http://127.0.0.1:$EnvironmentStatePort/indicators/current" `
+            -Description "HUD/Cube 背景向けのローカル限定・表示用状態 API。"
+    }
     if (-not $SkipMediapipe -and $mediapipeMediaMtxStackLaunched) {
         $browserMonitorPath = Join-Path $MediapipeRoot "apps\browser_camera_hub_viewer.html"
-        $browserMonitorUrl = "file:///$($browserMonitorPath -replace '\\','/')?mediaUrl=http%3A%2F%2F127.0.0.1%3A8889%2Fcam0%3Fcontrols%3Dfalse%26muted%3Dtrue%26autoplay%3Dtrue&wsUrl=ws%3A%2F%2F127.0.0.1%3A$MediapipePort"
+        $browserMonitorFile = $browserMonitorPath -replace "\\", "/"
+        $encodedMediaUrl = "http%3A%2F%2F127.0.0.1%3A8889%2Fcam0%3Fcontrols%3Dfalse%26muted%3Dtrue%26autoplay%3Dtrue"
+        $encodedWsUrl = "ws%3A%2F%2F127.0.0.1%3A$MediapipePort"
+        $browserMonitorUrl = "file:///{0}?mediaUrl={1}{2}wsUrl={3}" -f $browserMonitorFile, $encodedMediaUrl, ([char]38), $encodedWsUrl
         Write-GuideItem `
             -Name "MediaPipe Browser Monitor" `
             -Target $browserMonitorUrl `
@@ -873,6 +932,7 @@ function Start-SupervisedProcess {
     $startInfo.Environment["HOME_CONTROL_WORKSPACE_ROOT"] = $WorkspaceRoot
     $startInfo.Environment["HOME_CONTROL_STACK_STATE_DIR"] = $StateDir
     $startInfo.Environment["MEDIAPIPE_PORT"] = [string]$MediapipePort
+    $startInfo.Environment["ENVIRONMENT_STATE_PORT"] = [string]$EnvironmentStatePort
     $startInfo.Environment["TOUCHDESIGNER_GUI_PORT"] = [string]$TouchDesignerGuiPort
     $startInfo.Environment["TOUCHDESIGNER_UDP_HOST"] = "127.0.0.1"
     $startInfo.Environment["TOUCHDESIGNER_UDP_PORT"] = "9001"
@@ -949,6 +1009,9 @@ New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 Assert-Directory -Path $HomeAssistantServerRoot -Label "home-assistant-server"
 Assert-Directory -Path $MediapipeRoot -Label "mediapipe-sword-sign"
 Assert-Directory -Path $AituberRoot -Label "aituber-kit"
+if (-not $SkipEnvironmentState) {
+    Assert-Directory -Path $EnvironmentStateServerRoot -Label "environment-state-server"
+}
 if (-not $SkipDifyWatch) {
     Assert-Directory -Path $DifyWatchRoot -Label "sword-voice-agent"
     if (-not (Test-Path -LiteralPath $DifyWatchScript -PathType Leaf)) {
@@ -991,6 +1054,12 @@ if (-not $DryRun) {
         $requiredPorts += [pscustomobject]@{
             Label = "home-assistant-server"
             Port = $HomeAssistantBridgePort
+        }
+    }
+    if (-not $SkipEnvironmentState) {
+        $requiredPorts += [pscustomobject]@{
+            Label = "environment-state-server"
+            Port = $EnvironmentStatePort
         }
     }
     if (-not $SkipMediapipe) {
@@ -1040,11 +1109,15 @@ if (-not $SkipVoicevoxCheck -and -not $SkipAituber) {
 }
 
 if (-not $SkipHomeAssistantBridge) {
-    Assert-HomeControlBridgeTokenConfigured -EnvPath (Join-Path $HomeAssistantServerRoot ".env")
+    Assert-HomeControlBridgeTokenConfigured -EnvPath $HomeAssistantEnvPath
     Report-HomeControlFaultInjectionStatus `
-        -EnvPath (Join-Path $HomeAssistantServerRoot ".env") `
+        -EnvPath $HomeAssistantEnvPath `
         -ConfigPath $HomeControlConfigPath `
         -FaultModeOverride:$EnableHomeControlFaultInjection
+}
+
+if (-not $SkipEnvironmentState) {
+    Assert-EnvironmentStateTokenConfigured -EnvPath $HomeAssistantEnvPath
 }
 
 if (-not $SkipDify) {
@@ -1074,6 +1147,13 @@ if (-not $SkipAituber) {
     Assert-AituberDifyApiKeyReady -EnvPath (Join-Path $AituberRoot ".env")
 }
 
+$EnvironmentVoicevoxUrl = $VoicevoxUrl
+if ([string]::IsNullOrWhiteSpace($EnvironmentVoicevoxUrl)) {
+    $EnvironmentVoicevoxUrl = "http://127.0.0.1:50021"
+}
+$EnvironmentVoicevoxHealthUrl = "$($EnvironmentVoicevoxUrl.TrimEnd('/'))/version"
+$EnvironmentStateEnvFile = $HomeAssistantEnvPath -replace "\\", "/"
+
 $specs = @()
 $mediapipeCameraHubLaunched = $false
 $mediapipeMediaMtxStackLaunched = $false
@@ -1102,6 +1182,43 @@ if (-not $SkipHomeAssistantBridge) {
         ) `
         -WorkingDirectory $HomeAssistantServerRoot `
         -Environment $homeAssistantBridgeEnvironment
+}
+if (-not $SkipEnvironmentState) {
+    $environmentStateArgs = @(
+        "run",
+        "--env-file",
+        $EnvironmentStateEnvFile,
+        "python",
+        "-m",
+        "environment_state_server.main",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        [string]$EnvironmentStatePort,
+        "--ha-events-path",
+        (Join-Path $HomeAssistantServerRoot ".cache\home_control\events.jsonl"),
+        "--camera-hub-url",
+        "ws://127.0.0.1:$MediapipePort",
+        "--home-assistant-health-url",
+        "http://127.0.0.1:$HomeAssistantBridgePort/health",
+        "--aituber-url",
+        "http://127.0.0.1:$AituberPort",
+        "--dify-url",
+        "http://127.0.0.1:$DifyPort",
+        "--voicevox-health-url",
+        $EnvironmentVoicevoxHealthUrl
+    )
+    if ($SkipHomeAssistantBridge) {
+        $environmentStateArgs += "--disable-ha-events"
+    }
+    if ($SkipMediapipe) {
+        $environmentStateArgs += "--disable-camera-hub"
+    }
+    $specs += New-ServiceSpec `
+        -Name "environment_state_server" `
+        -FilePath $uv `
+        -Arguments $environmentStateArgs `
+        -WorkingDirectory $EnvironmentStateServerRoot
 }
 if (-not $SkipMediapipe) {
     $cameraHubServerPath = Join-Path $MediapipeRoot "apps\serve_camera_hub.py"

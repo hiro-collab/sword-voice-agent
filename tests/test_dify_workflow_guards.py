@@ -25,7 +25,7 @@ def extract_code_block(title: str) -> str:
     if code_index is None:
         candidates = [
             index
-            for index in range(max(0, title_index - 320), title_index)
+            for index in range(max(0, title_index - 700), title_index)
             if "code: |" in lines[index]
         ]
         assert candidates, f"code block not found for {title}"
@@ -183,6 +183,8 @@ def test_door_action_text_is_inferred_before_issue_inheritance() -> None:
 
         assert output["action_id"] == expected_action_id
         assert output["is_action"] is True
+        assert output["pre_action_text"]
+        assert "完了" not in output["pre_action_text"]
 
     output = main(raw, "中扉を閉じて", "HCA-old", "need_user", 1, "door_open", "", "token")
 
@@ -191,6 +193,7 @@ def test_door_action_text_is_inferred_before_issue_inheritance() -> None:
     assert output["inherited_issue"] is False
     assert output["issue_id"] != "HCA-old"
     assert output["confirmation_token"] == ""
+    assert "中扉を閉める" in output["pre_action_text"]
 
 
 def test_confirmation_reply_still_inherits_pending_issue() -> None:
@@ -203,3 +206,29 @@ def test_confirmation_reply_still_inherits_pending_issue() -> None:
     assert output["inherited_issue"] is True
     assert output["issue_id"] == "HCA-old"
     assert output["confirmation_token"] == "token"
+    assert output["pre_action_text"] == "[happy]OK、続きやるぞ。"
+
+
+def test_pre_action_text_filters_completion_claims() -> None:
+    main = load_main("action_id・issue_id整形")
+    raw = json.dumps(
+        {
+            "action_id": "door_close",
+            "confirmed": False,
+            "ack_text": "[neutral]はいよ。",
+            "pre_action_text": "[happy]中扉を閉めたぜ。",
+        },
+        ensure_ascii=False,
+    )
+    output = main(raw, "中扉を閉めて")
+
+    assert output["action_id"] == "door_close"
+    assert output["pre_action_text"] == "[neutral]中扉を閉めるか。わかった、やるよ。"
+
+
+def test_environment_state_uses_home_control_token_and_default_port() -> None:
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert "http://host.docker.internal:8790/environment/current" in text
+    assert "Authorization:Bearer {{#env.HOME_CONTROL_API_TOKEN#}}" in text
+    assert "ENVIRONMENT_STATE_TOKEN" not in text

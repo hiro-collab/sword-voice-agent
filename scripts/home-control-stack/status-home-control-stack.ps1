@@ -1,6 +1,7 @@
 param(
     [string]$WorkspaceRoot = "",
     [int]$HomeAssistantBridgePort = 8787,
+    [int]$EnvironmentStatePort = 8790,
     [int]$MediapipePort = 8765,
     [int]$AituberPort = 3000,
     [int]$TouchDesignerGuiPort = 8788,
@@ -171,6 +172,16 @@ function Get-StatusText {
         -PortListening (Test-TcpListen -Port $HomeAssistantBridgePort) `
         -HttpOk $haHealth.Ok `
         -Detail $haHealth.Detail `
+        -RequireHttp $true
+
+    $environmentEntry = $pidState["environment_state_server"]
+    $environmentHealth = Invoke-JsonHealthCheck -Url "http://127.0.0.1:$EnvironmentStatePort/health"
+    $rows += New-StatusRow `
+        -Name "environment_state_server" `
+        -ProcessAlive (Test-ProcessAlive -Entry $environmentEntry) `
+        -PortListening (Test-TcpListen -Port $EnvironmentStatePort) `
+        -HttpOk $environmentHealth.Ok `
+        -Detail $environmentHealth.Detail `
         -RequireHttp $true
 
     $mediapipeEntry = $pidState["mediapipe_camera_hub"]
