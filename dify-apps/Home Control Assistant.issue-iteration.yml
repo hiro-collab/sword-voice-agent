@@ -647,6 +647,8 @@ workflow:
 
                 「電気」「照明」「ライト」は light_on / light_off の対象として扱う。
 
+                「中扉」「扉」「ドア」は door_open / door_close / door_stop の対象として扱う。「開けて」「開いて」は door_open、「閉めて」「閉じて」「閉じ」は door_close、「止めて」「停止」は door_stop。
+
 
                 例。ack_text は作風サンプルであり、実出力ではその場に合わせて新しく生成する:
 
@@ -657,6 +659,12 @@ workflow:
                 ユーザー発話が「部屋の照明をつけて」なら {"action_id":"light_on","confirmed":false,"ack_text":"[relaxed]まかせな。"}
 
                 ユーザー発話が「エアコンをつけて」なら {"action_id":"aircon_on","confirmed":false,"ack_text":"[neutral]ちょい待ちな。"}
+
+                ユーザー発話が「中扉を開けて」なら {"action_id":"door_open","confirmed":false,"ack_text":"[neutral]はいよ。"}
+
+                ユーザー発話が「中扉を閉じて」なら {"action_id":"door_close","confirmed":false,"ack_text":"[neutral]おう、見るぞ。"}
+
+                ユーザー発話が「中扉を止めて」なら {"action_id":"door_stop","confirmed":false,"ack_text":"[neutral]まかせな。"}
 
                 直前にエアコン操作の確認を求められ、ユーザー発話が「はい、実行して」なら
                 {"action_id":"aircon_on","confirmed":true,"ack_text":"[happy]了解、進めるぞ。"}
@@ -898,6 +906,27 @@ workflow:
                 return f"HCA-{stamp}-{uuid.uuid4().hex[:6]}"
 
 
+            def _compact_text(value: str) -> str:
+                return re.sub(r"\s+", "", value or "").lower()
+
+
+            def _infer_action_from_user_text(user_text: str) -> str:
+                text = _compact_text(user_text)
+                if not text:
+                    return "none"
+
+                door_target = any(marker in text for marker in ("中扉", "扉", "ドア", "door"))
+                if door_target:
+                    if any(marker in text for marker in ("止め", "停止", "ストップ", "中止", "stop")):
+                        return "door_stop"
+                    if any(marker in text for marker in ("閉め", "閉じ", "閉ま", "しめ", "とじ", "close")):
+                        return "door_close"
+                    if any(marker in text for marker in ("開け", "開い", "開く", "あけ", "ひら", "open")):
+                        return "door_open"
+
+                return "none"
+
+
             def main(
                 text: str,
                 user_text: str,
@@ -918,6 +947,10 @@ workflow:
                 if action_id not in ALLOWED_ACTIONS:
                     action_id = "none"
 
+                inferred_action_id = _infer_action_from_user_text(user_text)
+                if inferred_action_id != "none":
+                    action_id = inferred_action_id
+
                 confirmed = _as_bool(data.get("confirmed"))
                 if not confirmed and not data:
                     confirmed = bool(TRUE_RE.search(raw_lower))
@@ -931,11 +964,16 @@ workflow:
                     confirmed = False
 
                 is_action = action_id != "none"
-                inherited_issue = bool(is_action and unresolved)
+                inherited_issue = bool(
+                    is_action
+                    and unresolved
+                    and active_issue_action_id
+                    and action_id == active_issue_action_id
+                )
                 issue_id = active_issue_id if inherited_issue else (_new_issue_id() if is_action else "")
                 attempt_start = _as_int(active_issue_attempts if inherited_issue else 0, 0)
                 process_input = (user_text or "").strip()
-                confirmation_token = (active_confirmation_token or "").strip() if confirmed else ""
+                confirmation_token = (active_confirmation_token or "").strip() if confirmed and inherited_issue else ""
                 ack_text = str(data.get("ack_text") or data.get("text") or "").strip()
                 prohibited_fragments = (
                     "聞こえたぜ",
@@ -1691,24 +1729,41 @@ workflow:
                     "ちょい待",
                     "まかせな",
                     "了解。",
+                    "はい、お願い",
+                    "おっけい、お願い",
+                    "実行してくれ",
+                    "やってくれ",
+                    "頼むぜ",
                 ]
                 if any(marker in visible for marker in weak_markers):
                     return True
                 if result_status == "confirmation_required":
                     confirmation_markers = [
-                        "実行",
-                        "進め",
-                        "やる",
-                        "お願い",
-                        "ok",
-                        "はい",
+                        "まだ",
+                        "確認",
                         "承認",
                         "許可",
-                        "確認",
-                        "言ってくれ",
+                        "実行するなら",
+                        "やるなら",
+                        "進めるなら",
+                        "言って",
+                        "教えて",
                     ]
                     return not any(marker in normalized for marker in confirmation_markers)
                 if result_status == "success":
+                    wrong_success_markers = [
+                        "実行してくれ",
+                        "やってくれ",
+                        "お願い",
+                        "まだ",
+                        "確認",
+                        "承認",
+                        "許可",
+                        "やるなら",
+                        "進めるなら",
+                    ]
+                    if any(marker in normalized for marker in wrong_success_markers):
+                        return True
                     success_markers = [
                         "受け付け",
                         "受付",
@@ -1742,7 +1797,7 @@ workflow:
                         return f"[happy]{message.rstrip('。.!！')}。"
                     return f"[happy]{label}、操作は受け付けたぜ。"
                 if result_status == "confirmation_required":
-                    return f"[neutral][motion:think]{label}だな。やるなら「お願い」か「OK」って言ってくれ。"
+                    return f"[neutral][motion:think]{label}だな。まだ実行してねえぞ。やるなら「お願い」か「OK」って言ってくれ。"
                 if decision == "retry_ai":
                     return "[neutral]ちょい引っかかったな。同じ件でもう一回だけ試すぜ。"
                 return ""
@@ -2631,24 +2686,41 @@ workflow:
                     "ちょい待",
                     "まかせな",
                     "了解。",
+                    "はい、お願い",
+                    "おっけい、お願い",
+                    "実行してくれ",
+                    "やってくれ",
+                    "頼むぜ",
                 ]
                 if any(marker in visible for marker in weak_markers):
                     return True
                 if result_status == "confirmation_required":
                     confirmation_markers = [
-                        "実行",
-                        "進め",
-                        "やる",
-                        "お願い",
-                        "ok",
-                        "はい",
+                        "まだ",
+                        "確認",
                         "承認",
                         "許可",
-                        "確認",
-                        "言ってくれ",
+                        "実行するなら",
+                        "やるなら",
+                        "進めるなら",
+                        "言って",
+                        "教えて",
                     ]
                     return not any(marker in normalized for marker in confirmation_markers)
                 if result_status == "success":
+                    wrong_success_markers = [
+                        "実行してくれ",
+                        "やってくれ",
+                        "お願い",
+                        "まだ",
+                        "確認",
+                        "承認",
+                        "許可",
+                        "やるなら",
+                        "進めるなら",
+                    ]
+                    if any(marker in normalized for marker in wrong_success_markers):
+                        return True
                     success_markers = [
                         "受け付け",
                         "受付",
@@ -2682,7 +2754,7 @@ workflow:
                         return f"[happy]{message.rstrip('。.!！')}。"
                     return f"[happy]{label}、操作は受け付けたぜ。"
                 if result_status == "confirmation_required":
-                    return f"[neutral][motion:think]{label}だな。やるなら「お願い」か「OK」って言ってくれ。"
+                    return f"[neutral][motion:think]{label}だな。まだ実行してねえぞ。やるなら「お願い」か「OK」って言ってくれ。"
                 if decision == "retry_ai":
                     return "[neutral]ちょい引っかかったな。同じ件でもう一回だけ試すぜ。"
                 return ""
@@ -3552,24 +3624,41 @@ workflow:
                     "ちょい待",
                     "まかせな",
                     "了解。",
+                    "はい、お願い",
+                    "おっけい、お願い",
+                    "実行してくれ",
+                    "やってくれ",
+                    "頼むぜ",
                 ]
                 if any(marker in visible for marker in weak_markers):
                     return True
                 if result_status == "confirmation_required":
                     confirmation_markers = [
-                        "実行",
-                        "進め",
-                        "やる",
-                        "お願い",
-                        "ok",
-                        "はい",
+                        "まだ",
+                        "確認",
                         "承認",
                         "許可",
-                        "確認",
-                        "言ってくれ",
+                        "実行するなら",
+                        "やるなら",
+                        "進めるなら",
+                        "言って",
+                        "教えて",
                     ]
                     return not any(marker in normalized for marker in confirmation_markers)
                 if result_status == "success":
+                    wrong_success_markers = [
+                        "実行してくれ",
+                        "やってくれ",
+                        "お願い",
+                        "まだ",
+                        "確認",
+                        "承認",
+                        "許可",
+                        "やるなら",
+                        "進めるなら",
+                    ]
+                    if any(marker in normalized for marker in wrong_success_markers):
+                        return True
                     success_markers = [
                         "受け付け",
                         "受付",
@@ -3603,7 +3692,7 @@ workflow:
                         return f"[happy]{message.rstrip('。.!！')}。"
                     return f"[happy]{label}、操作は受け付けたぜ。"
                 if result_status == "confirmation_required":
-                    return f"[neutral][motion:think]{label}だな。やるなら「お願い」か「OK」って言ってくれ。"
+                    return f"[neutral][motion:think]{label}だな。まだ実行してねえぞ。やるなら「お願い」か「OK」って言ってくれ。"
                 if decision == "retry_ai":
                     return "[neutral]ちょい引っかかったな。同じ件でもう一回だけ試すぜ。"
                 return ""

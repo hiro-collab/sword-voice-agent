@@ -14,10 +14,22 @@ WORKFLOW_PATH = (
 def extract_code_block(title: str) -> str:
     lines = WORKFLOW_PATH.read_text(encoding="utf-8").splitlines()
     title_index = next(index for index, line in enumerate(lines) if f"title: {title}" in line)
-    code_index = title_index
-    while code_index < len(lines) and "code: |" not in lines[code_index]:
-        code_index += 1
-    assert code_index < len(lines), f"code block not found for {title}"
+    code_index = next(
+        (
+            index
+            for index in range(title_index, min(len(lines), title_index + 120))
+            if "code: |" in lines[index]
+        ),
+        None,
+    )
+    if code_index is None:
+        candidates = [
+            index
+            for index in range(max(0, title_index - 320), title_index)
+            if "code: |" in lines[index]
+        ]
+        assert candidates, f"code block not found for {title}"
+        code_index = candidates[-1]
 
     content_indent = len(lines[code_index]) - len(lines[code_index].lstrip(" ")) + 2
     prefix = " " * content_indent
@@ -62,6 +74,7 @@ def test_confirmation_required_echo_is_replaced_with_confirmation_prompt() -> No
 
         assert output["decision"] == "ask_user"
         assert output["issue_status"] == "need_user"
+        assert "まだ実行して" in output["user_reply"]
         assert "お願い" in output["user_reply"]
         assert "OK" in output["user_reply"]
         assert "ほしいんだな" not in output["user_reply"]
@@ -93,3 +106,100 @@ def test_success_echo_is_replaced_with_bridge_message() -> None:
         assert output["decision"] == "finish"
         assert output["issue_status"] == "resolved"
         assert output["user_reply"] == "[happy]中扉を開けました。"
+
+
+def test_confirmation_required_permission_only_reply_is_replaced() -> None:
+    result = {
+        "issue_id": "hca-test",
+        "attempt": 1,
+        "status": "confirmation_required",
+        "bridge_status": "confirmation_required",
+        "action_id": "door_close",
+        "label": "中扉を閉める",
+    }
+    weak_decision = {
+        "issue_id": "hca-test",
+        "attempt": 1,
+        "user_reply": "[neutral]おっけい、お願い！",
+        "decision": "finish",
+        "issue_status": "closed",
+        "action_id": "door_close",
+    }
+
+    for title in ("判定JSON整形 1", "判定JSON整形 2", "判定JSON整形 3"):
+        main = load_main(title)
+        output = main(json.dumps(weak_decision, ensure_ascii=False), json.dumps(result, ensure_ascii=False), "token")
+
+        assert output["decision"] == "ask_user"
+        assert output["issue_status"] == "need_user"
+        assert "中扉を閉める" in output["user_reply"]
+        assert "まだ実行して" in output["user_reply"]
+
+
+def test_success_permission_or_execute_request_is_replaced_with_bridge_message() -> None:
+    result = {
+        "issue_id": "hca-test",
+        "attempt": 1,
+        "status": "success",
+        "bridge_status": "submitted",
+        "action_id": "door_open",
+        "label": "中扉を開ける",
+        "bridge_message": "中扉を開けました。",
+    }
+    weak_replies = [
+        "[happy]はい、お願い！",
+        "[happy]おっしゃ、実行してくれ！",
+    ]
+
+    for title in ("判定JSON整形 1", "判定JSON整形 2", "判定JSON整形 3"):
+        main = load_main(title)
+        for user_reply in weak_replies:
+            weak_decision = {
+                "issue_id": "hca-test",
+                "attempt": 1,
+                "user_reply": user_reply,
+                "decision": "ask_user",
+                "issue_status": "need_user",
+                "action_id": "door_open",
+            }
+            output = main(json.dumps(weak_decision, ensure_ascii=False), json.dumps(result, ensure_ascii=False), "")
+
+            assert output["decision"] == "finish"
+            assert output["issue_status"] == "resolved"
+            assert output["user_reply"] == "[happy]中扉を開けました。"
+
+
+def test_door_action_text_is_inferred_before_issue_inheritance() -> None:
+    main = load_main("action_id・issue_id整形")
+    raw = '{"action_id":"none","confirmed":false,"ack_text":"[neutral]はいよ。"}'
+
+    for user_text, expected_action_id in (
+        ("中扉を開けて", "door_open"),
+        ("中扉を閉じて", "door_close"),
+        ("中扉を閉じ", "door_close"),
+        ("中扉を止めて", "door_stop"),
+    ):
+        output = main(raw, user_text)
+
+        assert output["action_id"] == expected_action_id
+        assert output["is_action"] is True
+
+    output = main(raw, "中扉を閉じて", "HCA-old", "need_user", 1, "door_open", "", "token")
+
+    assert output["action_id"] == "door_close"
+    assert output["is_action"] is True
+    assert output["inherited_issue"] is False
+    assert output["issue_id"] != "HCA-old"
+    assert output["confirmation_token"] == ""
+
+
+def test_confirmation_reply_still_inherits_pending_issue() -> None:
+    main = load_main("action_id・issue_id整形")
+    raw = '{"action_id":"none","confirmed":false,"ack_text":"[neutral]はいよ。"}'
+    output = main(raw, "はい、実行して", "HCA-old", "need_user", 1, "door_open", "", "token")
+
+    assert output["action_id"] == "door_open"
+    assert output["confirmed"] is True
+    assert output["inherited_issue"] is True
+    assert output["issue_id"] == "HCA-old"
+    assert output["confirmation_token"] == "token"
