@@ -795,6 +795,10 @@ workflow:
                 - retry_ai の場合、next_input は自分が次試行に渡す短い入力にする。新しいissue_idは作らない。
                 - user_reply で「もう一回試す」「再試行する」と言う場合、decision は必ず retry_ai にする。decision が ask_user または finish の場合は、再試行するように聞こえる表現を使わない。
 
+                - ユーザー発話を言い換えるだけで終わらない。「中扉を開けてほしいんだな」のような確認だけの user_reply は禁止。
+                confirmation_required では、必ず「まだ実行していない」ことと、承認するための短い言い方を含める。
+                success では、bridge_message または label に基づき、命令を受け付けたことが分かる文にする。
+
                 - 最大試行回数は3回。現在 attempt=1。attempt=3では retry_ai を選ばない。
 
                 - user_reply は1〜2文で、感情タグを先頭に付ける。自然な場面では感情タグの直後にモーションタグを1つ付けてよい。利用可能な感情タグ: [neutral] [happy] [angry]
@@ -1665,6 +1669,85 @@ workflow:
                 return any(marker in normalized for marker in markers)
 
 
+            def _visible_reply(text: str) -> str:
+                without_tags = re.sub(r"\[[^\]]+\]", "", text or "")
+                return re.sub(r"\s+", "", without_tags).strip()
+
+
+            def _needs_guarded_reply(user_reply: str, result_status: str) -> bool:
+                visible = _visible_reply(user_reply)
+                normalized = visible.lower()
+                if not visible:
+                    return True
+                weak_markers = [
+                    "してほしい",
+                    "ほしいんだな",
+                    "件か",
+                    "操作だな",
+                    "見るぞ",
+                    "はいよ",
+                    "ふんふん",
+                    "ほうほう",
+                    "ちょい待",
+                    "まかせな",
+                    "了解。",
+                ]
+                if any(marker in visible for marker in weak_markers):
+                    return True
+                if result_status == "confirmation_required":
+                    confirmation_markers = [
+                        "実行",
+                        "進め",
+                        "やる",
+                        "お願い",
+                        "ok",
+                        "はい",
+                        "承認",
+                        "許可",
+                        "確認",
+                        "言ってくれ",
+                    ]
+                    return not any(marker in normalized for marker in confirmation_markers)
+                if result_status == "success":
+                    success_markers = [
+                        "受け付け",
+                        "受付",
+                        "送った",
+                        "出した",
+                        "通った",
+                        "できた",
+                        "やった",
+                        "完了",
+                        "動かした",
+                        "つけた",
+                        "消した",
+                        "開けた",
+                        "閉めた",
+                        "止めた",
+                        "開始",
+                        "戻した",
+                        "一時停止",
+                        "済み",
+                        "済ん",
+                    ]
+                    return not any(marker in visible for marker in success_markers)
+                return False
+
+
+            def _fallback_user_reply(result: dict, result_status: str, decision: str, action_id: str) -> str:
+                label = str(result.get("label") or action_id or "その操作").strip()
+                message = str(result.get("bridge_message") or "").strip()
+                if result_status == "success":
+                    if message:
+                        return f"[happy]{message.rstrip('。.!！')}。"
+                    return f"[happy]{label}、操作は受け付けたぜ。"
+                if result_status == "confirmation_required":
+                    return f"[neutral][motion:think]{label}だな。やるなら「お願い」か「OK」って言ってくれ。"
+                if decision == "retry_ai":
+                    return "[neutral]ちょい引っかかったな。同じ件でもう一回だけ試すぜ。"
+                return ""
+
+
             def main(text: str, result_json: str, result_confirmation_token: str = "") -> dict:
                 decision_data = _loads(text)
                 result = _loads(result_json)
@@ -1725,7 +1808,10 @@ workflow:
                     if issue_status in {"closed", "failed"}:
                         confirmation_token = ""
 
-                if not user_reply:
+                fallback_reply = _fallback_user_reply(result, result_status, decision, action_id)
+                if fallback_reply and _needs_guarded_reply(user_reply, result_status):
+                    user_reply = fallback_reply
+                elif not user_reply:
                     if result_status == "success":
                         user_reply = "[happy]よし、操作は受け付けたぜ。"
                     elif result_status == "confirmation_required":
@@ -2409,6 +2495,10 @@ workflow:
                 - retry_ai の場合、next_input は自分が次試行に渡す短い入力にする。新しいissue_idは作らない。
                 - user_reply で「もう一回試す」「再試行する」と言う場合、decision は必ず retry_ai にする。decision が ask_user または finish の場合は、再試行するように聞こえる表現を使わない。
 
+                - ユーザー発話を言い換えるだけで終わらない。「中扉を開けてほしいんだな」のような確認だけの user_reply は禁止。
+                confirmation_required では、必ず「まだ実行していない」ことと、承認するための短い言い方を含める。
+                success では、bridge_message または label に基づき、命令を受け付けたことが分かる文にする。
+
                 - 最大試行回数は3回。現在 attempt=2。attempt=3では retry_ai を選ばない。
 
                 - user_reply は1〜2文で、感情タグを先頭に付ける。自然な場面では感情タグの直後にモーションタグを1つ付けてよい。利用可能な感情タグ: [neutral] [happy] [angry]
@@ -2519,6 +2609,85 @@ workflow:
                 return any(marker in normalized for marker in markers)
 
 
+            def _visible_reply(text: str) -> str:
+                without_tags = re.sub(r"\[[^\]]+\]", "", text or "")
+                return re.sub(r"\s+", "", without_tags).strip()
+
+
+            def _needs_guarded_reply(user_reply: str, result_status: str) -> bool:
+                visible = _visible_reply(user_reply)
+                normalized = visible.lower()
+                if not visible:
+                    return True
+                weak_markers = [
+                    "してほしい",
+                    "ほしいんだな",
+                    "件か",
+                    "操作だな",
+                    "見るぞ",
+                    "はいよ",
+                    "ふんふん",
+                    "ほうほう",
+                    "ちょい待",
+                    "まかせな",
+                    "了解。",
+                ]
+                if any(marker in visible for marker in weak_markers):
+                    return True
+                if result_status == "confirmation_required":
+                    confirmation_markers = [
+                        "実行",
+                        "進め",
+                        "やる",
+                        "お願い",
+                        "ok",
+                        "はい",
+                        "承認",
+                        "許可",
+                        "確認",
+                        "言ってくれ",
+                    ]
+                    return not any(marker in normalized for marker in confirmation_markers)
+                if result_status == "success":
+                    success_markers = [
+                        "受け付け",
+                        "受付",
+                        "送った",
+                        "出した",
+                        "通った",
+                        "できた",
+                        "やった",
+                        "完了",
+                        "動かした",
+                        "つけた",
+                        "消した",
+                        "開けた",
+                        "閉めた",
+                        "止めた",
+                        "開始",
+                        "戻した",
+                        "一時停止",
+                        "済み",
+                        "済ん",
+                    ]
+                    return not any(marker in visible for marker in success_markers)
+                return False
+
+
+            def _fallback_user_reply(result: dict, result_status: str, decision: str, action_id: str) -> str:
+                label = str(result.get("label") or action_id or "その操作").strip()
+                message = str(result.get("bridge_message") or "").strip()
+                if result_status == "success":
+                    if message:
+                        return f"[happy]{message.rstrip('。.!！')}。"
+                    return f"[happy]{label}、操作は受け付けたぜ。"
+                if result_status == "confirmation_required":
+                    return f"[neutral][motion:think]{label}だな。やるなら「お願い」か「OK」って言ってくれ。"
+                if decision == "retry_ai":
+                    return "[neutral]ちょい引っかかったな。同じ件でもう一回だけ試すぜ。"
+                return ""
+
+
             def main(text: str, result_json: str, result_confirmation_token: str = "") -> dict:
                 decision_data = _loads(text)
                 result = _loads(result_json)
@@ -2579,7 +2748,10 @@ workflow:
                     if issue_status in {"closed", "failed"}:
                         confirmation_token = ""
 
-                if not user_reply:
+                fallback_reply = _fallback_user_reply(result, result_status, decision, action_id)
+                if fallback_reply and _needs_guarded_reply(user_reply, result_status):
+                    user_reply = fallback_reply
+                elif not user_reply:
                     if result_status == "success":
                         user_reply = "[happy]よし、操作は受け付けたぜ。"
                     elif result_status == "confirmation_required":
@@ -3244,6 +3416,10 @@ workflow:
                 - retry_ai の場合、next_input は自分が次試行に渡す短い入力にする。新しいissue_idは作らない。
                 - user_reply で「もう一回試す」「再試行する」と言う場合、decision は必ず retry_ai にする。decision が ask_user または finish の場合は、再試行するように聞こえる表現を使わない。
 
+                - ユーザー発話を言い換えるだけで終わらない。「中扉を開けてほしいんだな」のような確認だけの user_reply は禁止。
+                confirmation_required では、必ず「まだ実行していない」ことと、承認するための短い言い方を含める。
+                success では、bridge_message または label に基づき、命令を受け付けたことが分かる文にする。
+
                 - 最大試行回数は3回。現在 attempt=3。attempt=3では retry_ai を選ばない。
 
                 - user_reply は1〜2文で、感情タグを先頭に付ける。自然な場面では感情タグの直後にモーションタグを1つ付けてよい。利用可能な感情タグ: [neutral] [happy] [angry]
@@ -3354,6 +3530,85 @@ workflow:
                 return any(marker in normalized for marker in markers)
 
 
+            def _visible_reply(text: str) -> str:
+                without_tags = re.sub(r"\[[^\]]+\]", "", text or "")
+                return re.sub(r"\s+", "", without_tags).strip()
+
+
+            def _needs_guarded_reply(user_reply: str, result_status: str) -> bool:
+                visible = _visible_reply(user_reply)
+                normalized = visible.lower()
+                if not visible:
+                    return True
+                weak_markers = [
+                    "してほしい",
+                    "ほしいんだな",
+                    "件か",
+                    "操作だな",
+                    "見るぞ",
+                    "はいよ",
+                    "ふんふん",
+                    "ほうほう",
+                    "ちょい待",
+                    "まかせな",
+                    "了解。",
+                ]
+                if any(marker in visible for marker in weak_markers):
+                    return True
+                if result_status == "confirmation_required":
+                    confirmation_markers = [
+                        "実行",
+                        "進め",
+                        "やる",
+                        "お願い",
+                        "ok",
+                        "はい",
+                        "承認",
+                        "許可",
+                        "確認",
+                        "言ってくれ",
+                    ]
+                    return not any(marker in normalized for marker in confirmation_markers)
+                if result_status == "success":
+                    success_markers = [
+                        "受け付け",
+                        "受付",
+                        "送った",
+                        "出した",
+                        "通った",
+                        "できた",
+                        "やった",
+                        "完了",
+                        "動かした",
+                        "つけた",
+                        "消した",
+                        "開けた",
+                        "閉めた",
+                        "止めた",
+                        "開始",
+                        "戻した",
+                        "一時停止",
+                        "済み",
+                        "済ん",
+                    ]
+                    return not any(marker in visible for marker in success_markers)
+                return False
+
+
+            def _fallback_user_reply(result: dict, result_status: str, decision: str, action_id: str) -> str:
+                label = str(result.get("label") or action_id or "その操作").strip()
+                message = str(result.get("bridge_message") or "").strip()
+                if result_status == "success":
+                    if message:
+                        return f"[happy]{message.rstrip('。.!！')}。"
+                    return f"[happy]{label}、操作は受け付けたぜ。"
+                if result_status == "confirmation_required":
+                    return f"[neutral][motion:think]{label}だな。やるなら「お願い」か「OK」って言ってくれ。"
+                if decision == "retry_ai":
+                    return "[neutral]ちょい引っかかったな。同じ件でもう一回だけ試すぜ。"
+                return ""
+
+
             def main(text: str, result_json: str, result_confirmation_token: str = "") -> dict:
                 decision_data = _loads(text)
                 result = _loads(result_json)
@@ -3414,7 +3669,10 @@ workflow:
                     if issue_status in {"closed", "failed"}:
                         confirmation_token = ""
 
-                if not user_reply:
+                fallback_reply = _fallback_user_reply(result, result_status, decision, action_id)
+                if fallback_reply and _needs_guarded_reply(user_reply, result_status):
+                    user_reply = fallback_reply
+                elif not user_reply:
                     if result_status == "success":
                         user_reply = "[happy]よし、操作は受け付けたぜ。"
                     elif result_status == "confirmation_required":
