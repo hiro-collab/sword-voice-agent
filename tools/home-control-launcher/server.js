@@ -377,38 +377,61 @@ const quoteArg = (arg) => {
 
 const formatCommand = (command) => command.map(quoteArg).join(' ')
 
+const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const scriptSupportsParameter = (scriptPath, name) => {
+  try {
+    const text = fs.readFileSync(scriptPath, 'utf8')
+    return new RegExp(`\\$${escapeRegExp(name)}\\b`).test(text)
+  } catch {
+    return true
+  }
+}
+
 const addParam = (args, name, value) => {
   args.push(`-${name}`)
   args.push(String(value))
 }
 
+const addSupportedParam = (scriptPath, args, name, value) => {
+  if (scriptSupportsParameter(scriptPath, name)) {
+    addParam(args, name, value)
+  }
+}
+
+const addSupportedSwitch = (scriptPath, args, name) => {
+  if (scriptSupportsParameter(scriptPath, name)) {
+    args.push(`-${name}`)
+  }
+}
+
 const buildStackArgs = (options) => {
   const stackArgs = []
-  addParam(stackArgs, 'HomeAssistantBridgeHost', options.HomeAssistantBridgeHost)
-  addParam(stackArgs, 'HomeAssistantBridgePort', options.HomeAssistantBridgePort)
-  addParam(stackArgs, 'EnvironmentStatePort', options.EnvironmentStatePort)
-  addParam(stackArgs, 'MediapipePort', options.MediapipePort)
-  addParam(stackArgs, 'VisionSnapshotProcessorPort', options.VisionSnapshotProcessorPort)
-  addParam(stackArgs, 'AituberHost', options.AituberHost)
-  addParam(stackArgs, 'AituberPort', options.AituberPort)
-  addParam(stackArgs, 'TouchDesignerGuiHost', options.TouchDesignerGuiHost)
-  addParam(stackArgs, 'TouchDesignerGuiPort', options.TouchDesignerGuiPort)
-  addParam(stackArgs, 'DifyPort', options.DifyPort)
-  addParam(stackArgs, 'MediapipeMode', options.MediapipeMode)
-  addParam(stackArgs, 'MediapipeCameraName', options.MediapipeCameraName)
+  addSupportedParam(START_SCRIPT, stackArgs, 'HomeAssistantBridgeHost', options.HomeAssistantBridgeHost)
+  addSupportedParam(START_SCRIPT, stackArgs, 'HomeAssistantBridgePort', options.HomeAssistantBridgePort)
+  addSupportedParam(START_SCRIPT, stackArgs, 'EnvironmentStatePort', options.EnvironmentStatePort)
+  addSupportedParam(START_SCRIPT, stackArgs, 'MediapipePort', options.MediapipePort)
+  addSupportedParam(START_SCRIPT, stackArgs, 'VisionSnapshotProcessorPort', options.VisionSnapshotProcessorPort)
+  addSupportedParam(START_SCRIPT, stackArgs, 'AituberHost', options.AituberHost)
+  addSupportedParam(START_SCRIPT, stackArgs, 'AituberPort', options.AituberPort)
+  addSupportedParam(START_SCRIPT, stackArgs, 'TouchDesignerGuiHost', options.TouchDesignerGuiHost)
+  addSupportedParam(START_SCRIPT, stackArgs, 'TouchDesignerGuiPort', options.TouchDesignerGuiPort)
+  addSupportedParam(START_SCRIPT, stackArgs, 'DifyPort', options.DifyPort)
+  addSupportedParam(START_SCRIPT, stackArgs, 'MediapipeMode', options.MediapipeMode)
+  addSupportedParam(START_SCRIPT, stackArgs, 'MediapipeCameraName', options.MediapipeCameraName)
 
   if (options.VoicevoxUrl) {
-    addParam(stackArgs, 'VoicevoxUrl', options.VoicevoxUrl)
+    addSupportedParam(START_SCRIPT, stackArgs, 'VoicevoxUrl', options.VoicevoxUrl)
   }
   if (options.DifyDockerRoot) {
-    addParam(stackArgs, 'DifyDockerRoot', options.DifyDockerRoot)
+    addSupportedParam(START_SCRIPT, stackArgs, 'DifyDockerRoot', options.DifyDockerRoot)
   }
   if (options.HomeControlConfigPath) {
-    addParam(stackArgs, 'HomeControlConfigPath', options.HomeControlConfigPath)
+    addSupportedParam(START_SCRIPT, stackArgs, 'HomeControlConfigPath', options.HomeControlConfigPath)
   }
   for (const key of SWITCH_FIELDS) {
     if (options[key]) {
-      stackArgs.push(`-${key}`)
+      addSupportedSwitch(START_SCRIPT, stackArgs, key)
     }
   }
   return stackArgs
