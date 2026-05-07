@@ -12,7 +12,7 @@ from .responders import (
     describe_responder,
 )
 from .schema import TurnInput
-from .tools import MockThoughtTools, ThoughtTools
+from .tools import ThoughtTools, build_tools_from_env, detect_home_light_intent
 
 
 class ThoughtLoop:
@@ -24,7 +24,7 @@ class ThoughtLoop:
         source: str = "thought-core",
         responder: TurnResponder | None = None,
     ) -> None:
-        self.tools = tools or MockThoughtTools()
+        self.tools = tools or build_tools_from_env()
         self.max_execute_attempts = max(1, max_execute_attempts)
         self.source = source
         self.responder = responder or EnvironmentTurnResponder.from_env()
@@ -34,7 +34,7 @@ class ThoughtLoop:
         factory = EventFactory(turn_input.turn_id, turn_input.session_id, source=self.source)
         events: list[ThoughtEvent] = []
         try:
-            if not self._is_home_light_turn_on(turn_input.text):
+            if detect_home_light_intent(turn_input.text) is None:
                 self._handle_general_turn(events, factory, turn_input)
                 return events
 
@@ -62,13 +62,38 @@ class ThoughtLoop:
                 lambda: self.tools.home_preview(turn_input, observation),
             )
             action = preview.get("action", {})
+            if preview.get("status") not in {"ok", "preview"} or not action:
+                events.append(
+                    factory.emit(
+                        "feedback.requested",
+                        {
+                            "reason": "action_preview_failed",
+                            "speech": "家電操作の準備で止まりました。ブリッジ設定を確認します。",
+                            "display": "家電操作の準備に失敗しました",
+                            "preview_status": preview.get("status"),
+                            "preview_error": preview.get("error"),
+                        },
+                    )
+                )
+                events.append(
+                    factory.emit(
+                        "turn.completed",
+                        {
+                            "status": "needs_feedback",
+                            "action": action,
+                            "preview_status": preview.get("status"),
+                        },
+                    )
+                )
+                return events
             events.append(factory.emit("action.proposed", {"action": action}))
 
+            messages = self._home_action_messages(action)
             self._emit_message(
                 events,
                 factory,
-                speech="了解、リビングの電気をつけるね。",
-                display="リビングの電気をつけます",
+                speech=messages["before_speech"],
+                display=messages["before_display"],
                 emotion="confident",
                 motion="nod",
                 priority="immediate",
@@ -100,12 +125,12 @@ class ThoughtLoop:
                     )
                 )
 
-                if self._action_succeeded(action, after_observation):
+                if self._action_succeeded(action, after_observation, execute_result):
                     self._emit_message(
                         events,
                         factory,
-                        speech="リビングの電気をつけたよ。",
-                        display="リビングの電気をONにしました",
+                        speech=messages["success_speech"],
+                        display=messages["success_display"],
                         emotion="satisfied",
                         motion="small_nod",
                         priority="normal",
@@ -141,7 +166,7 @@ class ThoughtLoop:
                         "feedback.requested",
                         {
                             "reason": "verification_failed",
-                            "speech": "電気がついたか確認できませんでした。状態を確認してもらえますか？",
+                            "speech": messages["feedback_speech"],
                             "display": "電気の状態確認が必要です",
                             "attempts": attempt,
                             "last_execute_status": execute_result.get("status"),
@@ -283,22 +308,44 @@ class ThoughtLoop:
             )
         )
 
-    def _is_home_light_turn_on(self, text: str) -> bool:
-        normalized = text.replace(" ", "")
-        return ("電気" in normalized or "ライト" in normalized) and (
-            "つけ" in normalized or "点け" in normalized or "on" in normalized.lower()
-        )
+    def _home_action_messages(self, action: dict[str, Any]) -> dict[str, str]:
+        target_name = str(action.get("target_name") or "電気")
+        expected_state = action.get("expected_state")
+        if expected_state == "off":
+            return {
+                "before_speech": f"了解、{target_name}を消すね。",
+                "before_display": f"{target_name}を消します",
+                "success_speech": f"{target_name}を消したよ。",
+                "success_display": f"{target_name}をOFFにしました",
+                "feedback_speech": "電気が消えたか確認できませんでした。状態を確認してもらえますか？",
+            }
+        return {
+            "before_speech": f"了解、{target_name}をつけるね。",
+            "before_display": f"{target_name}をつけます",
+            "success_speech": f"{target_name}をつけたよ。",
+            "success_display": f"{target_name}をONにしました",
+            "feedback_speech": "電気がついたか確認できませんでした。状態を確認してもらえますか？",
+        }
 
-    def _action_succeeded(self, action: dict[str, Any], observation: dict[str, Any]) -> bool:
+    def _action_succeeded(
+        self,
+        action: dict[str, Any],
+        observation: dict[str, Any],
+        execute_result: dict[str, Any],
+    ) -> bool:
         expected_state = action.get("expected_state")
         target = action.get("target")
+        target_aliases = action.get("target_aliases")
+        targets = {str(target)} if target is not None else set()
+        if isinstance(target_aliases, list):
+            targets.update(str(item) for item in target_aliases)
         facts = observation.get("facts", {})
         devices = facts.get("devices", [])
         if not isinstance(devices, list):
-            return False
+            return bool(execute_result.get("verified_by_bridge"))
         for device in devices:
             if not isinstance(device, dict):
                 continue
-            if device.get("id") == target and device.get("state") == expected_state:
+            if str(device.get("id")) in targets and device.get("state") == expected_state:
                 return True
-        return False
+        return bool(execute_result.get("verified_by_bridge"))

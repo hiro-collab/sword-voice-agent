@@ -49,6 +49,12 @@ tool は単発能力として扱います。
 - `memory.write`
 - `web.search`
 
+`home.preview` / `home.execute` は `thought-core.tool_adapter.v0` の境界です。
+既定は依存なしの mock adapter で、スタック起動時に Home Assistant bridge が有効な場合だけ
+`THOUGHT_CORE_TOOLS_ADAPTER=home_control` と bridge URL / token がプロセス環境から渡されます。
+この adapter は bridge の allowlist 上の `action_id` だけを呼び、Home Assistant の
+service 名や entity 名は Thought Core 側では生成しません。
+
 `home.execute` は retry を隠しません。1回だけコマンド実行を試み、その結果を返します。
 再観測、成功評価、再試行、ユーザー確認、終了判断は `thought-core` の loop 側が担当します。
 

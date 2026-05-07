@@ -1,6 +1,7 @@
 import json
 import sys
 import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib import request
 
@@ -14,7 +15,7 @@ sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 from thought_core.loop import ThoughtLoop  # noqa: E402
 from thought_core.responders import ResponderResult  # noqa: E402
 from thought_core.server import create_server  # noqa: E402
-from thought_core.tools import MockThoughtTools  # noqa: E402
+from thought_core.tools import HomeControlHttpTools, HomeControlToolConfig, MockThoughtTools  # noqa: E402
 
 
 TURN = {
@@ -94,6 +95,148 @@ class ThoughtCoreContractTest(TestCase):
                 "turn.completed",
             ],
         )
+
+    def test_light_off_uses_home_tool_path(self) -> None:
+        tools = MockThoughtTools(light_on=True)
+        turn = {
+            **TURN,
+            "text": "リビングの電気を消して",
+            "turn_id": "turn_light_off",
+        }
+
+        events = ThoughtLoop(tools=tools).run_dicts(turn)
+        event_types = [event["type"] for event in events]
+        action_event = next(event for event in events if event["type"] == "action.proposed")
+        speeches = [
+            event["data"]["speech"]
+            for event in events
+            if event["type"] == "assistant.message"
+        ]
+
+        self.assertNotIn("responder.started", event_types)
+        self.assertEqual(action_event["data"]["action"]["action_id"], "light_off")
+        self.assertEqual(action_event["data"]["action"]["expected_state"], "off")
+        self.assertIn("了解、リビングの電気を消すね。", speeches)
+        self.assertIn("リビングの電気を消したよ。", speeches)
+        self.assertEqual(events[-1]["data"]["status"], "success")
+
+    def test_home_control_http_tools_call_bridge_execute(self) -> None:
+        calls: list[dict[str, object]] = []
+        state = {"light": "on"}
+
+        class BridgeHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                calls.append(
+                    {
+                        "method": "GET",
+                        "path": self.path,
+                        "authorization": self.headers.get("Authorization"),
+                    }
+                )
+                self._send_json(
+                    {
+                        "snapshot_id": "env_test",
+                        "appliances": {
+                            "light": {
+                                "state": state["light"],
+                                "updated_at": "2026-05-08T00:00:00+00:00",
+                                "source": "home_assistant",
+                            }
+                        },
+                        "last_home_assistant_events": [],
+                        "state_queries": {},
+                    }
+                )
+
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                calls.append(
+                    {
+                        "method": "POST",
+                        "path": self.path,
+                        "authorization": self.headers.get("Authorization"),
+                        "body": body,
+                    }
+                )
+                if self.path == "/actions/light_off/preview":
+                    self._send_json(
+                        {
+                            "ok": True,
+                            "action_id": "light_off",
+                            "executed": False,
+                            "status": "preview",
+                            "confirmation_required": False,
+                            "message": "preview",
+                            "speak": "preview",
+                            "expected_state": "off",
+                            "expected_effect": {"expected_state": "off"},
+                        }
+                    )
+                    return
+                if self.path == "/actions/light_off/execute":
+                    state["light"] = "off"
+                    self._send_json(
+                        {
+                            "ok": True,
+                            "action_id": "light_off",
+                            "executed": True,
+                            "status": "submitted",
+                            "confirmation_required": False,
+                            "message": "done",
+                            "speak": "done",
+                            "execution_id": "exec_test",
+                            "expected_state": "off",
+                            "expected_effect": {"expected_state": "off"},
+                        }
+                    )
+                    return
+                self._send_json({"ok": False, "error": "not_found"}, status=404)
+
+            def log_message(self, format, *args):  # type: ignore[no-untyped-def]  # noqa: A002
+                return
+
+            def _send_json(self, payload: dict[str, object], status: int = 200) -> None:
+                raw = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), BridgeHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            tools = HomeControlHttpTools(
+                HomeControlToolConfig(
+                    bridge_base_url=base_url,
+                    api_token="bridge-token",
+                    environment_state_url=f"{base_url}/environment/current",
+                    environment_api_token="environment-token",
+                    timeout_s=2,
+                )
+            )
+            events = ThoughtLoop(tools=tools).run_dicts(
+                {
+                    **TURN,
+                    "text": "リビングの電気を消して",
+                    "turn_id": "turn_bridge_light_off",
+                }
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        self.assertEqual(events[-1]["data"]["status"], "success")
+        post_paths = [call["path"] for call in calls if call["method"] == "POST"]
+        self.assertEqual(post_paths, ["/actions/light_off/preview", "/actions/light_off/execute"])
+        execute_call = calls[2]
+        self.assertEqual(execute_call["authorization"], "Bearer bridge-token")
+        self.assertEqual(execute_call["body"]["source"], "thought-core")
+        self.assertEqual(execute_call["body"]["request_id"], "turn_bridge_light_off-attempt-1")
 
     def test_general_turn_uses_responder_boundary(self) -> None:
         events = ThoughtLoop(responder=StaticResponder()).run_dicts(GENERAL_TURN)

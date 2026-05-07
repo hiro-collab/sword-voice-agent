@@ -1552,6 +1552,34 @@ foreach ($name in @(
         $thoughtCoreEnvironment[$name] = $value
     }
 }
+if ($EnableThoughtCore -and (-not $SkipHomeAssistantBridge)) {
+    $homeControlToken = [Environment]::GetEnvironmentVariable("HOME_CONTROL_API_TOKEN")
+    if ([string]::IsNullOrWhiteSpace($homeControlToken)) {
+        $homeControlToken = Get-DotEnvValue -Path $HomeAssistantEnvPath -Name "HOME_CONTROL_API_TOKEN"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($homeControlToken)) {
+        $thoughtCoreEnvironment["THOUGHT_CORE_TOOLS_ADAPTER"] = "home_control"
+        $thoughtCoreEnvironment["HOME_CONTROL_BRIDGE_URL"] = "http://127.0.0.1:$HomeAssistantBridgePort"
+        $thoughtCoreEnvironment["HOME_ASSISTANT_BRIDGE_URL"] = "http://127.0.0.1:$HomeAssistantBridgePort"
+        $thoughtCoreEnvironment["HOME_CONTROL_API_TOKEN"] = $homeControlToken
+    }
+}
+if ($EnableThoughtCore -and (-not $SkipEnvironmentState)) {
+    $environmentToken = [Environment]::GetEnvironmentVariable("ENVIRONMENT_API_TOKEN")
+    if ([string]::IsNullOrWhiteSpace($environmentToken)) {
+        $environmentToken = Get-DotEnvValue -Path $HomeAssistantEnvPath -Name "ENVIRONMENT_API_TOKEN"
+    }
+    if ([string]::IsNullOrWhiteSpace($environmentToken)) {
+        $environmentToken = [Environment]::GetEnvironmentVariable("HOME_CONTROL_API_TOKEN")
+    }
+    if ([string]::IsNullOrWhiteSpace($environmentToken)) {
+        $environmentToken = Get-DotEnvValue -Path $HomeAssistantEnvPath -Name "HOME_CONTROL_API_TOKEN"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($environmentToken)) {
+        $thoughtCoreEnvironment["ENVIRONMENT_STATE_URL"] = "http://127.0.0.1:$EnvironmentStatePort/environment/current"
+        $thoughtCoreEnvironment["ENVIRONMENT_API_TOKEN"] = $environmentToken
+    }
+}
 if ($StartThoughtCoreService) {
     $specs += New-ServiceSpec `
         -Name "thought_core_api" `
