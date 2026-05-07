@@ -3,12 +3,15 @@ import json
 from pathlib import Path
 import shutil
 from unittest import TestCase
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreHandoffError
+from sword_voice_agent.adapters.status_store import StatusStore
 from sword_voice_agent.adapters.thought_core import ThoughtCoreStreamEvent
 from sword_voice_agent.apps.watch_handoff_to_thought_core import (
     HandoffSignature,
+    ThoughtCoreAituberForwarder,
     build_parser,
     format_missing_handoff_message,
     format_watch_start_message,
@@ -139,6 +142,102 @@ class WatchHandoffToThoughtCoreTest(TestCase):
             self.assertTrue(result["skipped"])
             self.assertEqual(result["skip_reason"], "no_speech_placeholder")
             self.assertEqual(client.turn_payloads, [])
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_thought_core.request.urlopen")
+    def test_run_once_forwards_tts_chunks(self, urlopen: MagicMock) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+        urlopen.return_value = response
+
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            write_handoff(root, command="電気つけて", turn_id="turn-tts")
+            client = FakeThoughtCoreClient()
+            args = build_parser().parse_args(
+                [
+                    "--ai-talk-core-root",
+                    str(root),
+                    "--once",
+                    "--session-id",
+                    "living_room_main",
+                    "--status-dir",
+                    "",
+                    "--tts-chunk-url",
+                    "http://127.0.0.1:8765/api/tts/chunk",
+                    "--tts-http-timeout-s",
+                    "0.1",
+                ]
+            )
+
+            run_once(args, client=client)
+
+        payloads = [
+            json.loads(call.args[0].data.decode("utf-8"))
+            for call in urlopen.call_args_list
+        ]
+        self.assertEqual(payloads[0]["delta"], "了解")
+        self.assertEqual(payloads[0]["turn_id"], "turn-tts")
+        self.assertEqual(payloads[-1]["event"], "turn.completed")
+        self.assertTrue(payloads[-1]["final"])
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_thought_core.request.urlopen")
+    def test_run_once_posts_local_ack_and_assistant_message_to_aituber(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+        urlopen.return_value = response
+
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            write_handoff(root, command="電気つけて", turn_id="turn-aituber")
+            client = FakeThoughtCoreClient()
+            args = build_parser().parse_args(
+                [
+                    "--ai-talk-core-root",
+                    str(root),
+                    "--once",
+                    "--session-id",
+                    "living_room_main",
+                    "--status-dir",
+                    "",
+                    "--aituber-message-url",
+                    "http://127.0.0.1:3000/api/messages?clientId=client-1&type=direct_send",
+                    "--aituber-http-timeout-s",
+                    "0.1",
+                ]
+            )
+
+            run_once(args, client=client)
+
+        payloads = [
+            json.loads(call.args[0].data.decode("utf-8"))
+            for call in urlopen.call_args_list
+        ]
+        self.assertEqual(
+            [payload["messages"][0] for payload in payloads],
+            ["[neutral]はいよ。", "了解です"],
+        )
+
+    def test_aituber_forward_error_redacts_message_url(self) -> None:
+        with workspace_tempdir() as tmp:
+            store = StatusStore(Path(tmp) / ".cache" / "sword_voice_agent")
+            forwarder = ThoughtCoreAituberForwarder(
+                "https://aituber.example.test/api/messages?token=secret",
+                timeout_s=0.1,
+                store=store,
+                turn_id="turn-1",
+            )
+
+            forwarder.record_error("connection failed")
+
+            events = store.read_events()
+            self.assertEqual(events[0]["type"], "aituber.forward_error")
+            self.assertEqual(events[0]["source"], "watch_handoff_to_thought_core")
+            self.assertEqual(events[0]["payload"]["message_url"], "[redacted]")
+            self.assertTrue(events[0]["payload"]["message_url_present"])
+            self.assertNotIn("secret", json.dumps(events, ensure_ascii=False))
 
     def test_handoff_signature_changes_when_content_changes(self) -> None:
         with workspace_tempdir() as tmp:

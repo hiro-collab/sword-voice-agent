@@ -174,6 +174,15 @@ uv run sword-thought-core-watch --skip-existing --print-events
 `--skip-existing` は、起動時点で既にある handoff を処理せず、次に保存される handoff を待ちます。
 まだ `.cache/codex/web_latest.json` が無い場合も、そのまま監視し続けます。
 
+thought-core の応答を外側ランタイムへ流す場合は、必要な出力先だけ指定します。
+`assistant.speech_delta` は TTS chunk API へ、`assistant.message` は AITuberKit direct_send へ送ります。
+
+```powershell
+uv run sword-thought-core-watch --ai-talk-core-root ..\ai-talk-core --skip-existing --print-events --tts-chunk-url http://127.0.0.1:8765/api/tts/chunk --aituber-message-url "http://127.0.0.1:3000/api/messages?clientId=sword&type=direct_send"
+```
+
+AITuberKit への短い先行相づちを止める場合は `--local-ack-mode off` を指定します。
+
 現在の handoff を1回だけ処理する場合:
 
 ```powershell

@@ -1,24 +1,29 @@
 from __future__ import annotations
 
 import argparse
+import queue
 from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import threading
 import time
-from typing import Any
+from typing import Any, Callable
+from urllib import error, request
 
 from sword_voice_agent.adapters.ai_talk_core import (
     AiTalkCoreHandoffError,
     get_handoff_json_path,
 )
+from sword_voice_agent.adapters.auth import validate_http_url
 from sword_voice_agent.adapters.thought_core import (
     ThoughtCoreClient,
     ThoughtCoreClientError,
     ThoughtCoreStreamEvent,
 )
-from sword_voice_agent.adapters.status_store import StatusStore
+from sword_voice_agent.adapters.status_store import StatusStore, redacted_text
 from sword_voice_agent.apps.send_handoff_to_thought_core import (
     build_result,
     format_event_line,
@@ -30,6 +35,7 @@ from sword_voice_agent.apps.thought_core_status import build_thought_core_status
 NO_SPEECH_PLACEHOLDER = "音声を認識できませんでした。"
 THOUGHT_CORE_WATCHER_MODULE = "thought_core_watcher"
 THOUGHT_CORE_WATCHER_LABEL = "thought-core watcher"
+LOCAL_ACK_MODES = {"auto", "off"}
 
 
 @dataclass(frozen=True)
@@ -123,6 +129,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for latest status snapshots and events.jsonl.",
     )
     parser.add_argument(
+        "--tts-chunk-url",
+        default=os.environ.get("TTS_HTTP_CHUNK_URL", ""),
+        help="Optional tts-service /api/tts/chunk URL for thought-core speech deltas.",
+    )
+    parser.add_argument(
+        "--tts-http-timeout-s",
+        type=float,
+        default=default_tts_http_timeout_s(),
+        help="Timeout for each local TTS chunk POST.",
+    )
+    parser.add_argument(
+        "--aituber-message-url",
+        default=os.environ.get("AITUBER_MESSAGE_URL", ""),
+        help="Optional AITuberKit /api/messages URL for assistant.message output.",
+    )
+    parser.add_argument(
+        "--aituber-http-timeout-s",
+        type=float,
+        default=default_aituber_http_timeout_s(),
+        help="Timeout for each AITuberKit direct_send POST.",
+    )
+    parser.add_argument(
+        "--local-ack-mode",
+        choices=sorted(LOCAL_ACK_MODES),
+        default=default_local_ack_mode(),
+        help="Post a tiny local AITuber acknowledgement before the thought-core request.",
+    )
+    parser.add_argument(
         "--poll-interval-s",
         type=float,
         default=0.5,
@@ -201,11 +235,31 @@ def run_once(
     client: ThoughtCoreClient | None = None,
 ) -> dict[str, Any]:
     result = build_result(args)
+    status_store = StatusStore(args.status_dir) if args.status_dir else None
+    turn_id = turn_id_from_result(result)
+    stream_handlers: list[Callable[[ThoughtCoreStreamEvent], None]] = []
     status_writer = build_thought_core_status_writer(
         args.status_dir,
         result,
         source="watch_handoff_to_thought_core",
     )
+    if status_writer is not None:
+        stream_handlers.append(status_writer)
+    tts_forwarder = ThoughtCoreTtsForwarder.from_args(
+        args,
+        store=status_store,
+        turn_id=turn_id,
+    )
+    if tts_forwarder is not None:
+        stream_handlers.append(tts_forwarder)
+    aituber_forwarder = ThoughtCoreAituberForwarder.from_args(
+        args,
+        store=status_store,
+        turn_id=turn_id,
+    )
+    if aituber_forwarder is not None:
+        stream_handlers.append(aituber_forwarder)
+
     text = str(result["turn_payload"].get("text") or "")
     if should_skip_text(text, args):
         result["skipped"] = True
@@ -213,34 +267,116 @@ def run_once(
         save_result_outputs(args, result)
         if status_writer is not None:
             status_writer.finish(result)
+        close_stream_handlers(stream_handlers)
         return result
 
     result["skipped"] = False
     if args.dry_run:
         save_result_outputs(args, result)
+        close_stream_handlers(stream_handlers)
         return result
 
     events: list[dict[str, Any]] = []
 
     def on_event(event: ThoughtCoreStreamEvent) -> None:
         events.append(event.to_dict())
-        if status_writer is not None:
-            status_writer(event)
+        for stream_handler in stream_handlers:
+            stream_handler(event)
         if args.print_events:
             print(format_event_line(event), flush=True)
 
     thought_core = client or ThoughtCoreClient.from_env()
-    response = thought_core.send_turn_streaming(result["turn_payload"], on_event=on_event)
+    try:
+        if should_post_local_ack(args, aituber_forwarder):
+            aituber_forwarder.post_local_ack(build_local_ack(text))
+        response = thought_core.send_turn_streaming(
+            result["turn_payload"],
+            on_event=on_event,
+        )
+    except Exception:
+        close_stream_handlers(stream_handlers)
+        raise
     result["events"] = events
     result["response"] = response.to_dict()
     save_result_outputs(args, result)
-    if status_writer is not None:
-        status_writer.finish(result)
+    for stream_handler in stream_handlers:
+        finish = getattr(stream_handler, "finish", None)
+        if callable(finish):
+            finish(result)
     return result
+
+
+def turn_id_from_result(result: dict[str, Any]) -> str | None:
+    turn_payload = result.get("turn_payload")
+    if not isinstance(turn_payload, dict):
+        return None
+    turn_id = str(turn_payload.get("turn_id") or "").strip()
+    return turn_id or None
+
+
+def close_stream_handlers(
+    handlers: list[Callable[[ThoughtCoreStreamEvent], None]],
+) -> None:
+    for handler in handlers:
+        close = getattr(handler, "close", None)
+        if callable(close):
+            close()
+
+
+def should_post_local_ack(
+    args: argparse.Namespace,
+    aituber_forwarder: "ThoughtCoreAituberForwarder | None",
+) -> bool:
+    if aituber_forwarder is None:
+        return False
+    return str(getattr(args, "local_ack_mode", "auto") or "auto") != "off"
 
 
 def should_skip_text(text: str, args: argparse.Namespace) -> bool:
     return not args.send_no_speech and text.strip() == NO_SPEECH_PLACEHOLDER
+
+
+def default_tts_http_timeout_s() -> float:
+    try:
+        return max(0.05, float(os.environ.get("TTS_HTTP_TIMEOUT_S", "0.75")))
+    except ValueError:
+        return 0.75
+
+
+def default_aituber_http_timeout_s() -> float:
+    try:
+        return max(0.05, float(os.environ.get("AITUBER_HTTP_TIMEOUT_S", "0.75")))
+    except ValueError:
+        return 0.75
+
+
+def default_local_ack_mode() -> str:
+    value = os.environ.get("THOUGHT_CORE_LOCAL_ACK_MODE", "auto").strip().lower()
+    return value if value in LOCAL_ACK_MODES else "auto"
+
+
+def build_local_ack(text: str) -> str:
+    compact = re.sub(r"\s+", "", text)
+    if any(
+        marker in compact
+        for marker in (
+            "つけて",
+            "付けて",
+            "点けて",
+            "消して",
+            "開けて",
+            "閉めて",
+            "オンにして",
+            "オフにして",
+        )
+    ):
+        return "[neutral]はいよ。"
+    if any(
+        marker in compact
+        for marker in ("ついてる", "点いてる", "消えてる", "明るさ", "照明", "電気")
+    ):
+        return "[relaxed]ふんふん。"
+    return "[neutral]うん。"
 
 
 def save_result_outputs(
@@ -293,6 +429,282 @@ def resolve_default_cache_dir(args: argparse.Namespace) -> Path | None:
     if args.handoff_json:
         return Path(args.handoff_json).resolve().parent
     return None
+
+
+class AsyncJsonPostWorker:
+    def __init__(
+        self,
+        url: str,
+        *,
+        timeout_s: float,
+        on_error: Callable[[str], None],
+        enabled: bool = False,
+        queue_size: int = 100,
+    ) -> None:
+        self.url = url
+        self.timeout_s = max(0.05, timeout_s)
+        self.on_error = on_error
+        self._closed = False
+        self._queue: queue.Queue[bytes | None] | None = None
+        self._thread: threading.Thread | None = None
+        if enabled:
+            self._queue = queue.Queue(maxsize=max(1, queue_size))
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+
+    def post(self, body: bytes) -> None:
+        if self._closed:
+            self.on_error("forward worker is already closed")
+            return
+        if self._queue is None:
+            self._post_body(body)
+            return
+        try:
+            self._queue.put_nowait(body)
+        except queue.Full:
+            self.on_error("forward queue full")
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._queue is None or self._thread is None:
+            return
+        pending = self._queue.qsize()
+        try:
+            self._queue.put(None, timeout=self.timeout_s)
+        except queue.Full:
+            self.on_error("forward queue full during close")
+            return
+        wait_s = max(1.0, (pending + 1) * self.timeout_s + 0.5)
+        self._thread.join(timeout=wait_s)
+        if self._thread.is_alive():
+            self.on_error("forward worker did not stop before timeout")
+
+    def _run(self) -> None:
+        if self._queue is None:
+            return
+        while True:
+            body = self._queue.get()
+            try:
+                if body is None:
+                    return
+                self._post_body(body)
+            finally:
+                self._queue.task_done()
+
+    def _post_body(self, body: bytes) -> None:
+        req = request.Request(
+            self.url,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with request.urlopen(req, timeout=self.timeout_s) as response:
+                response.read()
+        except (error.HTTPError, error.URLError, TimeoutError, OSError) as exc:
+            self.on_error(str(exc))
+
+
+class ThoughtCoreTtsForwarder:
+    def __init__(
+        self,
+        chunk_url: str,
+        *,
+        timeout_s: float,
+        async_post: bool = False,
+        store: StatusStore | None = None,
+        turn_id: str | None = None,
+    ) -> None:
+        self.chunk_url = validate_http_url(chunk_url, label="--tts-chunk-url")
+        self.timeout_s = max(0.05, timeout_s)
+        self.store = store
+        self.turn_id = turn_id
+        self.final_sent = False
+        self.error_count = 0
+        self.poster = AsyncJsonPostWorker(
+            self.chunk_url,
+            timeout_s=self.timeout_s,
+            on_error=self.record_error,
+            enabled=async_post,
+        )
+
+    @classmethod
+    def from_args(
+        cls,
+        args: argparse.Namespace,
+        *,
+        store: StatusStore | None = None,
+        turn_id: str | None = None,
+    ) -> "ThoughtCoreTtsForwarder | None":
+        chunk_url = str(getattr(args, "tts_chunk_url", "") or "").strip()
+        if not chunk_url:
+            return None
+        return cls(
+            chunk_url,
+            timeout_s=float(getattr(args, "tts_http_timeout_s", 0.75)),
+            async_post=True,
+            store=store,
+            turn_id=turn_id,
+        )
+
+    def __call__(self, event: ThoughtCoreStreamEvent) -> None:
+        if event.is_speech_delta and event.speech_delta:
+            self.post(thought_core_tts_chunk_payload(event, turn_id=self.turn_id))
+        if event.is_completed and not self.final_sent:
+            self.final_sent = True
+            self.post(
+                thought_core_tts_chunk_payload(
+                    event,
+                    turn_id=self.turn_id,
+                    final=True,
+                )
+            )
+
+    def finish(self, result: dict[str, Any]) -> None:
+        try:
+            response = result.get("response")
+            if self.final_sent or result.get("skipped") or not isinstance(response, dict):
+                return
+            self.final_sent = True
+            self.post(
+                {
+                    "event": "turn.completed",
+                    "final": True,
+                    "turn_id": self.turn_id,
+                    "message_id": response.get("message_id"),
+                    "conversation_id": response.get("conversation_id"),
+                }
+            )
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        self.poster.close()
+
+    def post(self, payload: dict[str, Any]) -> None:
+        clean_payload = {
+            key: value
+            for key, value in payload.items()
+            if value is not None and value != ""
+        }
+        body = json.dumps(clean_payload, ensure_ascii=False).encode("utf-8")
+        self.poster.post(body)
+
+    def record_error(self, message: str) -> None:
+        self.error_count += 1
+        if self.error_count != 1 or self.store is None:
+            return
+        self.store.append_event(
+            "tts.forward_error",
+            source="watch_handoff_to_thought_core",
+            turn_id=self.turn_id,
+            payload={
+                "chunk_url": redacted_text(self.chunk_url),
+                "chunk_url_present": bool(self.chunk_url),
+                "error": message[:240],
+            },
+        )
+
+
+class ThoughtCoreAituberForwarder:
+    def __init__(
+        self,
+        message_url: str,
+        *,
+        timeout_s: float,
+        async_post: bool = False,
+        store: StatusStore | None = None,
+        turn_id: str | None = None,
+    ) -> None:
+        self.message_url = validate_http_url(message_url, label="--aituber-message-url")
+        self.timeout_s = max(0.05, timeout_s)
+        self.store = store
+        self.turn_id = turn_id
+        self.error_count = 0
+        self.poster = AsyncJsonPostWorker(
+            self.message_url,
+            timeout_s=self.timeout_s,
+            on_error=self.record_error,
+            enabled=async_post,
+        )
+
+    @classmethod
+    def from_args(
+        cls,
+        args: argparse.Namespace,
+        *,
+        store: StatusStore | None = None,
+        turn_id: str | None = None,
+    ) -> "ThoughtCoreAituberForwarder | None":
+        message_url = str(getattr(args, "aituber_message_url", "") or "").strip()
+        if not message_url:
+            return None
+        return cls(
+            message_url,
+            timeout_s=float(getattr(args, "aituber_http_timeout_s", 0.75)),
+            async_post=True,
+            store=store,
+            turn_id=turn_id,
+        )
+
+    def __call__(self, event: ThoughtCoreStreamEvent) -> None:
+        if event.is_message and event.speech:
+            self.post(event.speech)
+
+    def finish(self, result: dict[str, Any]) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self.poster.close()
+
+    def post_local_ack(self, message: str) -> None:
+        self.post(message)
+
+    def post(self, message: str) -> None:
+        clean_message = message.strip()
+        if not clean_message:
+            return
+        body = json.dumps({"messages": [clean_message]}, ensure_ascii=False).encode(
+            "utf-8"
+        )
+        self.poster.post(body)
+
+    def record_error(self, message: str) -> None:
+        self.error_count += 1
+        if self.error_count != 1 or self.store is None:
+            return
+        self.store.append_event(
+            "aituber.forward_error",
+            source="watch_handoff_to_thought_core",
+            turn_id=self.turn_id,
+            payload={
+                "message_url": redacted_text(self.message_url),
+                "message_url_present": bool(self.message_url),
+                "error": message[:240],
+            },
+        )
+
+
+def thought_core_tts_chunk_payload(
+    event: ThoughtCoreStreamEvent,
+    *,
+    turn_id: str | None,
+    final: bool = False,
+) -> dict[str, Any]:
+    return {
+        "event": event.event_type,
+        "delta": event.speech_delta,
+        "final": final,
+        "turn_id": turn_id or event.turn_id,
+        "message_id": event.event_id,
+        "conversation_id": event.turn_id,
+        "elapsed_s": event.elapsed_s,
+    }
 
 
 def run_watch(args: argparse.Namespace) -> None:
