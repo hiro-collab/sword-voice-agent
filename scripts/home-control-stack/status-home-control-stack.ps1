@@ -7,7 +7,10 @@ param(
     [int]$AituberPort = 3000,
     [int]$TouchDesignerGuiPort = 8788,
     [int]$DifyPort = 8080,
+    [int]$ThoughtCorePort = 18787,
     [string]$VoicevoxUrl = "",
+    [switch]$EnableThoughtCore,
+    [switch]$EnableThoughtCoreWatch,
     [switch]$Watch,
     [int]$IntervalSeconds = 3
 )
@@ -375,6 +378,30 @@ function Get-StatusText {
         -HttpOk $difyHealth.Ok `
         -Detail $difyHealth.Detail `
         -RequireHttp $true
+
+    $thoughtCoreEntry = $pidState["thought_core_api"]
+    $thoughtCoreListen = Test-TcpListen -Port $ThoughtCorePort
+    $thoughtCoreHealth = Invoke-HttpCheck -Url "http://127.0.0.1:$ThoughtCorePort/health"
+    if ($EnableThoughtCore -or $null -ne $thoughtCoreEntry -or $thoughtCoreListen -or $thoughtCoreHealth.Ok) {
+        $rows += New-StatusRow `
+            -Name "thought_core_api" `
+            -ProcessAlive (Test-ProcessAlive -Entry $thoughtCoreEntry) `
+            -PortListening $thoughtCoreListen `
+            -HttpOk $thoughtCoreHealth.Ok `
+            -Detail $thoughtCoreHealth.Detail `
+            -RequireHttp $true
+    }
+
+    $thoughtCoreWatcherEntry = $pidState["thought_core_watcher"]
+    if ($EnableThoughtCoreWatch -or $null -ne $thoughtCoreWatcherEntry) {
+        $thoughtCoreWatcherAlive = Test-ProcessAlive -Entry $thoughtCoreWatcherEntry
+        $rows += New-StatusRow `
+            -Name "thought_core_watcher" `
+            -ProcessAlive $thoughtCoreWatcherAlive `
+            -PortListening $false `
+            -HttpOk $false `
+            -Detail "process-only watcher"
+    }
 
     $voicevoxHealth = Invoke-HttpCheck -Url "$VoicevoxUrl/version"
     $voicevoxPort = 0

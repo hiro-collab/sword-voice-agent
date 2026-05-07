@@ -46,8 +46,28 @@ Start it from the workspace root:
 .\start-home-control-launcher.bat
 ```
 
+If another launcher is already running on the same port, the start shortcut
+stops that launcher first and then starts a fresh launcher in the current
+terminal. After that, `Ctrl+C` in that terminal stops the launcher server.
+This does not stop the Home Control Stack services.
+
+Stop only the launcher server from the workspace root:
+
+```powershell
+.\stop-home-control-launcher.bat
+```
+
+Stop the stack itself separately:
+
+```powershell
+.\stop-home-control-stack.bat
+```
+
 Or from this repository:
 
 ```powershell
 .\scripts\home-control-stack\start-home-control-launcher.ps1
 ```
+
+Use `-ReuseExisting` when you only want to open or reuse the already-running
+launcher instead of moving it into the current terminal.

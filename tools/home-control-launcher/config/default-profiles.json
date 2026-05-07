@@ -21,6 +21,20 @@
     }
   },
   {
+    "id": "thought-core-experimental",
+    "name": "Thought Core experimental",
+    "description": "Start the stack with the experimental thought-core API and watcher instead of Dify watcher.",
+    "options": {
+      "StopExisting": true,
+      "SkipDify": true,
+      "SkipDifyWatch": true,
+      "EnableThoughtCore": true,
+      "EnableThoughtCoreWatch": true,
+      "MediapipeMode": "mediamtx",
+      "MediapipeNoBrowser": true
+    }
+  },
+  {
     "id": "no-touchdesigner",
     "name": "No TouchDesigner GUI",
     "description": "Start the stack without the TouchDesigner control web GUI.",

@@ -143,6 +143,11 @@ class WatchHandoffToThoughtCoreTest(TestCase):
             self.assertEqual(result["skip_reason"], "no_speech_placeholder")
             self.assertEqual(client.turn_payloads, [])
 
+    def test_parser_accepts_aituber_speech_max_chars(self) -> None:
+        args = build_parser().parse_args(["--aituber-speech-max-chars", "40"])
+
+        self.assertEqual(args.aituber_speech_max_chars, 40)
+
     @patch("sword_voice_agent.apps.watch_handoff_to_thought_core.request.urlopen")
     def test_run_once_forwards_tts_chunks(self, urlopen: MagicMock) -> None:
         response = MagicMock()

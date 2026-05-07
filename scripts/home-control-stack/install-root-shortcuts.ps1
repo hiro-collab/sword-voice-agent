@@ -71,7 +71,8 @@ $scriptNames = @(
     "status-home-control-stack.ps1",
     "stop-home-control-stack.ps1",
     "run-home-control-fault-e2e.ps1",
-    "start-home-control-launcher.ps1"
+    "start-home-control-launcher.ps1",
+    "stop-home-control-launcher.ps1"
 )
 
 foreach ($scriptName in $scriptNames) {
@@ -89,7 +90,8 @@ $batchShortcuts = @(
     @{ Name = "start-home-control-stack.bat"; ScriptName = "start-home-control-stack.ps1"; ExtraArgs = "" },
     @{ Name = "status-home-control-stack.bat"; ScriptName = "status-home-control-stack.ps1"; ExtraArgs = "" },
     @{ Name = "stop-home-control-stack.bat"; ScriptName = "stop-home-control-stack.ps1"; ExtraArgs = "" },
-    @{ Name = "start-home-control-launcher.bat"; ScriptName = "start-home-control-launcher.ps1"; ExtraArgs = "-OpenBrowser" }
+    @{ Name = "start-home-control-launcher.bat"; ScriptName = "start-home-control-launcher.ps1"; ExtraArgs = "-OpenBrowser" },
+    @{ Name = "stop-home-control-launcher.bat"; ScriptName = "stop-home-control-launcher.ps1"; ExtraArgs = "" }
 )
 
 foreach ($shortcut in $batchShortcuts) {

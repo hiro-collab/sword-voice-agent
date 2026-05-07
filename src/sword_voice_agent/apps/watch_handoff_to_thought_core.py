@@ -36,6 +36,8 @@ NO_SPEECH_PLACEHOLDER = "音声を認識できませんでした。"
 THOUGHT_CORE_WATCHER_MODULE = "thought_core_watcher"
 THOUGHT_CORE_WATCHER_LABEL = "thought-core watcher"
 LOCAL_ACK_MODES = {"auto", "off"}
+SPEECH_END_CHARS = "。．.!?！？\n"
+SPEECH_SOFT_BREAK_CHARS = "、,， "
 
 
 @dataclass(frozen=True)
@@ -149,6 +151,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=default_aituber_http_timeout_s(),
         help="Timeout for each AITuberKit direct_send POST.",
+    )
+    parser.add_argument(
+        "--aituber-speech-max-chars",
+        type=int,
+        default=default_aituber_speech_max_chars(),
+        help="Split AITuber direct_send messages after roughly this many characters.",
     )
     parser.add_argument(
         "--local-ack-mode",
@@ -348,6 +356,13 @@ def default_aituber_http_timeout_s() -> float:
         return max(0.05, float(os.environ.get("AITUBER_HTTP_TIMEOUT_S", "0.75")))
     except ValueError:
         return 0.75
+
+
+def default_aituber_speech_max_chars() -> int:
+    try:
+        return max(8, int(os.environ.get("AITUBER_SPEECH_MAX_CHARS", "80")))
+    except ValueError:
+        return 80
 
 
 def default_local_ack_mode() -> str:
@@ -618,11 +633,13 @@ class ThoughtCoreAituberForwarder:
         *,
         timeout_s: float,
         async_post: bool = False,
+        max_chars: int = 80,
         store: StatusStore | None = None,
         turn_id: str | None = None,
     ) -> None:
         self.message_url = validate_http_url(message_url, label="--aituber-message-url")
         self.timeout_s = max(0.05, timeout_s)
+        self.max_chars = max(8, max_chars)
         self.store = store
         self.turn_id = turn_id
         self.error_count = 0
@@ -648,6 +665,7 @@ class ThoughtCoreAituberForwarder:
             message_url,
             timeout_s=float(getattr(args, "aituber_http_timeout_s", 0.75)),
             async_post=True,
+            max_chars=int(getattr(args, "aituber_speech_max_chars", 80)),
             store=store,
             turn_id=turn_id,
         )
@@ -666,13 +684,9 @@ class ThoughtCoreAituberForwarder:
         self.post(message)
 
     def post(self, message: str) -> None:
-        clean_message = message.strip()
-        if not clean_message:
-            return
-        body = json.dumps({"messages": [clean_message]}, ensure_ascii=False).encode(
-            "utf-8"
-        )
-        self.poster.post(body)
+        for chunk in split_aituber_speech_message(message, max_chars=self.max_chars):
+            body = json.dumps({"messages": [chunk]}, ensure_ascii=False).encode("utf-8")
+            self.poster.post(body)
 
     def record_error(self, message: str) -> None:
         self.error_count += 1
@@ -688,6 +702,46 @@ class ThoughtCoreAituberForwarder:
                 "error": message[:240],
             },
         )
+
+
+def split_aituber_speech_message(text: str, *, max_chars: int = 80) -> list[str]:
+    remaining = text.strip()
+    chunks: list[str] = []
+    while remaining:
+        cut_at = first_speech_boundary(remaining)
+        if cut_at is None and visible_speech_length(remaining) > max(8, max_chars):
+            cut_at = soft_speech_boundary(remaining, max_chars=max_chars)
+        if cut_at is None:
+            chunks.append(remaining)
+            break
+        chunk = remaining[:cut_at].strip()
+        remaining = remaining[cut_at:].lstrip()
+        if chunk:
+            chunks.append(chunk)
+    return chunks
+
+
+def first_speech_boundary(text: str) -> int | None:
+    for index, character in enumerate(text):
+        if character in SPEECH_END_CHARS:
+            return index + 1
+    return None
+
+
+def soft_speech_boundary(text: str, *, max_chars: int) -> int:
+    visible_count = 0
+    best_cut = 0
+    for index, character in enumerate(text):
+        visible_count += 0 if character.isspace() else 1
+        if character in SPEECH_SOFT_BREAK_CHARS:
+            best_cut = index + 1
+        if visible_count >= max(8, max_chars):
+            return best_cut or index + 1
+    return len(text)
+
+
+def visible_speech_length(text: str) -> int:
+    return len(re.sub(r"\s+", "", text))
 
 
 def thought_core_tts_chunk_payload(

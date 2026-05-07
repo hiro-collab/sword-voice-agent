@@ -83,6 +83,8 @@ const DEFAULT_OPTIONS = {
   TouchDesignerGuiHost: '127.0.0.1',
   TouchDesignerGuiPort: 8788,
   DifyPort: 8080,
+  ThoughtCoreHost: '127.0.0.1',
+  ThoughtCorePort: 18787,
   VoicevoxUrl: '',
   DifyDockerRoot: '',
   HomeControlConfigPath: '',
@@ -100,6 +102,8 @@ const DEFAULT_OPTIONS = {
   SkipAituber: false,
   SkipDifyWatch: false,
   SkipTouchDesignerGui: false,
+  EnableThoughtCore: false,
+  EnableThoughtCoreWatch: false,
   StopExisting: true,
   EnableHomeControlFaultInjection: false
 }
@@ -112,13 +116,15 @@ const NUMBER_FIELDS = new Set([
   'VisionSnapshotProcessorPort',
   'AituberPort',
   'TouchDesignerGuiPort',
-  'DifyPort'
+  'DifyPort',
+  'ThoughtCorePort'
 ])
 
 const STRING_FIELDS = new Set([
   'HomeAssistantBridgeHost',
   'AituberHost',
   'TouchDesignerGuiHost',
+  'ThoughtCoreHost',
   'VoicevoxUrl',
   'DifyDockerRoot',
   'HomeControlConfigPath',
@@ -424,6 +430,8 @@ const buildStackArgs = (options) => {
   addSupportedParam(START_SCRIPT, stackArgs, 'TouchDesignerGuiHost', options.TouchDesignerGuiHost)
   addSupportedParam(START_SCRIPT, stackArgs, 'TouchDesignerGuiPort', options.TouchDesignerGuiPort)
   addSupportedParam(START_SCRIPT, stackArgs, 'DifyPort', options.DifyPort)
+  addSupportedParam(START_SCRIPT, stackArgs, 'ThoughtCoreHost', options.ThoughtCoreHost)
+  addSupportedParam(START_SCRIPT, stackArgs, 'ThoughtCorePort', options.ThoughtCorePort)
   addSupportedParam(START_SCRIPT, stackArgs, 'MediapipeMode', options.MediapipeMode)
   addSupportedParam(START_SCRIPT, stackArgs, 'MediapipeCameraName', options.MediapipeCameraName)
 
@@ -751,12 +759,14 @@ const checkWebSocketHandshake = (port, host = '127.0.0.1', timeoutMs = 1200) =>
     socket.connect(port, host)
   })
 
-const serviceState = ({ entry, tcp, http, requireHttp = false }) => {
+const serviceState = ({ entry, tcp, http, requireHttp = false, processOnly = false }) => {
   const processAlive = entry ? isProcessAlive(entry.pid) : false
   const tcpOk = Boolean(tcp && tcp.ok)
   const httpOk = Boolean(http && http.ok)
   let state = 'DOWN'
-  if (processAlive && (tcpOk || httpOk)) {
+  if (processOnly && processAlive) {
+    state = 'OK'
+  } else if (processAlive && (tcpOk || httpOk)) {
     state = requireHttp && !httpOk ? 'DEGRADED' : 'OK'
   } else if (httpOk || tcpOk) {
     state = entry ? 'DEGRADED' : 'OK_EXTERNAL'
@@ -797,6 +807,9 @@ const getVoicevoxUrl = (options) =>
 
 const getEndpoints = (options) => {
   const voicevoxUrl = getVoicevoxUrl(options).replace(/\/$/, '')
+  const thoughtCoreHost =
+    options.ThoughtCoreHost === '0.0.0.0' ? '127.0.0.1' : options.ThoughtCoreHost
+  const thoughtCoreUrl = `http://${thoughtCoreHost}:${options.ThoughtCorePort}`
   const mediaUrl = encodeURIComponent(
     'http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true'
   )
@@ -826,6 +839,12 @@ const getEndpoints = (options) => {
       name: 'Dify',
       url: `http://127.0.0.1:${options.DifyPort}`,
       enabled: !options.SkipDify
+    },
+    {
+      group: 'Open in browser',
+      name: 'thought-core API index',
+      url: thoughtCoreUrl,
+      enabled: options.EnableThoughtCore
     },
     {
       group: 'Open in browser',
@@ -885,10 +904,22 @@ const getEndpoints = (options) => {
       enabled: !options.SkipVoicevoxCheck && !options.SkipAituber
     },
     {
+      group: 'Local APIs and feeds',
+      name: 'thought-core health',
+      url: `${thoughtCoreUrl}/health`,
+      enabled: options.EnableThoughtCore
+    },
+    {
       group: 'Background links',
       name: 'Dify watcher',
       url: 'no browser URL',
       enabled: !options.SkipDifyWatch
+    },
+    {
+      group: 'Background links',
+      name: 'thought-core watcher',
+      url: 'no browser URL',
+      enabled: options.EnableThoughtCoreWatch
     },
     {
       group: 'Background links',
@@ -908,6 +939,9 @@ const getStatus = async () => {
     pids.mediapipe_ws ||
     pids.mediapipe_camera_hub_gui
   const voicevoxUrl = getVoicevoxUrl(options).replace(/\/$/, '')
+  const thoughtCoreHost =
+    options.ThoughtCoreHost === '0.0.0.0' ? '127.0.0.1' : options.ThoughtCoreHost
+  const thoughtCoreUrl = `http://${thoughtCoreHost}:${options.ThoughtCorePort}`
   let voicevoxPort = 50021
   try {
     voicevoxPort = Number(new URL(voicevoxUrl).port || 50021)
@@ -928,6 +962,8 @@ const getStatus = async () => {
     tdHttp,
     difyTcp,
     difyHttp,
+    thoughtCoreTcp,
+    thoughtCoreHttp,
     voicevoxTcp,
     voicevoxHttp
   ] = await Promise.all([
@@ -943,6 +979,8 @@ const getStatus = async () => {
     checkHttp(`http://127.0.0.1:${options.TouchDesignerGuiPort}`),
     checkTcp(options.DifyPort),
     checkHttp(`http://127.0.0.1:${options.DifyPort}`),
+    checkTcp(options.ThoughtCorePort, thoughtCoreHost),
+    checkHttp(`${thoughtCoreUrl}/health`),
     checkTcp(voicevoxPort),
     checkHttp(`${voicevoxUrl}/version`)
   ])
@@ -990,6 +1028,16 @@ const getStatus = async () => {
         tcp: difyTcp,
         http: difyHttp,
         requireHttp: true
+      }),
+      thought_core_api: serviceState({
+        entry: pids.thought_core_api,
+        tcp: thoughtCoreTcp,
+        http: thoughtCoreHttp,
+        requireHttp: true
+      }),
+      thought_core_watcher: serviceState({
+        entry: pids.thought_core_watcher,
+        processOnly: true
       }),
       voicevox: serviceState({
         entry: null,
@@ -1130,6 +1178,17 @@ const handleApi = async (request, response, requestUrl) => {
     sendJson(response, 200, await runScriptAndCollect(STATUS_SCRIPT, [], 30000))
     return
   }
+  if (request.method === 'POST' && requestUrl.pathname === '/api/shutdown') {
+    sendJson(response, 200, {
+      ok: true,
+      message: 'launcher_shutdown_scheduled'
+    })
+    setTimeout(() => {
+      server.close(() => process.exit(0))
+      setTimeout(() => process.exit(0), 1000).unref()
+    }, 50).unref()
+    return
+  }
   sendJson(response, 404, { ok: false, error: 'not_found' })
 }
 
@@ -1186,7 +1245,7 @@ server.on('error', (error) => {
   if (error && error.code === 'EADDRINUSE') {
     const url = `http://${HOST}:${PORT}`
     console.log(`Home Control Launcher is already running: ${url}`)
-    console.log('Reuse the existing browser tab, or stop that process before changing the launcher port.')
+    console.log('Run .\\stop-home-control-launcher.bat, or restart via .\\start-home-control-launcher.bat from the workspace root.')
     if (OPEN_BROWSER) {
       openBrowser(url)
     }

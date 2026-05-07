@@ -23,12 +23,15 @@ const switchFields = [
   'SkipAituber',
   'SkipDifyWatch',
   'SkipTouchDesignerGui',
+  'EnableThoughtCore',
+  'EnableThoughtCoreWatch',
   'EnableHomeControlFaultInjection'
 ]
 
 const portFields = [
   'AituberPort',
   'DifyPort',
+  'ThoughtCorePort',
   'TouchDesignerGuiPort',
   'HomeAssistantBridgePort',
   'EnvironmentStatePort',
@@ -51,7 +54,14 @@ const serviceLabels = {
   aituber_kit: 'AITuber Kit',
   touchdesigner_control_gui: 'TouchDesigner GUI',
   dify: 'Dify',
+  thought_core_api: 'thought-core API',
+  thought_core_watcher: 'thought-core watcher',
   voicevox: 'VOICEVOX'
+}
+
+const enableFieldsByService = {
+  thought_core_api: ['EnableThoughtCore'],
+  thought_core_watcher: ['EnableThoughtCoreWatch']
 }
 
 const skipFieldsByService = {
@@ -109,13 +119,15 @@ const setBusy = (busy, label = '') => {
 
 const renderActionButtons = () => {
   const disabled = state.busy || state.remoteBusy
-  for (const id of ['start-button', 'stop-button', 'refresh-button', 'save-config']) {
+  for (const id of ['start-button', 'stop-button', 'refresh-button', 'save-config', 'stop-launcher-button']) {
     $(id).disabled = disabled
   }
   $('start-button').textContent =
     state.busy && state.operation === 'starting' ? 'Starting...' : 'Start Stack'
   $('stop-button').textContent =
     state.busy && state.operation === 'stopping' ? 'Stopping...' : 'Stop Stack'
+  $('stop-launcher-button').textContent =
+    state.busy && state.operation === 'stopping' ? 'Stopping...' : 'Stop Launcher'
   $('refresh-button').textContent = 'Refresh'
   $('save-config').textContent =
     state.busy && state.operation === 'saving' ? 'Saving...' : 'Save'
@@ -296,6 +308,10 @@ const stateClass = (serviceState) =>
 const serviceDisplayName = (name) => serviceLabels[name] || labelFor(name)
 
 const serviceIsIncluded = (name) => {
+  const enableFields = enableFieldsByService[name] || []
+  if (enableFields.length > 0) {
+    return enableFields.some((field) => state.options[field])
+  }
   const skipFields = skipFieldsByService[name] || []
   return !skipFields.some((field) => state.options[field])
 }
@@ -555,6 +571,28 @@ const stopStack = async () => {
   }
 }
 
+const stopLauncher = async () => {
+  const confirmed = window.confirm(
+    'Stop Home Control Launcher? Stack services are not stopped by this button.'
+  )
+  if (!confirmed) {
+    return
+  }
+  setOperation('stopping', 'Launcher server is shutting down. Stack services are unchanged.')
+  setBusy(true, 'Stopping')
+  try {
+    await api('/api/shutdown', { method: 'POST' })
+  } catch (error) {
+    if (!String(error.message || '').includes('Failed to fetch')) {
+      throw error
+    }
+  }
+  setOperation('stopped', 'Launcher stopped. Close this tab or start it again from the terminal.')
+  document.querySelectorAll('button, input, select').forEach((element) => {
+    element.disabled = true
+  })
+}
+
 const saveConfig = async () => {
   setOperation('saving', 'Writing launcher configuration.')
   setBusy(true, 'Saving')
@@ -600,6 +638,7 @@ const bindControls = () => {
   $('save-config').addEventListener('click', () => saveConfig().catch(showError))
   $('start-button').addEventListener('click', () => startStack().catch(showError))
   $('stop-button').addEventListener('click', () => stopStack().catch(showError))
+  $('stop-launcher-button').addEventListener('click', () => stopLauncher().catch(showError))
   $('copy-command').addEventListener('click', async () => {
     await navigator.clipboard.writeText($('command-preview').textContent)
     $('save-state').textContent = 'Copied'

@@ -6,6 +6,7 @@ param(
     [string]$AituberRoot = "",
     [string]$TouchDesignerGuiRoot = "",
     [string]$DifyWatchRoot = "",
+    [string]$ThoughtCoreRoot = "",
     [string]$EnvironmentStateServerRoot = "",
     [string]$DifyDockerRoot = "",
     [int]$HomeAssistantBridgePort = 8787,
@@ -20,6 +21,8 @@ param(
     [int]$TouchDesignerGuiPort = 8788,
     [string]$TouchDesignerGuiHost = "127.0.0.1",
     [int]$DifyPort = 8080,
+    [string]$ThoughtCoreHost = "127.0.0.1",
+    [int]$ThoughtCorePort = 18787,
     [string]$VoicevoxUrl = "",
     [ValidateSet("gui", "headless", "camera-hub", "mediamtx")]
     [string]$MediapipeMode = "mediamtx",
@@ -36,6 +39,8 @@ param(
     [switch]$SkipAituber,
     [switch]$SkipDifyWatch,
     [switch]$SkipTouchDesignerGui,
+    [switch]$EnableThoughtCore,
+    [switch]$EnableThoughtCoreWatch,
     [switch]$StopExisting,
     [switch]$EnableHomeControlFaultInjection,
     [switch]$DryRun
@@ -74,6 +79,9 @@ if ([string]::IsNullOrWhiteSpace($TouchDesignerGuiRoot)) {
 if ([string]::IsNullOrWhiteSpace($DifyWatchRoot)) {
     $DifyWatchRoot = Join-Path $WorkspaceRoot "sword-voice-agent"
 }
+if ([string]::IsNullOrWhiteSpace($ThoughtCoreRoot)) {
+    $ThoughtCoreRoot = Join-Path $WorkspaceRoot "sword-voice-agent"
+}
 if ([string]::IsNullOrWhiteSpace($EnvironmentStateServerRoot)) {
     $EnvironmentStateServerRoot = Join-Path $WorkspaceRoot "environment-state-server"
 }
@@ -85,6 +93,10 @@ $HomeAssistantEnvPath = Join-Path $HomeAssistantServerRoot ".env"
 $TouchDesignerGuiToolsRoot = Join-Path $TouchDesignerGuiRoot "tools"
 $DifyWatchScript = Join-Path $DifyWatchRoot "scripts\start-dify-watch.ps1"
 $DifyWatchEnvPath = Join-Path $DifyWatchRoot ".env"
+$ThoughtCoreScript = Join-Path $ThoughtCoreRoot "scripts\start-thought-core.ps1"
+$ThoughtCoreWatchScript = Join-Path $ThoughtCoreRoot "scripts\start-thought-core-watch.ps1"
+$ThoughtCoreEnvPath = Join-Path $ThoughtCoreRoot ".env"
+$AiTalkCoreRoot = Join-Path $WorkspaceRoot "ai-talk-core"
 $LaunchVisionSnapshotProcessor = ((-not $SkipVisionSnapshotProcessor) -and (-not $SkipMediapipe) -and ($MediapipeMode -eq "mediamtx"))
 
 $StateDir = Join-Path $WorkspaceRoot ".cache\home-control-stack"
@@ -92,6 +104,10 @@ $LogDir = Join-Path $StateDir "logs"
 $PidFile = Join-Path $StateDir "pids.json"
 $StopScript = Join-Path $PSScriptRoot "stop-home-control-stack.ps1"
 $DifyWatchStatusDir = Join-Path $StateDir "dify-watcher"
+$ThoughtCoreStatusDir = Join-Path $StateDir "thought-core-api"
+$ThoughtCoreWatchStatusDir = Join-Path $StateDir "thought-core-watcher"
+$ThoughtCoreClientHost = if ($ThoughtCoreHost -eq "0.0.0.0") { "127.0.0.1" } else { $ThoughtCoreHost }
+$ThoughtCoreBaseUrl = "http://{0}:{1}" -f $ThoughtCoreClientHost, $ThoughtCorePort
 $MediapipeCameraHubChildProcessFile = Join-Path $StateDir "modules\mediapipe_camera_hub_stack\processes.json"
 $StateQueryFeedbackPath = Join-Path $StateDir "feedback\state-query.jsonl"
 
@@ -974,6 +990,12 @@ function Write-StackEndpointGuide {
             -Target "http://127.0.0.1:$DifyPort" `
             -Description "Dify のワークフロー編集・ログ確認画面。Dify 本体はこのスクリプトでは停止しない。"
     }
+    if ($EnableThoughtCore) {
+        Write-GuideItem `
+            -Name "thought-core API" `
+            -Target $ThoughtCoreBaseUrl `
+            -Description "実験中の思考体 API。画面ではなく /health や /turn を持つローカル HTTP サービス。"
+    }
     if (-not $SkipTouchDesignerGui) {
         Write-GuideItem `
             -Name "TD Control GUI/API" `
@@ -1054,6 +1076,12 @@ function Write-StackEndpointGuide {
             -Name "Dify watcher" `
             -Target "no browser URL" `
             -Description "Dify のストリームを AITuber の発話キューへ渡す常駐処理。"
+    }
+    if ($EnableThoughtCoreWatch) {
+        Write-GuideItem `
+            -Name "thought-core watcher" `
+            -Target "no browser URL" `
+            -Description "ai-talk-core の handoff を thought-core へ渡し、発話イベントを AITuber/TTS へ転送する常駐処理。"
     }
     Write-GuideItem `
         -Name "TouchDesigner UDP receiver" `
@@ -1245,6 +1273,23 @@ if (-not $SkipDifyWatch) {
         throw "Dify watcher script not found: $DifyWatchScript"
     }
 }
+if ($EnableThoughtCore -or $EnableThoughtCoreWatch) {
+    Assert-Directory -Path $ThoughtCoreRoot -Label "sword-voice-agent"
+}
+if ($EnableThoughtCore) {
+    if (-not (Test-Path -LiteralPath $ThoughtCoreScript -PathType Leaf)) {
+        throw "thought-core start script not found: $ThoughtCoreScript"
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $ThoughtCoreRoot "services\thought-core") -PathType Container)) {
+        throw "thought-core service directory not found under: $ThoughtCoreRoot"
+    }
+}
+if ($EnableThoughtCoreWatch) {
+    if (-not (Test-Path -LiteralPath $ThoughtCoreWatchScript -PathType Leaf)) {
+        throw "thought-core watcher script not found: $ThoughtCoreWatchScript"
+    }
+    Assert-Directory -Path $AiTalkCoreRoot -Label "ai-talk-core"
+}
 if (-not $SkipTouchDesignerGui) {
     Assert-Directory -Path $TouchDesignerGuiRoot -Label "touchdesigner-ai-controller"
     Assert-Directory -Path $TouchDesignerGuiToolsRoot -Label "touchdesigner-ai-controller/tools"
@@ -1255,6 +1300,12 @@ if (-not $SkipVoicevoxCheck -and -not $SkipAituber -and [string]::IsNullOrWhiteS
     if ([string]::IsNullOrWhiteSpace($VoicevoxUrl)) {
         $VoicevoxUrl = "http://127.0.0.1:50021"
     }
+}
+
+$StartThoughtCoreService = $EnableThoughtCore
+if ($EnableThoughtCore -and (-not $StopExisting) -and (Test-HttpReachable -Url "$ThoughtCoreBaseUrl/health")) {
+    Write-Host "[thought-core] reachable: $ThoughtCoreBaseUrl (using existing service)"
+    $StartThoughtCoreService = $false
 }
 
 if (Test-RecordedProcessesAlive) {
@@ -1313,6 +1364,12 @@ if (-not $DryRun) {
             Port = $TouchDesignerGuiPort
         }
     }
+    if ($StartThoughtCoreService) {
+        $requiredPorts += [pscustomobject]@{
+            Label = "thought-core"
+            Port = $ThoughtCorePort
+        }
+    }
     if ($requiredPorts.Count -gt 0) {
         Resolve-PortConflicts -PortSpecs $requiredPorts
     }
@@ -1325,7 +1382,7 @@ if (-not $SkipTouchDesignerGui) {
     $node = Resolve-Tool -Name "node"
 }
 $powerShell = $null
-if (-not $SkipDifyWatch) {
+if ((-not $SkipDifyWatch) -or $EnableThoughtCore -or $EnableThoughtCoreWatch) {
     $powerShell = Resolve-CurrentPowerShell
 }
 $docker = $null
@@ -1380,7 +1437,12 @@ if (-not $SkipDifyWatch) {
 }
 
 if (-not $SkipAituber) {
-    Assert-AituberDifyApiKeyReady -EnvPath (Join-Path $AituberRoot ".env")
+    if ($EnableThoughtCore -and $SkipDify -and $SkipDifyWatch) {
+        Write-Host "[aituber_kit] DIFY_API_KEY check skipped; Projection Visual will use thought-core."
+    }
+    else {
+        Assert-AituberDifyApiKeyReady -EnvPath (Join-Path $AituberRoot ".env")
+    }
 }
 
 $EnvironmentVoicevoxUrl = $VoicevoxUrl
@@ -1469,6 +1531,29 @@ if (-not $SkipEnvironmentState) {
         -Module "environment-state-server" `
         -Role "api" `
         -AllowedProcessNames @("uv", "python")
+}
+if ($StartThoughtCoreService) {
+    $specs += New-ServiceSpec `
+        -Name "thought_core_api" `
+        -FilePath $powerShell `
+        -Arguments @(
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $ThoughtCoreScript,
+            "-HostName",
+            $ThoughtCoreHost,
+            "-Port",
+            [string]$ThoughtCorePort,
+            "-StatusDir",
+            $ThoughtCoreStatusDir
+        ) `
+        -WorkingDirectory $ThoughtCoreRoot `
+        -Module "sword-voice-agent" `
+        -Role "thought_core_api" `
+        -AllowedProcessNames @("pwsh", "powershell", "uv", "python")
 }
 if (-not $SkipMediapipe) {
     $cameraHubServerPath = Join-Path $MediapipeRoot "apps\serve_camera_hub.py"
@@ -1613,6 +1698,21 @@ if ($LaunchVisionSnapshotProcessor) {
         -AllowedProcessNames @("uv", "python")
 }
 if (-not $SkipAituber) {
+    $projectionVisualAIService = [Environment]::GetEnvironmentVariable("NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE", "Process")
+    if ([string]::IsNullOrWhiteSpace($projectionVisualAIService)) {
+        if ($EnableThoughtCore) {
+            $projectionVisualAIService = "thought-core"
+        }
+        else {
+            $projectionVisualAIService = "dify"
+        }
+    }
+    $aituberEnvironment = @{
+        THOUGHT_CORE_BASE_URL = $ThoughtCoreBaseUrl
+        NEXT_PUBLIC_THOUGHT_CORE_BASE_URL = $ThoughtCoreBaseUrl
+        NEXT_PUBLIC_THOUGHT_CORE_SESSION_ID = "aituber-kit"
+        NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE = $projectionVisualAIService
+    }
     $specs += New-ServiceSpec `
         -Name "aituber_kit" `
         -FilePath $npm `
@@ -1626,6 +1726,7 @@ if (-not $SkipAituber) {
             [string]$AituberPort
         ) `
         -WorkingDirectory $AituberRoot `
+        -Environment $aituberEnvironment `
         -Module "aituber-kit" `
         -Role "frontend" `
         -AllowedProcessNames @("cmd", "node", "npm")
@@ -1650,6 +1751,36 @@ if (-not $SkipDifyWatch) {
         -Module "sword-voice-agent" `
         -Role "dify_watcher" `
         -AllowedProcessNames @("pwsh", "powershell", "python")
+}
+if ($EnableThoughtCoreWatch) {
+    $thoughtCoreWatchArgs = @(
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        $ThoughtCoreWatchScript,
+        "-EnvPath",
+        $ThoughtCoreEnvPath,
+        "-AiTalkCoreRoot",
+        $AiTalkCoreRoot,
+        "-ThoughtCoreBaseUrl",
+        $ThoughtCoreBaseUrl,
+        "-StatusDir",
+        $ThoughtCoreWatchStatusDir
+    )
+    if (-not $SkipAituber) {
+        $thoughtCoreWatchArgs += @("-AituberPort", [string]$AituberPort)
+    }
+
+    $specs += New-ServiceSpec `
+        -Name "thought_core_watcher" `
+        -FilePath $powerShell `
+        -Arguments $thoughtCoreWatchArgs `
+        -WorkingDirectory $ThoughtCoreRoot `
+        -Module "sword-voice-agent" `
+        -Role "thought_core_watcher" `
+        -AllowedProcessNames @("pwsh", "powershell", "uv", "python")
 }
 if (-not $SkipTouchDesignerGui) {
     $specs += New-ServiceSpec `
