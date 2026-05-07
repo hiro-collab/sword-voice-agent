@@ -80,10 +80,37 @@ notepad .env
 
 | 書き込み場所 | 読むもの | 主な値 | 備考 |
 |---|---|---|---|
-| `<workspace>\sword-voice-agent\.env` | sword-voice-agent / dify watcher / 診断スクリプト | `DIFY_BASE_URL`, `DIFY_API_KEY`, `DIFY_USER`, `DIFY_RESPONSE_MODE`, `AITUBER_MESSAGE_URL` | Dify API Access の app key を入れる。`HOME_CONTROL_API_TOKEN` は通常ここではなく `home-assistant-server\.env` に置く。 |
-| `<workspace>\aituber-kit\.env` | AITuberKit Next.js API | `NEXT_PUBLIC_SELECT_AI_SERVICE=dify`, `DIFY_URL` または `DIFY_API_URL`, `DIFY_API_KEY` または `DIFY_KEY`, `VOICEVOX_SERVER_URL` | 画面から Dify に直接投げる経路の設定。`DIFY_URL` は例: `http://127.0.0.1:8080/v1`。 |
-| `<workspace>\home-assistant-server\.env` | home-assistant-server / environment-state-server | `HOME_CONTROL_API_TOKEN` | 32文字以上のランダム値。起動スクリプトは Environment State Server もこの env file で起動する。 |
+| `<workspace>\sword-voice-agent\.env` | sword-voice-agent / dify watcher / thought-core / 診断スクリプト | `DIFY_BASE_URL`, `DIFY_API_KEY`, `THOUGHT_CORE_BASE_URL`, `THOUGHT_CORE_LLM_*` | Dify app key と Thought Core responder adapter を置く。`HOME_CONTROL_API_TOKEN` は通常ここではなく `home-assistant-server\.env`。 |
+| `<workspace>\aituber-kit\.env` | AITuberKit Next.js API / Projection Visual | `NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE`, `THOUGHT_CORE_BASE_URL`, `NEXT_PUBLIC_THOUGHT_CORE_BASE_URL`, `DIFY_URL`, `DIFY_API_KEY`, `VOICEVOX_SERVER_URL` | Projection Visual の主経路は `thought-core` / `dify` で切り替える。Launcher 起動時は一部を自動注入する。 |
+| `<workspace>\home-assistant-server\.env` | home-assistant-server / environment-state-server | `HOME_CONTROL_API_TOKEN`, `ENVIRONMENT_API_TOKEN`, `HOME_ASSISTANT_TOKEN` | `HOME_CONTROL_API_TOKEN` は32文字以上のランダム値。`ENVIRONMENT_API_TOKEN` は空なら同じ値を使う。 |
 | Dify Studio のアプリ `ENV` | Dify workflow HTTP nodes | `HOME_CONTROL_API_TOKEN`, `ENVIRONMENT_STATE_URL`, `ENVIRONMENT_RELATIONS_URL`, `ENVIRONMENT_FEEDBACK_URL` | YAMLをインポートしても secret の実値は入らないため、公開前にDify画面で設定する。 |
+
+Thought Core を主経路にする最小構成は次です。
+
+```text
+# <workspace>\sword-voice-agent\.env
+THOUGHT_CORE_BASE_URL=http://127.0.0.1:18787
+THOUGHT_CORE_LLM_ENABLED=true
+THOUGHT_CORE_LLM_BASE_URL=https://api.openai.com/v1
+THOUGHT_CORE_LLM_API_KEY=<llm_api_key>
+THOUGHT_CORE_LLM_MODEL=gpt-4o-mini
+```
+
+```text
+# <workspace>\aituber-kit\.env
+NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE=thought-core
+THOUGHT_CORE_BASE_URL=http://127.0.0.1:18787
+NEXT_PUBLIC_THOUGHT_CORE_BASE_URL=http://127.0.0.1:18787
+NEXT_PUBLIC_THOUGHT_CORE_SESSION_ID=aituber-kit
+VOICEVOX_SERVER_URL=http://127.0.0.1:50021
+```
+
+```text
+# <workspace>\home-assistant-server\.env
+HOME_CONTROL_API_TOKEN=<32文字以上のランダム値>
+ENVIRONMENT_API_TOKEN=
+HOME_ASSISTANT_TOKEN=<Home Assistant long-lived access token>
+```
 
 Dify Studio の `ENV` は次を基準にします。
 
