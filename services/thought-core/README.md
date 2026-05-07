@@ -139,6 +139,20 @@ ai_talk_core を経由せず、手入力で thought-core の最小デモを確�
 uv run sword-thought-core-handoff --text "電気つけて" --session-id living_room_main --turn-id turn_manual_001 --print-events
 ```
 
+ai_talk_core の handoff 更新を監視して thought-core に流す場合:
+
+```powershell
+$env:AI_TALK_CORE_ROOT="..\ai-talk-core"
+$env:THOUGHT_CORE_BASE_URL="http://127.0.0.1:18787"
+uv run sword-thought-core-watch --skip-existing --print-events
+```
+
+現在の handoff を1回だけ処理する場合:
+
+```powershell
+uv run sword-thought-core-watch --ai-talk-core-root ..\ai-talk-core --once --print-events
+```
+
 ## turn input
 
 ```json
