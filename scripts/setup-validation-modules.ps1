@@ -4,6 +4,10 @@ param(
     [string]$MediapipeSwordSignRepoUrl = "https://github.com/hiro-collab/mediapipe-sword-sign.git",
     [string]$TtsServiceRepoUrl = "https://github.com/hiro-collab/tts-service.git",
     [string]$AvatarServiceRepoUrl = "https://github.com/hiro-collab/avatar-service.git",
+    [string]$EnvironmentStateServerRepoUrl = "https://github.com/hiro-collab/environment-state-server.git",
+    [string]$HomeAssistantServerRepoUrl = "https://github.com/hiro-collab/home-assistant-server.git",
+    [string]$AituberKitRepoUrl = "https://github.com/hiro-collab/aituber-kit-sword.git",
+    [string]$TouchDesignerAiControllerRepoUrl = "https://github.com/hiro-collab/touchdesigner-ai-controller.git",
     [string]$SystemHouseRendererRepoUrl = "https://github.com/hiro-collab/system-house-renderer.git",
     [string]$EnvPath = ".env",
     [switch]$UpdateEnv,
@@ -154,6 +158,10 @@ Ensure-ValidationClone -Name "ai-talk-core" -RepoUrl $AiTalkCoreRepoUrl
 Ensure-ValidationClone -Name "mediapipe-sword-sign" -RepoUrl $MediapipeSwordSignRepoUrl
 Ensure-ValidationClone -Name "tts-service" -RepoUrl $TtsServiceRepoUrl
 Ensure-ValidationClone -Name "avatar-service" -RepoUrl $AvatarServiceRepoUrl
+Ensure-ValidationClone -Name "environment-state-server" -RepoUrl $EnvironmentStateServerRepoUrl
+Ensure-ValidationClone -Name "home-assistant-server" -RepoUrl $HomeAssistantServerRepoUrl
+Ensure-ValidationClone -Name "aituber-kit" -RepoUrl $AituberKitRepoUrl
+Ensure-ValidationClone -Name "touchdesigner-ai-controller" -RepoUrl $TouchDesignerAiControllerRepoUrl
 Ensure-ValidationClone -Name "system-house-renderer" -RepoUrl $SystemHouseRendererRepoUrl
 
 if ($UpdateEnv) {
@@ -166,3 +174,8 @@ Write-Host "MEDIAPIPE_SWORD_SIGN_ROOT=..\mediapipe-sword-sign"
 Write-Host "TTS_SERVICE_ROOT=..\tts-service"
 Write-Host "AVATAR_SERVICE_ROOT=..\avatar-service"
 Write-Host "SYSTEM_HOUSE_RENDERER_ROOT=..\system-house-renderer"
+Write-Host "additional sibling clones:"
+Write-Host "environment-state-server"
+Write-Host "home-assistant-server"
+Write-Host "aituber-kit"
+Write-Host "touchdesigner-ai-controller"

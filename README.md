@@ -15,6 +15,7 @@ Camera Hub gesture topic
 - [system-requirements.md](docs/system-requirements.md): 目的、成功条件、前提。
 - [integration-contract.md](docs/integration-contract.md): 接続先、payload、ポート、認証。
 - [module-responsibilities.md](docs/module-responsibilities.md): 各モジュールの責務境界。
+- [repository-sources.md](docs/repository-sources.md): GitHub保存先とローカル専用ファイル。
 - [state_authority.md](docs/state_authority.md): state、flag、ID の authority。
 - [retired-paths.md](docs/retired-paths.md): 互換、保留、検証専用の導線。
 
@@ -38,6 +39,7 @@ Camera Hub gesture topic
   ai-talk-core\
   mediapipe-sword-sign\
   tts-service\
+  avatar-service\
   environment-state-server\
   home-assistant-server\
   aituber-kit\
@@ -45,7 +47,7 @@ Camera Hub gesture topic
   system-house-renderer\
 ```
 
-検証用モジュールは次で clone または pull できます。
+Git管理している兄弟モジュールは次で clone または pull できます。GitHubに入れない秘密値やローカル専用アセットは [repository-sources.md](docs/repository-sources.md) を参照してください。
 
 ```powershell
 cd <workspace>\sword-voice-agent
