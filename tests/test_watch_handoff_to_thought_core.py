@@ -111,6 +111,7 @@ class WatchHandoffToThoughtCoreTest(TestCase):
                     "thought_core.response",
                 ],
             )
+            self.assertEqual(status_events[-1]["source"], "watch_handoff_to_thought_core")
             self.assertEqual(status_events[0]["payload"]["speech"], "[redacted]")
             self.assertNotIn("了解です", json.dumps(status_events, ensure_ascii=False))
 

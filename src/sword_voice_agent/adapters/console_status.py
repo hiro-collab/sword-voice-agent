@@ -25,6 +25,7 @@ EXPECTED_MODULES = (
     ("mediapipe_udp_publisher", "MediaPipe UDP publisher"),
     ("dify_api", "Dify API"),
     ("dify_watcher", "Dify watcher"),
+    ("thought_core_watcher", "thought-core watcher"),
     ("tts_service", "TTS service"),
     ("avatar_service", "Avatar service"),
     ("console", "Integration console"),
@@ -63,6 +64,11 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
     dify_json = read_json_file(cache_dir / f"{config.source}_dify_latest.json")
     store_dify_json = (
         read_json_file(status_store.latest_dify_response_path)
+        if status_store is not None
+        else empty_file_state()
+    )
+    store_thought_core_json = (
+        read_json_file(status_store.latest_thought_core_response_path)
         if status_store is not None
         else empty_file_state()
     )
@@ -126,6 +132,10 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
         "health": {
             "handoff": handoff_json["exists"] and not handoff_json.get("error"),
             "dify": dify_json["exists"] and not dify_json.get("error"),
+            "thought_core": (
+                store_thought_core_json["exists"]
+                and not store_thought_core_json.get("error")
+            ),
             "dify_api": dify_api["available"],
             "gesture": gesture["exists"] and not gesture.get("error"),
             "input_gate": None if not config.input_gate_url else input_gate["available"],
@@ -140,6 +150,7 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
             store_voice_turn_json,
         ),
         "dify": normalize_dify_status(dify_json, dify_text, conversation_id),
+        "thought_core": normalize_thought_core_status(store_thought_core_json),
         "tts": normalize_tts_status(
             tts_json,
             tts_volume_json,
@@ -169,6 +180,7 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
             "tts_volume_json": strip_payload(tts_volume_json),
             "gesture_json": strip_payload(gesture),
             "status_dify_json": strip_payload(store_dify_json),
+            "status_thought_core_json": strip_payload(store_thought_core_json),
             "status_gesture_json": strip_payload(store_gesture),
             "status_gesture_diagnostic_json": strip_payload(store_gesture_diagnostic),
             "status_voice_turn_json": strip_payload(store_voice_turn_json),
@@ -195,6 +207,10 @@ def redact_console_status(status: Mapping[str, Any]) -> dict[str, Any]:
     dify = _mapping_mutable(redacted.get("dify"))
     for key in ("request_text", "turn_id", "answer", "conversation_id", "message_id"):
         dify[key] = _redact_scalar(dify.get(key))
+
+    thought_core = _mapping_mutable(redacted.get("thought_core"))
+    for key in ("request_text", "turn_id", "answer"):
+        thought_core[key] = _redact_scalar(thought_core.get(key))
 
     tts = _mapping_mutable(redacted.get("tts"))
     for key in (
@@ -250,6 +266,31 @@ def redact_event(event: Mapping[str, Any]) -> dict[str, Any]:
                 "message_id": _redact_scalar(data.get("message_id")),
                 "skipped": data.get("skipped", False),
                 "skip_reason": data.get("skip_reason"),
+            }
+        )
+    elif item.get("type") == "thought_core.response":
+        redacted_payload.update(
+            {
+                "request_text": _redact_scalar(data.get("request_text")),
+                "turn_text": _redact_scalar(data.get("turn_text")),
+                "response_text": _redact_scalar(data.get("response_text")),
+                "event_count": data.get("event_count"),
+                "skipped": data.get("skipped", False),
+                "skip_reason": data.get("skip_reason"),
+            }
+        )
+    elif str(item.get("type") or "").startswith("thought_core."):
+        redacted_payload.update(
+            {
+                "event_type": data.get("event_type"),
+                "seq": data.get("seq"),
+                "elapsed_s": data.get("elapsed_s"),
+                "speech_present": data.get("speech_present"),
+                "speech": _redact_scalar(data.get("speech")),
+                "status": data.get("status"),
+                "tool": data.get("tool"),
+                "tool_call_id": _redact_scalar(data.get("tool_call_id")),
+                "tool_call_id_present": data.get("tool_call_id_present"),
             }
         )
     elif item.get("type") == "gesture.received":
@@ -553,6 +594,40 @@ def normalize_dify_status(
             "latency": usage.get("latency") or streaming.get("completed_elapsed_s"),
             "first_token_latency": streaming.get("first_token_elapsed_s"),
         },
+    }
+
+
+def normalize_thought_core_status(
+    thought_core_json: Mapping[str, Any],
+) -> dict[str, Any]:
+    payload = mapping(thought_core_json.get("payload"))
+    request_payload = mapping(payload.get("request"))
+    request_context = mapping(request_payload.get("context"))
+    turn_payload = mapping(payload.get("turn_payload"))
+    response = mapping(payload.get("response"))
+    raw = mapping(response.get("raw"))
+    streaming = mapping(raw.get("_streaming"))
+    return {
+        "available": bool(thought_core_json.get("exists"))
+        and not thought_core_json.get("error"),
+        "updated_at": thought_core_json.get("mtime"),
+        "skipped": bool(payload.get("skipped", False)),
+        "skip_reason": payload.get("skip_reason"),
+        "request_text": str(
+            request_payload.get("text") or turn_payload.get("text") or ""
+        ),
+        "turn_id": str(
+            payload.get("turn_id")
+            or turn_payload.get("turn_id")
+            or response.get("conversation_id")
+            or request_context.get("turn_id")
+            or ""
+        ),
+        "session_id": str(turn_payload.get("session_id", "")),
+        "answer": str(response.get("text", "")),
+        "event_count": streaming.get("event_count"),
+        "latency": streaming.get("completed_elapsed_s"),
+        "first_event_latency": streaming.get("first_event_elapsed_s"),
     }
 
 

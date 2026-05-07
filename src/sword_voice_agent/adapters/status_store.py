@@ -139,6 +139,7 @@ class StatusStore:
         payload: Mapping[str, Any],
         *,
         turn_id: str | None = None,
+        source: str = "watch_handoff_to_thought_core",
     ) -> None:
         stored_payload = dict(payload)
         event_turn_id = turn_id or _turn_id_from_thought_core_payload(payload)
@@ -152,7 +153,7 @@ class StatusStore:
         streaming_payload = _mapping(raw_payload.get("_streaming"))
         self.append_event(
             "thought_core.response",
-            source="watch_handoff_to_thought_core",
+            source=source,
             turn_id=event_turn_id,
             payload={
                 "request_text": redacted_text(request_payload.get("text", "")),

@@ -18,12 +18,12 @@ from sword_voice_agent.adapters.thought_core import (
     ThoughtCoreClientError,
     ThoughtCoreStreamEvent,
 )
-from sword_voice_agent.adapters.status_store import StatusStore, redacted_text
 from sword_voice_agent.apps.send_handoff_to_thought_core import (
     build_result,
     format_event_line,
     validate_path_argument,
 )
+from sword_voice_agent.apps.thought_core_status import build_thought_core_status_writer
 
 
 NO_SPEECH_PLACEHOLDER = "音声を認識できませんでした。"
@@ -198,7 +198,11 @@ def run_once(
     client: ThoughtCoreClient | None = None,
 ) -> dict[str, Any]:
     result = build_result(args)
-    status_writer = build_status_writer(args, result)
+    status_writer = build_thought_core_status_writer(
+        args.status_dir,
+        result,
+        source="watch_handoff_to_thought_core",
+    )
     text = str(result["turn_payload"].get("text") or "")
     if should_skip_text(text, args):
         result["skipped"] = True
@@ -211,8 +215,6 @@ def run_once(
     result["skipped"] = False
     if args.dry_run:
         save_result_outputs(args, result)
-        if status_writer is not None:
-            status_writer.finish(result)
         return result
 
     events: list[dict[str, Any]] = []
@@ -232,65 +234,6 @@ def run_once(
     if status_writer is not None:
         status_writer.finish(result)
     return result
-
-
-def build_status_writer(
-    args: argparse.Namespace,
-    result: dict[str, Any],
-) -> "ThoughtCoreStreamStatusWriter | None":
-    if not args.status_dir:
-        return None
-    turn_payload = result.get("turn_payload")
-    turn_id = ""
-    if isinstance(turn_payload, dict):
-        turn_id = str(turn_payload.get("turn_id") or "")
-    return ThoughtCoreStreamStatusWriter(
-        StatusStore(args.status_dir),
-        turn_id=turn_id or None,
-    )
-
-
-class ThoughtCoreStreamStatusWriter:
-    def __init__(self, store: StatusStore, *, turn_id: str | None = None) -> None:
-        self.store = store
-        self.turn_id = turn_id
-        self.first_message_seen = False
-        self.completed_seen = False
-
-    def __call__(self, event: ThoughtCoreStreamEvent) -> None:
-        if event.is_message and not self.first_message_seen:
-            self.first_message_seen = True
-            self.store.append_event(
-                "thought_core.first_message",
-                source="watch_handoff_to_thought_core",
-                turn_id=self.turn_id or event.turn_id,
-                payload=stream_event_payload(event),
-            )
-        if event.is_completed and not self.completed_seen:
-            self.completed_seen = True
-            self.store.append_event(
-                "thought_core.completed",
-                source="watch_handoff_to_thought_core",
-                turn_id=self.turn_id or event.turn_id,
-                payload=stream_event_payload(event),
-            )
-
-    def finish(self, result: dict[str, Any]) -> None:
-        self.store.write_latest_thought_core_response(result, turn_id=self.turn_id)
-
-
-def stream_event_payload(event: ThoughtCoreStreamEvent) -> dict[str, Any]:
-    return {
-        "event_type": event.event_type,
-        "seq": event.seq,
-        "elapsed_s": event.elapsed_s,
-        "speech_present": bool(event.speech),
-        "speech": redacted_text(event.speech),
-        "status": event.data.get("status"),
-        "tool": event.data.get("tool"),
-        "tool_call_id": redacted_text(event.data.get("tool_call_id", "")),
-        "tool_call_id_present": bool(event.data.get("tool_call_id")),
-    }
 
 
 def should_skip_text(text: str, args: argparse.Namespace) -> bool:

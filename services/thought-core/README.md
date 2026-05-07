@@ -160,6 +160,12 @@ watcher は既定で `.cache/sword_voice_agent/latest_thought_core_response.json
 `.cache/sword_voice_agent/events.jsonl` に thought-core の進行を書きます。
 status 出力が不要な場合は `--status-dir ""` を指定します。
 
+手入力CLIやwatcherを実行した後、console status の `thought_core` セクションでも確認できます。
+
+```powershell
+uv run python -c "import json; from pathlib import Path; from sword_voice_agent.adapters.console_status import ConsoleStatusConfig, build_console_status; s=build_console_status(ConsoleStatusConfig(ai_talk_core_root=Path('..')/'ai-talk-core')); print(json.dumps(s['thought_core'], ensure_ascii=False, indent=2))"
+```
+
 ## turn input
 
 ```json

@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
@@ -109,6 +110,8 @@ class SendHandoffToThoughtCoreTest(TestCase):
                 "turn-test",
                 "--session-id",
                 "living_room_main",
+                "--status-dir",
+                "",
             ]
         )
 
@@ -117,6 +120,77 @@ class SendHandoffToThoughtCoreTest(TestCase):
         self.assertEqual(result["response"]["text"], "了解です")
         self.assertEqual(result["events"][0]["event_type"], "assistant.message")
         client.send_turn_streaming.assert_called_once()
+
+    @patch("sword_voice_agent.apps.send_handoff_to_thought_core.ThoughtCoreClient")
+    def test_run_writes_status_for_manual_text(self, client_class: MagicMock) -> None:
+        client = MagicMock()
+
+        def fake_streaming(turn_payload, *, on_event=None):
+            if on_event is not None:
+                on_event(
+                    ThoughtCoreStreamEvent(
+                        event_type="assistant.message",
+                        turn_id=turn_payload["turn_id"],
+                        session_id=turn_payload["session_id"],
+                        seq=1,
+                        data={"speech": "了解です"},
+                    )
+                )
+                on_event(
+                    ThoughtCoreStreamEvent(
+                        event_type="turn.completed",
+                        turn_id=turn_payload["turn_id"],
+                        session_id=turn_payload["session_id"],
+                        seq=2,
+                        data={"status": "success"},
+                    )
+                )
+            return AgentResponse(
+                text="了解です",
+                conversation_id=turn_payload["turn_id"],
+                raw={"_streaming": {"event_count": 2}},
+            )
+
+        client.send_turn_streaming.side_effect = fake_streaming
+        client_class.from_env.return_value = client
+
+        with workspace_tempdir() as tmp:
+            args = build_parser().parse_args(
+                [
+                    "--text",
+                    "電気つけて",
+                    "--turn-id",
+                    "turn-status",
+                    "--session-id",
+                    "living_room_main",
+                    "--status-dir",
+                    tmp,
+                ]
+            )
+
+            run(args)
+
+            latest = json.loads(
+                (Path(tmp) / "latest_thought_core_response.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            events = [
+                json.loads(line)
+                for line in (Path(tmp) / "events.jsonl").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            self.assertEqual(latest["turn_id"], "turn-status")
+            self.assertEqual(
+                [event["type"] for event in events],
+                [
+                    "thought_core.first_message",
+                    "thought_core.completed",
+                    "thought_core.response",
+                ],
+            )
+            self.assertEqual(events[-1]["source"], "send_handoff_to_thought_core")
 
     def test_rejects_placeholder_root(self) -> None:
         args = build_parser().parse_args(
@@ -148,3 +222,20 @@ class SendHandoffToThoughtCoreTest(TestCase):
 
         self.assertEqual(format_event_line(speech), "3 assistant.speech_delta: 了解")
         self.assertEqual(format_event_line(tool), "4 tool.started: environment.observe")
+
+
+def workspace_tempdir():
+    from contextlib import contextmanager
+    import shutil
+    from uuid import uuid4
+
+    @contextmanager
+    def _workspace_tempdir():
+        root = Path(__file__).resolve().parent / "_tmp" / uuid4().hex
+        root.mkdir(parents=True)
+        try:
+            yield str(root)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    return _workspace_tempdir()

@@ -16,6 +16,7 @@ from sword_voice_agent.adapters.thought_core import (
     ThoughtCoreStreamEvent,
     build_turn_payload,
 )
+from sword_voice_agent.apps.thought_core_status import build_thought_core_status_writer
 from sword_voice_agent.protocol.messages import AgentRequest
 
 
@@ -103,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--print-events",
         action="store_true",
         help="Print compact event lines while streaming.",
+    )
+    parser.add_argument(
+        "--status-dir",
+        default=".cache/sword_voice_agent",
+        help="Directory for latest status snapshots and events.jsonl.",
     )
     return parser
 
@@ -205,9 +211,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         return result
 
     events: list[dict[str, Any]] = []
+    status_writer = build_thought_core_status_writer(
+        args.status_dir,
+        result,
+        source="send_handoff_to_thought_core",
+    )
 
     def on_event(event: ThoughtCoreStreamEvent) -> None:
         events.append(event.to_dict())
+        if status_writer is not None:
+            status_writer(event)
         if args.print_events:
             print(format_event_line(event), flush=True)
 
@@ -215,6 +228,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     response = client.send_turn_streaming(result["turn_payload"], on_event=on_event)
     result["events"] = events
     result["response"] = response.to_dict()
+    if status_writer is not None:
+        status_writer.finish(result)
     return result
 
 
