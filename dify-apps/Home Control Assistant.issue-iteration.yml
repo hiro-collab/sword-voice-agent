@@ -1065,7 +1065,7 @@ workflow:
 
                 ack_text は毎回少し表現を変える。下の例文をそのままコピーしない。特に同じユーザー発話が続いても、完全に同じ ack_text を避ける。
 
-                自然な短い相槌が作れない場合は ack_text を空文字 "" にしてよい。無理に一言を作らない。
+                ack_text は原則として空にしない。どうしても自然な短い相槌が作れない場合だけ空文字 "" にしてよい。
 
                 20文字を超えそうな場合は、自然なところで短く切る。
 
@@ -1251,6 +1251,8 @@ workflow:
                 - ユーザー発話を言い換えるだけで終わらない。「中扉を開けてほしいんだな」のような確認だけの user_reply は禁止。
                 confirmation_required では、必ず「まだ実行していない」ことと、承認するための短い言い方を含める。
                 success では、bridge_message または label に基づき、命令を受け付けたことが分かる文にする。
+                success かつ action_id が light_on/light_off の場合、実行後Environment state JSONの wait_result.matched=true で state_queries.room_light が unknown / low confidence / expected_state と不一致なら、user_reply に自然な短い確認質問を一体化して含める。「実際はついてるか？」「見た感じ合ってるか？」のように、ユーザーに状態確認を促す。
+                wait_result.matched=false の場合は古い映像の可能性があるため、room_light を操作後証拠として扱わない。「映像側の更新がまだ取れていない」程度に留め、断定や学習用確認をしない。
 
                 - 最大試行回数は3回。現在 attempt=1。attempt=3では retry_ai を選ばない。
 
@@ -1299,7 +1301,7 @@ workflow:
             import uuid
             from datetime import datetime, timezone
 
-            HCA_WORKFLOW_VERSION = "hca-issue-iteration-state-feedback-20260507-01"
+            HCA_WORKFLOW_VERSION = "hca-issue-iteration-state-feedback-20260507-05"
             DIAGNOSTIC_RE = re.compile(r"(__hca_diagnostic__|hca_diagnostic|hca診断|dify診断|ワークフロー診断)", re.I)
             STATE_QUERY_FEEDBACK_TTL_SECONDS = 120
             ALLOWED_ACTIONS = {
@@ -1505,19 +1507,6 @@ workflow:
                 daylight_markers = ("日光", "外光", "太陽", "昼光", "窓の光", "自然光")
                 if any(marker in text for marker in daylight_markers):
                     return "daylight"
-                predicted_state = str((pending or {}).get("predicted_state") or "").strip().lower()
-                yes_markers = ("はい", "うん", "そう", "その通り", "合ってる", "あってる", "正しい")
-                if any(marker in text for marker in yes_markers):
-                    if predicted_state in {"off", "unlit"}:
-                        return "off"
-                    return "on"
-                no_markers = ("いいえ", "いや", "違う", "ちがう", "違います", "ううん")
-                if any(marker in text for marker in no_markers):
-                    if predicted_state in {"on", "lit"}:
-                        return "off"
-                    if predicted_state in {"off", "unlit"}:
-                        return "on"
-                    return "off"
                 off_markers = (
                     "消えてる",
                     "消えている",
@@ -1549,6 +1538,19 @@ workflow:
                 )
                 if any(marker in text for marker in on_markers):
                     return "on"
+                predicted_state = str((pending or {}).get("predicted_state") or "").strip().lower()
+                yes_markers = ("はい", "うん", "そう", "その通り", "合ってる", "あってる", "正しい")
+                if any(marker in text for marker in yes_markers):
+                    if predicted_state in {"off", "unlit"}:
+                        return "off"
+                    return "on"
+                no_markers = ("いいえ", "いや", "違う", "ちがう", "違います", "ううん")
+                if any(marker in text for marker in no_markers):
+                    if predicted_state in {"on", "lit"}:
+                        return "off"
+                    if predicted_state in {"off", "unlit"}:
+                        return "on"
+                    return "off"
                 return ""
 
 
@@ -1669,8 +1671,12 @@ workflow:
                     "authority": "user_feedback",
                     "source": "dify",
                     "workflow_version": HCA_WORKFLOW_VERSION,
-                    "feedback_reason": "user_correction_after_state_query",
+                    "feedback_reason": str(pending.get("feedback_reason") or "user_correction_after_state_query"),
                     "idempotency_key": _feedback_idempotency_key(conversation_id, pending, label),
+                    "source_context": str(pending.get("source_context") or "state_query"),
+                    "action_id": str(pending.get("action_id") or ""),
+                    "issue_id": str(pending.get("issue_id") or ""),
+                    "expected_state": str(pending.get("expected_state") or ""),
                     "snapshot_id": str(pending.get("snapshot_id") or ""),
                     "current_snapshot_id": str(environment.get("snapshot_id") or ""),
                     "predicted_state": str(pending.get("predicted_state") or "unknown"),
@@ -1767,33 +1773,97 @@ workflow:
                 return ""
 
 
+            def _light_appliance_state(environment: dict) -> dict:
+                appliances = environment.get("appliances") if isinstance(environment, dict) else {}
+                if isinstance(appliances, dict):
+                    light = appliances.get("light")
+                    if isinstance(light, dict) and str(light.get("state") or "").strip().lower() in {"on", "off"}:
+                        return light
+                actions = environment.get("actions") if isinstance(environment, dict) else []
+                if isinstance(actions, list):
+                    for action in actions:
+                        if not isinstance(action, dict):
+                            continue
+                        if str(action.get("appliance_id") or "").strip() != "light":
+                            continue
+                        current_state = action.get("current_state")
+                        if isinstance(current_state, dict) and str(current_state.get("state") or "").strip().lower() in {"on", "off"}:
+                            return current_state
+                return {}
+
+
+            def _light_appliance_state_reply(environment: dict, room_light=None) -> str:
+                light = _light_appliance_state(environment)
+                state = str(light.get("state") or "").strip().lower()
+                if state not in {"on", "off"}:
+                    return ""
+                stale = _as_bool(light.get("stale"))
+                state_text = "ついてる" if state == "on" else "消えてる"
+                prefix = "最後に取れた機器状態では" if stale else "機器状態では"
+                hint = _room_light_evidence_hint(room_light or {}) if isinstance(room_light, dict) else ""
+                if not hint and isinstance(room_light, dict):
+                    hint = str(room_light.get("answer_hint") or "").strip()
+                if hint:
+                    hint = re.sub(r"\s+", " ", hint).strip()
+                    return f"[neutral]{prefix}、電気は{state_text}な。映像推定はまだ補助情報で、{hint} 違ってたら教えてくれ。"
+                return f"[neutral]{prefix}、電気は{state_text}な。違ってたら教えてくれ。"
+
+
             def _state_query_reply(state_query_id: str, environment: dict) -> str:
                 if state_query_id != "room_light":
                     return ""
                 room_light = _room_light_query(environment)
                 if not room_light:
+                    appliance_reply = _light_appliance_state_reply(environment)
+                    if appliance_reply:
+                        return appliance_reply
                     return "[relaxed]今の環境情報だと、照明の状態はまだ確認できねえな。"
 
                 available = room_light.get("available")
                 stale = _as_bool(room_light.get("stale"))
                 if available is False or stale:
+                    appliance_reply = _light_appliance_state_reply(environment, room_light)
+                    if appliance_reply:
+                        return appliance_reply
                     return "[relaxed]今のセンサー情報だと、照明の状態はまだ確認できねえな。"
 
                 authority = str(room_light.get("authority") or room_light.get("source") or "").strip()
                 source_label = "映像推定" if authority in {"vision_snapshot_processor", "vision-snapshot-processor"} or "vision" in authority else "環境情報"
                 state = str(room_light.get("state") or "unknown").strip().lower()
                 answer_hint = str(room_light.get("answer_hint") or "").strip()
+                confidence = str(room_light.get("confidence_label") or "").strip().lower()
+                learning = room_light.get("learning") if isinstance(room_light.get("learning"), dict) else {}
+                learning_level = _as_int(learning.get("level_index") if learning else 0, 0)
+
+                def _confidence_tail() -> str:
+                    if confidence == "high":
+                        return "かなり自信ありだ。"
+                    if confidence == "medium":
+                        return "そこそこ見えてる。"
+                    if confidence == "low":
+                        return "まだ自信は低めだ。"
+                    return ""
 
                 if state in {"on", "lit"}:
-                    return f"[neutral]{source_label}だと、照明はついてる可能性が高そうだな。実際そうか？"
+                    tail = _confidence_tail()
+                    return f"[neutral]{source_label}だと、照明はついてる可能性が高そうだな。{tail}合ってるか？"
                 if state in {"off", "unlit"}:
-                    return f"[neutral]{source_label}だと、照明は消えてる可能性が高そうだな。実際そうか？"
+                    tail = _confidence_tail()
+                    return f"[neutral]{source_label}だと、照明は消えてる可能性が高そうだな。{tail}合ってるか？"
 
                 hint = answer_hint or _room_light_evidence_hint(room_light)
                 if hint:
                     hint = re.sub(r"\s+", " ", hint).strip()
-                    return f"[neutral]{source_label}だと、電気がついてるかは断定しづらいな。{hint} 実際はついてる？"
-                return f"[neutral]{source_label}だと、電気がついてるかはまだ断定しづらいな。実際はついてる？"
+                    appliance_reply = _light_appliance_state_reply(environment, room_light)
+                    if appliance_reply:
+                        return appliance_reply
+                    if learning_level >= 3:
+                        return f"[neutral]覚えた材料は増えてるが、今の{source_label}は断定しづらいな。{hint} 点いてる？消えてる？"
+                    return f"[neutral]{source_label}だと断定しづらいな。{hint} 点いてる？消えてる？"
+                appliance_reply = _light_appliance_state_reply(environment, room_light)
+                if appliance_reply:
+                    return appliance_reply
+                return f"[neutral]{source_label}だとまだ断定しづらいな。点いてる？消えてる？"
 
 
             def _environment_debug(environment: dict, environment_status_code=0) -> dict:
@@ -1801,6 +1871,7 @@ workflow:
                 if not isinstance(state_queries, dict):
                     state_queries = {}
                 room_light = _room_light_query(environment)
+                light = _light_appliance_state(environment)
                 return {
                     "environment_status_code": _as_int(environment_status_code, 0),
                     "environment_snapshot_id": str(environment.get("snapshot_id") or "") if isinstance(environment, dict) else "",
@@ -1817,6 +1888,14 @@ workflow:
                         "confidence_label": room_light.get("confidence_label") if room_light else "",
                         "authority": room_light.get("authority") if room_light else "",
                         "answer_hint": room_light.get("answer_hint") if room_light else "",
+                        "learning": room_light.get("learning") if room_light and isinstance(room_light.get("learning"), dict) else {},
+                    },
+                    "light_appliance": {
+                        "state": light.get("state") if light else "",
+                        "stale": light.get("stale") if light else None,
+                        "source": light.get("source") if light else "",
+                        "updated_at": light.get("updated_at") if light else "",
+                        "action_id": light.get("action_id") if light else "",
                     },
                 }
 
@@ -1827,10 +1906,24 @@ workflow:
                     "workflow_version": HCA_WORKFLOW_VERSION,
                     "feedback_contract": {
                         "state_query_feedback": True,
+                        "post_action_light_feedback": True,
                         "target": "room_light",
                         "ttl_seconds": STATE_QUERY_FEEDBACK_TTL_SECONDS,
                         "idempotency_key_format": "state-query-feedback:<conversation_id>:<snapshot_id>:<user_label>",
-                        "feedback_reason": "user_correction_after_state_query",
+                        "wait_for_room_light": {
+                            "endpoint": "/environment/current",
+                            "query": "wait_for=room_light&after=<action_started_at>&timeout_ms=1500",
+                            "timeout_ms": 1500,
+                            "timeout_status": 200,
+                            "matched_true_requires": [
+                                "observed_at_after",
+                                "source_snapshot_id_present",
+                            ],
+                        },
+                        "feedback_reasons": [
+                            "user_correction_after_state_query",
+                            "user_correction_after_light_action",
+                        ],
                     },
                     "environment": _environment_debug(environment, environment_status_code),
                 }
@@ -1962,6 +2055,26 @@ workflow:
                     return "[happy]OK、続きやるぞ。"
                 label = _action_phrase(action_id, action)
                 return f"[neutral]{label}か。わかった、やるよ。"
+
+
+            def _fallback_ack_text(user_text, action_id):
+                if action_id and action_id != "none":
+                    candidates = [
+                        "[neutral]はいよ。",
+                        "[relaxed]まかせな。",
+                        "[neutral]おう、見るぞ。",
+                        "[happy]任せとけ。",
+                        "[neutral]ちょい待ちな。",
+                    ]
+                else:
+                    candidates = [
+                        "[relaxed]ふんふん。",
+                        "[neutral]なるほどな。",
+                        "[relaxed]ほうほう。",
+                        "[neutral]うんうん。",
+                    ]
+                seed = sum(ord(ch) for ch in f"{action_id}:{user_text or ''}")
+                return candidates[seed % len(candidates)]
 
 
             def _sanitize_pre_action_text(value, action_id, confirmed=False, action=None):
@@ -2098,15 +2211,14 @@ workflow:
 
                 tag_re = re.compile(r"^\[(neutral|happy|angry|sad|relaxed|surprised)\](\[motion:(think|cheer|cross|mouth_cover|crossed_arms|bow|shrug|shy|wave|clap)\])?.+")
                 spoken_ack = re.sub(r"\[[^\]]+\]", "", ack_text).strip()
-                unsafe_ack = (
-                    generic_ack
-                    or not ack_text
+                hard_unsafe_ack = (
+                    not ack_text
                     or not tag_re.match(ack_text)
                     or spoken_ack.count("。") + spoken_ack.count("！") + spoken_ack.count("？") > 1
                     or any(word in spoken_ack for word in ("実行した", "実行しました", "できた", "できました", "完了", "消した", "消しました", "つけた", "つけました"))
                 )
-                if unsafe_ack:
-                    ack_text = ""
+                if generic_ack or hard_unsafe_ack:
+                    ack_text = _fallback_ack_text(user_text, action_id)
                 elif len(spoken_ack) > 20:
                     tag_match = re.match(r"^(\[(neutral|happy|angry|sad|relaxed|surprised)\](\[motion:(think|cheer|cross|mouth_cover|crossed_arms|bow|shrug|shy|wave|clap)\])?)", ack_text)
                     tag_prefix = tag_match.group(1) if tag_match else "[neutral]"
@@ -2149,6 +2261,7 @@ workflow:
                     pending_state_query_json_next = ""
                 state_query_feedback_json = json.dumps(state_feedback, ensure_ascii=False, sort_keys=True) if is_state_feedback else ""
 
+                action_started_at = datetime.now(timezone.utc).isoformat() if should_execute else ""
                 issue_status_initial = "open" if should_execute else ("resolved" if non_execute_reply else (active_issue_status or ""))
                 issue_summary = json.dumps(
                     {
@@ -2178,6 +2291,7 @@ workflow:
                         "workflow_version": HCA_WORKFLOW_VERSION,
                         "diagnostic": is_diagnostic,
                         "environment_status_code": _as_int(environment_status_code, 0),
+                        "action_started_at": action_started_at,
                     },
                     ensure_ascii=False,
                 )
@@ -2192,6 +2306,7 @@ workflow:
                         "environment_snapshot_id": environment.get("snapshot_id") or "",
                         "state_query_id": state_query_id or state_feedback.get("state_query_id", ""),
                         "state_feedback_label": state_feedback.get("user_label") if is_state_feedback else "",
+                        "action_started_at": action_started_at,
                     },
                     ensure_ascii=False,
                 )
@@ -2226,6 +2341,7 @@ workflow:
                     "is_state_feedback_expired": is_state_feedback_expired,
                     "state_query_feedback_json": state_query_feedback_json,
                     "workflow_version": HCA_WORKFLOW_VERSION,
+                    "action_started_at": action_started_at,
                     "diagnostic_json": diagnostic_json,
                 }
           code_language: python3
@@ -2315,6 +2431,9 @@ workflow:
               children: null
               type: string
             workflow_version:
+              children: null
+              type: string
+            action_started_at:
               children: null
               type: string
             diagnostic_json:
@@ -2651,7 +2770,8 @@ workflow:
                 実行不要応答候補:
                 {{#1777642160512.non_execute_reply#}}
 
-                実行不要応答候補が空でなければ、その文を一字一句変えずに一つだけ返答してください。空の場合だけ、通常会話として最も適切な会話文を一つだけ返答してください。
+                実行不要応答候補が空でなければ、その文字列を一字一句そのまま返してください。前後に相槌、説明、提案、締め文、追加質問を追加しないでください。
+                実行不要応答候補が空の場合だけ、通常会話として自然な会話文を一つだけ返答してください。
                 家電操作を実行したとは言わないでください。家電操作に分類された依頼は別の経路で処理されています。
 
                 ユーザー発話:
@@ -2957,7 +3077,10 @@ workflow:
 
             Accept:application/json
           method: get
-          params: ''
+          params: |-
+            wait_for:room_light
+            after:{{#1777642160512.action_started_at#}}
+            timeout_ms:1500
           retry_config:
             max_retries: 0
             retry_enabled: false
@@ -3099,10 +3222,12 @@ workflow:
           code: |
             import json
             import re
+            from datetime import datetime, timezone
 
             MAX_ATTEMPTS = 3
             ALLOWED_DECISIONS = {"finish", "retry_ai", "ask_user"}
             ALLOWED_STATUSES = {"resolved", "retrying", "need_user", "failed", "closed"}
+            POST_ACTION_ROOM_LIGHT_ACTIONS = {"light_on": "on", "light_off": "off"}
 
 
             def _loads(raw: str) -> dict:
@@ -3132,6 +3257,123 @@ workflow:
                 if isinstance(value, str):
                     return value.strip().lower() in {"true", "1", "yes", "y"}
                 return False
+
+
+            def _environment_from_body(raw: str) -> dict:
+                data = _loads(raw or "")
+                if isinstance(data.get("environment"), dict):
+                    return data["environment"]
+                if isinstance(data.get("body"), dict):
+                    return data["body"]
+                return data if isinstance(data, dict) else {}
+
+
+            def _room_light_query(environment: dict) -> dict:
+                queries = environment.get("state_queries") if isinstance(environment, dict) else {}
+                if not isinstance(queries, dict):
+                    return {}
+                room_light = queries.get("room_light")
+                return room_light if isinstance(room_light, dict) else {}
+
+
+            def _wait_result(environment: dict) -> dict:
+                wait = environment.get("wait_result") if isinstance(environment, dict) else {}
+                return wait if isinstance(wait, dict) else {}
+
+
+            def _post_action_wait_matched(environment: dict) -> bool:
+                wait = _wait_result(environment)
+                return _as_bool(wait.get("matched")) if wait else False
+
+
+            def _post_action_wait_timed_out(action_id: str, result_status: str, decision: str, environment: dict) -> bool:
+                if not POST_ACTION_ROOM_LIGHT_ACTIONS.get(action_id) or result_status != "success" or decision != "finish":
+                    return False
+                wait = _wait_result(environment)
+                return bool(wait) and not _as_bool(wait.get("matched"))
+
+
+            def _post_action_feedback_needed(action_id: str, result_status: str, decision: str, room_light: dict, environment: dict) -> bool:
+                expected = POST_ACTION_ROOM_LIGHT_ACTIONS.get(action_id)
+                if not expected or result_status != "success" or decision != "finish":
+                    return False
+                if not _post_action_wait_matched(environment):
+                    return False
+                if not room_light or room_light.get("available") is False or _as_bool(room_light.get("stale")):
+                    return False
+                state = str(room_light.get("state") or "unknown").lower()
+                confidence = str(room_light.get("confidence_label") or "").lower()
+                return state in {"", "unknown"} or confidence in {"", "low"} or (state in {"on", "off"} and state != expected)
+
+
+            def _append_post_action_feedback_prompt(user_reply: str, action_id: str, room_light: dict) -> str:
+                expected = POST_ACTION_ROOM_LIGHT_ACTIONS.get(action_id, "unknown")
+                expected_text = "ついてる" if expected == "on" else "消えてる"
+                state = str(room_light.get("state") or "unknown").lower()
+                confidence = str(room_light.get("confidence_label") or "").lower()
+                if state in {"on", "off"} and state != expected:
+                    prompt = f"映像だと少しズレて見えるんだが、実際は{expected_text}か？"
+                elif confidence in {"", "low"}:
+                    prompt = f"映像だとまだ自信が低いんだが、実際は{expected_text}か？"
+                else:
+                    prompt = f"実際は{expected_text}か？"
+                visible = _visible_reply(user_reply)
+                if "実際" in visible or "ついてるか" in visible or "消えてるか" in visible:
+                    return user_reply
+                return f"{user_reply.rstrip()} {prompt}"
+
+
+            def _append_post_action_wait_note(user_reply: str, environment: dict) -> str:
+                visible = _visible_reply(user_reply)
+                if "映像側の更新" in visible:
+                    return user_reply
+                return f"{user_reply.rstrip()} 映像側の更新がまだ取れてねえな。状態確認は少し待ってからにするぜ。"
+
+
+            def _build_post_action_pending(action_id: str, issue_id: str, room_light: dict, environment: dict) -> tuple[str, str]:
+                expected = POST_ACTION_ROOM_LIGHT_ACTIONS.get(action_id)
+                if not expected:
+                    return "", ""
+                evidence = room_light.get("evidence") if isinstance(room_light.get("evidence"), dict) else {}
+                wait = _wait_result(environment)
+                pending = {
+                    "type": "state_query_pending",
+                    "state_query_id": "room_light",
+                    "target": "room_light",
+                    "feedback_reason": "user_correction_after_light_action",
+                    "source_context": "post_light_action",
+                    "action_id": action_id,
+                    "issue_id": issue_id,
+                    "expected_state": expected,
+                    "snapshot_id": str(environment.get("snapshot_id") or ""),
+                    "authority": str(room_light.get("authority") or room_light.get("source") or ""),
+                    "projected_by": str(room_light.get("projected_by") or ""),
+                    "predicted_state": str(room_light.get("state") or "unknown"),
+                    "confidence_label": str(room_light.get("confidence_label") or ""),
+                    "answer_hint": str(room_light.get("answer_hint") or ""),
+                    "workflow_version": "post-action-room-light-feedback-v1",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "observed_at": str(room_light.get("observed_at") or evidence.get("observed_at") or ""),
+                    "updated_at": str(room_light.get("updated_at") or evidence.get("updated_at") or ""),
+                    "wait_result": {
+                        "target": wait.get("target") or "",
+                        "matched": _as_bool(wait.get("matched")),
+                        "after": wait.get("after") or "",
+                        "observed_at": wait.get("observed_at") or "",
+                        "elapsed_ms": wait.get("elapsed_ms"),
+                        "reason": wait.get("reason") or "",
+                    },
+                    "evidence": {
+                        "source": evidence.get("source") or "",
+                        "topic": evidence.get("topic") or "",
+                        "lighting_type": evidence.get("lighting_type") or "",
+                        "daylight_state": evidence.get("daylight_state") or "",
+                        "electric_on_probability": evidence.get("electric_on_probability"),
+                        "daylight_present_probability": evidence.get("daylight_present_probability"),
+                        "dark_probability": evidence.get("dark_probability"),
+                    },
+                }
+                return "room_light", json.dumps(pending, ensure_ascii=False, sort_keys=True)
 
 
             def _is_config_or_bridge_error(result: dict, bridge_status: str) -> bool:
@@ -3206,11 +3448,14 @@ workflow:
                 normalized = visible.lower()
                 if not visible:
                     return True
-                weak_markers = [
+                compact_visible = re.sub(r"\s+", "", visible).rstrip("。.!！?？")
+                weak_echo_markers = [
                     "してほしい",
                     "ほしいんだな",
                     "件か",
                     "操作だな",
+                ]
+                weak_ack_markers = [
                     "見るぞ",
                     "はいよ",
                     "ふんふん",
@@ -3224,7 +3469,9 @@ workflow:
                     "やってくれ",
                     "頼むぜ",
                 ]
-                if any(marker in visible for marker in weak_markers):
+                if any(marker in visible for marker in weak_echo_markers):
+                    return True
+                if compact_visible in {marker.rstrip("。.!！?？") for marker in weak_ack_markers}:
                     return True
                 if result_status == "confirmation_required":
                     confirmation_markers = [
@@ -3292,9 +3539,11 @@ workflow:
                 return ""
 
 
-            def main(text: str, result_json: str, result_confirmation_token: str = "") -> dict:
+            def main(text: str, result_json: str, result_confirmation_token: str = "", environment_body: str = "") -> dict:
                 decision_data = _loads(text)
                 result = _loads(result_json)
+                environment = _environment_from_body(environment_body)
+                room_light = _room_light_query(environment)
 
                 issue_id = str(decision_data.get("issue_id") or result.get("issue_id") or "")
                 attempt = _as_int(decision_data.get("attempt") or result.get("attempt"), 1)
@@ -3352,6 +3601,7 @@ workflow:
                     if issue_status in {"closed", "failed"}:
                         confirmation_token = ""
 
+                action_started_at = datetime.now(timezone.utc).isoformat() if decision == "retry_ai" else ""
                 fallback_reply = _fallback_user_reply(result, result_status, decision, action_id)
                 if fallback_reply and _needs_guarded_reply(user_reply, result_status):
                     user_reply = fallback_reply
@@ -3364,6 +3614,13 @@ workflow:
                         user_reply = "[neutral]ちょい引っかかったな。同じ件でもう一回だけ試すぜ。"
 
                 user_reply = _normalize_motion_tags(user_reply)
+                pending_state_query_id = ""
+                pending_state_query_json = ""
+                if _post_action_feedback_needed(action_id, result_status, decision, room_light, environment):
+                    user_reply = _append_post_action_feedback_prompt(user_reply, action_id, room_light)
+                    pending_state_query_id, pending_state_query_json = _build_post_action_pending(action_id, issue_id, room_light, environment)
+                elif _post_action_wait_timed_out(action_id, result_status, decision, environment):
+                    user_reply = _append_post_action_wait_note(user_reply, environment)
 
                 issue_summary = json.dumps(
                     {
@@ -3375,7 +3632,9 @@ workflow:
                         "issue_status": issue_status,
                         "action_id": action_id,
                         "next_input": next_input,
+                        "action_started_at": action_started_at,
                         "confirmation_token_present": bool(confirmation_token),
+                        "post_action_feedback_pending": bool(pending_state_query_json),
                     },
                     ensure_ascii=False,
                 )
@@ -3389,7 +3648,9 @@ workflow:
                         "decision": decision,
                         "issue_status": issue_status,
                         "action_id": action_id,
+                        "action_started_at": action_started_at,
                         "confirmation_token_present": bool(confirmation_token),
+                        "post_action_feedback_pending": bool(pending_state_query_json),
                     },
                     ensure_ascii=False,
                 )
@@ -3406,6 +3667,9 @@ workflow:
                     "action_id": action_id,
                     "confirmed": confirmed,
                     "confirmation_token": confirmation_token,
+                    "action_started_at": action_started_at,
+                    "pending_state_query_id": pending_state_query_id,
+                    "pending_state_query_json": pending_state_query_json,
                     "issue_summary": issue_summary,
                     "issue_event": issue_event,
                     "raw_decision_json": json.dumps(decision_data, ensure_ascii=False),
@@ -3454,6 +3718,15 @@ workflow:
             confirmation_token:
               children: null
               type: string
+            action_started_at:
+              children: null
+              type: string
+            pending_state_query_id:
+              children: null
+              type: string
+            pending_state_query_json:
+              children: null
+              type: string
           variables:
             - value_selector:
                 - '1777645000001'
@@ -3470,6 +3743,11 @@ workflow:
                 - confirmation_token
               value_type: string
               variable: result_confirmation_token
+            - value_selector:
+                - hca_environment_after_1
+                - body
+              value_type: string
+              variable: environment_body
         height: 52
         id: hca_decision_parse_1
         position:
@@ -3610,6 +3888,24 @@ workflow:
                 - conversation
                 - issue_history
               write_mode: over-write
+            - input_type: variable
+              operation: over-write
+              value:
+                - hca_decision_parse_1
+                - pending_state_query_id
+              variable_selector:
+                - conversation
+                - pending_state_query_id
+              write_mode: over-write
+            - input_type: variable
+              operation: over-write
+              value:
+                - hca_decision_parse_1
+                - pending_state_query_json
+              variable_selector:
+                - conversation
+                - pending_state_query_json
+              write_mode: over-write
           version: '2'
         height: 88
         id: hca_retry_assign_1
@@ -3720,6 +4016,24 @@ workflow:
               variable_selector:
                 - conversation
                 - issue_history
+              write_mode: over-write
+            - input_type: variable
+              operation: over-write
+              value:
+                - hca_decision_parse_1
+                - pending_state_query_id
+              variable_selector:
+                - conversation
+                - pending_state_query_id
+              write_mode: over-write
+            - input_type: variable
+              operation: over-write
+              value:
+                - hca_decision_parse_1
+                - pending_state_query_json
+              variable_selector:
+                - conversation
+                - pending_state_query_json
               write_mode: over-write
           version: '2'
         height: 88
@@ -3974,7 +4288,10 @@ workflow:
 
             Accept:application/json
           method: get
-          params: ''
+          params: |-
+            wait_for:room_light
+            after:{{#hca_decision_parse_1.action_started_at#}}
+            timeout_ms:1500
           retry_config:
             max_retries: 0
             retry_enabled: false
@@ -4096,6 +4413,8 @@ workflow:
                 - ユーザー発話を言い換えるだけで終わらない。「中扉を開けてほしいんだな」のような確認だけの user_reply は禁止。
                 confirmation_required では、必ず「まだ実行していない」ことと、承認するための短い言い方を含める。
                 success では、bridge_message または label に基づき、命令を受け付けたことが分かる文にする。
+                success かつ action_id が light_on/light_off の場合、実行後Environment state JSONの wait_result.matched=true で state_queries.room_light が unknown / low confidence / expected_state と不一致なら、user_reply に自然な短い確認質問を一体化して含める。「実際はついてるか？」「見た感じ合ってるか？」のように、ユーザーに状態確認を促す。
+                wait_result.matched=false の場合は古い映像の可能性があるため、room_light を操作後証拠として扱わない。「映像側の更新がまだ取れていない」程度に留め、断定や学習用確認をしない。
 
                 - 最大試行回数は3回。現在 attempt=2。attempt=3では retry_ai を選ばない。
 
@@ -4141,10 +4460,12 @@ workflow:
           code: |
             import json
             import re
+            from datetime import datetime, timezone
 
             MAX_ATTEMPTS = 3
             ALLOWED_DECISIONS = {"finish", "retry_ai", "ask_user"}
             ALLOWED_STATUSES = {"resolved", "retrying", "need_user", "failed", "closed"}
+            POST_ACTION_ROOM_LIGHT_ACTIONS = {"light_on": "on", "light_off": "off"}
 
 
             def _loads(raw: str) -> dict:
@@ -4174,6 +4495,123 @@ workflow:
                 if isinstance(value, str):
                     return value.strip().lower() in {"true", "1", "yes", "y"}
                 return False
+
+
+            def _environment_from_body(raw: str) -> dict:
+                data = _loads(raw or "")
+                if isinstance(data.get("environment"), dict):
+                    return data["environment"]
+                if isinstance(data.get("body"), dict):
+                    return data["body"]
+                return data if isinstance(data, dict) else {}
+
+
+            def _room_light_query(environment: dict) -> dict:
+                queries = environment.get("state_queries") if isinstance(environment, dict) else {}
+                if not isinstance(queries, dict):
+                    return {}
+                room_light = queries.get("room_light")
+                return room_light if isinstance(room_light, dict) else {}
+
+
+            def _wait_result(environment: dict) -> dict:
+                wait = environment.get("wait_result") if isinstance(environment, dict) else {}
+                return wait if isinstance(wait, dict) else {}
+
+
+            def _post_action_wait_matched(environment: dict) -> bool:
+                wait = _wait_result(environment)
+                return _as_bool(wait.get("matched")) if wait else False
+
+
+            def _post_action_wait_timed_out(action_id: str, result_status: str, decision: str, environment: dict) -> bool:
+                if not POST_ACTION_ROOM_LIGHT_ACTIONS.get(action_id) or result_status != "success" or decision != "finish":
+                    return False
+                wait = _wait_result(environment)
+                return bool(wait) and not _as_bool(wait.get("matched"))
+
+
+            def _post_action_feedback_needed(action_id: str, result_status: str, decision: str, room_light: dict, environment: dict) -> bool:
+                expected = POST_ACTION_ROOM_LIGHT_ACTIONS.get(action_id)
+                if not expected or result_status != "success" or decision != "finish":
+                    return False
+                if not _post_action_wait_matched(environment):
+                    return False
+                if not room_light or room_light.get("available") is False or _as_bool(room_light.get("stale")):
+                    return False
+                state = str(room_light.get("state") or "unknown").lower()
+                confidence = str(room_light.get("confidence_label") or "").lower()
+                return state in {"", "unknown"} or confidence in {"", "low"} or (state in {"on", "off"} and state != expected)
+
+
+            def _append_post_action_feedback_prompt(user_reply: str, action_id: str, room_light: dict) -> str:
+                expected = POST_ACTION_ROOM_LIGHT_ACTIONS.get(action_id, "unknown")
+                expected_text = "ついてる" if expected == "on" else "消えてる"
+                state = str(room_light.get("state") or "unknown").lower()
+                confidence = str(room_light.get("confidence_label") or "").lower()
+                if state in {"on", "off"} and state != expected:
+                    prompt = f"映像だと少しズレて見えるんだが、実際は{expected_text}か？"
+                elif confidence in {"", "low"}:
+                    prompt = f"映像だとまだ自信が低いんだが、実際は{expected_text}か？"
+                else:
+                    prompt = f"実際は{expected_text}か？"
+                visible = _visible_reply(user_reply)
+                if "実際" in visible or "ついてるか" in visible or "消えてるか" in visible:
+                    return user_reply
+                return f"{user_reply.rstrip()} {prompt}"
+
+
+            def _append_post_action_wait_note(user_reply: str, environment: dict) -> str:
+                visible = _visible_reply(user_reply)
+                if "映像側の更新" in visible:
+                    return user_reply
+                return f"{user_reply.rstrip()} 映像側の更新がまだ取れてねえな。状態確認は少し待ってからにするぜ。"
+
+
+            def _build_post_action_pending(action_id: str, issue_id: str, room_light: dict, environment: dict) -> tuple[str, str]:
+                expected = POST_ACTION_ROOM_LIGHT_ACTIONS.get(action_id)
+                if not expected:
+                    return "", ""
+                evidence = room_light.get("evidence") if isinstance(room_light.get("evidence"), dict) else {}
+                wait = _wait_result(environment)
+                pending = {
+                    "type": "state_query_pending",
+                    "state_query_id": "room_light",
+                    "target": "room_light",
+                    "feedback_reason": "user_correction_after_light_action",
+                    "source_context": "post_light_action",
+                    "action_id": action_id,
+                    "issue_id": issue_id,
+                    "expected_state": expected,
+                    "snapshot_id": str(environment.get("snapshot_id") or ""),
+                    "authority": str(room_light.get("authority") or room_light.get("source") or ""),
+                    "projected_by": str(room_light.get("projected_by") or ""),
+                    "predicted_state": str(room_light.get("state") or "unknown"),
+                    "confidence_label": str(room_light.get("confidence_label") or ""),
+                    "answer_hint": str(room_light.get("answer_hint") or ""),
+                    "workflow_version": "post-action-room-light-feedback-v1",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "observed_at": str(room_light.get("observed_at") or evidence.get("observed_at") or ""),
+                    "updated_at": str(room_light.get("updated_at") or evidence.get("updated_at") or ""),
+                    "wait_result": {
+                        "target": wait.get("target") or "",
+                        "matched": _as_bool(wait.get("matched")),
+                        "after": wait.get("after") or "",
+                        "observed_at": wait.get("observed_at") or "",
+                        "elapsed_ms": wait.get("elapsed_ms"),
+                        "reason": wait.get("reason") or "",
+                    },
+                    "evidence": {
+                        "source": evidence.get("source") or "",
+                        "topic": evidence.get("topic") or "",
+                        "lighting_type": evidence.get("lighting_type") or "",
+                        "daylight_state": evidence.get("daylight_state") or "",
+                        "electric_on_probability": evidence.get("electric_on_probability"),
+                        "daylight_present_probability": evidence.get("daylight_present_probability"),
+                        "dark_probability": evidence.get("dark_probability"),
+                    },
+                }
+                return "room_light", json.dumps(pending, ensure_ascii=False, sort_keys=True)
 
 
             def _is_config_or_bridge_error(result: dict, bridge_status: str) -> bool:
@@ -4248,11 +4686,14 @@ workflow:
                 normalized = visible.lower()
                 if not visible:
                     return True
-                weak_markers = [
+                compact_visible = re.sub(r"\s+", "", visible).rstrip("。.!！?？")
+                weak_echo_markers = [
                     "してほしい",
                     "ほしいんだな",
                     "件か",
                     "操作だな",
+                ]
+                weak_ack_markers = [
                     "見るぞ",
                     "はいよ",
                     "ふんふん",
@@ -4266,7 +4707,9 @@ workflow:
                     "やってくれ",
                     "頼むぜ",
                 ]
-                if any(marker in visible for marker in weak_markers):
+                if any(marker in visible for marker in weak_echo_markers):
+                    return True
+                if compact_visible in {marker.rstrip("。.!！?？") for marker in weak_ack_markers}:
                     return True
                 if result_status == "confirmation_required":
                     confirmation_markers = [
@@ -4334,9 +4777,11 @@ workflow:
                 return ""
 
 
-            def main(text: str, result_json: str, result_confirmation_token: str = "") -> dict:
+            def main(text: str, result_json: str, result_confirmation_token: str = "", environment_body: str = "") -> dict:
                 decision_data = _loads(text)
                 result = _loads(result_json)
+                environment = _environment_from_body(environment_body)
+                room_light = _room_light_query(environment)
 
                 issue_id = str(decision_data.get("issue_id") or result.get("issue_id") or "")
                 attempt = _as_int(decision_data.get("attempt") or result.get("attempt"), 1)
@@ -4394,6 +4839,7 @@ workflow:
                     if issue_status in {"closed", "failed"}:
                         confirmation_token = ""
 
+                action_started_at = datetime.now(timezone.utc).isoformat() if decision == "retry_ai" else ""
                 fallback_reply = _fallback_user_reply(result, result_status, decision, action_id)
                 if fallback_reply and _needs_guarded_reply(user_reply, result_status):
                     user_reply = fallback_reply
@@ -4406,6 +4852,13 @@ workflow:
                         user_reply = "[neutral]ちょい引っかかったな。同じ件でもう一回だけ試すぜ。"
 
                 user_reply = _normalize_motion_tags(user_reply)
+                pending_state_query_id = ""
+                pending_state_query_json = ""
+                if _post_action_feedback_needed(action_id, result_status, decision, room_light, environment):
+                    user_reply = _append_post_action_feedback_prompt(user_reply, action_id, room_light)
+                    pending_state_query_id, pending_state_query_json = _build_post_action_pending(action_id, issue_id, room_light, environment)
+                elif _post_action_wait_timed_out(action_id, result_status, decision, environment):
+                    user_reply = _append_post_action_wait_note(user_reply, environment)
 
                 issue_summary = json.dumps(
                     {
@@ -4417,7 +4870,9 @@ workflow:
                         "issue_status": issue_status,
                         "action_id": action_id,
                         "next_input": next_input,
+                        "action_started_at": action_started_at,
                         "confirmation_token_present": bool(confirmation_token),
+                        "post_action_feedback_pending": bool(pending_state_query_json),
                     },
                     ensure_ascii=False,
                 )
@@ -4431,7 +4886,9 @@ workflow:
                         "decision": decision,
                         "issue_status": issue_status,
                         "action_id": action_id,
+                        "action_started_at": action_started_at,
                         "confirmation_token_present": bool(confirmation_token),
+                        "post_action_feedback_pending": bool(pending_state_query_json),
                     },
                     ensure_ascii=False,
                 )
@@ -4448,6 +4905,9 @@ workflow:
                     "action_id": action_id,
                     "confirmed": confirmed,
                     "confirmation_token": confirmation_token,
+                    "action_started_at": action_started_at,
+                    "pending_state_query_id": pending_state_query_id,
+                    "pending_state_query_json": pending_state_query_json,
                     "issue_summary": issue_summary,
                     "issue_event": issue_event,
                     "raw_decision_json": json.dumps(decision_data, ensure_ascii=False),
@@ -4496,6 +4956,15 @@ workflow:
             confirmation_token:
               children: null
               type: string
+            action_started_at:
+              children: null
+              type: string
+            pending_state_query_id:
+              children: null
+              type: string
+            pending_state_query_json:
+              children: null
+              type: string
           variables:
             - value_selector:
                 - hca_decision_llm_2
@@ -4512,6 +4981,11 @@ workflow:
                 - confirmation_token
               value_type: string
               variable: result_confirmation_token
+            - value_selector:
+                - hca_environment_after_2
+                - body
+              value_type: string
+              variable: environment_body
         height: 52
         id: hca_decision_parse_2
         position:
@@ -4652,6 +5126,24 @@ workflow:
                 - conversation
                 - issue_history
               write_mode: over-write
+            - input_type: variable
+              operation: over-write
+              value:
+                - hca_decision_parse_2
+                - pending_state_query_id
+              variable_selector:
+                - conversation
+                - pending_state_query_id
+              write_mode: over-write
+            - input_type: variable
+              operation: over-write
+              value:
+                - hca_decision_parse_2
+                - pending_state_query_json
+              variable_selector:
+                - conversation
+                - pending_state_query_json
+              write_mode: over-write
           version: '2'
         height: 88
         id: hca_retry_assign_2
@@ -4743,6 +5235,24 @@ workflow:
               variable_selector:
                 - conversation
                 - issue_history
+              write_mode: over-write
+            - input_type: variable
+              operation: over-write
+              value:
+                - hca_decision_parse_2
+                - pending_state_query_id
+              variable_selector:
+                - conversation
+                - pending_state_query_id
+              write_mode: over-write
+            - input_type: variable
+              operation: over-write
+              value:
+                - hca_decision_parse_2
+                - pending_state_query_json
+              variable_selector:
+                - conversation
+                - pending_state_query_json
               write_mode: over-write
           version: '2'
         height: 88
@@ -4997,7 +5507,10 @@ workflow:
 
             Accept:application/json
           method: get
-          params: ''
+          params: |-
+            wait_for:room_light
+            after:{{#hca_decision_parse_2.action_started_at#}}
+            timeout_ms:1500
           retry_config:
             max_retries: 0
             retry_enabled: false
@@ -5119,6 +5632,8 @@ workflow:
                 - ユーザー発話を言い換えるだけで終わらない。「中扉を開けてほしいんだな」のような確認だけの user_reply は禁止。
                 confirmation_required では、必ず「まだ実行していない」ことと、承認するための短い言い方を含める。
                 success では、bridge_message または label に基づき、命令を受け付けたことが分かる文にする。
+                success かつ action_id が light_on/light_off の場合、実行後Environment state JSONの wait_result.matched=true で state_queries.room_light が unknown / low confidence / expected_state と不一致なら、user_reply に自然な短い確認質問を一体化して含める。「実際はついてるか？」「見た感じ合ってるか？」のように、ユーザーに状態確認を促す。
+                wait_result.matched=false の場合は古い映像の可能性があるため、room_light を操作後証拠として扱わない。「映像側の更新がまだ取れていない」程度に留め、断定や学習用確認をしない。
 
                 - 最大試行回数は3回。現在 attempt=3。attempt=3では retry_ai を選ばない。
 
@@ -5164,10 +5679,12 @@ workflow:
           code: |
             import json
             import re
+            from datetime import datetime, timezone
 
             MAX_ATTEMPTS = 3
             ALLOWED_DECISIONS = {"finish", "retry_ai", "ask_user"}
             ALLOWED_STATUSES = {"resolved", "retrying", "need_user", "failed", "closed"}
+            POST_ACTION_ROOM_LIGHT_ACTIONS = {"light_on": "on", "light_off": "off"}
 
 
             def _loads(raw: str) -> dict:
@@ -5197,6 +5714,123 @@ workflow:
                 if isinstance(value, str):
                     return value.strip().lower() in {"true", "1", "yes", "y"}
                 return False
+
+
+            def _environment_from_body(raw: str) -> dict:
+                data = _loads(raw or "")
+                if isinstance(data.get("environment"), dict):
+                    return data["environment"]
+                if isinstance(data.get("body"), dict):
+                    return data["body"]
+                return data if isinstance(data, dict) else {}
+
+
+            def _room_light_query(environment: dict) -> dict:
+                queries = environment.get("state_queries") if isinstance(environment, dict) else {}
+                if not isinstance(queries, dict):
+                    return {}
+                room_light = queries.get("room_light")
+                return room_light if isinstance(room_light, dict) else {}
+
+
+            def _wait_result(environment: dict) -> dict:
+                wait = environment.get("wait_result") if isinstance(environment, dict) else {}
+                return wait if isinstance(wait, dict) else {}
+
+
+            def _post_action_wait_matched(environment: dict) -> bool:
+                wait = _wait_result(environment)
+                return _as_bool(wait.get("matched")) if wait else False
+
+
+            def _post_action_wait_timed_out(action_id: str, result_status: str, decision: str, environment: dict) -> bool:
+                if not POST_ACTION_ROOM_LIGHT_ACTIONS.get(action_id) or result_status != "success" or decision != "finish":
+                    return False
+                wait = _wait_result(environment)
+                return bool(wait) and not _as_bool(wait.get("matched"))
+
+
+            def _post_action_feedback_needed(action_id: str, result_status: str, decision: str, room_light: dict, environment: dict) -> bool:
+                expected = POST_ACTION_ROOM_LIGHT_ACTIONS.get(action_id)
+                if not expected or result_status != "success" or decision != "finish":
+                    return False
+                if not _post_action_wait_matched(environment):
+                    return False
+                if not room_light or room_light.get("available") is False or _as_bool(room_light.get("stale")):
+                    return False
+                state = str(room_light.get("state") or "unknown").lower()
+                confidence = str(room_light.get("confidence_label") or "").lower()
+                return state in {"", "unknown"} or confidence in {"", "low"} or (state in {"on", "off"} and state != expected)
+
+
+            def _append_post_action_feedback_prompt(user_reply: str, action_id: str, room_light: dict) -> str:
+                expected = POST_ACTION_ROOM_LIGHT_ACTIONS.get(action_id, "unknown")
+                expected_text = "ついてる" if expected == "on" else "消えてる"
+                state = str(room_light.get("state") or "unknown").lower()
+                confidence = str(room_light.get("confidence_label") or "").lower()
+                if state in {"on", "off"} and state != expected:
+                    prompt = f"映像だと少しズレて見えるんだが、実際は{expected_text}か？"
+                elif confidence in {"", "low"}:
+                    prompt = f"映像だとまだ自信が低いんだが、実際は{expected_text}か？"
+                else:
+                    prompt = f"実際は{expected_text}か？"
+                visible = _visible_reply(user_reply)
+                if "実際" in visible or "ついてるか" in visible or "消えてるか" in visible:
+                    return user_reply
+                return f"{user_reply.rstrip()} {prompt}"
+
+
+            def _append_post_action_wait_note(user_reply: str, environment: dict) -> str:
+                visible = _visible_reply(user_reply)
+                if "映像側の更新" in visible:
+                    return user_reply
+                return f"{user_reply.rstrip()} 映像側の更新がまだ取れてねえな。状態確認は少し待ってからにするぜ。"
+
+
+            def _build_post_action_pending(action_id: str, issue_id: str, room_light: dict, environment: dict) -> tuple[str, str]:
+                expected = POST_ACTION_ROOM_LIGHT_ACTIONS.get(action_id)
+                if not expected:
+                    return "", ""
+                evidence = room_light.get("evidence") if isinstance(room_light.get("evidence"), dict) else {}
+                wait = _wait_result(environment)
+                pending = {
+                    "type": "state_query_pending",
+                    "state_query_id": "room_light",
+                    "target": "room_light",
+                    "feedback_reason": "user_correction_after_light_action",
+                    "source_context": "post_light_action",
+                    "action_id": action_id,
+                    "issue_id": issue_id,
+                    "expected_state": expected,
+                    "snapshot_id": str(environment.get("snapshot_id") or ""),
+                    "authority": str(room_light.get("authority") or room_light.get("source") or ""),
+                    "projected_by": str(room_light.get("projected_by") or ""),
+                    "predicted_state": str(room_light.get("state") or "unknown"),
+                    "confidence_label": str(room_light.get("confidence_label") or ""),
+                    "answer_hint": str(room_light.get("answer_hint") or ""),
+                    "workflow_version": "post-action-room-light-feedback-v1",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "observed_at": str(room_light.get("observed_at") or evidence.get("observed_at") or ""),
+                    "updated_at": str(room_light.get("updated_at") or evidence.get("updated_at") or ""),
+                    "wait_result": {
+                        "target": wait.get("target") or "",
+                        "matched": _as_bool(wait.get("matched")),
+                        "after": wait.get("after") or "",
+                        "observed_at": wait.get("observed_at") or "",
+                        "elapsed_ms": wait.get("elapsed_ms"),
+                        "reason": wait.get("reason") or "",
+                    },
+                    "evidence": {
+                        "source": evidence.get("source") or "",
+                        "topic": evidence.get("topic") or "",
+                        "lighting_type": evidence.get("lighting_type") or "",
+                        "daylight_state": evidence.get("daylight_state") or "",
+                        "electric_on_probability": evidence.get("electric_on_probability"),
+                        "daylight_present_probability": evidence.get("daylight_present_probability"),
+                        "dark_probability": evidence.get("dark_probability"),
+                    },
+                }
+                return "room_light", json.dumps(pending, ensure_ascii=False, sort_keys=True)
 
 
             def _is_config_or_bridge_error(result: dict, bridge_status: str) -> bool:
@@ -5271,11 +5905,14 @@ workflow:
                 normalized = visible.lower()
                 if not visible:
                     return True
-                weak_markers = [
+                compact_visible = re.sub(r"\s+", "", visible).rstrip("。.!！?？")
+                weak_echo_markers = [
                     "してほしい",
                     "ほしいんだな",
                     "件か",
                     "操作だな",
+                ]
+                weak_ack_markers = [
                     "見るぞ",
                     "はいよ",
                     "ふんふん",
@@ -5289,7 +5926,9 @@ workflow:
                     "やってくれ",
                     "頼むぜ",
                 ]
-                if any(marker in visible for marker in weak_markers):
+                if any(marker in visible for marker in weak_echo_markers):
+                    return True
+                if compact_visible in {marker.rstrip("。.!！?？") for marker in weak_ack_markers}:
                     return True
                 if result_status == "confirmation_required":
                     confirmation_markers = [
@@ -5357,9 +5996,11 @@ workflow:
                 return ""
 
 
-            def main(text: str, result_json: str, result_confirmation_token: str = "") -> dict:
+            def main(text: str, result_json: str, result_confirmation_token: str = "", environment_body: str = "") -> dict:
                 decision_data = _loads(text)
                 result = _loads(result_json)
+                environment = _environment_from_body(environment_body)
+                room_light = _room_light_query(environment)
 
                 issue_id = str(decision_data.get("issue_id") or result.get("issue_id") or "")
                 attempt = _as_int(decision_data.get("attempt") or result.get("attempt"), 1)
@@ -5417,6 +6058,7 @@ workflow:
                     if issue_status in {"closed", "failed"}:
                         confirmation_token = ""
 
+                action_started_at = datetime.now(timezone.utc).isoformat() if decision == "retry_ai" else ""
                 fallback_reply = _fallback_user_reply(result, result_status, decision, action_id)
                 if fallback_reply and _needs_guarded_reply(user_reply, result_status):
                     user_reply = fallback_reply
@@ -5429,6 +6071,13 @@ workflow:
                         user_reply = "[neutral]ちょい引っかかったな。同じ件でもう一回だけ試すぜ。"
 
                 user_reply = _normalize_motion_tags(user_reply)
+                pending_state_query_id = ""
+                pending_state_query_json = ""
+                if _post_action_feedback_needed(action_id, result_status, decision, room_light, environment):
+                    user_reply = _append_post_action_feedback_prompt(user_reply, action_id, room_light)
+                    pending_state_query_id, pending_state_query_json = _build_post_action_pending(action_id, issue_id, room_light, environment)
+                elif _post_action_wait_timed_out(action_id, result_status, decision, environment):
+                    user_reply = _append_post_action_wait_note(user_reply, environment)
 
                 issue_summary = json.dumps(
                     {
@@ -5440,7 +6089,9 @@ workflow:
                         "issue_status": issue_status,
                         "action_id": action_id,
                         "next_input": next_input,
+                        "action_started_at": action_started_at,
                         "confirmation_token_present": bool(confirmation_token),
+                        "post_action_feedback_pending": bool(pending_state_query_json),
                     },
                     ensure_ascii=False,
                 )
@@ -5454,7 +6105,9 @@ workflow:
                         "decision": decision,
                         "issue_status": issue_status,
                         "action_id": action_id,
+                        "action_started_at": action_started_at,
                         "confirmation_token_present": bool(confirmation_token),
+                        "post_action_feedback_pending": bool(pending_state_query_json),
                     },
                     ensure_ascii=False,
                 )
@@ -5471,6 +6124,9 @@ workflow:
                     "action_id": action_id,
                     "confirmed": confirmed,
                     "confirmation_token": confirmation_token,
+                    "action_started_at": action_started_at,
+                    "pending_state_query_id": pending_state_query_id,
+                    "pending_state_query_json": pending_state_query_json,
                     "issue_summary": issue_summary,
                     "issue_event": issue_event,
                     "raw_decision_json": json.dumps(decision_data, ensure_ascii=False),
@@ -5519,6 +6175,15 @@ workflow:
             confirmation_token:
               children: null
               type: string
+            action_started_at:
+              children: null
+              type: string
+            pending_state_query_id:
+              children: null
+              type: string
+            pending_state_query_json:
+              children: null
+              type: string
           variables:
             - value_selector:
                 - hca_decision_llm_3
@@ -5535,6 +6200,11 @@ workflow:
                 - confirmation_token
               value_type: string
               variable: result_confirmation_token
+            - value_selector:
+                - hca_environment_after_3
+                - body
+              value_type: string
+              variable: environment_body
         height: 52
         id: hca_decision_parse_3
         position:
@@ -5644,6 +6314,24 @@ workflow:
               variable_selector:
                 - conversation
                 - issue_history
+              write_mode: over-write
+            - input_type: variable
+              operation: over-write
+              value:
+                - hca_decision_parse_3
+                - pending_state_query_id
+              variable_selector:
+                - conversation
+                - pending_state_query_id
+              write_mode: over-write
+            - input_type: variable
+              operation: over-write
+              value:
+                - hca_decision_parse_3
+                - pending_state_query_json
+              variable_selector:
+                - conversation
+                - pending_state_query_json
               write_mode: over-write
           version: '2'
         height: 88

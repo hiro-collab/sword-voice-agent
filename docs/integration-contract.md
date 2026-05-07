@@ -33,6 +33,7 @@ Camera Hub owns physical camera capture, frame reading, landmark inference, and 
 | Endpoint | Consumer | Notes |
 |---|---|---|
 | `GET /environment/current` | Dify | Requires Bearer token |
+| `GET /environment/current?wait_for=room_light&after=<iso>&timeout_ms=1500` | Dify | Short wait for a room-light snapshot newer than `after`; returns 200 even on timeout |
 | `GET /environment/relations` | Dify | Related metadata only |
 | `POST /feedback/state-query` | Dify | User correction for the immediately preceding state query; non-authoritative learning data |
 | `GET /feedback/state-query/recent` | Dify / debug | Recent feedback records; Requires Bearer token |
@@ -43,7 +44,31 @@ Camera Hub owns physical camera capture, frame reading, landmark inference, and 
 
 Environment State Server subscribes to Camera Hub topics, Vision Snapshot Processor topics, and Home Assistant bridge events. It does not open the camera.
 
-For room-light state queries, Dify reads `state_queries.room_light` from `/environment/current`. `vision_snapshot_processor` remains the authority for image-derived `on/off/unknown`, `lighting_type`, and probability values; `environment_state_server` only projects them into `available`, `stale`, `confidence_label`, `answer_hint`, `authority`, `projected_by`, and normalized `evidence`.
+For room-light state queries, Dify reads `state_queries.room_light` from `/environment/current`. `vision_snapshot_processor` remains the authority for image-derived `on/off/unknown`, `lighting_type`, and probability values; `environment_state_server` only projects them into `available`, `stale`, `stale_reason`, `confidence_label`, `answer_hint`, `authority`, `projected_by`, `observed_at`, `updated_at`, `source_snapshot_id`, normalized `evidence`, and the non-authoritative `learning` summary.
+
+When Dify needs a post-action room-light snapshot, it calls:
+
+```text
+GET /environment/current?wait_for=room_light&after=<action_time>&timeout_ms=1500
+```
+
+`timeout_ms` is capped by Environment. The response always remains an environment snapshot. It additionally includes:
+
+```json
+{
+  "wait_result": {
+    "target": "room_light",
+    "matched": true,
+    "after": "2026-05-07T14:15:00+09:00",
+    "timeout_ms": 1500,
+    "observed_at": "2026-05-07T14:15:00.320000+09:00",
+    "elapsed_ms": 320,
+    "reason": "matched"
+  }
+}
+```
+
+`wait_result.matched=true` means `state_queries.room_light.observed_at` is newer than `after` and `state_queries.room_light.source_snapshot_id` is present. Only then should Dify treat `state_queries.room_light` as post-action evidence. If no newer room-light snapshot arrives in time, the response is still HTTP 200 with `wait_result.matched=false` and `wait_result.reason="timeout"`. Dify should then avoid treating the room-light snapshot as post-action evidence.
 
 When Dify asks a follow-up such as "実際はついてる?", the user's next short correction is sent to `POST /feedback/state-query`. The payload includes `target=room_light`, `snapshot_id`, `current_snapshot_id`, `predicted_state`, `predicted_confidence_label`, `user_label`, `user_text`, `workflow_version`, `feedback_reason`, `idempotency_key`, and the original projected evidence. Environment should store this as `authority=user_feedback` training material without rewriting the authoritative vision state for that snapshot. Dify only sends feedback while the pending state query is fresh, currently within 120 seconds; stale corrections ask the user to re-check state instead.
 
@@ -79,7 +104,11 @@ Example:
 
 Accepted `user_label` values are `on`, `off`, `daylight`, and `unknown`. Environment adds `received_at` and `received_snapshot_id` at receive time. If `idempotency_key` is repeated, Environment returns the same `feedback_id` with `duplicate=true` and does not append a second JSONL line. If `pending.created_at` / `updated_at` / `observed_at` or `snapshot_id` is older than 120 seconds, Environment stores the record as `status=accepted_with_warning` with `warnings=["pending_stale"]`.
 
-The Dify diagnostic query (`__HCA_DIAGNOSTIC__`) includes `feedback_contract.state_query_feedback=true`, `ttl_seconds`, `idempotency_key_format`, and `feedback_reason` so launcher-side checks can confirm the published YAML matches this contract.
+Known feedback warning values are `pending_stale`, `snapshot_mismatch`, `wait_timeout`, `duplicate`, and `invalid_context`. The initial Environment implementation emits `pending_stale`; the others are reserved contract values for later validation layers.
+
+Dify can also request room-light feedback after a successful `light_on` or `light_off` action when `wait_result.matched=true` and the fresh post-action Environment snapshot is unknown, low confidence, or disagrees with the expected state. In that case it keeps the same `POST /feedback/state-query` endpoint and sends `feedback_reason=user_correction_after_light_action`, `source_context=post_light_action`, `action_id`, `issue_id`, `expected_state`, and the matching `wait_result`. This remains user_feedback training material; it does not change Home Assistant action authority or vision authority immediately. If `wait_result.matched=false`, Dify should not create this post-action feedback pending item from the stale snapshot; it may only tell the user that the vision update has not arrived yet.
+
+The Dify diagnostic query (`__HCA_DIAGNOSTIC__`) includes `feedback_contract.state_query_feedback=true`, `feedback_contract.post_action_light_feedback=true`, `feedback_contract.wait_for_room_light`, `ttl_seconds`, `idempotency_key_format`, and `feedback_reasons` so launcher-side checks can confirm the published YAML matches this contract.
 
 Successful response:
 
@@ -94,7 +123,7 @@ Successful response:
 }
 ```
 
-If persistence is unavailable, return a non-2xx status with a short `error`; Dify treats this endpoint as best-effort and continues the conversation. Debug endpoints accept `target=room_light`; `recent` also accepts `limit`. `summary` returns `status_counts` with fixed keys for `accepted`, `accepted_with_warning`, `duplicate`, and `rejected`; duplicate/rejected counts are runtime diagnostics and may reset when Environment State Server restarts.
+If persistence is unavailable, return a non-2xx status with a short `error`; Dify treats this endpoint as best-effort and continues the conversation. Debug endpoints accept `target=room_light`; `recent` also accepts `limit`. `summary` returns `label_counts`, `status_counts`, `reason_counts`, `source_context_counts`, `action_counts`, `expected_state_counts`, and `learning`. `learning.level` is one of `none`, `collecting`, `seeded`, `usable`, or `reinforced`; `learning.problems[]` carries machine-readable `code`, `severity`, and `message` for cases such as missing labels, no post-action feedback, stale feedback, duplicates, or rejected payloads. `status_counts` has fixed keys for `accepted`, `accepted_with_warning`, `duplicate`, and `rejected`; duplicate/rejected counts are runtime diagnostics and may reset when Environment State Server restarts.
 
 ## Dify
 

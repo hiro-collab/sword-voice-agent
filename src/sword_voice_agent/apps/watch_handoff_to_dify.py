@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import queue
 from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import threading
 import time
 from typing import Any, Callable
 from urllib import error, request
@@ -29,6 +31,7 @@ NO_SPEECH_PLACEHOLDER = "音声を認識できませんでした。"
 SHORT_ASCII_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z'-]*")
 STRIPPABLE_ASCII_PUNCTUATION = " \t\r\n.,!?;:\"'`“”‘’()[]{}<>"
 RESPONSE_MODES = {"blocking", "streaming"}
+LOCAL_ACK_MODES = {"auto", "off"}
 SPEECH_MARKER_PATTERN = re.compile(r"\[\[SPEECH:[A-Z0-9_-]+\]\]")
 KNOWN_MOTION_TAGS = frozenset(
     (
@@ -174,6 +177,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Flush an unfinished AITuber speech chunk after roughly this many characters.",
     )
     parser.add_argument(
+        "--local-ack-mode",
+        choices=sorted(LOCAL_ACK_MODES),
+        default=default_local_ack_mode(),
+        help=(
+            "Post a tiny local AITuber acknowledgement before the Dify request. "
+            "auto uses this only when AITuber direct_send is configured."
+        ),
+    )
+    parser.add_argument(
         "--poll-interval-s",
         type=float,
         default=0.5,
@@ -259,6 +271,7 @@ def process_handoff(
     *,
     client: DifyClient | None = None,
     on_stream_event: Callable[[DifyStreamEvent], None] | None = None,
+    on_before_request: Callable[[Any], None] | None = None,
 ) -> dict[str, Any]:
     handoff = load_handoff_from_args(args)
     conversation_id = resolve_conversation_id(args)
@@ -292,6 +305,9 @@ def process_handoff(
 
     if args.dry_run:
         return result
+
+    if on_before_request is not None:
+        on_before_request(agent_request)
 
     dify_client = client or DifyClient.from_env()
     if args.response_mode == "streaming":
@@ -332,6 +348,11 @@ def is_suspect_short_ascii_stt(text: str, *, max_chars: int = 16) -> bool:
 def default_response_mode() -> str:
     value = os.environ.get("DIFY_RESPONSE_MODE", "blocking").strip().lower()
     return value if value in RESPONSE_MODES else "blocking"
+
+
+def default_local_ack_mode() -> str:
+    value = os.environ.get("DIFY_LOCAL_ACK_MODE", "auto").strip().lower()
+    return value if value in LOCAL_ACK_MODES else "auto"
 
 
 def default_tts_http_timeout_s() -> float:
@@ -486,11 +507,20 @@ def run_once(
     )
     if aituber_forwarder is not None:
         stream_handlers.append(aituber_forwarder)
-    result = process_handoff(
-        args,
-        client=client,
-        on_stream_event=dispatch_stream_event(stream_handlers),
-    )
+    try:
+        before_request = build_before_dify_request_callback(
+            args,
+            aituber_forwarder=aituber_forwarder,
+        )
+        result = process_handoff(
+            args,
+            client=client,
+            on_stream_event=dispatch_stream_event(stream_handlers),
+            on_before_request=before_request,
+        )
+    except Exception:
+        close_stream_handlers(stream_handlers)
+        raise
     save_result_outputs(args, result)
     for stream_handler in stream_handlers:
         finish = getattr(stream_handler, "finish", None)
@@ -502,6 +532,57 @@ def run_once(
             turn_id=turn_id,
         )
     return result
+
+
+def build_before_dify_request_callback(
+    args: argparse.Namespace,
+    *,
+    aituber_forwarder: "AituberSpeechForwarder | None",
+) -> Callable[[Any], None] | None:
+    if aituber_forwarder is None:
+        return None
+    if str(getattr(args, "local_ack_mode", "auto") or "auto") == "off":
+        return None
+    if getattr(args, "response_mode", "") != "streaming":
+        return None
+
+    def post_local_ack(agent_request: Any) -> None:
+        aituber_forwarder.post_local_ack(
+            build_local_ack(str(getattr(agent_request, "text", "") or ""))
+        )
+
+    return post_local_ack
+
+
+def build_local_ack(text: str) -> str:
+    compact = re.sub(r"\s+", "", text)
+    if any(
+        marker in compact
+        for marker in (
+            "つけて",
+            "付けて",
+            "点けて",
+            "消して",
+            "開けて",
+            "閉めて",
+            "オンにして",
+            "オフにして",
+        )
+    ):
+        return "[neutral]はいよ。"
+    if any(
+        marker in compact
+        for marker in ("ついてる", "点いてる", "消えてる", "明るさ", "照明", "電気")
+    ):
+        return "[relaxed]ふんふん。"
+    return "[neutral]うん。"
+
+
+def close_stream_handlers(handlers: list[Callable[[DifyStreamEvent], None]]) -> None:
+    for handler in handlers:
+        close = getattr(handler, "close", None)
+        if callable(close):
+            close()
 
 
 def dispatch_stream_event(
@@ -600,12 +681,93 @@ def stream_event_payload(event: DifyStreamEvent) -> dict[str, Any]:
     }
 
 
+class AsyncJsonPostWorker:
+    def __init__(
+        self,
+        url: str,
+        *,
+        timeout_s: float,
+        on_error: Callable[[str], None],
+        enabled: bool = False,
+        queue_size: int = 100,
+    ) -> None:
+        self.url = url
+        self.timeout_s = max(0.05, timeout_s)
+        self.on_error = on_error
+        self.enabled = enabled
+        self._closed = False
+        self._queue: queue.Queue[bytes | None] | None = None
+        self._thread: threading.Thread | None = None
+        if enabled:
+            self._queue = queue.Queue(maxsize=max(1, queue_size))
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+
+    def post(self, body: bytes) -> None:
+        if self._closed:
+            self.on_error("forward worker is already closed")
+            return
+        if self._queue is None:
+            self._post_body(body)
+            return
+        try:
+            self._queue.put_nowait(body)
+        except queue.Full:
+            self.on_error("forward queue full")
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._queue is None or self._thread is None:
+            return
+        pending = self._queue.qsize()
+        try:
+            self._queue.put(None, timeout=self.timeout_s)
+        except queue.Full:
+            self.on_error("forward queue full during close")
+            return
+        wait_s = max(1.0, (pending + 1) * self.timeout_s + 0.5)
+        self._thread.join(timeout=wait_s)
+        if self._thread.is_alive():
+            self.on_error("forward worker did not stop before timeout")
+
+    def _run(self) -> None:
+        if self._queue is None:
+            return
+        while True:
+            body = self._queue.get()
+            try:
+                if body is None:
+                    return
+                self._post_body(body)
+            finally:
+                self._queue.task_done()
+
+    def _post_body(self, body: bytes) -> None:
+        req = request.Request(
+            self.url,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with request.urlopen(req, timeout=self.timeout_s) as response:
+                response.read()
+        except (error.HTTPError, error.URLError, TimeoutError, OSError) as exc:
+            self.on_error(str(exc))
+
+
 class TtsStreamForwarder:
     def __init__(
         self,
         chunk_url: str,
         *,
         timeout_s: float,
+        async_post: bool = False,
         store: StatusStore | None = None,
         turn_id: str | None = None,
     ) -> None:
@@ -615,6 +777,12 @@ class TtsStreamForwarder:
         self.turn_id = turn_id
         self.final_sent = False
         self.error_count = 0
+        self.poster = AsyncJsonPostWorker(
+            self.chunk_url,
+            timeout_s=self.timeout_s,
+            on_error=self.record_error,
+            enabled=async_post,
+        )
 
     @classmethod
     def from_args(
@@ -630,6 +798,7 @@ class TtsStreamForwarder:
         return cls(
             chunk_url,
             timeout_s=float(getattr(args, "tts_http_timeout_s", 0.75)),
+            async_post=True,
             store=store,
             turn_id=turn_id,
         )
@@ -642,24 +811,30 @@ class TtsStreamForwarder:
             self.post(tts_chunk_payload(event, turn_id=self.turn_id, final=True))
 
     def finish(self, result: dict[str, Any]) -> None:
-        response = result.get("response")
-        if (
-            self.final_sent
-            or result.get("response_mode") != "streaming"
-            or result.get("skipped")
-            or not isinstance(response, dict)
-        ):
-            return
-        self.final_sent = True
-        self.post(
-            {
-                "event": "message_end",
-                "final": True,
-                "turn_id": self.turn_id,
-                "message_id": response.get("message_id"),
-                "conversation_id": response.get("conversation_id"),
-            }
-        )
+        try:
+            response = result.get("response")
+            if (
+                self.final_sent
+                or result.get("response_mode") != "streaming"
+                or result.get("skipped")
+                or not isinstance(response, dict)
+            ):
+                return
+            self.final_sent = True
+            self.post(
+                {
+                    "event": "message_end",
+                    "final": True,
+                    "turn_id": self.turn_id,
+                    "message_id": response.get("message_id"),
+                    "conversation_id": response.get("conversation_id"),
+                }
+            )
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        self.poster.close()
 
     def post(self, payload: dict[str, Any]) -> None:
         clean_payload = {
@@ -668,20 +843,7 @@ class TtsStreamForwarder:
             if value is not None and value != ""
         }
         body = json.dumps(clean_payload, ensure_ascii=False).encode("utf-8")
-        req = request.Request(
-            self.chunk_url,
-            data=body,
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-        )
-        try:
-            with request.urlopen(req, timeout=self.timeout_s) as response:
-                response.read()
-        except (error.HTTPError, error.URLError, TimeoutError, OSError) as exc:
-            self.record_error(str(exc))
+        self.poster.post(body)
 
     def record_error(self, message: str) -> None:
         self.error_count += 1
@@ -705,6 +867,7 @@ class AituberSpeechForwarder:
         message_url: str,
         *,
         timeout_s: float,
+        async_post: bool = False,
         max_chars: int = 80,
         store: StatusStore | None = None,
         turn_id: str | None = None,
@@ -717,6 +880,13 @@ class AituberSpeechForwarder:
         self.buffer = ""
         self.done_seen = False
         self.error_count = 0
+        self.suppress_next_pure_ack = False
+        self.poster = AsyncJsonPostWorker(
+            self.message_url,
+            timeout_s=self.timeout_s,
+            on_error=self.record_error,
+            enabled=async_post,
+        )
 
     @classmethod
     def from_args(
@@ -732,6 +902,7 @@ class AituberSpeechForwarder:
         return cls(
             message_url,
             timeout_s=float(getattr(args, "aituber_http_timeout_s", 0.75)),
+            async_post=True,
             max_chars=int(getattr(args, "aituber_speech_max_chars", 80)),
             store=store,
             turn_id=turn_id,
@@ -746,14 +917,20 @@ class AituberSpeechForwarder:
             self.flush_ready(final=True)
 
     def finish(self, result: dict[str, Any]) -> None:
-        if (
-            self.done_seen
-            or result.get("response_mode") != "streaming"
-            or result.get("skipped")
-        ):
-            return
-        self.done_seen = True
-        self.flush_ready(final=True)
+        try:
+            if (
+                self.done_seen
+                or result.get("response_mode") != "streaming"
+                or result.get("skipped")
+            ):
+                return
+            self.done_seen = True
+            self.flush_ready(final=True)
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        self.poster.close()
 
     def flush_ready(self, *, final: bool) -> None:
         chunks, self.buffer = split_speech_chunks(
@@ -764,27 +941,21 @@ class AituberSpeechForwarder:
         for chunk in chunks:
             self.post(chunk)
 
-    def post(self, message: str) -> None:
+    def post_local_ack(self, message: str) -> None:
+        self.post(message, suppressible=False)
+        self.suppress_next_pure_ack = True
+
+    def post(self, message: str, *, suppressible: bool = True) -> None:
         clean_message = clean_speech_message(message)
         if not clean_message:
+            return
+        if suppressible and self.suppress_next_pure_ack and is_pure_ack_message(clean_message):
+            self.suppress_next_pure_ack = False
             return
         body = json.dumps({"messages": [clean_message]}, ensure_ascii=False).encode(
             "utf-8"
         )
-        req = request.Request(
-            self.message_url,
-            data=body,
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-        )
-        try:
-            with request.urlopen(req, timeout=self.timeout_s) as response:
-                response.read()
-        except (error.HTTPError, error.URLError, TimeoutError, OSError) as exc:
-            self.record_error(str(exc))
+        self.poster.post(body)
 
     def record_error(self, message: str) -> None:
         self.error_count += 1
@@ -861,6 +1032,29 @@ def clean_speech_message(text: str) -> str:
     if not visible:
         return ""
     return cleaned
+
+
+PURE_ACK_VISIBLE_TEXTS = frozenset(
+    (
+        "はいよ",
+        "はいよ。",
+        "うん",
+        "うん。",
+        "うんうん",
+        "うんうん。",
+        "ふんふん",
+        "ふんふん。",
+        "おう",
+        "おう。",
+        "了解",
+        "了解。",
+    )
+)
+
+
+def is_pure_ack_message(text: str) -> bool:
+    visible = visible_speech_text(clean_speech_message(text))
+    return visible in PURE_ACK_VISIBLE_TEXTS
 
 
 def normalize_motion_tags(text: str) -> str:

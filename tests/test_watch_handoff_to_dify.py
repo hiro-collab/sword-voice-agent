@@ -2,6 +2,7 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 import shutil
+import time
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -265,6 +266,45 @@ class WatchHandoffToDifyTest(TestCase):
             self.assertNotIn("secret", json.dumps(events, ensure_ascii=False))
 
     @patch("sword_voice_agent.apps.watch_handoff_to_dify.request.urlopen")
+    def test_tts_forwarder_async_post_does_not_block_stream_handler(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+
+        def slow_urlopen(*args, **kwargs):
+            time.sleep(0.25)
+            return response
+
+        urlopen.side_effect = slow_urlopen
+        forwarder = TtsStreamForwarder(
+            "http://127.0.0.1:8765/api/tts/chunk",
+            timeout_s=0.5,
+            async_post=True,
+        )
+
+        started = time.perf_counter()
+        forwarder(
+            DifyStreamEvent(
+                event="message",
+                answer_delta="Dify",
+                message_id="msg-1",
+            )
+        )
+        elapsed = time.perf_counter() - started
+
+        self.assertLess(elapsed, 0.15)
+        forwarder.finish(
+            {
+                "response_mode": "streaming",
+                "skipped": False,
+                "response": {"message_id": "msg-1", "conversation_id": "conv-1"},
+            }
+        )
+        self.assertGreaterEqual(urlopen.call_count, 2)
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_dify.request.urlopen")
     def test_run_once_streaming_forwards_tts_chunks(self, urlopen: MagicMock) -> None:
         response = MagicMock()
         response.__enter__.return_value.read.return_value = b"{}"
@@ -301,6 +341,44 @@ class WatchHandoffToDifyTest(TestCase):
         self.assertEqual([payload.get("delta") for payload in payloads[:2]], ["Dify", "応答です"])
         self.assertEqual(payloads[-1]["event"], "message_end")
         self.assertTrue(payloads[-1]["final"])
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_dify.request.urlopen")
+    def test_run_once_streaming_posts_local_ack_before_dify_chunks(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+        urlopen.return_value = response
+
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            write_handoff(root, command="電気を消してください")
+            client = FakeDifyClient()
+            args = build_parser().parse_args(
+                [
+                    "--ai-talk-core-root",
+                    str(root),
+                    "--once",
+                    "--response-mode",
+                    "streaming",
+                    "--aituber-message-url",
+                    "http://127.0.0.1:3000/api/messages?clientId=client-1&type=direct_send",
+                    "--aituber-http-timeout-s",
+                    "0.1",
+                ]
+            )
+
+            run_once(args, client=client)
+
+        payloads = [
+            json.loads(call.args[0].data.decode("utf-8"))
+            for call in urlopen.call_args_list
+        ]
+        self.assertEqual(
+            [payload["messages"][0] for payload in payloads],
+            ["[neutral]はいよ。", "Dify応答です"],
+        )
 
     def test_split_speech_chunks_keeps_partial_until_sentence_end(self) -> None:
         chunks, remainder = split_speech_chunks(
