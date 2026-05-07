@@ -58,6 +58,26 @@ service 名や entity 名は Thought Core 側では生成しません。
 `home.execute` は retry を隠しません。1回だけコマンド実行を試み、その結果を返します。
 再観測、成功評価、再試行、ユーザー確認、終了判断は `thought-core` の loop 側が担当します。
 
+### Dify YAML から移植した環境認識
+
+元の Home Control Assistant YAML では、`state_queries.room_light` を Home Assistant の
+スイッチ状態とは別の「映像由来の部屋の明るさ推定」として扱っていました。Thought Core でも
+この境界を維持します。
+
+- 「電気ついてる？」「照明消えてる？」「部屋の明るさどう？」は家電操作ではなく
+  `environment.observe` による状態照会として扱う
+- `environment.actions` がある場合は aliases / target_label / verb / noop を見て分類し、
+  noop の操作は `home.execute` に進めず `action.skipped` で完了する
+- Dify YAML と同じ action_id 群のうち、`light_*`, `fan_*`, `aircon_*`, `door_*`,
+  `vacuum_*` は Thought Core 側でも bridge allowlist へ渡せる
+- `room_light.authority=vision_snapshot_processor` はカメラ推定として返し、HA の実スイッチ状態と混ぜない
+- `light_on` / `light_off` の実行後は `ENVIRONMENT_STATE_URL` に
+  `wait_for=room_light&after=<issued_at>&timeout_ms=1500` を付けて再観測する
+- 操作後の映像推定が不一致、unknown、または low confidence の場合は
+  `state_query.feedback_pending` event を出し、ユーザー確認に回せる pending JSON を残す
+
+待機時間は `THOUGHT_CORE_ROOM_LIGHT_WAIT_TIMEOUT_MS` で調整できます。
+
 ## 起動方法
 
 この初期実装は Python 標準ライブラリだけで動きます。

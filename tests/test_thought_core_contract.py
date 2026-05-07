@@ -120,6 +120,135 @@ class ThoughtCoreContractTest(TestCase):
         self.assertIn("リビングの電気を消したよ。", speeches)
         self.assertEqual(events[-1]["data"]["status"], "success")
 
+    def test_room_light_state_query_uses_environment_without_home_execute(self) -> None:
+        tools = MockThoughtTools(light_on=True)
+        turn = {
+            **TURN,
+            "text": "電気ついてる？",
+            "turn_id": "turn_room_light_state_query",
+        }
+
+        events = ThoughtLoop(tools=tools).run_dicts(turn)
+        event_types = [event["type"] for event in events]
+        tool_names = [
+            event["data"]["tool"]
+            for event in events
+            if event["type"] == "tool.started"
+        ]
+        speeches = [
+            event["data"]["speech"]
+            for event in events
+            if event["type"] == "assistant.message"
+        ]
+
+        self.assertIn("environment.state_query_answer", event_types)
+        self.assertNotIn("responder.started", event_types)
+        self.assertEqual(tool_names, ["environment.observe"])
+        self.assertEqual(tools.execute_calls, [])
+        self.assertIn("カメラ推定", speeches[-1])
+        self.assertEqual(events[-1]["data"]["status"], "state_answer")
+        self.assertEqual(events[-1]["data"]["state"], "on")
+
+    def test_light_action_adds_room_light_feedback_when_vision_mismatches(self) -> None:
+        tools = MockThoughtTools(light_on=False)
+        turn = {
+            **TURN,
+            "text": "リビングの電気をつけて",
+            "turn_id": "turn_room_light_feedback",
+            "context_refs": {
+                **TURN["context_refs"],
+                "mock_after_action_room_light_state": "off",
+                "mock_after_action_room_light_confidence_label": "high",
+                "mock_after_action_wait_matched": "true",
+            },
+        }
+
+        events = ThoughtLoop(tools=tools).run_dicts(turn)
+        event_types = [event["type"] for event in events]
+        message = [
+            event["data"]["speech"]
+            for event in events
+            if event["type"] == "assistant.message"
+        ][-1]
+        pending = next(
+            event for event in events if event["type"] == "state_query.feedback_pending"
+        )
+
+        self.assertIn("state_query.feedback_pending", event_types)
+        self.assertIn("映像", message)
+        self.assertEqual(pending["data"]["state_query_id"], "room_light")
+        self.assertEqual(pending["data"]["expected_state"], "on")
+        self.assertEqual(pending["data"]["predicted_state"], "off")
+        self.assertTrue(events[-1]["data"]["post_action_feedback_pending"])
+        self.assertEqual(events[-1]["data"]["room_light_wait_matched"], True)
+
+    def test_environment_noop_action_skips_home_execute(self) -> None:
+        class NoopLightTools(MockThoughtTools):
+            def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+                observation = super().environment_observe(turn, reason=reason)
+                observation["environment"]["actions"] = [
+                    {
+                        "action_id": "light_off",
+                        "aliases": ["電気を消して"],
+                        "label": "ライトを消す",
+                        "appliance_id": "light",
+                        "target_label": "電気",
+                        "verb": "消す",
+                        "pre_action_phrase": "電気を消す",
+                        "expected_state": "off",
+                        "available": False,
+                        "noop": True,
+                        "reason": "already_off",
+                        "reason_text": "電気はすでに消えています",
+                    }
+                ]
+                return observation
+
+        tools = NoopLightTools(light_on=False)
+        events = ThoughtLoop(tools=tools).run_dicts(
+            {
+                **TURN,
+                "text": "電気を消して",
+                "turn_id": "turn_light_noop",
+            }
+        )
+        tool_names = [
+            event["data"]["tool"]
+            for event in events
+            if event["type"] == "tool.started"
+        ]
+        message = next(
+            event["data"]["speech"]
+            for event in events
+            if event["type"] == "assistant.message"
+        )
+
+        self.assertIn("action.skipped", [event["type"] for event in events])
+        self.assertEqual(tool_names, ["environment.observe", "home.preview"])
+        self.assertEqual(tools.execute_calls, [])
+        self.assertIn("すでに消えています", message)
+        self.assertEqual(events[-1]["data"]["status"], "noop")
+
+    def test_vacuum_return_uses_dify_action_id_dictionary(self) -> None:
+        tools = MockThoughtTools()
+        events = ThoughtLoop(tools=tools).run_dicts(
+            {
+                **TURN,
+                "text": "掃除機を戻して",
+                "turn_id": "turn_vacuum_return",
+            }
+        )
+        action_event = next(event for event in events if event["type"] == "action.proposed")
+        message = [
+            event["data"]["speech"]
+            for event in events
+            if event["type"] == "assistant.message"
+        ][-1]
+
+        self.assertEqual(action_event["data"]["action"]["action_id"], "vacuum_return")
+        self.assertIn("掃除機を戻した", message)
+        self.assertEqual(events[-1]["data"]["status"], "success")
+
     def test_home_control_http_tools_call_bridge_execute(self) -> None:
         calls: list[dict[str, object]] = []
         state = {"light": "on"}
@@ -233,6 +362,16 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(events[-1]["data"]["status"], "success")
         post_paths = [call["path"] for call in calls if call["method"] == "POST"]
         self.assertEqual(post_paths, ["/actions/light_off/preview", "/actions/light_off/execute"])
+        get_paths = [str(call["path"]) for call in calls if call["method"] == "GET"]
+        self.assertEqual(get_paths[0], "/environment/current")
+        self.assertTrue(
+            any(
+                path.startswith("/environment/current?")
+                and "wait_for=room_light" in path
+                and "timeout_ms=1500" in path
+                for path in get_paths
+            )
+        )
         execute_call = calls[2]
         self.assertEqual(execute_call["authorization"], "Bearer bridge-token")
         self.assertEqual(execute_call["body"]["source"], "thought-core")
