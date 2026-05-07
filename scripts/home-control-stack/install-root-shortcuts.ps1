@@ -30,7 +30,10 @@ function Write-Utf8NoBomFile {
 }
 
 function New-BatchShortcut {
-    param([Parameter(Mandatory = $true)][string]$ScriptName)
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptName,
+        [string]$ExtraArgs = ""
+    )
 
     return @"
 @echo off
@@ -39,9 +42,9 @@ for %%I in ("%~dp0.") do set "WORKSPACE_ROOT=%%~fI"
 set "TARGET=%WORKSPACE_ROOT%\sword-voice-agent\scripts\home-control-stack\$ScriptName"
 where pwsh >nul 2>nul
 if %ERRORLEVEL%==0 (
-  pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%TARGET%" -WorkspaceRoot "%WORKSPACE_ROOT%" %*
+  pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%TARGET%" -WorkspaceRoot "%WORKSPACE_ROOT%" $ExtraArgs %*
 ) else (
-  powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%TARGET%" -WorkspaceRoot "%WORKSPACE_ROOT%" %*
+  powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%TARGET%" -WorkspaceRoot "%WORKSPACE_ROOT%" $ExtraArgs %*
 )
 endlocal
 "@
@@ -67,7 +70,8 @@ $scriptNames = @(
     "start-home-control-stack.ps1",
     "status-home-control-stack.ps1",
     "stop-home-control-stack.ps1",
-    "run-home-control-fault-e2e.ps1"
+    "run-home-control-fault-e2e.ps1",
+    "start-home-control-launcher.ps1"
 )
 
 foreach ($scriptName in $scriptNames) {
@@ -81,11 +85,17 @@ foreach ($scriptName in $scriptNames) {
         -Text (New-PowerShellShortcut -ScriptName $scriptName)
 }
 
-foreach ($name in @("start", "status", "stop")) {
-    $scriptName = "$name-home-control-stack.ps1"
+$batchShortcuts = @(
+    @{ Name = "start-home-control-stack.bat"; ScriptName = "start-home-control-stack.ps1"; ExtraArgs = "" },
+    @{ Name = "status-home-control-stack.bat"; ScriptName = "status-home-control-stack.ps1"; ExtraArgs = "" },
+    @{ Name = "stop-home-control-stack.bat"; ScriptName = "stop-home-control-stack.ps1"; ExtraArgs = "" },
+    @{ Name = "start-home-control-launcher.bat"; ScriptName = "start-home-control-launcher.ps1"; ExtraArgs = "-OpenBrowser" }
+)
+
+foreach ($shortcut in $batchShortcuts) {
     Write-Utf8NoBomFile `
-        -Path (Join-Path $WorkspaceRoot "$name-home-control-stack.bat") `
-        -Text (New-BatchShortcut -ScriptName $scriptName)
+        -Path (Join-Path $WorkspaceRoot $shortcut.Name) `
+        -Text (New-BatchShortcut -ScriptName $shortcut.ScriptName -ExtraArgs $shortcut.ExtraArgs)
 }
 
 Write-Host "Home Control root shortcuts installed for $WorkspaceRoot"
