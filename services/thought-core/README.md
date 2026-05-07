@@ -139,6 +139,21 @@ ai_talk_core を経由せず、手入力で thought-core の最小デモを確�
 uv run sword-thought-core-handoff --text "電気つけて" --session-id living_room_main --turn-id turn_manual_001 --print-events
 ```
 
+mock実装で retry 成功を確認する場合:
+
+```powershell
+uv run sword-thought-core-handoff --text "電気つけて" --session-id living_room_main --turn-id turn_retry_demo --context-ref mock_initial_light_state=off --context-ref mock_execute_failures_before_success=1 --print-events
+```
+
+mock実装で retry しても確認できず、`feedback.requested` へ進む流れを確認する場合:
+
+```powershell
+uv run sword-thought-core-handoff --text "電気つけて" --session-id living_room_main --turn-id turn_feedback_demo --context-ref mock_initial_light_state=off --context-ref mock_execute_failures_before_success=3 --print-events
+```
+
+`mock_` で始まる `context_refs` は、依存なしの実験用 mock だけが読むデモ制御です。
+実ツールでは、Environment / Home Assistant の事実を source of truth として扱います。
+
 ai_talk_core の handoff 更新を監視して thought-core に流す場合:
 
 ```powershell

@@ -40,12 +40,21 @@ class MockThoughtTools:
     include_secret_in_execute_result: bool = False
     light_on: bool = False
     execute_calls: list[dict[str, Any]] = field(default_factory=list)
+    execute_attempts_by_turn: dict[str, int] = field(default_factory=dict)
+    light_state_by_turn: dict[str, bool] = field(default_factory=dict)
 
     def environment_observe(self, turn: TurnInput, *, reason: str) -> dict[str, Any]:
-        state = "on" if self.light_on else "off"
+        light_on = self._light_on_for_turn(turn)
+        forced_state = _optional_context_text(turn, f"mock_{reason}_light_state")
+        if forced_state in {"on", "off"}:
+            light_on = forced_state == "on"
+            self.light_state_by_turn[turn.turn_id] = light_on
+        state = "on" if light_on else "off"
         return {
             "status": "ok",
-            "observation_ref": f"obs_{len(self.execute_calls):04d}_{reason}",
+            "observation_ref": (
+                f"obs_{self.execute_attempts_by_turn.get(turn.turn_id, 0):04d}_{reason}"
+            ),
             "observation_source": "environment-state-server.mock",
             "facts": {
                 "location": "living_room",
@@ -74,8 +83,14 @@ class MockThoughtTools:
 
     def home_execute(self, turn: TurnInput, action: dict[str, Any]) -> dict[str, Any]:
         self.execute_calls.append(action)
-        attempt = len(self.execute_calls)
-        if attempt <= self.execute_failures_before_success:
+        attempt = self.execute_attempts_by_turn.get(turn.turn_id, 0) + 1
+        self.execute_attempts_by_turn[turn.turn_id] = attempt
+        failures_before_success = _optional_context_int(
+            turn,
+            "mock_execute_failures_before_success",
+            self.execute_failures_before_success,
+        )
+        if attempt <= failures_before_success:
             result: dict[str, Any] = {
                 "status": "failed",
                 "retryable": True,
@@ -84,6 +99,7 @@ class MockThoughtTools:
             }
         else:
             self.light_on = action.get("expected_state") == "on"
+            self.light_state_by_turn[turn.turn_id] = self.light_on
             result = {
                 "status": "accepted",
                 "retryable": False,
@@ -104,3 +120,29 @@ class MockThoughtTools:
     def web_search(self, turn: TurnInput, query: str) -> dict[str, Any]:
         return {"status": "ok", "query": query, "results": []}
 
+    def _light_on_for_turn(self, turn: TurnInput) -> bool:
+        if turn.turn_id in self.light_state_by_turn:
+            return self.light_state_by_turn[turn.turn_id]
+        initial_state = _optional_context_text(turn, "mock_initial_light_state")
+        if initial_state in {"on", "off"}:
+            self.light_state_by_turn[turn.turn_id] = initial_state == "on"
+        else:
+            self.light_state_by_turn[turn.turn_id] = self.light_on
+        return self.light_state_by_turn[turn.turn_id]
+
+
+def _optional_context_text(turn: TurnInput, key: str) -> str:
+    value = turn.context_refs.get(key)
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
+def _optional_context_int(turn: TurnInput, key: str, default: int) -> int:
+    value = turn.context_refs.get(key)
+    if value is None:
+        return default
+    try:
+        return max(0, int(str(value).strip()))
+    except (TypeError, ValueError):
+        return default

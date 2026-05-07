@@ -110,6 +110,81 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(events[-1]["data"]["status"], "needs_feedback")
         self.assertEqual(len(tools.execute_calls), 2)
 
+    def test_mock_context_ref_can_demo_retry_success(self) -> None:
+        tools = MockThoughtTools()
+        turn = {
+            **TURN,
+            "turn_id": "turn_retry_demo",
+            "context_refs": {
+                **TURN["context_refs"],
+                "mock_initial_light_state": "off",
+                "mock_execute_failures_before_success": "1",
+            },
+        }
+
+        events = ThoughtLoop(tools=tools, max_execute_attempts=2).run_dicts(turn)
+        execute_results = [
+            event
+            for event in events
+            if event["type"] == "tool.result" and event["data"]["tool"] == "home.execute"
+        ]
+
+        self.assertEqual(len(execute_results), 2)
+        self.assertEqual(execute_results[0]["data"]["status"], "failed")
+        self.assertEqual(execute_results[1]["data"]["status"], "accepted")
+        self.assertEqual(events[-1]["data"]["status"], "success")
+
+    def test_mock_context_ref_can_demo_feedback_request(self) -> None:
+        tools = MockThoughtTools()
+        turn = {
+            **TURN,
+            "turn_id": "turn_feedback_demo",
+            "context_refs": {
+                **TURN["context_refs"],
+                "mock_initial_light_state": "off",
+                "mock_execute_failures_before_success": "3",
+            },
+        }
+
+        events = ThoughtLoop(tools=tools, max_execute_attempts=2).run_dicts(turn)
+        event_types = [event["type"] for event in events]
+
+        self.assertIn("feedback.requested", event_types)
+        self.assertEqual(events[-1]["data"]["status"], "needs_feedback")
+        self.assertEqual(tools.execute_attempts_by_turn["turn_feedback_demo"], 2)
+
+    def test_mock_failure_context_is_scoped_to_turn(self) -> None:
+        tools = MockThoughtTools()
+        failing_turn = {
+            **TURN,
+            "turn_id": "turn_failure_scoped",
+            "context_refs": {
+                **TURN["context_refs"],
+                "mock_initial_light_state": "off",
+                "mock_execute_failures_before_success": "3",
+            },
+        }
+        success_turn = {
+            **TURN,
+            "turn_id": "turn_success_scoped",
+            "context_refs": {
+                **TURN["context_refs"],
+                "mock_initial_light_state": "off",
+            },
+        }
+
+        failing_events = ThoughtLoop(tools=tools, max_execute_attempts=2).run_dicts(
+            failing_turn
+        )
+        success_events = ThoughtLoop(tools=tools, max_execute_attempts=2).run_dicts(
+            success_turn
+        )
+
+        self.assertEqual(failing_events[-1]["data"]["status"], "needs_feedback")
+        self.assertEqual(success_events[-1]["data"]["status"], "success")
+        self.assertEqual(tools.execute_attempts_by_turn["turn_failure_scoped"], 2)
+        self.assertEqual(tools.execute_attempts_by_turn["turn_success_scoped"], 1)
+
     def test_secret_values_are_redacted_from_events(self) -> None:
         tools = MockThoughtTools(include_secret_in_execute_result=True)
         events = ThoughtLoop(tools=tools).run_dicts(TURN)
@@ -148,3 +223,27 @@ class ThoughtCoreContractTest(TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_get_turn_stream_returns_sse_events(self) -> None:
+        server = create_server("127.0.0.1", 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+
+            with request.urlopen(
+                "http://127.0.0.1:"
+                f"{port}/turn/stream?text=%E9%9B%BB%E6%B0%97%E3%81%A4%E3%81%91%E3%81%A6"
+                "&turn_id=turn_get_test&session_id=living_room_main",
+                timeout=5,
+            ) as response:
+                payload = response.read().decode("utf-8")
+                content_type = response.headers["Content-Type"]
+
+            self.assertEqual(content_type, "text/event-stream; charset=utf-8")
+            self.assertIn("event: assistant.message", payload)
+            self.assertIn("event: turn.completed", payload)
+            self.assertIn('"turn_id":"turn_get_test"', payload)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
