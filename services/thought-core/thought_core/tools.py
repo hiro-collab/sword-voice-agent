@@ -61,6 +61,7 @@ class MockThoughtTools:
     execute_calls: list[dict[str, Any]] = field(default_factory=list)
     execute_attempts_by_turn: dict[str, int] = field(default_factory=dict)
     light_state_by_turn: dict[str, bool] = field(default_factory=dict)
+    appliance_states: dict[str, str] = field(default_factory=dict)
 
     def environment_observe(self, turn: TurnInput, *, reason: str) -> dict[str, Any]:
         light_on = self._light_on_for_turn(turn)
@@ -69,7 +70,34 @@ class MockThoughtTools:
             light_on = forced_state == "on"
             self.light_state_by_turn[turn.turn_id] = light_on
         state = "on" if light_on else "off"
+        devices = [
+            {
+                "id": "living_room_light",
+                "kind": "light",
+                "name": "リビングの電気",
+                "state": state,
+            }
+        ]
+        for appliance_id, appliance_state in sorted(self.appliance_states.items()):
+            if appliance_id in {"light", "living_room_light"}:
+                continue
+            devices.append(
+                {
+                    "id": appliance_id,
+                    "kind": appliance_id,
+                    "name": _device_name(appliance_id),
+                    "state": appliance_state,
+                }
+            )
         environment = self._mock_environment(turn, reason, state)
+        for appliance_id, appliance_state in sorted(self.appliance_states.items()):
+            if appliance_id in {"light", "living_room_light"}:
+                continue
+            environment.setdefault("appliances", {})[appliance_id] = {
+                "state": appliance_state,
+                "updated_at": "2026-05-08T00:00:00+00:00",
+                "source": "home_assistant.mock",
+            }
         return {
             "status": "ok",
             "observation_ref": (
@@ -78,14 +106,7 @@ class MockThoughtTools:
             "observation_source": "environment-state-server.mock",
             "facts": {
                 "location": "living_room",
-                "devices": [
-                    {
-                        "id": "living_room_light",
-                        "kind": "light",
-                        "name": "リビングの電気",
-                        "state": state,
-                    }
-                ],
+                "devices": devices,
                 "state_queries": environment.get("state_queries", {}),
             },
             "environment": environment,
@@ -129,6 +150,10 @@ class MockThoughtTools:
         else:
             self.light_on = action.get("expected_state") == "on"
             self.light_state_by_turn[turn.turn_id] = self.light_on
+            target = str(action.get("target") or "").strip()
+            expected_state = str(action.get("expected_state") or "").strip()
+            if target and target not in {"light", "living_room_light"} and expected_state:
+                self.appliance_states[target] = expected_state
             result = {
                 "status": "accepted",
                 "retryable": False,
@@ -379,6 +404,7 @@ class HomeControlHttpTools:
         action.update(
             {
                 "confirm_required": bool(payload.get("confirmation_required")),
+                "confirmation_token": payload.get("confirmation_token"),
                 "bridge_status": payload.get("status"),
                 "expected_effect": payload.get("expected_effect"),
                 "preview": payload.get("preview"),
@@ -409,12 +435,18 @@ class HomeControlHttpTools:
 
         attempt = self.execute_attempts_by_turn.get(turn.turn_id, 0) + 1
         self.execute_attempts_by_turn[turn.turn_id] = attempt
+        body = _bridge_body(turn, request_id=f"{turn.turn_id}-attempt-{attempt}")
+        if bool(action.get("confirmed")):
+            body["confirmed"] = True
+        confirmation_token = str(action.get("confirmation_token") or "").strip()
+        if confirmation_token:
+            body["confirmation_token"] = confirmation_token
         try:
             payload = self._json_request(
                 "POST",
                 self._bridge_url(f"/actions/{action_id}/execute"),
                 token=self.config.api_token,
-                body=_bridge_body(turn, request_id=f"{turn.turn_id}-attempt-{attempt}"),
+                body=body,
             )
         except HomeControlToolError as exc:
             return {
@@ -446,6 +478,7 @@ class HomeControlHttpTools:
             "bridge_status": bridge_status,
             "message": payload.get("message"),
             "speak": payload.get("speak"),
+            "confirmation_token": payload.get("confirmation_token"),
             "expected_state": payload.get("expected_state"),
             "expected_effect": payload.get("expected_effect"),
         }
@@ -868,6 +901,9 @@ def _device_name(device_id: str) -> str:
         "light": "リビングの電気",
         "living_room_light": "リビングの電気",
         "fan": "扇風機",
+        "aircon": "エアコン",
+        "door": "中扉",
+        "vacuum": "掃除機",
     }.get(device_id, device_id)
 
 

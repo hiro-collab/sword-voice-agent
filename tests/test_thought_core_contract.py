@@ -77,6 +77,9 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(
             event_types,
             [
+                "input.acknowledged",
+                "assistant.speech_delta",
+                "assistant.message",
                 "tool.started",
                 "tool.result",
                 "observation.received",
@@ -90,6 +93,7 @@ class ThoughtCoreContractTest(TestCase):
                 "tool.started",
                 "tool.result",
                 "observation.received",
+                "action.reviewed",
                 "assistant.speech_delta",
                 "assistant.message",
                 "turn.completed",
@@ -217,11 +221,11 @@ class ThoughtCoreContractTest(TestCase):
             for event in events
             if event["type"] == "tool.started"
         ]
-        message = next(
+        message = [
             event["data"]["speech"]
             for event in events
             if event["type"] == "assistant.message"
-        )
+        ][-1]
 
         self.assertIn("action.skipped", [event["type"] for event in events])
         self.assertEqual(tool_names, ["environment.observe", "home.preview"])
@@ -377,6 +381,277 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(execute_call["body"]["source"], "thought-core")
         self.assertEqual(execute_call["body"]["request_id"], "turn_bridge_light_off-attempt-1")
 
+    def test_confirm_required_action_waits_for_user_confirmation(self) -> None:
+        calls: list[dict[str, object]] = []
+        state = {"door": "open"}
+
+        class BridgeHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                calls.append(
+                    {
+                        "method": "GET",
+                        "path": self.path,
+                        "authorization": self.headers.get("Authorization"),
+                    }
+                )
+                self._send_json(
+                    {
+                        "snapshot_id": "env_test",
+                        "appliances": {
+                            "door": {
+                                "state": state["door"],
+                                "updated_at": "2026-05-08T00:00:00+00:00",
+                                "source": "home_assistant",
+                            }
+                        },
+                        "last_home_assistant_events": [],
+                        "state_queries": {},
+                    }
+                )
+
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                calls.append(
+                    {
+                        "method": "POST",
+                        "path": self.path,
+                        "authorization": self.headers.get("Authorization"),
+                        "body": body,
+                    }
+                )
+                if self.path == "/actions/door_close/preview":
+                    self._send_json(
+                        {
+                            "ok": True,
+                            "action_id": "door_close",
+                            "executed": False,
+                            "status": "preview",
+                            "confirmation_required": True,
+                            "confirmation_token": "confirm-token-1",
+                            "message": "中扉を閉めるを実行します。よろしいですか？",
+                            "speak": "中扉を閉めるを実行します。よろしいですか？",
+                            "expected_state": "closed",
+                            "expected_effect": {"expected_state": "closed"},
+                        }
+                    )
+                    return
+                if self.path == "/actions/door_close/execute":
+                    if (
+                        body.get("confirmed") is True
+                        and body.get("confirmation_token") == "confirm-token-1"
+                    ):
+                        state["door"] = "closed"
+                        self._send_json(
+                            {
+                                "ok": True,
+                                "action_id": "door_close",
+                                "executed": True,
+                                "status": "submitted",
+                                "confirmation_required": True,
+                                "message": "中扉を閉めました。",
+                                "speak": "中扉を閉めました。",
+                                "execution_id": "exec_door_close",
+                                "expected_state": "closed",
+                                "expected_effect": {"expected_state": "closed"},
+                            }
+                        )
+                        return
+                    self._send_json(
+                        {
+                            "ok": True,
+                            "action_id": "door_close",
+                            "executed": False,
+                            "status": "confirmation_required",
+                            "confirmation_required": True,
+                            "confirmation_token": "confirm-token-2",
+                            "message": "確認が必要です。",
+                            "speak": "確認が必要です。",
+                        }
+                    )
+                    return
+                self._send_json({"ok": False, "error": "not_found"}, status=404)
+
+            def log_message(self, format, *args):  # type: ignore[no-untyped-def]  # noqa: A002
+                return
+
+            def _send_json(self, payload: dict[str, object], status: int = 200) -> None:
+                raw = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), BridgeHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            loop = ThoughtLoop(
+                tools=HomeControlHttpTools(
+                    HomeControlToolConfig(
+                        bridge_base_url=base_url,
+                        api_token="bridge-token",
+                        environment_state_url=f"{base_url}/environment/current",
+                        environment_api_token="environment-token",
+                        timeout_s=2,
+                    )
+                )
+            )
+            first_events = loop.run_dicts(
+                {
+                    **TURN,
+                    "text": "中扉を閉めて",
+                    "turn_id": "turn_door_close_preview",
+                }
+            )
+            second_events = loop.run_dicts(
+                {
+                    **TURN,
+                    "text": "お願い",
+                    "turn_id": "turn_door_close_confirm",
+                }
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        first_messages = [
+            event["data"]["speech"]
+            for event in first_events
+            if event["type"] == "assistant.message"
+        ]
+        second_messages = [
+            event["data"]["speech"]
+            for event in second_events
+            if event["type"] == "assistant.message"
+        ]
+        post_calls = [call for call in calls if call["method"] == "POST"]
+
+        self.assertEqual(first_events[-1]["data"]["status"], "confirmation_required")
+        self.assertIn("まだ実行していません", first_messages[-1])
+        self.assertEqual([call["path"] for call in post_calls], [
+            "/actions/door_close/preview",
+            "/actions/door_close/execute",
+        ])
+        execute_body = post_calls[1]["body"]
+        self.assertEqual(execute_body["confirmed"], True)
+        self.assertEqual(execute_body["confirmation_token"], "confirm-token-1")
+        self.assertEqual(second_events[-1]["data"]["status"], "success")
+        self.assertIn("中扉を閉めました。", second_messages[-1])
+        serialized = json.dumps(first_events + second_events, ensure_ascii=False)
+        self.assertNotIn("confirm-token-1", serialized)
+        self.assertIn("[REDACTED]", serialized)
+
+    def test_action_waits_for_multiple_observations_before_giving_up(self) -> None:
+        class UnobservableDoorTools(MockThoughtTools):
+            def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+                return {
+                    "status": "ok",
+                    "observation_ref": f"obs_{reason}",
+                    "observation_source": "environment-state-server.mock",
+                    "facts": {"devices": [], "state_queries": {}},
+                    "environment": {"appliances": {}, "state_queries": {}},
+                }
+
+            def home_execute(self, turn, action):  # type: ignore[no-untyped-def]
+                self.execute_calls.append(action)
+                return {
+                    "status": "accepted",
+                    "executed": True,
+                    "retryable": False,
+                    "command_id": "cmd_unobservable",
+                    "attempt": len(self.execute_calls),
+                }
+
+        loop = ThoughtLoop(tools=UnobservableDoorTools())
+        first_events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "中扉を閉めて",
+                "turn_id": "turn_unobservable_door_1",
+            }
+        )
+        second_events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "確認して",
+                "turn_id": "turn_unobservable_door_2",
+            }
+        )
+        third_events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "もう一度確認して",
+                "turn_id": "turn_unobservable_door_3",
+            }
+        )
+
+        self.assertEqual(first_events[-1]["data"]["status"], "verification_pending")
+        self.assertEqual(second_events[-1]["data"]["status"], "verification_pending")
+        self.assertEqual(third_events[-1]["data"]["status"], "needs_feedback")
+        self.assertIn("action.review_pending", [event["type"] for event in first_events])
+        self.assertIn("feedback.requested", [event["type"] for event in third_events])
+
+    def test_low_risk_action_can_retry_after_review_exhausted(self) -> None:
+        class RetryableLightTools(MockThoughtTools):
+            def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+                state = "on" if len(self.execute_calls) >= 2 else "off"
+                return {
+                    "status": "ok",
+                    "observation_ref": f"obs_{len(self.execute_calls)}_{reason}",
+                    "observation_source": "environment-state-server.mock",
+                    "facts": {
+                        "devices": [
+                            {
+                                "id": "living_room_light",
+                                "kind": "light",
+                                "name": "リビングの電気",
+                                "state": state,
+                            }
+                        ],
+                        "state_queries": {},
+                    },
+                    "environment": {
+                        "appliances": {"light": {"state": state}},
+                        "state_queries": {},
+                    },
+                }
+
+            def home_execute(self, turn, action):  # type: ignore[no-untyped-def]
+                self.execute_calls.append(action)
+                return {
+                    "status": "accepted",
+                    "executed": True,
+                    "retryable": False,
+                    "command_id": f"cmd_{len(self.execute_calls)}",
+                    "attempt": len(self.execute_calls),
+                }
+
+        tools = RetryableLightTools()
+        loop = ThoughtLoop(tools=tools)
+        first_events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "電気をつけて",
+                "turn_id": "turn_retry_review_1",
+            }
+        )
+        second_events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "確認して",
+                "turn_id": "turn_retry_review_2",
+            }
+        )
+
+        self.assertEqual(first_events[-1]["data"]["status"], "verification_pending")
+        self.assertIn("action.retrying", [event["type"] for event in second_events])
+        self.assertEqual(second_events[-1]["data"]["status"], "success")
+        self.assertEqual(len(tools.execute_calls), 2)
+
     def test_general_turn_uses_responder_boundary(self) -> None:
         events = ThoughtLoop(responder=StaticResponder()).run_dicts(GENERAL_TURN)
         event_types = [event["type"] for event in events]
@@ -384,6 +659,9 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(
             event_types,
             [
+                "input.acknowledged",
+                "assistant.speech_delta",
+                "assistant.message",
                 "responder.started",
                 "responder.completed",
                 "assistant.speech_delta",
@@ -391,10 +669,10 @@ class ThoughtCoreContractTest(TestCase):
                 "turn.completed",
             ],
         )
-        self.assertEqual(events[0]["data"]["boundary"], "thought-core.turn_responder.v0")
-        self.assertEqual(events[1]["data"]["adapter_kind"], "test_responder")
-        self.assertTrue(events[1]["data"]["used_llm"])
-        self.assertEqual(events[3]["data"]["speech"], "聞こえています。応答境界も動いています。")
+        self.assertEqual(events[3]["data"]["boundary"], "thought-core.turn_responder.v0")
+        self.assertEqual(events[4]["data"]["adapter_kind"], "test_responder")
+        self.assertTrue(events[4]["data"]["used_llm"])
+        self.assertEqual(events[6]["data"]["speech"], "聞こえています。応答境界も動いています。")
         self.assertEqual(events[-1]["data"]["status"], "llm_response")
 
     def test_general_turn_can_fall_back_without_llm(self) -> None:

@@ -15,6 +15,7 @@ SENSITIVE_KEY_PARTS = (
     "apikey",
     "access_token",
     "refresh_token",
+    "confirmation_token",
     "secret",
     "password",
     "credential",
@@ -98,4 +99,3 @@ def redact_secrets(value: Any) -> Any:
 def _is_sensitive_key(key: str) -> bool:
     lowered = key.lower().replace("-", "_")
     return any(part in lowered for part in SENSITIVE_KEY_PARTS)
-

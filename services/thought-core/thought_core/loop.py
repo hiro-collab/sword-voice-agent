@@ -35,12 +35,20 @@ class ThoughtLoop:
         self.max_execute_attempts = max(1, max_execute_attempts)
         self.source = source
         self.responder = responder or EnvironmentTurnResponder.from_env()
+        self.pending_confirmations: dict[str, dict[str, Any]] = {}
+        self.pending_action_reviews: dict[str, dict[str, Any]] = {}
 
     def run(self, turn: TurnInput | Mapping[str, Any]) -> list[ThoughtEvent]:
         turn_input = turn if isinstance(turn, TurnInput) else TurnInput.from_mapping(turn)
         factory = EventFactory(turn_input.turn_id, turn_input.session_id, source=self.source)
         events: list[ThoughtEvent] = []
         try:
+            self._emit_input_ack(events, factory, turn_input)
+            if self._handle_pending_confirmation_if_needed(events, factory, turn_input):
+                return events
+            if self._handle_pending_action_review_if_needed(events, factory, turn_input):
+                return events
+
             if detect_room_light_state_query(turn_input.text):
                 self._handle_room_light_state_query(events, factory, turn_input)
                 return events
@@ -136,6 +144,45 @@ class ThoughtLoop:
                 return events
             events.append(factory.emit("action.proposed", {"action": action}))
 
+            if action.get("confirm_required"):
+                self._remember_confirmation(turn_input, action)
+                speech = self._confirmation_prompt(action)
+                events.append(
+                    factory.emit(
+                        "action.confirmation_required",
+                        {
+                            "action": action,
+                            "confirmation_token_present": bool(
+                                action.get("confirmation_token")
+                            ),
+                            "speech": speech,
+                        },
+                    )
+                )
+                self._emit_message(
+                    events,
+                    factory,
+                    speech=speech,
+                    display=speech,
+                    emotion="focused",
+                    motion="small_nod",
+                    priority="immediate",
+                )
+                events.append(
+                    factory.emit(
+                        "turn.completed",
+                        {
+                            "status": "confirmation_required",
+                            "action": action,
+                            "preview_status": preview.get("status"),
+                            "confirmation_token_present": bool(
+                                action.get("confirmation_token")
+                            ),
+                        },
+                    )
+                )
+                return events
+
             messages = self._home_action_messages(action)
             self._emit_message(
                 events,
@@ -173,14 +220,20 @@ class ThoughtLoop:
                     )
                 )
 
-                if self._action_succeeded(action, after_observation, execute_result):
+                review = self._review_action_result(action, after_observation, execute_result)
+                events.append(factory.emit("action.reviewed", review))
+
+                if review["status"] == "succeeded":
                     post_action_feedback = self._post_action_room_light_feedback(
                         turn_input,
                         action,
                         after_observation,
                     )
-                    success_speech = messages["success_speech"]
-                    success_display = messages["success_display"]
+                    success_speech = (
+                        str(execute_result.get("speak") or execute_result.get("message") or "")
+                        or messages["success_speech"]
+                    )
+                    success_display = success_speech or messages["success_display"]
                     if post_action_feedback["speech_suffix"]:
                         success_speech = (
                             f"{success_speech} {post_action_feedback['speech_suffix']}"
@@ -221,6 +274,18 @@ class ThoughtLoop:
                             },
                         )
                     )
+                    return events
+
+                if self._begin_pending_action_review(
+                    events,
+                    factory,
+                    turn_input,
+                    action=action,
+                    execute_result=execute_result,
+                    review=review,
+                    observations_done=1,
+                    execute_attempts=attempt,
+                ):
                     return events
 
                 retryable = bool(execute_result.get("retryable", True))
@@ -274,6 +339,868 @@ class ThoughtLoop:
     def run_dicts(self, turn: TurnInput | Mapping[str, Any]) -> list[dict[str, Any]]:
         return [event.to_dict() for event in self.run(turn)]
 
+    def _handle_pending_confirmation_if_needed(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+    ) -> bool:
+        pending = self.pending_confirmations.get(turn_input.session_id)
+        if not pending:
+            return False
+        if self._is_confirmation_cancel(turn_input.text):
+            self.pending_confirmations.pop(turn_input.session_id, None)
+            speech = "了解、さっきの家電操作は実行せずに取り消しました。"
+            events.append(
+                factory.emit(
+                    "action.confirmation_cancelled",
+                    {"action": pending.get("action", {}), "speech": speech},
+                )
+            )
+            self._emit_message(
+                events,
+                factory,
+                speech=speech,
+                display=speech,
+                emotion="neutral",
+                motion="small_nod",
+                priority="normal",
+            )
+            events.append(
+                factory.emit(
+                    "turn.completed",
+                    {"status": "cancelled", "action": pending.get("action", {})},
+                )
+            )
+            return True
+        if not self._is_confirmation_reply(turn_input.text):
+            return False
+        action = dict(pending.get("action") or {})
+        if not action:
+            self.pending_confirmations.pop(turn_input.session_id, None)
+            return False
+        token = str(pending.get("confirmation_token") or action.get("confirmation_token") or "")
+        action["confirmed"] = True
+        if token:
+            action["confirmation_token"] = token
+        events.append(
+            factory.emit(
+                "action.confirmed",
+                {
+                    "action": action,
+                    "confirmation_token_present": bool(token),
+                },
+            )
+        )
+        self._emit_message(
+            events,
+            factory,
+            speech="OK、続きやるね。",
+            display="確認しました",
+            emotion="confident",
+            motion="nod",
+            priority="immediate",
+        )
+        execute_result = self._call_tool(
+            events,
+            factory,
+            "home.execute",
+            lambda: self.tools.home_execute(turn_input, action),
+        )
+        if execute_result.get("status") == "confirmation_required":
+            if execute_result.get("confirmation_token"):
+                action["confirmation_token"] = execute_result.get("confirmation_token")
+                self._remember_confirmation(turn_input, action)
+            speech = (
+                "確認の有効期限が切れたみたいです。まだ実行していません。"
+                "実行してよければ、もう一度「お願い」か「OK」と言ってください。"
+            )
+            events.append(
+                factory.emit(
+                    "action.confirmation_required",
+                    {
+                        "action": action,
+                        "confirmation_token_present": bool(
+                            action.get("confirmation_token")
+                        ),
+                        "speech": speech,
+                    },
+                )
+            )
+            self._emit_message(
+                events,
+                factory,
+                speech=speech,
+                display=speech,
+                emotion="focused",
+                motion="small_nod",
+                priority="immediate",
+            )
+            events.append(
+                factory.emit(
+                    "turn.completed",
+                    {
+                        "status": "confirmation_required",
+                        "action": action,
+                        "execute_status": execute_result.get("status"),
+                        "confirmation_token_present": bool(
+                            action.get("confirmation_token")
+                        ),
+                    },
+                )
+            )
+            return True
+
+        after_observation = self._call_tool(
+            events,
+            factory,
+            "environment.observe",
+            lambda: self.tools.environment_observe(turn_input, reason="after_action"),
+        )
+        events.append(
+            factory.emit(
+                "observation.received",
+                {
+                    "observation_ref": after_observation.get("observation_ref"),
+                    "observation_source": after_observation.get("observation_source"),
+                    "facts": after_observation.get("facts", {}),
+                    "after_tool": "home.execute",
+                    "attempt": execute_result.get("attempt", 1),
+                    "confirmed": True,
+                },
+            )
+        )
+        review = self._review_action_result(action, after_observation, execute_result)
+        events.append(factory.emit("action.reviewed", review))
+
+        if review["status"] == "succeeded":
+            self.pending_confirmations.pop(turn_input.session_id, None)
+            messages = self._home_action_messages(action)
+            post_action_feedback = self._post_action_room_light_feedback(
+                turn_input,
+                action,
+                after_observation,
+            )
+            success_speech = (
+                str(execute_result.get("speak") or execute_result.get("message") or "")
+                or messages["success_speech"]
+            )
+            success_display = success_speech or messages["success_display"]
+            if post_action_feedback["speech_suffix"]:
+                success_speech = f"{success_speech} {post_action_feedback['speech_suffix']}"
+                success_display = f"{success_display} / 映像確認"
+            self._emit_message(
+                events,
+                factory,
+                speech=success_speech,
+                display=success_display,
+                emotion="satisfied",
+                motion="small_nod",
+                priority="normal",
+            )
+            pending_feedback = post_action_feedback["pending"]
+            if pending_feedback:
+                events.append(factory.emit("state_query.feedback_pending", pending_feedback))
+            events.append(
+                factory.emit(
+                    "turn.completed",
+                    {
+                        "status": "success",
+                        "attempts": execute_result.get("attempt", 1),
+                        "action": action,
+                        "execute_status": execute_result.get("status"),
+                        "confirmed": True,
+                        "room_light_wait_matched": post_action_feedback["wait_matched"],
+                        "post_action_feedback_pending": bool(pending_feedback),
+                        "pending_state_query_id": (
+                            pending_feedback.get("state_query_id")
+                            if pending_feedback
+                            else ""
+                        ),
+                        "pending_state_query_json": (
+                            json.dumps(
+                                pending_feedback,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            )
+                            if pending_feedback
+                            else ""
+                        ),
+                    },
+                )
+            )
+            return True
+
+        if self._begin_pending_action_review(
+            events,
+            factory,
+            turn_input,
+            action=action,
+            execute_result=execute_result,
+            review=review,
+            observations_done=1,
+            execute_attempts=int(execute_result.get("attempt") or 1),
+            confirmed=True,
+        ):
+            self.pending_confirmations.pop(turn_input.session_id, None)
+            return True
+
+        retryable = bool(execute_result.get("retryable", True))
+        if retryable:
+            self.pending_confirmations[turn_input.session_id] = {
+                "action": action,
+                "confirmation_token": action.get("confirmation_token"),
+            }
+        else:
+            self.pending_confirmations.pop(turn_input.session_id, None)
+        messages = self._home_action_messages(action)
+        events.append(
+            factory.emit(
+                "feedback.requested",
+                {
+                    "reason": "confirmed_action_failed",
+                    "speech": messages["feedback_speech"],
+                    "display": "家電の状態確認が必要です",
+                    "last_execute_status": execute_result.get("status"),
+                    "confirmed": True,
+                },
+            )
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {
+                    "status": "needs_feedback",
+                    "attempts": execute_result.get("attempt", 1),
+                    "action": action,
+                    "confirmed": True,
+                },
+            )
+        )
+        return True
+
+    def _handle_pending_action_review_if_needed(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+    ) -> bool:
+        pending = self.pending_action_reviews.get(turn_input.session_id)
+        if not pending:
+            return False
+        if self._is_confirmation_cancel(turn_input.text):
+            self.pending_action_reviews.pop(turn_input.session_id, None)
+            action = dict(pending.get("action") or {})
+            speech = "了解、さっきの実行後確認はここで止めます。"
+            events.append(
+                factory.emit(
+                    "action.review_cancelled",
+                    {"action": action, "speech": speech},
+                )
+            )
+            self._emit_message(
+                events,
+                factory,
+                speech=speech,
+                display=speech,
+                emotion="neutral",
+                motion="small_nod",
+                priority="normal",
+            )
+            events.append(
+                factory.emit(
+                    "turn.completed",
+                    {"status": "review_cancelled", "action": action},
+                )
+            )
+            return True
+
+        action = dict(pending.get("action") or {})
+        if not action:
+            self.pending_action_reviews.pop(turn_input.session_id, None)
+            return False
+        policy = self._action_review_policy(action)
+        observations_done = int(pending.get("observations_done") or 0) + 1
+        execute_attempts = int(pending.get("execute_attempts") or 1)
+        execute_result = (
+            pending.get("execute_result")
+            if isinstance(pending.get("execute_result"), dict)
+            else {}
+        )
+        observation = self._call_tool(
+            events,
+            factory,
+            "environment.observe",
+            lambda: self.tools.environment_observe(turn_input, reason="action_review"),
+        )
+        events.append(
+            factory.emit(
+                "observation.received",
+                {
+                    "observation_ref": observation.get("observation_ref"),
+                    "observation_source": observation.get("observation_source"),
+                    "facts": observation.get("facts", {}),
+                    "review_for_action": action.get("action_id"),
+                    "observations_done": observations_done,
+                    "execute_attempts": execute_attempts,
+                },
+            )
+        )
+        review = self._review_action_result(action, observation, execute_result)
+        review["observations_done"] = observations_done
+        review["execute_attempts"] = execute_attempts
+        review["settle_ms"] = policy["settle_ms"]
+        events.append(factory.emit("action.reviewed", review))
+
+        if review["status"] == "succeeded":
+            self.pending_action_reviews.pop(turn_input.session_id, None)
+            messages = self._home_action_messages(action)
+            speech = f"確認できました。{messages['success_speech']}"
+            self._emit_message(
+                events,
+                factory,
+                speech=speech,
+                display=speech,
+                emotion="satisfied",
+                motion="small_nod",
+                priority="normal",
+            )
+            events.append(
+                factory.emit(
+                    "turn.completed",
+                    {
+                        "status": "success",
+                        "action": action,
+                        "review_status": review["status"],
+                        "observations_done": observations_done,
+                        "execute_attempts": execute_attempts,
+                    },
+                )
+            )
+            return True
+
+        if observations_done < policy["observation_attempts"]:
+            pending["observations_done"] = observations_done
+            pending["last_review"] = review
+            pending["updated_at"] = datetime.now(UTC).isoformat()
+            speech = self._pending_review_speech(action, policy, observations_done)
+            events.append(
+                factory.emit(
+                    "action.review_pending",
+                    {
+                        "action": action,
+                        "review": review,
+                        "observations_done": observations_done,
+                        "observation_attempts": policy["observation_attempts"],
+                        "settle_ms": policy["settle_ms"],
+                    },
+                )
+            )
+            self._emit_message(
+                events,
+                factory,
+                speech=speech,
+                display=speech,
+                emotion="focused",
+                motion="think",
+                priority="normal",
+            )
+            events.append(
+                factory.emit(
+                    "turn.completed",
+                    {
+                        "status": "verification_pending",
+                        "action": action,
+                        "review_status": review["status"],
+                        "observations_done": observations_done,
+                        "observation_attempts": policy["observation_attempts"],
+                        "settle_ms": policy["settle_ms"],
+                    },
+                )
+            )
+            return True
+
+        if self._can_retry_review_action(action, pending, policy):
+            return self._retry_pending_action_review(
+                events,
+                factory,
+                turn_input,
+                action=action,
+                pending=pending,
+                policy=policy,
+                last_review=review,
+            )
+
+        self.pending_action_reviews.pop(turn_input.session_id, None)
+        messages = self._home_action_messages(action)
+        speech = (
+            f"{messages['feedback_speech']} "
+            "何回か環境を見直しましたが、期待した状態を確認できませんでした。"
+        )
+        events.append(
+            factory.emit(
+                "feedback.requested",
+                {
+                    "reason": "review_exhausted",
+                    "speech": speech,
+                    "display": "実行後確認に失敗しました",
+                    "action": action,
+                    "last_review": review,
+                    "observations_done": observations_done,
+                    "execute_attempts": execute_attempts,
+                },
+            )
+        )
+        self._emit_message(
+            events,
+            factory,
+            speech=speech,
+            display=speech,
+            emotion="concerned",
+            motion="look_back",
+            priority="normal",
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {
+                    "status": "needs_feedback",
+                    "action": action,
+                    "review_status": review["status"],
+                    "observations_done": observations_done,
+                    "execute_attempts": execute_attempts,
+                },
+            )
+        )
+        return True
+
+    def _retry_pending_action_review(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        *,
+        action: dict[str, Any],
+        pending: dict[str, Any],
+        policy: dict[str, int],
+        last_review: dict[str, Any],
+    ) -> bool:
+        execute_attempts = int(pending.get("execute_attempts") or 1) + 1
+        events.append(
+            factory.emit(
+                "action.retrying",
+                {
+                    "action": action,
+                    "execute_attempts": execute_attempts,
+                    "last_review": last_review,
+                },
+            )
+        )
+        self._emit_message(
+            events,
+            factory,
+            speech="反映が確認できなかったので、もう一度だけ試してから見直します。",
+            display="再実行して確認します",
+            emotion="focused",
+            motion="nod",
+            priority="immediate",
+        )
+        execute_result = self._call_tool(
+            events,
+            factory,
+            "home.execute",
+            lambda: self.tools.home_execute(turn_input, action),
+        )
+        observation = self._call_tool(
+            events,
+            factory,
+            "environment.observe",
+            lambda: self.tools.environment_observe(turn_input, reason="after_action"),
+        )
+        events.append(
+            factory.emit(
+                "observation.received",
+                {
+                    "observation_ref": observation.get("observation_ref"),
+                    "observation_source": observation.get("observation_source"),
+                    "facts": observation.get("facts", {}),
+                    "after_tool": "home.execute",
+                    "attempt": execute_attempts,
+                    "review_retry": True,
+                },
+            )
+        )
+        review = self._review_action_result(action, observation, execute_result)
+        review["observations_done"] = 1
+        review["execute_attempts"] = execute_attempts
+        review["settle_ms"] = policy["settle_ms"]
+        events.append(factory.emit("action.reviewed", review))
+        if review["status"] == "succeeded":
+            self.pending_action_reviews.pop(turn_input.session_id, None)
+            messages = self._home_action_messages(action)
+            speech = f"再実行後に確認できました。{messages['success_speech']}"
+            self._emit_message(
+                events,
+                factory,
+                speech=speech,
+                display=speech,
+                emotion="satisfied",
+                motion="small_nod",
+                priority="normal",
+            )
+            events.append(
+                factory.emit(
+                    "turn.completed",
+                    {
+                        "status": "success",
+                        "action": action,
+                        "review_status": review["status"],
+                        "observations_done": 1,
+                        "execute_attempts": execute_attempts,
+                    },
+                )
+            )
+            return True
+
+        self._begin_pending_action_review(
+            events,
+            factory,
+            turn_input,
+            action=action,
+            execute_result=execute_result,
+            review=review,
+            observations_done=1,
+            execute_attempts=execute_attempts,
+        )
+        return True
+
+    def _begin_pending_action_review(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        *,
+        action: dict[str, Any],
+        execute_result: dict[str, Any],
+        review: dict[str, Any],
+        observations_done: int,
+        execute_attempts: int,
+        confirmed: bool = False,
+    ) -> bool:
+        if review["status"] in {"succeeded", "execute_failed"}:
+            return False
+        if not self._execution_was_accepted(execute_result):
+            return False
+        policy = self._action_review_policy(action)
+        self.pending_action_reviews[turn_input.session_id] = {
+            "action": dict(action),
+            "execute_result": dict(execute_result),
+            "last_review": dict(review),
+            "observations_done": observations_done,
+            "execute_attempts": execute_attempts,
+            "confirmed": confirmed,
+            "policy": dict(policy),
+            "created_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        speech = self._pending_review_speech(action, policy, observations_done)
+        events.append(
+            factory.emit(
+                "action.review_pending",
+                {
+                    "action": action,
+                    "review": review,
+                    "observations_done": observations_done,
+                    "observation_attempts": policy["observation_attempts"],
+                    "settle_ms": policy["settle_ms"],
+                    "execute_attempts": execute_attempts,
+                    "confirmed": confirmed,
+                },
+            )
+        )
+        self._emit_message(
+            events,
+            factory,
+            speech=speech,
+            display=speech,
+            emotion="focused",
+            motion="think",
+            priority="normal",
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {
+                    "status": "verification_pending",
+                    "action": action,
+                    "review_status": review["status"],
+                    "observations_done": observations_done,
+                    "observation_attempts": policy["observation_attempts"],
+                    "settle_ms": policy["settle_ms"],
+                    "execute_attempts": execute_attempts,
+                    "confirmed": confirmed,
+                },
+            )
+        )
+        return True
+
+    def _review_action_result(
+        self,
+        action: dict[str, Any],
+        observation: dict[str, Any],
+        execute_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        action_id = str(action.get("action_id") or "")
+        expected_state = str(
+            action.get("expected_state") or execute_result.get("expected_state") or ""
+        ).strip()
+        status = str(execute_result.get("status") or "")
+        if not self._execution_was_accepted(execute_result):
+            return {
+                "status": "execute_failed",
+                "reason": str(execute_result.get("error") or status or "execute_failed"),
+                "action_id": action_id,
+                "expected_state": expected_state,
+            }
+
+        device_review = self._review_device_state(action, observation, expected_state)
+        if device_review:
+            return device_review
+
+        room_light_review = self._review_room_light_state(action, observation, expected_state)
+        if room_light_review:
+            return room_light_review
+
+        wait_result = self._wait_result_from_observation(observation)
+        if wait_result and self._as_bool(wait_result.get("matched")) is False:
+            return {
+                "status": "pending",
+                "reason": "environment_wait_timeout",
+                "action_id": action_id,
+                "expected_state": expected_state,
+                "wait_result": wait_result,
+            }
+
+        return {
+            "status": "pending",
+            "reason": "accepted_but_unverified",
+            "action_id": action_id,
+            "expected_state": expected_state,
+            "bridge_status": status,
+        }
+
+    def _review_device_state(
+        self,
+        action: dict[str, Any],
+        observation: dict[str, Any],
+        expected_state: str,
+    ) -> dict[str, Any]:
+        targets = self._action_targets(action)
+        if not targets:
+            return {}
+        facts = observation.get("facts", {})
+        devices = facts.get("devices", []) if isinstance(facts, dict) else []
+        if not isinstance(devices, list):
+            return {}
+        for device in devices:
+            if not isinstance(device, dict):
+                continue
+            device_id = str(device.get("id") or "")
+            if device_id not in targets:
+                continue
+            state = str(device.get("state") or "").strip()
+            evidence = {
+                "source": device.get("source") or "environment.observe",
+                "device_id": device_id,
+                "state": state,
+                "stale": device.get("stale"),
+                "updated_at": device.get("updated_at"),
+            }
+            if self._as_bool(device.get("stale")) is True:
+                return {
+                    "status": "pending",
+                    "reason": "device_state_stale",
+                    "action_id": action.get("action_id"),
+                    "expected_state": expected_state,
+                    "evidence": evidence,
+                }
+            if expected_state and state == expected_state:
+                return {
+                    "status": "succeeded",
+                    "reason": "device_state_matched",
+                    "action_id": action.get("action_id"),
+                    "expected_state": expected_state,
+                    "evidence": evidence,
+                }
+            if state:
+                return {
+                    "status": "mismatch",
+                    "reason": "device_state_mismatch",
+                    "action_id": action.get("action_id"),
+                    "expected_state": expected_state,
+                    "evidence": evidence,
+                }
+        return {}
+
+    def _review_room_light_state(
+        self,
+        action: dict[str, Any],
+        observation: dict[str, Any],
+        expected_state: str,
+    ) -> dict[str, Any]:
+        if action.get("target") not in {"light", "living_room_light"}:
+            return {}
+        if expected_state not in {"on", "off"}:
+            return {}
+        room_light = self._room_light_from_observation(observation)
+        if not room_light:
+            return {}
+        evidence = {
+            "source": room_light.get("authority") or room_light.get("source"),
+            "state": room_light.get("state"),
+            "confidence_label": room_light.get("confidence_label"),
+            "stale": room_light.get("stale"),
+            "observed_at": room_light.get("observed_at"),
+            "updated_at": room_light.get("updated_at"),
+        }
+        if room_light.get("available") is False or self._as_bool(room_light.get("stale")):
+            return {
+                "status": "pending",
+                "reason": "room_light_unavailable_or_stale",
+                "action_id": action.get("action_id"),
+                "expected_state": expected_state,
+                "evidence": evidence,
+            }
+        state = str(room_light.get("state") or "unknown").lower()
+        confidence = str(room_light.get("confidence_label") or "").lower()
+        confidence_low = confidence in {"", "low", "very_low", "unknown"}
+        if state == expected_state and not confidence_low:
+            return {
+                "status": "succeeded",
+                "reason": "room_light_state_matched",
+                "action_id": action.get("action_id"),
+                "expected_state": expected_state,
+                "evidence": evidence,
+            }
+        if state in {"on", "off"} and state != expected_state and not confidence_low:
+            return {
+                "status": "mismatch",
+                "reason": "room_light_state_mismatch",
+                "action_id": action.get("action_id"),
+                "expected_state": expected_state,
+                "evidence": evidence,
+            }
+        return {
+            "status": "pending",
+            "reason": "room_light_low_confidence",
+            "action_id": action.get("action_id"),
+            "expected_state": expected_state,
+            "evidence": evidence,
+        }
+
+    def _action_review_policy(self, action: dict[str, Any]) -> dict[str, int]:
+        action_id = str(action.get("action_id") or "")
+        profiles = {
+            "light_on": {"settle_ms": 1500, "observation_attempts": 2, "auto_retries": 1},
+            "light_off": {"settle_ms": 1500, "observation_attempts": 2, "auto_retries": 1},
+            "fan_on": {"settle_ms": 2500, "observation_attempts": 2, "auto_retries": 1},
+            "fan_off": {"settle_ms": 2500, "observation_attempts": 2, "auto_retries": 1},
+            "aircon_on": {"settle_ms": 8000, "observation_attempts": 3, "auto_retries": 0},
+            "aircon_off": {"settle_ms": 8000, "observation_attempts": 3, "auto_retries": 0},
+            "door_open": {"settle_ms": 5000, "observation_attempts": 3, "auto_retries": 0},
+            "door_close": {"settle_ms": 5000, "observation_attempts": 3, "auto_retries": 0},
+            "door_stop": {"settle_ms": 1500, "observation_attempts": 2, "auto_retries": 0},
+            "vacuum_start": {"settle_ms": 10000, "observation_attempts": 4, "auto_retries": 0},
+            "vacuum_return": {"settle_ms": 10000, "observation_attempts": 4, "auto_retries": 0},
+            "vacuum_pause": {"settle_ms": 3000, "observation_attempts": 2, "auto_retries": 0},
+        }
+        policy = dict(
+            profiles.get(
+                action_id,
+                {"settle_ms": 3000, "observation_attempts": 2, "auto_retries": 0},
+            )
+        )
+        expected_effect = action.get("expected_effect")
+        if isinstance(expected_effect, dict):
+            policy["settle_ms"] = self._int_value(
+                expected_effect.get("settle_ms")
+                or expected_effect.get("settle_time_ms")
+                or expected_effect.get("verification_delay_ms"),
+                policy["settle_ms"],
+            )
+            policy["observation_attempts"] = self._int_value(
+                expected_effect.get("observation_attempts")
+                or expected_effect.get("verification_attempts"),
+                policy["observation_attempts"],
+            )
+        if action.get("confirm_required"):
+            policy["auto_retries"] = 0
+        policy["settle_ms"] = max(0, policy["settle_ms"])
+        policy["observation_attempts"] = max(1, policy["observation_attempts"])
+        policy["auto_retries"] = max(0, policy["auto_retries"])
+        return policy
+
+    def _pending_review_speech(
+        self,
+        action: dict[str, Any],
+        policy: dict[str, int],
+        observations_done: int,
+    ) -> str:
+        phrase = str(
+            action.get("pre_action_phrase")
+            or action.get("target_name")
+            or action.get("action_id")
+            or "この操作"
+        )
+        seconds = max(1, round(policy["settle_ms"] / 1000))
+        remaining = max(0, policy["observation_attempts"] - observations_done)
+        tail = (
+            f"あと{remaining}回くらい見直します。"
+            if remaining
+            else "次で判断します。"
+        )
+        return (
+            f"{phrase}の操作は送信しました。反映には{seconds}秒くらいかかる見込みです。"
+            f"まだ環境で結果を確認しきれていないので、少し待ってから確認します。{tail}"
+        )
+
+    def _can_retry_review_action(
+        self,
+        action: dict[str, Any],
+        pending: dict[str, Any],
+        policy: dict[str, int],
+    ) -> bool:
+        if action.get("confirm_required"):
+            return False
+        execute_attempts = int(pending.get("execute_attempts") or 1)
+        return execute_attempts <= policy["auto_retries"]
+
+    def _execution_was_accepted(self, execute_result: dict[str, Any]) -> bool:
+        status = str(execute_result.get("status") or "")
+        if bool(execute_result.get("executed")) or bool(execute_result.get("verified_by_bridge")):
+            return True
+        return status in {"accepted", "submitted", "duplicate"}
+
+    def _action_targets(self, action: dict[str, Any]) -> set[str]:
+        target = action.get("target")
+        target_aliases = action.get("target_aliases")
+        targets = {str(target)} if target is not None else set()
+        if isinstance(target_aliases, list):
+            targets.update(str(item) for item in target_aliases)
+        return {target for target in targets if target}
+
+    def _wait_result_from_observation(self, observation: dict[str, Any]) -> dict[str, Any]:
+        environment = observation.get("environment")
+        if isinstance(environment, dict) and isinstance(environment.get("wait_result"), dict):
+            return environment["wait_result"]
+        return {}
+
+    def _int_value(self, value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
     def _call_tool(
         self,
         events: list[ThoughtEvent],
@@ -305,6 +1232,49 @@ class ThoughtLoop:
             )
         )
         return result
+
+    def _emit_input_ack(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+    ) -> None:
+        speech = self._input_ack_speech(turn_input)
+        events.append(
+            factory.emit(
+                "input.acknowledged",
+                {
+                    "text_length": len(turn_input.text),
+                    "speech": speech,
+                    "streamed": True,
+                },
+            )
+        )
+        self._emit_message(
+            events,
+            factory,
+            speech=speech,
+            display=speech,
+            emotion="attentive",
+            motion="small_nod",
+            priority="immediate",
+        )
+
+    def _input_ack_speech(self, turn_input: TurnInput) -> str:
+        text = turn_input.text.replace(" ", "").replace("　", "")
+        if self.pending_confirmations.get(turn_input.session_id):
+            if self._is_confirmation_reply(text):
+                return "うん、確認したよ。"
+            if self._is_confirmation_cancel(text):
+                return "うん、止めるね。"
+            return "うん、確認中の操作があるよ。"
+        if self.pending_action_reviews.get(turn_input.session_id):
+            return "うん、もう一度見てみるね。"
+        if detect_room_light_state_query(turn_input.text):
+            return "うん、状態を見てみるね。"
+        if detect_home_action_intent(turn_input.text) is not None:
+            return "うん、操作できるか確認するね。"
+        return "うん、聞いたよ。"
 
     def _handle_general_turn(
         self,
@@ -451,6 +1421,60 @@ class ThoughtLoop:
                 },
             )
         )
+
+    def _remember_confirmation(self, turn_input: TurnInput, action: dict[str, Any]) -> None:
+        self.pending_confirmations[turn_input.session_id] = {
+            "action": dict(action),
+            "confirmation_token": action.get("confirmation_token"),
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+
+    def _confirmation_prompt(self, action: dict[str, Any]) -> str:
+        phrase = str(
+            action.get("pre_action_phrase")
+            or action.get("target_name")
+            or action.get("action_id")
+            or "この操作"
+        ).strip()
+        return (
+            f"{phrase}には確認が必要です。まだ実行していません。"
+            "実行してよければ「お願い」か「OK」と言ってください。"
+        )
+
+    def _is_confirmation_reply(self, text: str) -> bool:
+        normalized = text.replace(" ", "").replace("　", "").lower()
+        if not normalized:
+            return False
+        positive_markers = (
+            "お願い",
+            "おねがい",
+            "はい",
+            "ok",
+            "ｏｋ",
+            "オーケー",
+            "おっけ",
+            "いいよ",
+            "実行して",
+            "やって",
+            "続き",
+            "許可",
+        )
+        return any(marker in normalized for marker in positive_markers)
+
+    def _is_confirmation_cancel(self, text: str) -> bool:
+        normalized = text.replace(" ", "").replace("　", "").lower()
+        cancel_markers = (
+            "キャンセル",
+            "やめ",
+            "中止",
+            "取り消",
+            "とりけ",
+            "いいえ",
+            "だめ",
+            "ダメ",
+            "しないで",
+        )
+        return any(marker in normalized for marker in cancel_markers)
 
     def _post_action_room_light_feedback(
         self,
