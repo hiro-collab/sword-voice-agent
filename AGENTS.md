@@ -6,7 +6,7 @@
 
 - 作業ルートはこのリポジトリの内側ディレクトリです。
 - 兄弟リポジトリは統合確認対象です。明示依頼がない限り、兄弟リポジトリの実装や文書を編集しません。
-- `archives/` は履歴退避先です。要求仕様、接続契約、作業ルールの根拠として扱いません。
+- `archives/` は履歴退避先です。通常の実装判断では検索しなくても大丈夫です。必要になった場合は履歴確認として読みます。
 
 ## Project Documents
 
@@ -16,6 +16,7 @@
 - `docs/module-responsibilities.md`: 各モジュールの責務境界。
 - `docs/state_authority.md`: state、flag、ID の authority。
 - `docs/retired-paths.md`: 互換、保留、検証専用の導線。
+- `docs/module-maintainer-requests.md`: 別担当モジュールへ渡す文書整理依頼。
 
 ## Architecture Rules
 

@@ -1,37 +1,15 @@
 # Retired Paths
 
-この文書は、残してよいが通常の統合導線では使わないものを短く記録する場所です。
+この文書は、残っているが通常の統合導線では使わないものの索引です。詳しい履歴や検討理由はここに戻さず、必要なときだけ `archives/` を確認します。
 
-## Legacy Full Stack
+| Path | Status |
+| --- | --- |
+| `scripts\start-full-stack.ps1` / `start-full-stack-supervisor.ps1` | 旧 full-stack 起動。通常は Home Control Stack を使う。 |
+| `mediapipe-sword-sign\apps\publish_udp.py` | 旧 UDP gesture 連携。通常は Camera Hub WebSocket topic を使う。 |
+| `mediapipe-sword-sign\apps\serve_websocket.py` | 旧 direct JSON WebSocket。通常は Camera Hub topic envelope を使う。 |
+| Camera Hub Python JPEG topic | Python 画像 transport の検証用。通常映像は MediaMTX を使う。 |
+| AITuberKit external WebSocket mode | 評価済み互換導線。通常 speech path は `POST /api/messages?...type=direct_send`。 |
+| AITuberKit renderer API proposal | 設計案。実装済み接続契約ではない。 |
+| `tts-service` status-file source | 互換・切り分け用。通常は HTTP source と streaming chunk endpoint を使う。 |
 
-`sword-voice-agent\scripts\start-full-stack.ps1` and `start-full-stack-supervisor.ps1` bundle ai-talk-core, UDP receiver, TTS service, Avatar service, and console in the older layout.
-
-Use this only for compatibility checks or when specifically debugging that path. The standard start flow is Home Control Stack.
-
-## MediaPipe UDP Publisher
-
-`mediapipe-sword-sign\apps\publish_udp.py` sends gesture JSON directly over UDP. It remains useful for isolated receiver tests and older integrations. The standard flow uses Camera Hub WebSocket topics.
-
-## `serve_websocket.py` Direct JSON
-
-`mediapipe-sword-sign\apps\serve_websocket.py` publishes direct gesture JSON. It remains useful for older AITuberKit gesture voice bridge tests. The standard flow uses Camera Hub topic envelopes.
-
-## Python JPEG Topic
-
-Camera Hub can publish JPEG frames from Python for debugging. Do not use it as the normal video path. Use MediaMTX for browser video and Camera Hub topics for state overlays.
-
-## AITuberKit External WebSocket Mode
-
-AITuberKit can connect to a fixed external WebSocket endpoint. This was evaluated, but the standard speech path is `POST /api/messages?...type=direct_send`.
-
-## AITuberKit Renderer API Proposal
-
-A custom renderer API for structured `avatar_state` was considered. It remains a design option, not an implemented integration contract.
-
-## TTS Status File Source
-
-`tts-service` can poll `latest_dify_response.json`. The standard integration uses the HTTP source and streaming chunk endpoint.
-
-## Archived Markdown
-
-Detailed setup logs, review notes, worker coordination notes, and evaluation documents were moved under `archives/legacy-md/2026-05-07-doc-rebuild/`. They are history, not requirements.
+`archives/legacy-md/2026-05-07-doc-rebuild/` には剪定前のメモやレビューを残しています。通常の実装判断では読まなくても大丈夫です。
