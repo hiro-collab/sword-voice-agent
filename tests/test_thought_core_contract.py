@@ -193,6 +193,27 @@ class ThoughtCoreContractTest(TestCase):
         self.assertNotIn("mock-token-that-must-not-leak", serialized)
         self.assertIn("[REDACTED]", serialized)
 
+    def test_get_root_returns_api_index(self) -> None:
+        server = create_server("127.0.0.1", 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+
+            with request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                content_type = response.headers["Content-Type"]
+
+            self.assertEqual(content_type, "application/json; charset=utf-8")
+            self.assertEqual(payload["service"], "thought-core")
+            self.assertEqual(payload["kind"], "api")
+            self.assertIn("POST /turn", payload["endpoints"]["turn_json"])
+            self.assertIn("sword-console", payload["console_command"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_post_turn_stream_returns_sse_events(self) -> None:
         server = create_server("127.0.0.1", 0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)

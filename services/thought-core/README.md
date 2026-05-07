@@ -52,6 +52,15 @@ uv run python -m thought_core --host 127.0.0.1 --port 18787
 `python` が別アプリ同梱の Python を指している環境があるため、リポジトリの Python 環境を
 使う `uv run python` を推奨します。
 
+`127.0.0.1:18787` は thought-core の API です。
+ブラウザで見る監視画面は `sword-console` 側なので、通常は `127.0.0.1:8790` を開きます。
+
+API index:
+
+```http
+GET /
+```
+
 health check:
 
 ```http

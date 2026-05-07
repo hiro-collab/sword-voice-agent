@@ -26,6 +26,9 @@ def create_server(
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib handler name
             parsed = urlparse(self.path)
+            if parsed.path == "/":
+                self._send_json(service_index_payload())
+                return
             if parsed.path == "/health":
                 self._send_json({"status": "ok", "service": "thought-core"})
                 return
@@ -146,6 +149,23 @@ def _first(params: dict[str, list[str]], key: str, default: str = "") -> str:
     if not values:
         return default
     return values[0]
+
+
+def service_index_payload() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "service": "thought-core",
+        "kind": "api",
+        "note": "This is the thought-core API, not the Sword Voice Agent console UI.",
+        "console_command": "uv run sword-console --ai-talk-core-root ..\\ai-talk-core",
+        "endpoints": {
+            "health": "GET /health",
+            "turn_json": "POST /turn",
+            "turn_sse": "POST /turn?stream=true",
+            "turn_sse_alias": "POST /turn/stream",
+            "eventsource_demo": "GET /turn/stream?text=電気つけて",
+        },
+    }
 
 
 if __name__ == "__main__":
