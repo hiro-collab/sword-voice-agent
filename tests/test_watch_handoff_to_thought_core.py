@@ -8,12 +8,16 @@ from uuid import uuid4
 from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreHandoffError
 from sword_voice_agent.adapters.thought_core import ThoughtCoreStreamEvent
 from sword_voice_agent.apps.watch_handoff_to_thought_core import (
+    HandoffSignature,
     build_parser,
     format_missing_handoff_message,
     format_watch_start_message,
     handoff_signature,
+    result_module_detail,
     resolve_handoff_json_path,
     run_once,
+    watcher_module_detail,
+    write_watcher_module_status,
 )
 from sword_voice_agent.protocol.messages import AgentResponse
 
@@ -170,6 +174,79 @@ class WatchHandoffToThoughtCoreTest(TestCase):
         missing = format_missing_handoff_message(path)
         self.assertIn("handoff JSON が見つかりません", missing)
         self.assertIn("sword-thought-core-handoff", missing)
+
+    def test_watcher_module_status_is_written(self) -> None:
+        with workspace_tempdir() as tmp:
+            status_dir = Path(tmp) / ".cache" / "sword_voice_agent"
+            args = build_parser().parse_args(
+                [
+                    "--handoff-json",
+                    str(Path(tmp) / "missing.json"),
+                    "--status-dir",
+                    str(status_dir),
+                ]
+            )
+
+            write_watcher_module_status(args, "running", detail="watching handoffs")
+
+            payload = json.loads(
+                (
+                    status_dir / "modules" / "thought_core_watcher.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(payload["name"], "thought_core_watcher")
+            self.assertEqual(payload["label"], "thought-core watcher")
+            self.assertEqual(payload["state"], "running")
+            self.assertEqual(payload["detail"], "watching handoffs")
+
+    def test_watcher_module_status_can_be_disabled(self) -> None:
+        with workspace_tempdir() as tmp:
+            args = build_parser().parse_args(
+                [
+                    "--handoff-json",
+                    str(Path(tmp) / "missing.json"),
+                    "--status-dir",
+                    "",
+                ]
+            )
+
+            write_watcher_module_status(args, "running", detail="watching handoffs")
+
+            self.assertFalse((Path(tmp) / "modules").exists())
+
+    def test_watcher_module_detail_is_non_sensitive(self) -> None:
+        signature = HandoffSignature(
+            path="C:/Users/example/private/web_latest.json",
+            size=1,
+            mtime_ns=2,
+            digest="abc",
+        )
+
+        self.assertEqual(
+            watcher_module_detail(signature, skip_existing=True),
+            "handoff present / new handoffs only",
+        )
+        self.assertEqual(
+            watcher_module_detail(None, skip_existing=False),
+            "waiting for handoff / current and new handoffs",
+        )
+        self.assertEqual(
+            result_module_detail(
+                {
+                    "response": {
+                        "text": "了解です",
+                        "raw": {"data": {"status": "success"}},
+                    }
+                }
+            ),
+            "last result success",
+        )
+        self.assertEqual(
+            result_module_detail(
+                {"skipped": True, "skip_reason": "no_speech_placeholder"}
+            ),
+            "skipped no_speech_placeholder",
+        )
 
 
 def write_handoff(root: Path, *, command: str, turn_id: str | None = None) -> Path:

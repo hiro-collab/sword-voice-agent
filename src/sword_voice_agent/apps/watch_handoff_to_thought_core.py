@@ -18,6 +18,7 @@ from sword_voice_agent.adapters.thought_core import (
     ThoughtCoreClientError,
     ThoughtCoreStreamEvent,
 )
+from sword_voice_agent.adapters.status_store import StatusStore
 from sword_voice_agent.apps.send_handoff_to_thought_core import (
     build_result,
     format_event_line,
@@ -27,6 +28,8 @@ from sword_voice_agent.apps.thought_core_status import build_thought_core_status
 
 
 NO_SPEECH_PLACEHOLDER = "音声を認識できませんでした。"
+THOUGHT_CORE_WATCHER_MODULE = "thought_core_watcher"
+THOUGHT_CORE_WATCHER_LABEL = "thought-core watcher"
 
 
 @dataclass(frozen=True)
@@ -298,13 +301,28 @@ def run_watch(args: argparse.Namespace) -> None:
     print(format_watch_start_message(handoff_path, skip_existing=args.skip_existing))
     while True:
         current = handoff_signature(handoff_path)
+        write_watcher_module_status(
+            args,
+            "running",
+            detail=watcher_module_detail(current, skip_existing=args.skip_existing),
+        )
         if current is not None and current != seen:
             try:
                 result = run_once(args)
             except (AiTalkCoreHandoffError, ThoughtCoreClientError, ValueError) as exc:
                 print(f"[thought-core-watch] input error: {exc}")
+                write_watcher_module_status(
+                    args,
+                    "error",
+                    detail="last processing error",
+                )
             else:
                 seen = current
+                write_watcher_module_status(
+                    args,
+                    "running",
+                    detail=result_module_detail(result),
+                )
                 print_result(args, result)
         time.sleep(max(0.05, args.poll_interval_s))
 
@@ -326,6 +344,48 @@ def print_result(args: argparse.Namespace, result: dict[str, Any]) -> None:
 def format_watch_start_message(path: Path, *, skip_existing: bool) -> str:
     mode = "新規handoffのみ" if skip_existing else "現在のhandoffと新規handoff"
     return f"[thought-core-watch] 監視中: {path} ({mode})"
+
+
+def watcher_module_detail(
+    signature: HandoffSignature | None,
+    *,
+    skip_existing: bool,
+) -> str:
+    mode = "new handoffs only" if skip_existing else "current and new handoffs"
+    availability = "handoff present" if signature is not None else "waiting for handoff"
+    return f"{availability} / {mode}"
+
+
+def result_module_detail(result: dict[str, Any]) -> str:
+    if result.get("skipped"):
+        return f"skipped {result.get('skip_reason', 'unknown')}"
+    response = result.get("response")
+    if isinstance(response, dict):
+        raw = response.get("raw")
+        if isinstance(raw, dict):
+            data = raw.get("data")
+            if isinstance(data, dict) and data.get("status"):
+                return f"last result {data.get('status')}"
+        if response.get("text"):
+            return "last result completed"
+    return "last result processed"
+
+
+def write_watcher_module_status(
+    args: argparse.Namespace,
+    state: str,
+    *,
+    detail: str,
+) -> None:
+    status_dir = str(getattr(args, "status_dir", "") or "")
+    if not status_dir:
+        return
+    StatusStore(status_dir).write_module_status(
+        THOUGHT_CORE_WATCHER_MODULE,
+        state,
+        label=THOUGHT_CORE_WATCHER_LABEL,
+        detail=detail,
+    )
 
 
 def format_missing_handoff_message(path: Path) -> str:
