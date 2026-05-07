@@ -24,6 +24,7 @@ EXPECTED_MODULES = (
     ("gesture_udp_receiver", "Gesture UDP receiver"),
     ("mediapipe_udp_publisher", "MediaPipe UDP publisher"),
     ("dify_api", "Dify API"),
+    ("thought_core_api", "thought-core API"),
     ("dify_watcher", "Dify watcher"),
     ("thought_core_watcher", "thought-core watcher"),
     ("tts_service", "TTS service"),
@@ -48,6 +49,8 @@ class ConsoleStatusConfig:
     input_gate_timeout_s: float = 1.5
     dify_base_url: str | None = None
     dify_timeout_s: float = 1.5
+    thought_core_base_url: str | None = None
+    thought_core_timeout_s: float = 1.5
     avatar_url: str | None = None
     avatar_model_url: str | None = None
     avatar_timeout_s: float = 1.5
@@ -91,6 +94,7 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
     )
     input_gate = fetch_input_gate(config)
     dify_api = fetch_dify_api(config)
+    thought_core_api = fetch_thought_core_api(config)
     avatar = fetch_avatar_service(config)
     store_gesture = (
         read_json_file(status_store.latest_gesture_path)
@@ -137,6 +141,7 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
                 and not store_thought_core_json.get("error")
             ),
             "dify_api": dify_api["available"],
+            "thought_core_api": thought_core_api["available"],
             "gesture": gesture["exists"] and not gesture.get("error"),
             "input_gate": None if not config.input_gate_url else input_gate["available"],
             "tts": tts_json["exists"] and not tts_json.get("error"),
@@ -160,11 +165,13 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
         ),
         "avatar": avatar,
         "dify_api": dify_api,
+        "thought_core_api": thought_core_api,
         "input_gate": input_gate,
         "modules": normalize_module_statuses(
             module_statuses,
             input_gate=input_gate,
             dify_api=dify_api,
+            thought_core_api=thought_core_api,
             avatar=avatar,
             timestamp=timestamp,
             stale_after_s=config.module_stale_after_s,
@@ -231,6 +238,9 @@ def redact_console_status(status: Mapping[str, Any]) -> dict[str, Any]:
 
     dify_api = _mapping_mutable(redacted.get("dify_api"))
     dify_api["url"] = _redact_scalar(dify_api.get("url"))
+
+    thought_core_api = _mapping_mutable(redacted.get("thought_core_api"))
+    thought_core_api["url"] = _redact_scalar(thought_core_api.get("url"))
 
     avatar = _mapping_mutable(redacted.get("avatar"))
     avatar["url"] = _redact_scalar(avatar.get("url"))
@@ -336,6 +346,7 @@ def normalize_module_statuses(
     *,
     input_gate: Mapping[str, Any],
     dify_api: Mapping[str, Any] | None = None,
+    thought_core_api: Mapping[str, Any] | None = None,
     avatar: Mapping[str, Any] | None = None,
     timestamp: float,
     stale_after_s: float,
@@ -366,6 +377,18 @@ def normalize_module_statuses(
                 age = 0.0
                 error_text = str(dify_api.get("error") or "not reachable")
                 detail = f"{dify_api.get('url')} / {error_text}"
+        elif name == "thought_core_api" and thought_core_api is not None:
+            if thought_core_api.get("available"):
+                state = "running"
+                updated_at = timestamp
+                age = 0.0
+                detail = str(thought_core_api.get("url") or detail or "reachable")
+            elif thought_core_api.get("url"):
+                state = "error"
+                updated_at = timestamp
+                age = 0.0
+                error_text = str(thought_core_api.get("error") or "not reachable")
+                detail = f"{thought_core_api.get('url')} / {error_text}"
         elif name == "avatar_service" and avatar is not None:
             if avatar.get("available"):
                 state = "running"
@@ -807,6 +830,14 @@ def fetch_dify_api(config: ConsoleStatusConfig) -> dict[str, Any]:
         config.dify_base_url,
         timeout_s=config.dify_timeout_s,
         label="DIFY_BASE_URL",
+    )
+
+
+def fetch_thought_core_api(config: ConsoleStatusConfig) -> dict[str, Any]:
+    return fetch_http_reachability(
+        config.thought_core_base_url,
+        timeout_s=config.thought_core_timeout_s,
+        label="THOUGHT_CORE_BASE_URL",
     )
 
 

@@ -185,6 +185,8 @@ watcher は既定で `.cache/sword_voice_agent/latest_thought_core_response.json
 status 出力が不要な場合は `--status-dir ""` を指定します。
 
 手入力CLIやwatcherを実行した後、console status の `thought_core` セクションでも確認できます。
+`sword-console` は既定で `http://127.0.0.1:18787` の thought-core API 到達性も Modules に表示します。
+別ポートで動かす場合は `--thought-core-base-url` を指定します。
 
 ```powershell
 uv run python -c "import json; from pathlib import Path; from sword_voice_agent.adapters.console_status import ConsoleStatusConfig, build_console_status; s=build_console_status(ConsoleStatusConfig(ai_talk_core_root=Path('..')/'ai-talk-core')); print(json.dumps(s['thought_core'], ensure_ascii=False, indent=2))"

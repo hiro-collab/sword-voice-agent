@@ -104,6 +104,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dify-timeout", type=float, default=1.5)
     parser.add_argument(
+        "--thought-core-base-url",
+        default=os.environ.get("THOUGHT_CORE_BASE_URL", "http://127.0.0.1:18787"),
+        help="Optional thought-core API base URL for readiness status.",
+    )
+    parser.add_argument("--thought-core-timeout", type=float, default=1.5)
+    parser.add_argument(
         "--avatar-url",
         default=os.environ.get("AVATAR_SERVICE_URL", ""),
         help="Optional avatar-service URL for readiness status and browser bridge.",
@@ -506,6 +512,8 @@ def run_server(args: argparse.Namespace) -> ThreadingHTTPServer:
         input_gate_timeout_s=args.input_gate_timeout,
         dify_base_url=args.dify_base_url or None,
         dify_timeout_s=args.dify_timeout,
+        thought_core_base_url=args.thought_core_base_url or None,
+        thought_core_timeout_s=args.thought_core_timeout,
         avatar_url=args.avatar_url or None,
         avatar_model_url=args.avatar_model_url or None,
         avatar_timeout_s=args.avatar_timeout,
