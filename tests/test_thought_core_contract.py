@@ -13,6 +13,7 @@ THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core"
 sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 
 from thought_core.loop import ThoughtLoop  # noqa: E402
+from thought_core.reasoning import LocalActionReasoner  # noqa: E402
 from thought_core.responders import ResponderResult  # noqa: E402
 from thought_core.server import create_server  # noqa: E402
 from thought_core.tools import HomeControlHttpTools, HomeControlToolConfig, MockThoughtTools  # noqa: E402
@@ -83,8 +84,10 @@ class ThoughtCoreContractTest(TestCase):
                 "tool.started",
                 "tool.result",
                 "observation.received",
+                "target_state.imagined",
                 "tool.started",
                 "tool.result",
+                "command.planned",
                 "action.proposed",
                 "assistant.speech_delta",
                 "assistant.message",
@@ -126,6 +129,111 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(action_event["data"]["action"]["expected_state"], "off")
         self.assertIn("了解、リビングの電気を消すね。", speeches)
         self.assertIn("リビングの電気を消したよ。", speeches)
+        self.assertEqual(events[-1]["data"]["status"], "success")
+
+    def test_target_state_projection_only_constrains_required_values(self) -> None:
+        class NoisyEnvironmentTools(MockThoughtTools):
+            def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+                observation = super().environment_observe(turn, reason=reason)
+                observation["environment"].setdefault("appliances", {})["unrelated"] = {
+                    "state": "surprising",
+                    "source": "mock",
+                }
+                observation["facts"].setdefault("devices", []).append(
+                    {
+                        "id": "unrelated",
+                        "kind": "sensor",
+                        "name": "無関係な値",
+                        "state": "surprising",
+                    }
+                )
+                return observation
+
+        events = ThoughtLoop(tools=NoisyEnvironmentTools(light_on=False)).run_dicts(
+            {
+                **TURN,
+                "text": "リビングの電気をつけて",
+                "turn_id": "turn_target_projection",
+            }
+        )
+        target_event = next(
+            event for event in events if event["type"] == "target_state.imagined"
+        )
+        plan_event = next(event for event in events if event["type"] == "command.planned")
+        review_event = next(event for event in events if event["type"] == "action.reviewed")
+        target_state = target_event["data"]["target_state"]
+
+        self.assertEqual(
+            target_state["wildcard_policy"],
+            "unspecified_values_are_any",
+        )
+        self.assertEqual(target_state["bindings"][0]["target"], "light")
+        self.assertEqual(target_state["bindings"][0]["value"], "on")
+        self.assertEqual(plan_event["data"]["target_state_diff"]["status"], "mismatch")
+        self.assertEqual(review_event["data"]["target_state_diff"]["status"], "matched")
+        self.assertEqual(review_event["data"]["review_basis"], "target_state")
+        self.assertEqual(events[-1]["data"]["status"], "success")
+
+    def test_action_review_can_use_injected_llm_reasoner_boundary(self) -> None:
+        class FakeLlmReasoner:
+            adapter_kind = "fake_llm_reasoner"
+            provider = "test"
+            model = "fake-model"
+
+            def __init__(self) -> None:
+                self.local = LocalActionReasoner()
+
+            def imagine_target_state(self, turn, observation):  # type: ignore[no-untyped-def]
+                return self.local.imagine_target_state(turn, observation)
+
+            def plan_command(self, turn, observation, target_state, preview):  # type: ignore[no-untyped-def]
+                return self.local.plan_command(turn, observation, target_state, preview)
+
+            def review_target_state(  # type: ignore[no-untyped-def]
+                self,
+                turn,
+                action,
+                target_state,
+                observation,
+                execute_result,
+            ):
+                review = self.local.review_target_state(
+                    turn,
+                    action,
+                    target_state,
+                    observation,
+                    execute_result,
+                )
+                review["reason"] = "fake_llm_target_state_review"
+                review["judge"] = {
+                    "adapter_kind": self.adapter_kind,
+                    "provider": self.provider,
+                    "model": self.model,
+                    "used_llm": True,
+                }
+                return review
+
+        events = ThoughtLoop(
+            tools=MockThoughtTools(light_on=False),
+            action_reasoner=FakeLlmReasoner(),
+        ).run_dicts(
+            {
+                **TURN,
+                "text": "リビングの電気をつけて",
+                "turn_id": "turn_fake_llm_reasoner",
+            }
+        )
+        target_event = next(
+            event for event in events if event["type"] == "target_state.imagined"
+        )
+        review_event = next(event for event in events if event["type"] == "action.reviewed")
+
+        self.assertEqual(
+            target_event["data"]["reasoner"]["adapter_kind"],
+            "fake_llm_reasoner",
+        )
+        self.assertEqual(review_event["data"]["reason"], "fake_llm_target_state_review")
+        self.assertTrue(review_event["data"]["judge"]["used_llm"])
         self.assertEqual(events[-1]["data"]["status"], "success")
 
     def test_room_light_state_query_uses_environment_without_home_execute(self) -> None:

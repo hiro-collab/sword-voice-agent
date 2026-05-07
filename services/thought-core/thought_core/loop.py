@@ -13,6 +13,12 @@ from .responders import (
     TurnResponder,
     describe_responder,
 )
+from .reasoning import (
+    ACTION_REASONER_BOUNDARY,
+    ActionReasoner,
+    build_action_reasoner_from_env,
+    describe_action_reasoner,
+)
 from .schema import TurnInput
 from .tools import (
     ThoughtTools,
@@ -30,11 +36,13 @@ class ThoughtLoop:
         max_execute_attempts: int = 3,
         source: str = "thought-core",
         responder: TurnResponder | None = None,
+        action_reasoner: ActionReasoner | None = None,
     ) -> None:
         self.tools = tools or build_tools_from_env()
         self.max_execute_attempts = max(1, max_execute_attempts)
         self.source = source
         self.responder = responder or EnvironmentTurnResponder.from_env()
+        self.action_reasoner = action_reasoner or build_action_reasoner_from_env()
         self.pending_confirmations: dict[str, dict[str, Any]] = {}
         self.pending_action_reviews: dict[str, dict[str, Any]] = {}
         self.pending_state_queries: dict[str, dict[str, Any]] = {}
@@ -76,6 +84,12 @@ class ThoughtLoop:
                     },
                 )
             )
+            target_state = self._imagine_target_state(
+                events,
+                factory,
+                turn_input,
+                observation,
+            )
 
             preview = self._call_tool(
                 events,
@@ -84,6 +98,21 @@ class ThoughtLoop:
                 lambda: self.tools.home_preview(turn_input, observation),
             )
             action = preview.get("action", {})
+            command_plan: dict[str, Any] = {}
+            if isinstance(action, dict) and action:
+                command_plan = self._plan_command(
+                    events,
+                    factory,
+                    turn_input,
+                    observation,
+                    target_state,
+                    preview,
+                )
+                action = self._attach_reasoning_to_action(
+                    action,
+                    target_state,
+                    command_plan,
+                )
             if preview.get("status") == "noop" and action:
                 speech = str(
                     preview.get("message")
@@ -223,7 +252,12 @@ class ThoughtLoop:
                     )
                 )
 
-                review = self._review_action_result(action, after_observation, execute_result)
+                review = self._review_action_result(
+                    turn_input,
+                    action,
+                    after_observation,
+                    execute_result,
+                )
                 events.append(factory.emit("action.reviewed", review))
 
                 if review["status"] == "succeeded":
@@ -1041,7 +1075,12 @@ class ThoughtLoop:
                 },
             )
         )
-        review = self._review_action_result(action, after_observation, execute_result)
+        review = self._review_action_result(
+            turn_input,
+            action,
+            after_observation,
+            execute_result,
+        )
         events.append(factory.emit("action.reviewed", review))
 
         if review["status"] == "succeeded":
@@ -1228,7 +1267,12 @@ class ThoughtLoop:
                 },
             )
         )
-        review = self._review_action_result(action, observation, execute_result)
+        review = self._review_action_result(
+            turn_input,
+            action,
+            observation,
+            execute_result,
+        )
         review["observations_done"] = observations_done
         review["execute_attempts"] = execute_attempts
         review["settle_ms"] = policy["settle_ms"]
@@ -1454,7 +1498,12 @@ class ThoughtLoop:
                 },
             )
         )
-        review = self._review_action_result(action, observation, execute_result)
+        review = self._review_action_result(
+            turn_input,
+            action,
+            observation,
+            execute_result,
+        )
         review["observations_done"] = 1
         review["execute_attempts"] = execute_attempts
         review["settle_ms"] = policy["settle_ms"]
@@ -1583,8 +1632,146 @@ class ThoughtLoop:
         )
         return True
 
+    def _imagine_target_state(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        observation: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            target_state = self.action_reasoner.imagine_target_state(
+                turn_input,
+                observation,
+            )
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            target_state = {
+                "schema": ACTION_REASONER_BOUNDARY,
+                "status": "error",
+                "reason": "target_state_reasoner_error",
+                "error": str(exc),
+                "bindings": [],
+                "wildcard_policy": "unspecified_values_are_any",
+            }
+        events.append(
+            factory.emit(
+                "target_state.imagined",
+                {
+                    "boundary": ACTION_REASONER_BOUNDARY,
+                    "reasoner": describe_action_reasoner(self.action_reasoner),
+                    "target_state": target_state,
+                },
+            )
+        )
+        return target_state
+
+    def _plan_command(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        observation: dict[str, Any],
+        target_state: dict[str, Any],
+        preview: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            command_plan = self.action_reasoner.plan_command(
+                turn_input,
+                observation,
+                target_state,
+                preview,
+            )
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            command_plan = {
+                "schema": ACTION_REASONER_BOUNDARY,
+                "status": "error",
+                "reason": "command_reasoner_error",
+                "error": str(exc),
+                "wildcard_policy": target_state.get(
+                    "wildcard_policy",
+                    "unspecified_values_are_any",
+                ),
+            }
+        events.append(
+            factory.emit(
+                "command.planned",
+                {
+                    "boundary": ACTION_REASONER_BOUNDARY,
+                    "reasoner": describe_action_reasoner(self.action_reasoner),
+                    "target_state_id": target_state.get("target_state_id"),
+                    "command_plan": command_plan,
+                    "target_state_diff": command_plan.get("diff_before", {}),
+                },
+            )
+        )
+        return command_plan
+
+    def _attach_reasoning_to_action(
+        self,
+        action: dict[str, Any],
+        target_state: dict[str, Any],
+        command_plan: dict[str, Any],
+    ) -> dict[str, Any]:
+        attached = dict(action)
+        if target_state:
+            attached["target_state"] = dict(target_state)
+        if command_plan:
+            attached["command_plan"] = dict(command_plan)
+        return attached
+
+    def _target_state_from_action(self, action: dict[str, Any]) -> dict[str, Any]:
+        target_state = action.get("target_state")
+        if isinstance(target_state, dict) and isinstance(target_state.get("bindings"), list):
+            return target_state
+        target = str(action.get("target") or "").strip()
+        expected_state = str(action.get("expected_state") or "").strip()
+        if not target or not expected_state:
+            return {
+                "schema": ACTION_REASONER_BOUNDARY,
+                "status": "unsupported",
+                "reason": "action_has_no_target_state",
+                "bindings": [],
+                "wildcard_policy": "unspecified_values_are_any",
+            }
+        target_aliases = action.get("target_aliases")
+        aliases: list[str] = []
+        if isinstance(target_aliases, list):
+            aliases.extend(str(item) for item in target_aliases if str(item or "").strip())
+        aliases.append(target)
+        if action.get("action_id"):
+            aliases.append(str(action.get("action_id")))
+        if target == "light":
+            aliases.append("living_room_light")
+        return {
+            "schema": ACTION_REASONER_BOUNDARY,
+            "status": "ok",
+            "source": "action_fallback",
+            "target_state_id": f"target_action_{action.get('action_id') or target}",
+            "action_id_hint": action.get("action_id"),
+            "bindings": [
+                {
+                    "kind": "appliance_state",
+                    "target": target,
+                    "target_name": action.get("target_name"),
+                    "target_aliases": sorted(set(aliases)),
+                    "field": "state",
+                    "operator": "eq",
+                    "value": expected_state,
+                    "scope": "required",
+                    "path_hint": f"environment.appliances.{target}.state",
+                }
+            ],
+            "wildcard_policy": "unspecified_values_are_any",
+            "ignored_values": "all_environment_values_without_required_bindings",
+        }
+
+    def _target_state_is_reviewable(self, target_state: dict[str, Any]) -> bool:
+        bindings = target_state.get("bindings")
+        return isinstance(bindings, list) and bool(bindings)
+
     def _review_action_result(
         self,
+        turn_input: TurnInput,
         action: dict[str, Any],
         observation: dict[str, Any],
         execute_result: dict[str, Any],
@@ -1593,6 +1780,42 @@ class ThoughtLoop:
         expected_state = str(
             action.get("expected_state") or execute_result.get("expected_state") or ""
         ).strip()
+        target_state = self._target_state_from_action(action)
+        if self._target_state_is_reviewable(target_state):
+            try:
+                review = self.action_reasoner.review_target_state(
+                    turn_input,
+                    action,
+                    target_state,
+                    observation,
+                    execute_result,
+                )
+            except Exception as exc:  # pragma: no cover - defensive boundary
+                review = {
+                    "status": "pending",
+                    "reason": "target_state_review_error",
+                    "error": str(exc),
+                }
+            if not isinstance(review, dict):
+                review = {
+                    "status": "pending",
+                    "reason": "target_state_review_invalid",
+                }
+            if review.get("status") in {
+                "succeeded",
+                "mismatch",
+                "pending",
+                "execute_failed",
+            }:
+                review.setdefault("action_id", action_id)
+                review.setdefault("expected_state", expected_state)
+                review.setdefault("target_state_id", target_state.get("target_state_id"))
+                review.setdefault("review_basis", "target_state")
+                review.setdefault(
+                    "wildcard_policy",
+                    target_state.get("wildcard_policy", "unspecified_values_are_any"),
+                )
+                return review
         status = str(execute_result.get("status") or "")
         if not self._execution_was_accepted(execute_result):
             return {
@@ -1870,8 +2093,18 @@ class ThoughtLoop:
             "action_id": str(action.get("action_id") or ""),
             "target": str(action.get("target") or ""),
             "expected_state": str(action.get("expected_state") or ""),
+            "target_state": (
+                action.get("target_state")
+                if isinstance(action.get("target_state"), dict)
+                else {}
+            ),
             "retry_budget": retry_budget,
             "last_review": dict(review),
+            "target_state_diff": (
+                review.get("target_state_diff")
+                if isinstance(review.get("target_state_diff"), dict)
+                else {}
+            ),
             "created_at": datetime.now(UTC).isoformat(),
         }
         result = self._call_tool(
