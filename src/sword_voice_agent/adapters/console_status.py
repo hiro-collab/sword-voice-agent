@@ -606,6 +606,7 @@ def normalize_thought_core_status(
     turn_payload = mapping(payload.get("turn_payload"))
     response = mapping(payload.get("response"))
     raw = mapping(response.get("raw"))
+    raw_data = mapping(raw.get("data"))
     streaming = mapping(raw.get("_streaming"))
     return {
         "available": bool(thought_core_json.get("exists"))
@@ -613,6 +614,7 @@ def normalize_thought_core_status(
         "updated_at": thought_core_json.get("mtime"),
         "skipped": bool(payload.get("skipped", False)),
         "skip_reason": payload.get("skip_reason"),
+        "status": raw_data.get("status"),
         "request_text": str(
             request_payload.get("text") or turn_payload.get("text") or ""
         ),

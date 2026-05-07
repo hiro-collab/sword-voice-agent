@@ -260,6 +260,7 @@ class ConsoleStatusTest(TestCase):
                             "text": "リビングの電気をつけたよ。",
                             "conversation_id": "turn-1",
                             "raw": {
+                                "data": {"status": "success"},
                                 "_streaming": {
                                     "event_count": 16,
                                     "first_event_elapsed_s": 0.1,
@@ -287,6 +288,7 @@ class ConsoleStatusTest(TestCase):
             self.assertEqual(status["thought_core"]["request_text"], "電気つけて")
             self.assertEqual(status["thought_core"]["turn_id"], "turn-1")
             self.assertEqual(status["thought_core"]["session_id"], "living_room_main")
+            self.assertEqual(status["thought_core"]["status"], "success")
             self.assertEqual(
                 status["thought_core"]["answer"],
                 "リビングの電気をつけたよ。",
