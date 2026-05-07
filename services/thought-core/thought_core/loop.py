@@ -1,0 +1,262 @@
+"""Explicit thought loop for the first thought-core contract draft."""
+
+from __future__ import annotations
+
+from typing import Any, Callable, Mapping
+
+from .events import EventFactory, ThoughtEvent
+from .schema import TurnInput
+from .tools import MockThoughtTools, ThoughtTools
+
+
+class ThoughtLoop:
+    def __init__(
+        self,
+        tools: ThoughtTools | None = None,
+        *,
+        max_execute_attempts: int = 2,
+        source: str = "thought-core",
+    ) -> None:
+        self.tools = tools or MockThoughtTools()
+        self.max_execute_attempts = max(1, max_execute_attempts)
+        self.source = source
+
+    def run(self, turn: TurnInput | Mapping[str, Any]) -> list[ThoughtEvent]:
+        turn_input = turn if isinstance(turn, TurnInput) else TurnInput.from_mapping(turn)
+        factory = EventFactory(turn_input.turn_id, turn_input.session_id, source=self.source)
+        events: list[ThoughtEvent] = []
+        try:
+            if not self._is_home_light_turn_on(turn_input.text):
+                self._emit_message(
+                    events,
+                    factory,
+                    speech="今は家電操作の実験境界だけ動いています。",
+                    display="thought-core mock response",
+                    emotion="neutral",
+                    motion="idle",
+                    priority="normal",
+                )
+                events.append(factory.emit("turn.completed", {"status": "unsupported_intent"}))
+                return events
+
+            observation = self._call_tool(
+                events,
+                factory,
+                "environment.observe",
+                lambda: self.tools.environment_observe(turn_input, reason="before_action"),
+            )
+            events.append(
+                factory.emit(
+                    "observation.received",
+                    {
+                        "observation_ref": observation.get("observation_ref"),
+                        "observation_source": observation.get("observation_source"),
+                        "facts": observation.get("facts", {}),
+                    },
+                )
+            )
+
+            preview = self._call_tool(
+                events,
+                factory,
+                "home.preview",
+                lambda: self.tools.home_preview(turn_input, observation),
+            )
+            action = preview.get("action", {})
+            events.append(factory.emit("action.proposed", {"action": action}))
+
+            self._emit_message(
+                events,
+                factory,
+                speech="了解、リビングの電気をつけるね。",
+                display="リビングの電気をつけます",
+                emotion="confident",
+                motion="nod",
+                priority="immediate",
+            )
+
+            for attempt in range(1, self.max_execute_attempts + 1):
+                execute_result = self._call_tool(
+                    events,
+                    factory,
+                    "home.execute",
+                    lambda: self.tools.home_execute(turn_input, action),
+                )
+                after_observation = self._call_tool(
+                    events,
+                    factory,
+                    "environment.observe",
+                    lambda: self.tools.environment_observe(turn_input, reason="after_action"),
+                )
+                events.append(
+                    factory.emit(
+                        "observation.received",
+                        {
+                            "observation_ref": after_observation.get("observation_ref"),
+                            "observation_source": after_observation.get("observation_source"),
+                            "facts": after_observation.get("facts", {}),
+                            "after_tool": "home.execute",
+                            "attempt": attempt,
+                        },
+                    )
+                )
+
+                if self._action_succeeded(action, after_observation):
+                    self._emit_message(
+                        events,
+                        factory,
+                        speech="リビングの電気をつけたよ。",
+                        display="リビングの電気をONにしました",
+                        emotion="satisfied",
+                        motion="small_nod",
+                        priority="normal",
+                    )
+                    events.append(
+                        factory.emit(
+                            "turn.completed",
+                            {
+                                "status": "success",
+                                "attempts": attempt,
+                                "action": action,
+                                "execute_status": execute_result.get("status"),
+                            },
+                        )
+                    )
+                    return events
+
+                retryable = bool(execute_result.get("retryable", True))
+                if attempt < self.max_execute_attempts and retryable:
+                    self._emit_message(
+                        events,
+                        factory,
+                        speech="反応が確認できないので、もう一度だけ試します。",
+                        display="再試行します",
+                        emotion="focused",
+                        motion="look_back",
+                        priority="normal",
+                    )
+                    continue
+
+                events.append(
+                    factory.emit(
+                        "feedback.requested",
+                        {
+                            "reason": "verification_failed",
+                            "speech": "電気がついたか確認できませんでした。状態を確認してもらえますか？",
+                            "display": "電気の状態確認が必要です",
+                            "attempts": attempt,
+                            "last_execute_status": execute_result.get("status"),
+                        },
+                    )
+                )
+                events.append(
+                    factory.emit(
+                        "turn.completed",
+                        {
+                            "status": "needs_feedback",
+                            "attempts": attempt,
+                            "action": action,
+                        },
+                    )
+                )
+                return events
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            events.append(
+                factory.emit(
+                    "turn.error",
+                    {
+                        "code": "thought_core_error",
+                        "message": str(exc),
+                    },
+                )
+            )
+            return events
+
+    def run_dicts(self, turn: TurnInput | Mapping[str, Any]) -> list[dict[str, Any]]:
+        return [event.to_dict() for event in self.run(turn)]
+
+    def _call_tool(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        tool_name: str,
+        call: Callable[[], dict[str, Any]],
+    ) -> dict[str, Any]:
+        tool_call_id = factory.next_tool_call_id()
+        events.append(
+            factory.emit(
+                "tool.started",
+                {
+                    "tool": tool_name,
+                    "tool_call_id": tool_call_id,
+                },
+            )
+        )
+        result = call()
+        status = result.get("status", "ok")
+        events.append(
+            factory.emit(
+                "tool.result",
+                {
+                    "tool": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "status": status,
+                    "result": result,
+                },
+            )
+        )
+        return result
+
+    def _emit_message(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        *,
+        speech: str,
+        display: str,
+        emotion: str,
+        motion: str,
+        priority: str,
+    ) -> None:
+        events.append(
+            factory.emit(
+                "assistant.speech_delta",
+                {
+                    "delta": speech,
+                    "channel": "speech",
+                },
+            )
+        )
+        events.append(
+            factory.emit(
+                "assistant.message",
+                {
+                    "speech": speech,
+                    "display": display,
+                    "emotion": emotion,
+                    "motion": motion,
+                    "priority": priority,
+                },
+            )
+        )
+
+    def _is_home_light_turn_on(self, text: str) -> bool:
+        normalized = text.replace(" ", "")
+        return ("電気" in normalized or "ライト" in normalized) and (
+            "つけ" in normalized or "点け" in normalized or "on" in normalized.lower()
+        )
+
+    def _action_succeeded(self, action: dict[str, Any], observation: dict[str, Any]) -> bool:
+        expected_state = action.get("expected_state")
+        target = action.get("target")
+        facts = observation.get("facts", {})
+        devices = facts.get("devices", [])
+        if not isinstance(devices, list):
+            return False
+        for device in devices:
+            if not isinstance(device, dict):
+                continue
+            if device.get("id") == target and device.get("state") == expected_state:
+                return True
+        return False
+
