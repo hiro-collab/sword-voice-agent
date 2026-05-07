@@ -16,8 +16,10 @@ from sword_voice_agent.apps.watch_handoff_to_thought_core import (
     format_missing_handoff_message,
     format_watch_start_message,
     handoff_signature,
+    pending_action_review,
     result_module_detail,
     resolve_handoff_json_path,
+    run_pending_action_reviews,
     run_once,
     watcher_module_detail,
     write_watcher_module_status,
@@ -61,6 +63,73 @@ class FakeThoughtCoreClient:
             text="了解です",
             conversation_id=turn_payload["turn_id"],
             raw={"status": "success"},
+        )
+
+
+class PendingReviewThoughtCoreClient:
+    def __init__(self) -> None:
+        self.turn_payloads = []
+
+    def send_turn_streaming(self, turn_payload, *, on_event=None):
+        self.turn_payloads.append(turn_payload)
+        if len(self.turn_payloads) == 1:
+            events = [
+                ThoughtCoreStreamEvent(
+                    event_type="action.review_pending",
+                    turn_id=turn_payload["turn_id"],
+                    session_id=turn_payload["session_id"],
+                    seq=1,
+                    data={
+                        "action": {"action_id": "aircon_on", "target": "aircon"},
+                        "review": {"status": "unknown"},
+                        "observations_done": 1,
+                        "observation_attempts": 3,
+                        "settle_ms": 2000,
+                    },
+                ),
+                ThoughtCoreStreamEvent(
+                    event_type="assistant.message",
+                    turn_id=turn_payload["turn_id"],
+                    session_id=turn_payload["session_id"],
+                    seq=2,
+                    data={"speech": "あとで見直します"},
+                ),
+                ThoughtCoreStreamEvent(
+                    event_type="turn.completed",
+                    turn_id=turn_payload["turn_id"],
+                    session_id=turn_payload["session_id"],
+                    seq=3,
+                    data={"status": "verification_pending"},
+                ),
+            ]
+            response_text = "あとで見直します"
+            raw = {"data": {"status": "verification_pending"}}
+        else:
+            events = [
+                ThoughtCoreStreamEvent(
+                    event_type="assistant.message",
+                    turn_id=turn_payload["turn_id"],
+                    session_id=turn_payload["session_id"],
+                    seq=1,
+                    data={"speech": "見直して確認できました"},
+                ),
+                ThoughtCoreStreamEvent(
+                    event_type="turn.completed",
+                    turn_id=turn_payload["turn_id"],
+                    session_id=turn_payload["session_id"],
+                    seq=2,
+                    data={"status": "success"},
+                ),
+            ]
+            response_text = "見直して確認できました"
+            raw = {"data": {"status": "success"}}
+        for event in events:
+            if on_event is not None:
+                on_event(event)
+        return AgentResponse(
+            text=response_text,
+            conversation_id=turn_payload["turn_id"],
+            raw=raw,
         )
 
 
@@ -147,6 +216,43 @@ class WatchHandoffToThoughtCoreTest(TestCase):
         args = build_parser().parse_args(["--aituber-speech-max-chars", "40"])
 
         self.assertEqual(args.aituber_speech_max_chars, 40)
+
+    def test_run_pending_action_reviews_sends_synthetic_review_turn(self) -> None:
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            write_handoff(root, command="エアコンをつけて", turn_id="turn-aircon")
+            client = PendingReviewThoughtCoreClient()
+            args = build_parser().parse_args(
+                [
+                    "--ai-talk-core-root",
+                    str(root),
+                    "--once",
+                    "--session-id",
+                    "living_room_main",
+                    "--status-dir",
+                    "",
+                    "--auto-review-max-delay-s",
+                    "0.05",
+                ]
+            )
+
+            initial = run_once(args, client=client)
+            sleeps: list[float] = []
+            review_results = run_pending_action_reviews(
+                args,
+                initial,
+                client=client,
+                sleep=sleeps.append,
+                printer=lambda *_: None,
+            )
+
+        self.assertIsNotNone(pending_action_review(initial))
+        self.assertEqual(sleeps, [0.05])
+        self.assertEqual(len(review_results), 1)
+        self.assertEqual(client.turn_payloads[1]["text"], "確認して")
+        self.assertEqual(client.turn_payloads[1]["session_id"], "living_room_main")
+        self.assertEqual(client.turn_payloads[1]["turn_id"], "turn-aircon_review_2")
+        self.assertEqual(review_results[0]["response"]["text"], "見直して確認できました")
 
     @patch("sword_voice_agent.apps.watch_handoff_to_thought_core.request.urlopen")
     def test_run_once_forwards_tts_chunks(self, urlopen: MagicMock) -> None:

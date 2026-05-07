@@ -171,6 +171,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Polling interval for watch mode.",
     )
     parser.add_argument(
+        "--auto-review-pending",
+        dest="auto_review_pending",
+        action="store_true",
+        default=default_auto_review_pending(),
+        help="Automatically send follow-up review turns when thought-core returns action.review_pending.",
+    )
+    parser.add_argument(
+        "--no-auto-review-pending",
+        dest="auto_review_pending",
+        action="store_false",
+        help="Disable automatic follow-up review turns.",
+    )
+    parser.add_argument(
+        "--auto-review-text",
+        default=os.environ.get("THOUGHT_CORE_AUTO_REVIEW_TEXT", "確認して"),
+        help="Text used for automatic action review turns.",
+    )
+    parser.add_argument(
+        "--auto-review-max-delay-s",
+        type=float,
+        default=default_auto_review_max_delay_s(),
+        help="Upper bound for each automatic review sleep.",
+    )
+    parser.add_argument(
+        "--auto-review-max-turns",
+        type=int,
+        default=default_auto_review_max_turns(),
+        help="Safety cap for automatic review turns spawned from one handoff.",
+    )
+    parser.add_argument(
         "--once",
         action="store_true",
         help="Process the current handoff once and exit.",
@@ -368,6 +398,25 @@ def default_aituber_speech_max_chars() -> int:
 def default_local_ack_mode() -> str:
     value = os.environ.get("THOUGHT_CORE_LOCAL_ACK_MODE", "auto").strip().lower()
     return value if value in LOCAL_ACK_MODES else "auto"
+
+
+def default_auto_review_pending() -> bool:
+    value = os.environ.get("THOUGHT_CORE_AUTO_REVIEW_PENDING", "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def default_auto_review_max_delay_s() -> float:
+    try:
+        return max(0.0, float(os.environ.get("THOUGHT_CORE_AUTO_REVIEW_MAX_DELAY_S", "30")))
+    except ValueError:
+        return 30.0
+
+
+def default_auto_review_max_turns() -> int:
+    try:
+        return max(1, int(os.environ.get("THOUGHT_CORE_AUTO_REVIEW_MAX_TURNS", "6")))
+    except ValueError:
+        return 6
 
 
 def build_local_ack(text: str) -> str:
@@ -765,6 +814,7 @@ def run_watch(args: argparse.Namespace) -> None:
     handoff_path = resolve_handoff_json_path(args)
     seen = handoff_signature(handoff_path) if args.skip_existing else None
     print(format_watch_start_message(handoff_path, skip_existing=args.skip_existing))
+    thought_core = ThoughtCoreClient.from_env()
     while True:
         current = handoff_signature(handoff_path)
         write_watcher_module_status(
@@ -774,7 +824,7 @@ def run_watch(args: argparse.Namespace) -> None:
         )
         if current is not None and current != seen:
             try:
-                result = run_once(args)
+                result = run_once(args, client=thought_core)
             except (AiTalkCoreHandoffError, ThoughtCoreClientError, ValueError) as exc:
                 print(f"[thought-core-watch] input error: {exc}")
                 write_watcher_module_status(
@@ -790,7 +840,132 @@ def run_watch(args: argparse.Namespace) -> None:
                     detail=result_module_detail(result),
                 )
                 print_result(args, result)
+                schedule_pending_action_reviews(args, result, client=thought_core)
         time.sleep(max(0.05, args.poll_interval_s))
+
+
+def schedule_pending_action_reviews(
+    args: argparse.Namespace,
+    result: dict[str, Any],
+    *,
+    client: ThoughtCoreClient | None = None,
+) -> bool:
+    if not bool(getattr(args, "auto_review_pending", True)):
+        return False
+    if pending_action_review(result) is None:
+        return False
+    worker_args = clone_args_for_auto_review(args)
+
+    def worker() -> None:
+        try:
+            run_pending_action_reviews(worker_args, result, client=client)
+        except (AiTalkCoreHandoffError, ThoughtCoreClientError, ValueError) as exc:
+            print(f"[thought-core-watch] auto review error: {exc}")
+            write_watcher_module_status(
+                worker_args,
+                "error",
+                detail="auto action review error",
+            )
+
+    thread = threading.Thread(
+        target=worker,
+        name="thought-core-auto-review",
+        daemon=True,
+    )
+    thread.start()
+    return True
+
+
+def run_pending_action_reviews(
+    args: argparse.Namespace,
+    result: dict[str, Any],
+    *,
+    client: ThoughtCoreClient | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    printer: Callable[[argparse.Namespace, dict[str, Any]], None] | None = None,
+) -> list[dict[str, Any]]:
+    if not bool(getattr(args, "auto_review_pending", True)):
+        return []
+    thought_core = client or ThoughtCoreClient.from_env()
+    max_turns = max(1, int(getattr(args, "auto_review_max_turns", 6) or 6))
+    review_results: list[dict[str, Any]] = []
+    current_result = result
+    printer_func = print_result if printer is None else printer
+    for _ in range(max_turns):
+        pending = pending_action_review(current_result)
+        if pending is None:
+            break
+        delay_s = pending_action_review_delay_s(args, pending)
+        if delay_s > 0:
+            sleep(delay_s)
+        review_args = build_auto_review_args(args, current_result, pending)
+        next_result = run_once(review_args, client=thought_core)
+        review_results.append(next_result)
+        printer_func(review_args, next_result)
+        current_result = next_result
+    return review_results
+
+
+def pending_action_review(result: dict[str, Any]) -> dict[str, Any] | None:
+    events = result.get("events")
+    if not isinstance(events, list):
+        return None
+    for event in reversed(events):
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("event_type") or event.get("type") or "")
+        if event_type != "action.review_pending":
+            continue
+        data = event.get("data")
+        if isinstance(data, dict):
+            return dict(data)
+        raw = event.get("raw")
+        if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
+            return dict(raw["data"])
+    return None
+
+
+def pending_action_review_delay_s(
+    args: argparse.Namespace,
+    pending: dict[str, Any],
+) -> float:
+    try:
+        delay_s = max(0.0, float(pending.get("settle_ms") or 0) / 1000.0)
+    except (TypeError, ValueError):
+        delay_s = 0.0
+    try:
+        max_delay_s = max(0.0, float(getattr(args, "auto_review_max_delay_s", 30.0)))
+    except (TypeError, ValueError):
+        max_delay_s = 30.0
+    return min(delay_s, max_delay_s)
+
+
+def build_auto_review_args(
+    args: argparse.Namespace,
+    result: dict[str, Any],
+    pending: dict[str, Any],
+) -> argparse.Namespace:
+    review_args = clone_args_for_auto_review(args)
+    review_args.text = str(getattr(args, "auto_review_text", "") or "確認して")
+    review_args.turn_id = auto_review_turn_id(result, pending)
+    review_args.local_ack_mode = "off"
+    return review_args
+
+
+def clone_args_for_auto_review(args: argparse.Namespace) -> argparse.Namespace:
+    values = dict(vars(args))
+    values["context"] = list(values.get("context") or [])
+    values["context_ref"] = list(values.get("context_ref") or [])
+    return argparse.Namespace(**values)
+
+
+def auto_review_turn_id(result: dict[str, Any], pending: dict[str, Any]) -> str:
+    base_turn_id = turn_id_from_result(result) or f"turn_{int(time.time() * 1000)}"
+    try:
+        observations_done = int(pending.get("observations_done") or 0)
+    except (TypeError, ValueError):
+        observations_done = 0
+    return f"{base_turn_id}_review_{observations_done + 1}"
 
 
 def print_result(args: argparse.Namespace, result: dict[str, Any]) -> None:
