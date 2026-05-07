@@ -96,6 +96,10 @@ class ThoughtCoreContractTest(TestCase):
                 "action.reviewed",
                 "assistant.speech_delta",
                 "assistant.message",
+                "state_query.feedback_detected",
+                "tool.started",
+                "tool.result",
+                "state_query.feedback_saved",
                 "turn.completed",
             ],
         )
@@ -152,6 +156,103 @@ class ThoughtCoreContractTest(TestCase):
         self.assertIn("カメラ推定", speeches[-1])
         self.assertEqual(events[-1]["data"]["status"], "state_answer")
         self.assertEqual(events[-1]["data"]["state"], "on")
+
+    def test_room_light_state_query_saves_followup_user_feedback(self) -> None:
+        tools = MockThoughtTools(light_on=True)
+        loop = ThoughtLoop(tools=tools)
+        query_turn = {
+            **TURN,
+            "text": "電気ついてる？",
+            "turn_id": "turn_room_light_query_feedback",
+            "context_refs": {
+                **TURN["context_refs"],
+                "mock_room_light_state": "unknown",
+                "mock_room_light_confidence_label": "low",
+            },
+        }
+        feedback_turn = {
+            **TURN,
+            "text": "ついてるよ",
+            "turn_id": "turn_room_light_user_feedback",
+        }
+
+        query_events = loop.run_dicts(query_turn)
+        feedback_events = loop.run_dicts(feedback_turn)
+        feedback_event_types = [event["type"] for event in feedback_events]
+
+        self.assertIn("state_query.feedback_pending", [event["type"] for event in query_events])
+        self.assertIn("state_query.feedback_saved", feedback_event_types)
+        self.assertEqual(feedback_events[-1]["data"]["status"], "state_feedback")
+        self.assertEqual(tools.state_query_feedback_calls[0]["user_label"], "on")
+        self.assertEqual(
+            tools.state_query_feedback_calls[0]["feedback_reason"],
+            "user_correction_after_state_query",
+        )
+
+    def test_pending_room_light_feedback_can_continue_as_home_command(self) -> None:
+        tools = MockThoughtTools(light_on=True)
+        loop = ThoughtLoop(tools=tools)
+        query_turn = {
+            **TURN,
+            "text": "電気ついてる？",
+            "turn_id": "turn_room_light_query_before_command",
+            "context_refs": {
+                **TURN["context_refs"],
+                "mock_room_light_state": "unknown",
+                "mock_room_light_confidence_label": "low",
+            },
+        }
+        command_turn = {
+            **TURN,
+            "text": "はい、電気を消して",
+            "turn_id": "turn_feedback_then_light_off",
+        }
+
+        loop.run_dicts(query_turn)
+        events = loop.run_dicts(command_turn)
+        event_types = [event["type"] for event in events]
+        action_event = next(event for event in events if event["type"] == "action.proposed")
+
+        self.assertIn("state_query.feedback_saved", event_types)
+        self.assertEqual(tools.state_query_feedback_calls[0]["user_label"], "on")
+        self.assertEqual(action_event["data"]["action"]["action_id"], "light_off")
+        self.assertEqual(events[-1]["data"]["status"], "success")
+
+    def test_direct_room_light_state_statement_is_saved_as_feedback(self) -> None:
+        tools = MockThoughtTools(light_on=True)
+        turn = {
+            **TURN,
+            "text": "現在、部屋の電気は消灯状態です",
+            "turn_id": "turn_direct_room_light_feedback",
+        }
+
+        events = ThoughtLoop(tools=tools).run_dicts(turn)
+
+        self.assertIn("state_query.feedback_saved", [event["type"] for event in events])
+        self.assertEqual(events[-1]["data"]["status"], "state_feedback")
+        self.assertEqual(tools.state_query_feedback_calls[0]["user_label"], "off")
+        self.assertEqual(
+            tools.state_query_feedback_calls[0]["feedback_reason"],
+            "user_reported_room_light_state",
+        )
+
+    def test_light_action_saves_verified_post_action_feedback(self) -> None:
+        tools = MockThoughtTools(light_on=False)
+        turn = {
+            **TURN,
+            "text": "リビングの電気をつけて",
+            "turn_id": "turn_light_action_learning",
+        }
+
+        events = ThoughtLoop(tools=tools).run_dicts(turn)
+
+        self.assertIn("state_query.feedback_saved", [event["type"] for event in events])
+        self.assertEqual(events[-1]["data"]["post_action_feedback_saved"], True)
+        self.assertEqual(tools.state_query_feedback_calls[0]["user_label"], "on")
+        self.assertEqual(
+            tools.state_query_feedback_calls[0]["source_context"],
+            "post_light_action",
+        )
 
     def test_light_action_adds_room_light_feedback_when_vision_mismatches(self) -> None:
         tools = MockThoughtTools(light_on=False)
@@ -566,7 +667,8 @@ class ThoughtCoreContractTest(TestCase):
                     "attempt": len(self.execute_calls),
                 }
 
-        loop = ThoughtLoop(tools=UnobservableDoorTools())
+        tools = UnobservableDoorTools()
+        loop = ThoughtLoop(tools=tools)
         first_events = loop.run_dicts(
             {
                 **TURN,
@@ -594,6 +696,17 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(third_events[-1]["data"]["status"], "needs_feedback")
         self.assertIn("action.review_pending", [event["type"] for event in first_events])
         self.assertIn("feedback.requested", [event["type"] for event in third_events])
+        short_memory_statuses = [
+            item["retry_budget"]["status"] for item in tools.short_memory_write_calls
+        ]
+        self.assertIn("review_budget_opened", short_memory_statuses)
+        self.assertIn("review_observation_pending", short_memory_statuses)
+        self.assertIn("review_retry_exhausted", short_memory_statuses)
+        self.assertEqual(tools.short_memory_write_calls[0]["type"], "short_memory")
+        self.assertEqual(
+            tools.short_memory_write_calls[0]["retry_budget"]["observation_attempts"],
+            3,
+        )
 
     def test_low_risk_action_can_retry_after_review_exhausted(self) -> None:
         class RetryableLightTools(MockThoughtTools):
@@ -651,6 +764,13 @@ class ThoughtCoreContractTest(TestCase):
         self.assertIn("action.retrying", [event["type"] for event in second_events])
         self.assertEqual(second_events[-1]["data"]["status"], "success")
         self.assertEqual(len(tools.execute_calls), 2)
+        retry_budget_items = [
+            item
+            for item in tools.short_memory_write_calls
+            if item["retry_budget"]["status"] == "review_retry_scheduled"
+        ]
+        self.assertEqual(len(retry_budget_items), 1)
+        self.assertEqual(retry_budget_items[0]["retry_budget"]["auto_retries"], 1)
 
     def test_general_turn_uses_responder_boundary(self) -> None:
         events = ThoughtLoop(responder=StaticResponder()).run_dicts(GENERAL_TURN)
@@ -716,6 +836,10 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(len(tools.execute_calls), 2)
         self.assertEqual(events[-1]["type"], "turn.completed")
         self.assertEqual(events[-1]["data"]["status"], "success")
+        self.assertIn(
+            "execute_retry_scheduled",
+            [item["retry_budget"]["status"] for item in tools.short_memory_write_calls],
+        )
 
     def test_tool_failure_requests_feedback_when_retry_exhausted(self) -> None:
         tools = MockThoughtTools(execute_failures_before_success=3)
@@ -726,6 +850,10 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(events[-1]["type"], "turn.completed")
         self.assertEqual(events[-1]["data"]["status"], "needs_feedback")
         self.assertEqual(len(tools.execute_calls), 2)
+        self.assertIn(
+            "execute_retry_exhausted",
+            [item["retry_budget"]["status"] for item in tools.short_memory_write_calls],
+        )
 
     def test_mock_context_ref_can_demo_retry_success(self) -> None:
         tools = MockThoughtTools()

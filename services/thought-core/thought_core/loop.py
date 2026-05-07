@@ -37,6 +37,7 @@ class ThoughtLoop:
         self.responder = responder or EnvironmentTurnResponder.from_env()
         self.pending_confirmations: dict[str, dict[str, Any]] = {}
         self.pending_action_reviews: dict[str, dict[str, Any]] = {}
+        self.pending_state_queries: dict[str, dict[str, Any]] = {}
 
     def run(self, turn: TurnInput | Mapping[str, Any]) -> list[ThoughtEvent]:
         turn_input = turn if isinstance(turn, TurnInput) else TurnInput.from_mapping(turn)
@@ -44,6 +45,8 @@ class ThoughtLoop:
         events: list[ThoughtEvent] = []
         try:
             self._emit_input_ack(events, factory, turn_input)
+            if self._handle_state_query_feedback_if_needed(events, factory, turn_input):
+                return events
             if self._handle_pending_confirmation_if_needed(events, factory, turn_input):
                 return events
             if self._handle_pending_action_review_if_needed(events, factory, turn_input):
@@ -250,7 +253,17 @@ class ThoughtLoop:
                     )
                     pending = post_action_feedback["pending"]
                     if pending:
+                        self._remember_state_query_pending(turn_input, pending)
                         events.append(factory.emit("state_query.feedback_pending", pending))
+                    post_action_feedback_saved = False
+                    if not pending:
+                        post_action_feedback_saved = self._save_post_action_room_light_learning(
+                            events,
+                            factory,
+                            turn_input,
+                            action,
+                            after_observation,
+                        )
                     events.append(
                         factory.emit(
                             "turn.completed",
@@ -263,6 +276,7 @@ class ThoughtLoop:
                                     "wait_matched"
                                 ],
                                 "post_action_feedback_pending": bool(pending),
+                                "post_action_feedback_saved": post_action_feedback_saved,
                                 "pending_state_query_id": (
                                     pending.get("state_query_id") if pending else ""
                                 ),
@@ -290,6 +304,19 @@ class ThoughtLoop:
 
                 retryable = bool(execute_result.get("retryable", True))
                 if attempt < self.max_execute_attempts and retryable:
+                    self._write_short_memory(
+                        events,
+                        factory,
+                        turn_input,
+                        action=action,
+                        status="execute_retry_scheduled",
+                        retry_scope="execute",
+                        progress={
+                            "execute_attempts": attempt,
+                            "max_execute_attempts": self.max_execute_attempts,
+                        },
+                        review={},
+                    )
                     self._emit_message(
                         events,
                         factory,
@@ -312,6 +339,20 @@ class ThoughtLoop:
                             "last_execute_status": execute_result.get("status"),
                         },
                     )
+                )
+                self._write_short_memory(
+                    events,
+                    factory,
+                    turn_input,
+                    action=action,
+                    status="execute_retry_exhausted",
+                    retry_scope="execute",
+                    progress={
+                        "execute_attempts": attempt,
+                        "max_execute_attempts": self.max_execute_attempts,
+                        "last_execute_status": execute_result.get("status"),
+                    },
+                    review={},
                 )
                 events.append(
                     factory.emit(
@@ -338,6 +379,536 @@ class ThoughtLoop:
 
     def run_dicts(self, turn: TurnInput | Mapping[str, Any]) -> list[dict[str, Any]]:
         return [event.to_dict() for event in self.run(turn)]
+
+    def _handle_state_query_feedback_if_needed(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+    ) -> bool:
+        action_intent = detect_home_action_intent(turn_input.text)
+        has_action = action_intent is not None and self._looks_like_home_action_command(
+            turn_input.text
+        )
+        pending = self.pending_state_queries.get(turn_input.session_id)
+        if pending and pending.get("state_query_id") == "room_light":
+            label = self._room_light_feedback_label(turn_input.text, pending=pending)
+            if label:
+                self.pending_state_queries.pop(turn_input.session_id, None)
+                if self._state_query_pending_is_expired(pending):
+                    events.append(
+                        factory.emit(
+                            "state_query.feedback_expired",
+                            {
+                                "state_query_id": "room_light",
+                                "target": "room_light",
+                                "created_at": pending.get("created_at"),
+                                "ttl_seconds": 120,
+                                "continued_as_action": has_action,
+                            },
+                        )
+                    )
+                    if has_action:
+                        return False
+                    speech = "少し前の状態確認なので、もう一回見てから覚えます。"
+                    self._emit_message(
+                        events,
+                        factory,
+                        speech=speech,
+                        display=speech,
+                        emotion="focused",
+                        motion="think",
+                        priority="normal",
+                    )
+                    events.append(
+                        factory.emit(
+                            "turn.completed",
+                            {
+                                "status": "state_feedback_expired",
+                                "state_query_id": "room_light",
+                            },
+                        )
+                    )
+                    return True
+
+                self._persist_state_query_feedback(
+                    events,
+                    factory,
+                    turn_input,
+                    pending=pending,
+                    user_label=label,
+                )
+                speech = self._state_feedback_reply(label, continue_action=has_action)
+                self._emit_message(
+                    events,
+                    factory,
+                    speech=speech,
+                    display=speech,
+                    emotion="attentive",
+                    motion="small_nod",
+                    priority="normal",
+                )
+                if has_action:
+                    return False
+                events.append(
+                    factory.emit(
+                        "turn.completed",
+                        {
+                            "status": "state_feedback",
+                            "state_query_id": "room_light",
+                            "user_label": label,
+                        },
+                    )
+                )
+                return True
+            if has_action:
+                self.pending_state_queries.pop(turn_input.session_id, None)
+                events.append(
+                    factory.emit(
+                        "state_query.feedback_cleared",
+                        {
+                            "state_query_id": "room_light",
+                            "reason": "new_action_without_feedback",
+                            "action_id": action_intent.action_id,
+                        },
+                    )
+                )
+
+        direct_label = self._direct_room_light_feedback_label(turn_input.text)
+        if not direct_label:
+            return False
+        self._persist_state_query_feedback(
+            events,
+            factory,
+            turn_input,
+            pending={},
+            user_label=direct_label,
+            feedback_reason="user_reported_room_light_state",
+            source_context="state_query",
+        )
+        speech = self._state_feedback_reply(direct_label, continue_action=has_action)
+        self._emit_message(
+            events,
+            factory,
+            speech=speech,
+            display=speech,
+            emotion="attentive",
+            motion="small_nod",
+            priority="normal",
+        )
+        if has_action:
+            return False
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {
+                    "status": "state_feedback",
+                    "state_query_id": "room_light",
+                    "user_label": direct_label,
+                    "direct_feedback": True,
+                },
+            )
+        )
+        return True
+
+    def _persist_state_query_feedback(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        *,
+        pending: dict[str, Any],
+        user_label: str,
+        feedback_reason: str = "",
+        source_context: str = "",
+        current_observation: dict[str, Any] | None = None,
+        emit_observation: bool = True,
+    ) -> dict[str, Any]:
+        observation = current_observation
+        if observation is None:
+            observation = self._call_tool(
+                events,
+                factory,
+                "environment.observe",
+                lambda: self.tools.environment_observe(
+                    turn_input,
+                    reason="state_feedback",
+                ),
+            )
+            emit_observation = True
+        if emit_observation:
+            events.append(
+                factory.emit(
+                    "observation.received",
+                    {
+                        "observation_ref": observation.get("observation_ref"),
+                        "observation_source": observation.get("observation_source"),
+                        "facts": observation.get("facts", {}),
+                        "state_query_id": "room_light",
+                        "after_tool": "state_query.feedback",
+                    },
+                )
+            )
+        if not pending:
+            environment = (
+                observation.get("environment")
+                if isinstance(observation.get("environment"), dict)
+                else {}
+            )
+            pending = self._build_state_query_pending(
+                turn_input,
+                self._room_light_from_observation(observation),
+                environment,
+                feedback_reason=feedback_reason or "user_reported_room_light_state",
+                source_context=source_context or "state_query",
+            )
+        payload = self._build_state_query_feedback_payload(
+            turn_input,
+            pending=pending,
+            user_label=user_label,
+            current_observation=observation,
+            feedback_reason=feedback_reason,
+            source_context=source_context,
+        )
+        events.append(
+            factory.emit(
+                "state_query.feedback_detected",
+                {
+                    "state_query_id": "room_light",
+                    "target": "room_light",
+                    "user_label": user_label,
+                    "source_context": payload.get("source_context"),
+                    "feedback_reason": payload.get("feedback_reason"),
+                    "continued_as_input": self._looks_like_home_action_command(
+                        turn_input.text
+                    )
+                    and detect_home_action_intent(turn_input.text) is not None,
+                },
+            )
+        )
+        result = self._call_tool(
+            events,
+            factory,
+            "state_query.feedback",
+            lambda: self.tools.state_query_feedback(turn_input, payload),
+        )
+        events.append(
+            factory.emit(
+                "state_query.feedback_saved",
+                {
+                    "state_query_id": "room_light",
+                    "target": "room_light",
+                    "status": result.get("status"),
+                    "ok": bool(result.get("ok", result.get("status") in {"accepted", "duplicate"})),
+                    "feedback_id": result.get("feedback_id"),
+                    "duplicate": bool(result.get("duplicate")),
+                    "user_label": user_label,
+                    "source_context": payload.get("source_context"),
+                    "feedback_reason": payload.get("feedback_reason"),
+                    "idempotency_key": payload.get("idempotency_key"),
+                },
+            )
+        )
+        return {"payload": payload, "result": result}
+
+    def _build_state_query_feedback_payload(
+        self,
+        turn_input: TurnInput,
+        *,
+        pending: dict[str, Any],
+        user_label: str,
+        current_observation: dict[str, Any],
+        feedback_reason: str = "",
+        source_context: str = "",
+    ) -> dict[str, Any]:
+        environment = (
+            current_observation.get("environment")
+            if isinstance(current_observation.get("environment"), dict)
+            else {}
+        )
+        current_room_light = self._room_light_from_observation(current_observation)
+        return {
+            "type": "state_query_feedback",
+            "target": "room_light",
+            "state_query_id": "room_light",
+            "authority": "user_feedback",
+            "source": self.source,
+            "workflow_version": "thought-core-state-query-feedback-v1",
+            "feedback_reason": str(
+                feedback_reason
+                or pending.get("feedback_reason")
+                or "user_correction_after_state_query"
+            ),
+            "source_context": str(source_context or pending.get("source_context") or "state_query"),
+            "action_id": str(pending.get("action_id") or ""),
+            "issue_id": str(pending.get("issue_id") or ""),
+            "expected_state": str(pending.get("expected_state") or ""),
+            "snapshot_id": str(pending.get("snapshot_id") or ""),
+            "current_snapshot_id": str(environment.get("snapshot_id") or ""),
+            "predicted_state": str(pending.get("predicted_state") or "unknown"),
+            "predicted_confidence_label": str(
+                pending.get("confidence_label")
+                or pending.get("predicted_confidence_label")
+                or ""
+            ),
+            "user_label": user_label,
+            "user_text": turn_input.text,
+            "idempotency_key": self._state_query_feedback_idempotency_key(
+                turn_input,
+                pending,
+                user_label,
+            ),
+            "pending": {
+                **pending,
+                "current_state_query": {
+                    "state": current_room_light.get("state") if current_room_light else "",
+                    "confidence_label": (
+                        current_room_light.get("confidence_label")
+                        if current_room_light
+                        else ""
+                    ),
+                    "answer_hint": (
+                        current_room_light.get("answer_hint")
+                        if current_room_light
+                        else ""
+                    ),
+                    "authority": (
+                        current_room_light.get("authority")
+                        if current_room_light
+                        else ""
+                    ),
+                },
+            },
+        }
+
+    def _state_query_feedback_idempotency_key(
+        self,
+        turn_input: TurnInput,
+        pending: dict[str, Any],
+        user_label: str,
+    ) -> str:
+        session = self._idempotency_part(turn_input.session_id or "session")
+        snapshot = self._idempotency_part(
+            str(pending.get("snapshot_id") or turn_input.turn_id or "snapshot")
+        )
+        label = self._idempotency_part(user_label)
+        return f"state-query-feedback:{session}:{snapshot}:{label}"[:200]
+
+    def _idempotency_part(self, value: str) -> str:
+        text = value.replace(" ", "_").replace("　", "_").strip()
+        return "".join(ch for ch in text if ch.isalnum() or ch in {"-", "_", "."}) or "na"
+
+    def _remember_state_query_pending(
+        self,
+        turn_input: TurnInput,
+        pending: dict[str, Any],
+    ) -> None:
+        if pending.get("state_query_id") != "room_light":
+            return
+        self.pending_state_queries[turn_input.session_id] = dict(pending)
+
+    def _state_query_pending_is_expired(self, pending: dict[str, Any]) -> bool:
+        created_at = str(pending.get("created_at") or "").strip()
+        if not created_at:
+            return False
+        try:
+            created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        age = (datetime.now(UTC) - created.astimezone(UTC)).total_seconds()
+        return age > 120
+
+    def _room_light_feedback_label(
+        self,
+        text: str,
+        *,
+        pending: dict[str, Any] | None = None,
+    ) -> str:
+        normalized = self._normalize_text(text)
+        explicit = self._explicit_room_light_state_label(normalized)
+        if explicit:
+            return explicit
+        if not pending:
+            return ""
+        predicted = str(pending.get("predicted_state") or "").lower()
+        yes_markers = (
+            "はい",
+            "うん",
+            "そう",
+            "その通り",
+            "合ってる",
+            "あってる",
+            "正しい",
+            "せや",
+            "yes",
+            "ok",
+        )
+        no_markers = (
+            "いいえ",
+            "いや",
+            "違う",
+            "ちがう",
+            "逆",
+            "ちがいます",
+            "違います",
+            "no",
+        )
+        if any(marker in normalized for marker in yes_markers):
+            return predicted if predicted in {"on", "off", "daylight"} else "on"
+        if any(marker in normalized for marker in no_markers):
+            if predicted == "on":
+                return "off"
+            if predicted == "off":
+                return "on"
+            return "unknown"
+        return ""
+
+    def _direct_room_light_feedback_label(self, text: str) -> str:
+        normalized = self._normalize_text(text)
+        label = self._explicit_room_light_state_label(normalized)
+        if not label:
+            return ""
+        if not self._mentions_room_light(normalized):
+            return ""
+        question_markers = ("?", "？", "かな", "教えて", "確認して", "どう")
+        if any(marker in normalized for marker in question_markers):
+            return ""
+        command_markers = (
+            "消して",
+            "消す",
+            "消せ",
+            "消しといて",
+            "消灯して",
+            "オフにして",
+            "切って",
+            "つけて",
+            "点けて",
+            "付けて",
+            "つける",
+            "オンにして",
+            "入れて",
+        )
+        state_cues = (
+            "今",
+            "現在",
+            "実際",
+            "状態",
+            "もう",
+            "まだ",
+            "です",
+            "だよ",
+            "だね",
+            "なって",
+            "いる",
+            "います",
+            "中",
+        )
+        if any(marker in normalized for marker in command_markers) and not any(
+            cue in normalized for cue in state_cues
+        ):
+            return ""
+        return label
+
+    def _explicit_room_light_state_label(self, normalized: str) -> str:
+        if any(marker in normalized for marker in ("日光", "外光", "太陽光", "昼光")):
+            return "daylight"
+        if any(marker in normalized for marker in ("わからない", "分からない", "不明", "不確か")):
+            return "unknown"
+        off_markers = (
+            "ついてない",
+            "点いてない",
+            "付いてない",
+            "消えてる",
+            "消えています",
+            "消えてます",
+            "消灯状態",
+            "消灯中",
+            "消灯してる",
+            "消灯しています",
+            "暗い",
+            "オフです",
+            "offです",
+            "offだ",
+            "切れてる",
+        )
+        if any(marker in normalized for marker in off_markers):
+            return "off"
+        on_markers = (
+            "ついてる",
+            "点いてる",
+            "付いてる",
+            "ついています",
+            "点いてます",
+            "ついてます",
+            "点灯状態",
+            "点灯中",
+            "点灯してる",
+            "点灯しています",
+            "明るい",
+            "オンです",
+            "onです",
+            "onだ",
+        )
+        if any(marker in normalized for marker in on_markers):
+            return "on"
+        return ""
+
+    def _mentions_room_light(self, normalized: str) -> bool:
+        return any(
+            marker in normalized
+            for marker in ("電気", "照明", "ライト", "明かり", "明り", "部屋", "リビング")
+        )
+
+    def _looks_like_home_action_command(self, text: str) -> bool:
+        normalized = self._normalize_text(text)
+        command_markers = (
+            "して",
+            "お願い",
+            "おねがい",
+            "つけて",
+            "点けて",
+            "付けて",
+            "つける",
+            "点ける",
+            "付ける",
+            "オンに",
+            "入れて",
+            "入れる",
+            "消して",
+            "消す",
+            "消せ",
+            "オフに",
+            "切って",
+            "切る",
+            "開けて",
+            "開ける",
+            "閉めて",
+            "閉める",
+            "止めて",
+            "止める",
+            "戻して",
+            "戻す",
+            "動かして",
+            "動かす",
+            "一時停止",
+            "起動",
+        )
+        return any(marker in normalized for marker in command_markers)
+
+    def _normalize_text(self, text: str) -> str:
+        return text.replace(" ", "").replace("　", "").lower()
+
+    def _state_feedback_reply(self, user_label: str, *, continue_action: bool) -> str:
+        label_text = {
+            "on": "ついてる",
+            "off": "消えてる",
+            "daylight": "日光の影響がある",
+            "unknown": "判断しづらい",
+        }.get(user_label, user_label)
+        suffix = "そのうえで操作も続けるね。" if continue_action else "学習用の材料として残したよ。"
+        return f"なるほど、実際は{label_text}んだね。{suffix}"
 
     def _handle_pending_confirmation_if_needed(
         self,
@@ -500,7 +1071,17 @@ class ThoughtLoop:
             )
             pending_feedback = post_action_feedback["pending"]
             if pending_feedback:
+                self._remember_state_query_pending(turn_input, pending_feedback)
                 events.append(factory.emit("state_query.feedback_pending", pending_feedback))
+            post_action_feedback_saved = False
+            if not pending_feedback:
+                post_action_feedback_saved = self._save_post_action_room_light_learning(
+                    events,
+                    factory,
+                    turn_input,
+                    action,
+                    after_observation,
+                )
             events.append(
                 factory.emit(
                     "turn.completed",
@@ -512,6 +1093,7 @@ class ThoughtLoop:
                         "confirmed": True,
                         "room_light_wait_matched": post_action_feedback["wait_matched"],
                         "post_action_feedback_pending": bool(pending_feedback),
+                        "post_action_feedback_saved": post_action_feedback_saved,
                         "pending_state_query_id": (
                             pending_feedback.get("state_query_id")
                             if pending_feedback
@@ -705,6 +1287,20 @@ class ThoughtLoop:
                 motion="think",
                 priority="normal",
             )
+            self._write_short_memory(
+                events,
+                factory,
+                turn_input,
+                action=action,
+                status="review_observation_pending",
+                retry_scope="review",
+                policy=policy,
+                progress={
+                    "observations_done": observations_done,
+                    "execute_attempts": execute_attempts,
+                },
+                review=review,
+            )
             events.append(
                 factory.emit(
                     "turn.completed",
@@ -751,6 +1347,20 @@ class ThoughtLoop:
                 },
             )
         )
+        self._write_short_memory(
+            events,
+            factory,
+            turn_input,
+            action=action,
+            status="review_retry_exhausted",
+            retry_scope="review",
+            policy=policy,
+            progress={
+                "observations_done": observations_done,
+                "execute_attempts": execute_attempts,
+            },
+            review=review,
+        )
         self._emit_message(
             events,
             factory,
@@ -786,6 +1396,20 @@ class ThoughtLoop:
         last_review: dict[str, Any],
     ) -> bool:
         execute_attempts = int(pending.get("execute_attempts") or 1) + 1
+        self._write_short_memory(
+            events,
+            factory,
+            turn_input,
+            action=action,
+            status="review_retry_scheduled",
+            retry_scope="review",
+            policy=policy,
+            progress={
+                "execute_attempts": execute_attempts,
+                "previous_review_status": last_review.get("status"),
+            },
+            review=last_review,
+        )
         events.append(
             factory.emit(
                 "action.retrying",
@@ -892,6 +1516,21 @@ class ThoughtLoop:
         if not self._execution_was_accepted(execute_result):
             return False
         policy = self._action_review_policy(action)
+        self._write_short_memory(
+            events,
+            factory,
+            turn_input,
+            action=action,
+            status="review_budget_opened",
+            retry_scope="review",
+            policy=policy,
+            progress={
+                "observations_done": observations_done,
+                "execute_attempts": execute_attempts,
+                "confirmed": confirmed,
+            },
+            review=review,
+        )
         self.pending_action_reviews[turn_input.session_id] = {
             "action": dict(action),
             "execute_result": dict(execute_result),
@@ -1201,6 +1840,61 @@ class ThoughtLoop:
         except (TypeError, ValueError):
             return default
 
+    def _write_short_memory(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        *,
+        action: dict[str, Any],
+        status: str,
+        retry_scope: str,
+        progress: dict[str, Any],
+        review: dict[str, Any],
+        policy: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
+        retry_budget = {
+            "scope": retry_scope,
+            "status": status,
+            "max_execute_attempts": self.max_execute_attempts,
+            "observation_attempts": int((policy or {}).get("observation_attempts") or 0),
+            "auto_retries": int((policy or {}).get("auto_retries") or 0),
+            "settle_ms": int((policy or {}).get("settle_ms") or 0),
+            "progress": dict(progress),
+        }
+        item = {
+            "type": "short_memory",
+            "kind": "retry_budget",
+            "turn_id": turn_input.turn_id,
+            "session_id": turn_input.session_id,
+            "action_id": str(action.get("action_id") or ""),
+            "target": str(action.get("target") or ""),
+            "expected_state": str(action.get("expected_state") or ""),
+            "retry_budget": retry_budget,
+            "last_review": dict(review),
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        result = self._call_tool(
+            events,
+            factory,
+            "short_memory.write",
+            lambda: self.tools.short_memory_write(turn_input, item),
+        )
+        events.append(
+            factory.emit(
+                "short_memory.updated",
+                {
+                    "kind": item["kind"],
+                    "status": status,
+                    "action_id": item["action_id"],
+                    "retry_budget": retry_budget,
+                    "write_status": result.get("status"),
+                    "written": bool(result.get("written", result.get("ok", False))),
+                },
+            )
+        )
+        return result
+
     def _call_tool(
         self,
         events: list[ThoughtEvent],
@@ -1270,6 +1964,22 @@ class ThoughtLoop:
             return "うん、確認中の操作があるよ。"
         if self.pending_action_reviews.get(turn_input.session_id):
             return "うん、もう一度見てみるね。"
+        pending_state_query = self.pending_state_queries.get(turn_input.session_id)
+        if pending_state_query and self._room_light_feedback_label(
+            turn_input.text,
+            pending=pending_state_query,
+        ):
+            if self._looks_like_home_action_command(
+                turn_input.text
+            ) and detect_home_action_intent(turn_input.text) is not None:
+                return "うん、状態も受け取って操作も確認するね。"
+            return "うん、その状態を覚えるね。"
+        if self._direct_room_light_feedback_label(turn_input.text):
+            if self._looks_like_home_action_command(
+                turn_input.text
+            ) and detect_home_action_intent(turn_input.text) is not None:
+                return "うん、状態も受け取って操作も確認するね。"
+            return "うん、その状態を覚えるね。"
         if detect_room_light_state_query(turn_input.text):
             return "うん、状態を見てみるね。"
         if detect_home_action_intent(turn_input.text) is not None:
@@ -1363,6 +2073,20 @@ class ThoughtLoop:
                 },
             )
         )
+        environment = (
+            observation.get("environment")
+            if isinstance(observation.get("environment"), dict)
+            else {}
+        )
+        pending = self._build_state_query_pending(
+            turn_input,
+            room_light,
+            environment,
+            feedback_reason="user_correction_after_state_query",
+            source_context="state_query",
+        )
+        self._remember_state_query_pending(turn_input, pending)
+        events.append(factory.emit("state_query.feedback_pending", pending))
         self._emit_message(
             events,
             factory,
@@ -1385,6 +2109,12 @@ class ThoughtLoop:
                     "authority": room_light.get("authority") if room_light else "",
                     "available": room_light.get("available") if room_light else False,
                     "stale": room_light.get("stale") if room_light else None,
+                    "pending_state_query_id": pending.get("state_query_id"),
+                    "pending_state_query_json": json.dumps(
+                        pending,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                 },
             )
         )
@@ -1476,6 +2206,59 @@ class ThoughtLoop:
         )
         return any(marker in normalized for marker in cancel_markers)
 
+    def _save_post_action_room_light_learning(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        action: dict[str, Any],
+        observation: dict[str, Any],
+    ) -> bool:
+        action_id = str(action.get("action_id") or "")
+        expected_state = str(action.get("expected_state") or "")
+        if action_id not in {"light_on", "light_off"} or expected_state not in {"on", "off"}:
+            return False
+        environment = (
+            observation.get("environment")
+            if isinstance(observation.get("environment"), dict)
+            else {}
+        )
+        room_light = self._room_light_from_observation(observation)
+        if not room_light:
+            return False
+        if room_light.get("available") is False or self._as_bool(room_light.get("stale")):
+            return False
+        state = str(room_light.get("state") or "unknown").lower()
+        confidence = str(room_light.get("confidence_label") or "").lower()
+        if state != expected_state or confidence in {"", "low", "very_low", "unknown"}:
+            return False
+        pending = self._build_state_query_pending(
+            turn_input,
+            room_light,
+            environment,
+            feedback_reason="action_expected_state_after_light_action",
+            source_context="post_light_action",
+            action_id=action_id,
+            expected_state=expected_state,
+            workflow_version="thought-core-post-action-room-light-feedback-v1",
+        )
+        persisted = self._persist_state_query_feedback(
+            events,
+            factory,
+            turn_input,
+            pending=pending,
+            user_label=expected_state,
+            feedback_reason="action_expected_state_after_light_action",
+            source_context="post_light_action",
+            current_observation=observation,
+            emit_observation=False,
+        )
+        result = persisted.get("result") if isinstance(persisted, dict) else {}
+        return bool(
+            isinstance(result, dict)
+            and result.get("status") in {"accepted", "accepted_with_warning", "duplicate"}
+        )
+
     def _post_action_room_light_feedback(
         self,
         turn_input: TurnInput,
@@ -1545,19 +2328,45 @@ class ThoughtLoop:
         room_light: dict[str, Any],
         environment: dict[str, Any],
     ) -> dict[str, Any]:
+        pending = self._build_state_query_pending(
+            turn_input,
+            room_light,
+            environment,
+            feedback_reason="user_correction_after_light_action",
+            source_context="post_light_action",
+            action_id=action_id,
+            expected_state=expected_state,
+            workflow_version="thought-core-post-action-room-light-feedback-v1",
+        )
+        wait_result = environment.get("wait_result")
+        pending["wait_result"] = wait_result if isinstance(wait_result, dict) else {}
+        return pending
+
+    def _build_state_query_pending(
+        self,
+        turn_input: TurnInput,
+        room_light: dict[str, Any],
+        environment: dict[str, Any],
+        *,
+        feedback_reason: str,
+        source_context: str,
+        action_id: str = "",
+        expected_state: str = "",
+        workflow_version: str = "thought-core-state-query-feedback-v1",
+    ) -> dict[str, Any]:
         evidence = (
             room_light.get("evidence")
             if isinstance(room_light.get("evidence"), dict)
             else {}
         )
         wait_result = environment.get("wait_result")
-        return {
+        pending = {
             "type": "state_query_pending",
             "state_query_id": "room_light",
             "target": "room_light",
-            "feedback_reason": "user_correction_after_light_action",
-            "source_context": "post_light_action",
-            "workflow_version": "thought-core-post-action-room-light-feedback-v1",
+            "feedback_reason": feedback_reason,
+            "source_context": source_context,
+            "workflow_version": workflow_version,
             "turn_id": turn_input.turn_id,
             "session_id": turn_input.session_id,
             "action_id": action_id,
@@ -1584,6 +2393,7 @@ class ThoughtLoop:
             },
             "created_at": datetime.now(UTC).isoformat(),
         }
+        return pending
 
     def _room_light_from_observation(self, observation: dict[str, Any]) -> dict[str, Any]:
         environment = observation.get("environment")

@@ -23,7 +23,17 @@ class ThoughtTools(Protocol):
     def home_execute(self, turn: TurnInput, action: dict[str, Any]) -> dict[str, Any]:
         ...
 
+    def state_query_feedback(
+        self,
+        turn: TurnInput,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        ...
+
     def memory_retrieve(self, turn: TurnInput) -> dict[str, Any]:
+        ...
+
+    def short_memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
         ...
 
     def memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
@@ -62,6 +72,9 @@ class MockThoughtTools:
     execute_attempts_by_turn: dict[str, int] = field(default_factory=dict)
     light_state_by_turn: dict[str, bool] = field(default_factory=dict)
     appliance_states: dict[str, str] = field(default_factory=dict)
+    state_query_feedback_calls: list[dict[str, Any]] = field(default_factory=list)
+    short_memory_write_calls: list[dict[str, Any]] = field(default_factory=list)
+    memory_write_calls: list[dict[str, Any]] = field(default_factory=list)
 
     def environment_observe(self, turn: TurnInput, *, reason: str) -> dict[str, Any]:
         light_on = self._light_on_for_turn(turn)
@@ -169,8 +182,28 @@ class MockThoughtTools:
     def memory_retrieve(self, turn: TurnInput) -> dict[str, Any]:
         return {"status": "ok", "items": []}
 
-    def memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
+    def state_query_feedback(
+        self,
+        turn: TurnInput,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.state_query_feedback_calls.append(dict(payload))
+        return {
+            "status": "accepted",
+            "ok": True,
+            "feedback_id": f"sqf_mock_{len(self.state_query_feedback_calls):04d}",
+            "duplicate": False,
+            "target": payload.get("target") or payload.get("state_query_id"),
+            "user_label": payload.get("user_label"),
+        }
+
+    def short_memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
+        self.short_memory_write_calls.append(dict(item))
         return {"status": "ok", "written": True}
+
+    def memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
+        self.memory_write_calls.append(dict(item))
+        return self.short_memory_write(turn, item)
 
     def web_search(self, turn: TurnInput, query: str) -> dict[str, Any]:
         return {"status": "ok", "query": query, "results": []}
@@ -276,6 +309,7 @@ class HomeControlToolConfig:
     api_token: str
     environment_state_url: str = ""
     environment_api_token: str = ""
+    environment_feedback_url: str = ""
     timeout_s: float = 3.0
     room_light_wait_timeout_ms: int = 1500
 
@@ -291,6 +325,14 @@ class HomeControlToolConfig:
             "ENVIRONMENT_STATE_URL",
             default="http://127.0.0.1:8790/environment/current",
         )
+        environment_feedback_url = _env_first("ENVIRONMENT_FEEDBACK_URL")
+        if not environment_feedback_url and environment_state_url:
+            environment_feedback_url = environment_state_url.replace(
+                "/environment/current",
+                "/feedback/state-query",
+            )
+        if not environment_feedback_url:
+            environment_feedback_url = "http://127.0.0.1:8790/feedback/state-query"
         environment_api_token = _env_first("ENVIRONMENT_API_TOKEN") or api_token
         timeout_s = _optional_float(_env_first("THOUGHT_CORE_HOME_HTTP_TIMEOUT_S"), 3.0)
         room_light_wait_timeout_ms = _optional_int(
@@ -302,6 +344,7 @@ class HomeControlToolConfig:
             api_token=api_token,
             environment_state_url=environment_state_url,
             environment_api_token=environment_api_token,
+            environment_feedback_url=environment_feedback_url,
             timeout_s=timeout_s,
             room_light_wait_timeout_ms=room_light_wait_timeout_ms,
         )
@@ -483,11 +526,52 @@ class HomeControlHttpTools:
             "expected_effect": payload.get("expected_effect"),
         }
 
+    def state_query_feedback(
+        self,
+        turn: TurnInput,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self.config.environment_feedback_url or not self.config.environment_api_token:
+            return {
+                "status": "skipped",
+                "ok": False,
+                "error": "environment_feedback_unconfigured",
+            }
+        try:
+            response_payload = self._json_request(
+                "POST",
+                self.config.environment_feedback_url,
+                token=self.config.environment_api_token,
+                body=payload,
+            )
+        except HomeControlToolError as exc:
+            return {
+                "status": "failed",
+                "ok": False,
+                "error": exc.code,
+                "detail": exc.safe_detail,
+            }
+        status = str(response_payload.get("status") or "accepted")
+        return {
+            "status": status,
+            "ok": status in {"accepted", "accepted_with_warning", "duplicate"},
+            "feedback_id": response_payload.get("feedback_id"),
+            "duplicate": status == "duplicate",
+            "warnings": response_payload.get("warnings", []),
+            "target": response_payload.get("target") or payload.get("target"),
+            "user_label": response_payload.get("user_label") or payload.get("user_label"),
+            "response": response_payload,
+        }
+
     def memory_retrieve(self, turn: TurnInput) -> dict[str, Any]:
         return {"status": "ok", "items": []}
 
+    def short_memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
+        return {"status": "ok", "written": True, "scope": "short_memory"}
+
     def memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
-        return {"status": "ok", "written": True}
+        return self.short_memory_write(turn, item)
+
 
     def web_search(self, turn: TurnInput, query: str) -> dict[str, Any]:
         return {"status": "ok", "query": query, "results": []}
