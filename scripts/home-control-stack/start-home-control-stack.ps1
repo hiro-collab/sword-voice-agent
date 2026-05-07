@@ -13,6 +13,7 @@ param(
     [string]$HomeControlConfigPath = "",
     [int]$EnvironmentStatePort = 8790,
     [int]$MediapipePort = 8765,
+    [int]$MediapipeBrowserMonitorPort = 8770,
     [int]$VisionSnapshotProcessorPort = 8776,
     [int]$AituberPort = 3000,
     [string]$AituberHost = "127.0.0.1",
@@ -996,15 +997,13 @@ function Write-StackEndpointGuide {
             -Description "HUD/Cube 背景向けのローカル限定・表示用状態 API。"
     }
     if (-not $SkipMediapipe -and $mediapipeMediaMtxStackLaunched) {
-        $browserMonitorPath = Join-Path $MediapipeRoot "apps\browser_camera_hub_viewer.html"
-        $browserMonitorFile = $browserMonitorPath -replace "\\", "/"
         $encodedMediaUrl = "http%3A%2F%2F127.0.0.1%3A8889%2Fcam0%3Fcontrols%3Dfalse%26muted%3Dtrue%26autoplay%3Dtrue"
         $encodedWsUrl = "ws%3A%2F%2F127.0.0.1%3A$MediapipePort"
-        $browserMonitorUrl = "file:///{0}?mediaUrl={1}{2}wsUrl={3}" -f $browserMonitorFile, $encodedMediaUrl, ([char]38), $encodedWsUrl
+        $browserMonitorUrl = "http://127.0.0.1:$MediapipeBrowserMonitorPort/browser_camera_hub_viewer.html?mediaUrl={0}{1}wsUrl={2}{1}target=sword_sign" -f $encodedMediaUrl, ([char]38), $encodedWsUrl
         Write-GuideItem `
             -Name "MediaPipe Browser Monitor" `
             -Target $browserMonitorUrl `
-            -Description "MediaMTX の映像と Camera Hub の topic を同時に見るブラウザ GUI。必要なときだけ手動で開く。"
+            -Description "MediaMTX の映像と Camera Hub の topic を同時に見る HTTP Browser Monitor。必要なときだけ手動で開く。"
         Write-GuideItem `
             -Name "MediaMTX video" `
             -Target "http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true" `
@@ -1482,7 +1481,9 @@ if (-not $SkipMediapipe) {
             "--camera-name",
             $MediapipeCameraName,
             "--hub-port",
-            [string]$MediapipePort
+            [string]$MediapipePort,
+            "--viewer-port",
+            [string]$MediapipeBrowserMonitorPort
         )
         if ($StopExisting) {
             $cameraHubStackArgs += "--force-stop-existing"

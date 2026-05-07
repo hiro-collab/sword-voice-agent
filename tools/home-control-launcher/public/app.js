@@ -2,7 +2,11 @@ const state = {
   profiles: [],
   selectedProfileId: 'full-stack',
   options: {},
-  busy: false
+  busy: false,
+  operation: 'idle',
+  operationDetail: 'Waiting for an action.',
+  remoteBusy: false,
+  remoteOperation: null
 }
 
 const switchFields = [
@@ -39,6 +43,39 @@ const textFields = [
   'HomeControlConfigPath'
 ]
 
+const serviceLabels = {
+  home_assistant_bridge: 'Home Assistant Bridge',
+  environment_state_server: 'Environment State',
+  mediapipe: 'MediaPipe',
+  vision_snapshot_processor: 'Vision Snapshot',
+  aituber_kit: 'AITuber Kit',
+  touchdesigner_control_gui: 'TouchDesigner GUI',
+  dify: 'Dify',
+  voicevox: 'VOICEVOX'
+}
+
+const skipFieldsByService = {
+  home_assistant_bridge: ['SkipHomeAssistantBridge'],
+  environment_state_server: ['SkipEnvironmentState'],
+  mediapipe: ['SkipMediapipe'],
+  vision_snapshot_processor: ['SkipVisionSnapshotProcessor', 'SkipMediapipe'],
+  aituber_kit: ['SkipAituber'],
+  touchdesigner_control_gui: ['SkipTouchDesignerGui'],
+  dify: ['SkipDify'],
+  voicevox: ['SkipVoicevoxCheck', 'SkipAituber']
+}
+
+const operationLabels = {
+  idle: 'Launcher standby',
+  starting: 'Starting stack',
+  started: 'Stack online',
+  stopping: 'Stopping stack',
+  stopped: 'Stack stopped',
+  saving: 'Saving config',
+  blocked: 'Action blocked',
+  error: 'Action failed'
+}
+
 const $ = (id) => document.getElementById(id)
 
 const api = async (path, options = {}) => {
@@ -51,17 +88,109 @@ const api = async (path, options = {}) => {
   })
   const payload = await response.json()
   if (!response.ok || payload.ok === false) {
-    throw new Error(payload.error || `HTTP ${response.status}`)
+    const error = new Error(payload.message || payload.error || `HTTP ${response.status}`)
+    error.status = response.status
+    error.payload = payload
+    throw error
   }
   return payload
 }
 
 const setBusy = (busy, label = '') => {
   state.busy = busy
-  for (const id of ['start-button', 'stop-button', 'refresh-button']) {
-    $(id).disabled = busy
+  document.body.dataset.busy = busy ? 'true' : 'false'
+  $('save-state').textContent = busy
+    ? label || 'Working'
+    : state.remoteBusy
+      ? 'Locked'
+      : 'Ready'
+  renderActionButtons()
+}
+
+const renderActionButtons = () => {
+  const disabled = state.busy || state.remoteBusy
+  for (const id of ['start-button', 'stop-button', 'refresh-button', 'save-config']) {
+    $(id).disabled = disabled
   }
-  $('save-state').textContent = busy ? label || 'Working' : 'Ready'
+  $('start-button').textContent =
+    state.busy && state.operation === 'starting' ? 'Starting...' : 'Start Stack'
+  $('stop-button').textContent =
+    state.busy && state.operation === 'stopping' ? 'Stopping...' : 'Stop Stack'
+  $('refresh-button').textContent = 'Refresh'
+  $('save-config').textContent =
+    state.busy && state.operation === 'saving' ? 'Saving...' : 'Save'
+}
+
+const setOperation = (operation, detail = '') => {
+  state.operation = operation
+  state.operationDetail = detail || operationLabels[operation] || ''
+  document.body.dataset.operation = operation
+  renderOperation()
+  renderOperationReadiness()
+  renderActionButtons()
+}
+
+const renderOperation = () => {
+  const banner = $('operation-banner')
+  const operation = state.operation || 'idle'
+  banner.hidden = operation === 'idle'
+  banner.className = `operation-banner ${operation}`
+  $('operation-title').textContent = operationLabels[operation] || operationLabels.idle
+  $('operation-detail').textContent = state.operationDetail || 'Waiting for an action.'
+}
+
+const renderOperationReadiness = () => {
+  const readinessStates = {
+    starting: ['Starting', 'warn'],
+    stopping: ['Stopping', 'warn'],
+    stopped: ['Stopped', 'warn'],
+    blocked: ['Locked', 'warn'],
+    error: ['Action failed', 'down']
+  }
+  const readiness = readinessStates[state.operation]
+  if (!readiness) {
+    return
+  }
+  const readinessCard = $('readiness-card')
+  readinessCard.classList.remove('ready', 'warn', 'down')
+  readinessCard.classList.add(readiness[1])
+  $('readiness-label').textContent = readiness[0]
+  $('readiness-detail').textContent = state.operationDetail
+}
+
+const operationUiType = (operationType) => {
+  if (operationType === 'start') {
+    return 'starting'
+  }
+  if (operationType === 'stop') {
+    return 'stopping'
+  }
+  if (operationType === 'save') {
+    return 'saving'
+  }
+  return 'blocked'
+}
+
+const applyServerOperation = (operation) => {
+  const wasRemoteBusy = state.remoteBusy
+  const remoteBusy = Boolean(operation && operation.busy)
+  state.remoteBusy = remoteBusy && !state.busy
+  state.remoteOperation = remoteBusy ? operation : null
+
+  if (state.remoteBusy) {
+    const uiOperation = operationUiType(operation.type)
+    setOperation(
+      uiOperation,
+      `Another ${operation.type} operation is running. Started ${formatTimestamp(operation.startedAt)}.`
+    )
+    $('save-state').textContent = 'Locked'
+    return
+  }
+
+  if (wasRemoteBusy && !state.busy && ['starting', 'stopping', 'saving', 'blocked'].includes(state.operation)) {
+    setOperation('idle')
+  }
+  renderActionButtons()
 }
 
 const profileOptions = () => {
@@ -84,6 +213,7 @@ const applyProfileDefaults = async () => {
   state.options = preview.options
   $('command-preview').textContent = preview.commandLine
   renderControls()
+  renderSystemSummary()
 }
 
 const setOption = (key, value) => {
@@ -109,6 +239,10 @@ const renderControls = () => {
   profileSelect.value = state.selectedProfileId
   const profile = state.profiles.find((item) => item.id === state.selectedProfileId)
   $('profile-description').textContent = profile ? profile.description : ''
+  $('active-profile-name').textContent = profile ? profile.name : state.selectedProfileId
+  $('active-profile-detail').textContent = state.options.MediapipeMode
+    ? `MediaPipe: ${state.options.MediapipeMode}`
+    : 'Configuration pending'
 
   for (const field of portFields) {
     const input = $(field)
@@ -159,15 +293,137 @@ const escapeHtml = (value) =>
 const stateClass = (serviceState) =>
   `state-${String(serviceState || 'down').toLowerCase().replace(/_/g, '-')}`
 
+const serviceDisplayName = (name) => serviceLabels[name] || labelFor(name)
+
+const serviceIsIncluded = (name) => {
+  const skipFields = skipFieldsByService[name] || []
+  return !skipFields.some((field) => state.options[field])
+}
+
+const serviceStateGroup = (serviceState) => {
+  const value = String(serviceState || 'DOWN').toUpperCase()
+  if (value === 'OK' || value === 'OK_EXTERNAL') {
+    return 'ok'
+  }
+  if (value === 'DEGRADED' || value === 'STARTING') {
+    return 'warn'
+  }
+  return 'down'
+}
+
+const formatTimestamp = (value) => {
+  if (!value) {
+    return 'Awaiting status'
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).format(date)
+}
+
+const summarizeServices = (services = {}) => {
+  const entries = Object.entries(services).filter(([name]) => serviceIsIncluded(name))
+  const summary = {
+    total: entries.length,
+    online: 0,
+    warn: 0,
+    down: 0
+  }
+  for (const [, service] of entries) {
+    const group = serviceStateGroup(service.state)
+    if (group === 'ok') {
+      summary.online += 1
+    } else if (group === 'warn') {
+      summary.warn += 1
+    } else {
+      summary.down += 1
+    }
+  }
+  return summary
+}
+
+const renderSystemSummary = (services = null, timestamp = '') => {
+  const profile = state.profiles.find((item) => item.id === state.selectedProfileId)
+  $('active-profile-name').textContent = profile ? profile.name : state.selectedProfileId
+  $('active-profile-detail').textContent = state.options.MediapipeMode
+    ? `MediaPipe: ${state.options.MediapipeMode}`
+    : 'Configuration pending'
+
+  if (!services) {
+    return
+  }
+
+  const summary = summarizeServices(services)
+  if (state.operation === 'starting') {
+    const detail =
+      summary.total > 0
+        ? `${summary.online}/${summary.total} expected services online. Watching startup progress.`
+        : 'Start command accepted. Waiting for service status.'
+    if (summary.total > 0 && summary.online === summary.total) {
+      setOperation('started', `All expected services are online. Updated ${formatTimestamp(timestamp)}.`)
+    } else {
+      setOperation('starting', detail)
+    }
+  }
+
+  const attention = summary.warn + summary.down
+  const readinessCard = $('readiness-card')
+  readinessCard.classList.remove('ready', 'warn', 'down')
+
+  let readinessLabel = 'Ready'
+  let readinessClass = 'ready'
+  if (state.operation === 'starting') {
+    readinessLabel = 'Starting'
+    readinessClass = 'warn'
+  } else if (state.operation === 'stopping') {
+    readinessLabel = 'Stopping'
+    readinessClass = 'warn'
+  } else if (state.operation === 'stopped') {
+    readinessLabel = 'Stopped'
+    readinessClass = 'warn'
+  } else if (summary.total === 0) {
+    readinessLabel = 'Manual'
+    readinessClass = 'warn'
+  } else if (summary.down > 0) {
+    readinessLabel = 'Check stack'
+    readinessClass = 'down'
+  } else if (summary.warn > 0) {
+    readinessLabel = 'Warming up'
+    readinessClass = 'warn'
+  }
+  readinessCard.classList.add(readinessClass)
+  $('readiness-label').textContent = readinessLabel
+  $('readiness-detail').textContent =
+    state.operation === 'starting' ||
+    state.operation === 'stopping' ||
+    state.operation === 'stopped'
+      ? state.operationDetail
+      : `${summary.online}/${summary.total} expected services online`
+  $('online-count').textContent = `${summary.online}/${summary.total}`
+  $('online-detail').textContent = `Updated ${formatTimestamp(timestamp)}`
+  $('attention-count').textContent = String(attention)
+  $('attention-detail').textContent =
+    attention === 0 ? 'All expected services nominal' : `${summary.warn} warming, ${summary.down} down`
+}
+
 const renderServices = (services) => {
   const names = Object.keys(services || {})
   $('service-list').innerHTML = names
     .map((name) => {
       const service = services[name]
+      const included = serviceIsIncluded(name)
       return `
-        <article class="service-row">
+        <article class="service-row ${included ? '' : 'service-skipped'}" data-state-group="${serviceStateGroup(service.state)}">
           <header>
-            <span class="service-name">${escapeHtml(name)}</span>
+            <span class="service-title">
+              <span class="service-name">${escapeHtml(serviceDisplayName(name))}</span>
+              <span class="service-key">${escapeHtml(name)}${included ? '' : ' / profile off'}</span>
+            </span>
             <span class="state-pill ${stateClass(service.state)}">${escapeHtml(service.state)}</span>
           </header>
           <div class="service-meta">
@@ -194,12 +450,16 @@ const renderEndpoints = (endpoints) => {
       const links = items
         .map((endpoint) => {
           const isUrl = /^https?:|^file:/.test(endpoint.url)
-          const attrs = isUrl
+          const canOpen = isUrl && endpoint.enabled
+          const attrs = canOpen
             ? `href="${escapeHtml(endpoint.url)}" target="_blank" rel="noreferrer"`
-            : 'href="#"'
+            : 'href="#" aria-disabled="true" tabindex="-1"'
+          const status = endpoint.enabled ? (canOpen ? 'open' : 'reference') : 'skipped'
+          const className = endpoint.enabled ? (canOpen ? '' : 'reference-only') : 'disabled'
           return `
-            <a class="endpoint-link ${endpoint.enabled ? '' : 'disabled'}" ${attrs}>
+            <a class="endpoint-link ${className}" ${attrs}>
               <strong>${escapeHtml(endpoint.name)}</strong>
+              <em class="endpoint-status">${status}</em>
               <span>${escapeHtml(endpoint.url)}</span>
             </a>
           `
@@ -241,6 +501,8 @@ const refreshState = async () => {
   $('command-preview').textContent = payload.preview?.commandLine || ''
   $('log-output').textContent = payload.logTail || 'No launcher log yet.'
   renderControls()
+  applyServerOperation(payload.operation || payload.status?.operation)
+  renderSystemSummary(payload.status?.services || {}, payload.status?.timestamp)
   renderServices(payload.status?.services || {})
   renderEndpoints(payload.endpoints || [])
 }
@@ -248,6 +510,8 @@ const refreshState = async () => {
 const refreshStatusOnly = async () => {
   const payload = await api('/api/status')
   $('status-time').textContent = payload.timestamp || 'Unknown'
+  applyServerOperation(payload.operation)
+  renderSystemSummary(payload.services || {}, payload.timestamp)
   renderServices(payload.services || {})
   const logs = await api('/api/logs')
   $('log-output').textContent = logs.logTail || 'No launcher log yet.'
@@ -259,6 +523,7 @@ const refreshLogsOnly = async () => {
 }
 
 const startStack = async () => {
+  setOperation('starting', 'Start command is being sent. Waiting for the supervisor to spawn.')
   setBusy(true, 'Starting')
   try {
     await api('/api/start', {
@@ -268,6 +533,7 @@ const startStack = async () => {
         options: currentOptions()
       })
     })
+    setOperation('starting', 'Start command accepted. Watching services come online.')
     await refreshState()
   } finally {
     setBusy(false)
@@ -275,12 +541,14 @@ const startStack = async () => {
 }
 
 const stopStack = async () => {
+  setOperation('stopping', 'Stop command is running. Waiting for the shutdown script.')
   setBusy(true, 'Stopping')
   try {
     await api('/api/stop', {
       method: 'POST',
       body: JSON.stringify({ stopDify: false })
     })
+    setOperation('stopped', 'Stop command completed. Service cards are refreshed below.')
     await refreshState()
   } finally {
     setBusy(false)
@@ -288,6 +556,7 @@ const stopStack = async () => {
 }
 
 const saveConfig = async () => {
+  setOperation('saving', 'Writing launcher configuration.')
   setBusy(true, 'Saving')
   try {
     await api('/api/save-config', {
@@ -303,6 +572,7 @@ const saveConfig = async () => {
     }, 1200)
   } finally {
     setBusy(false)
+    setOperation('idle')
   }
 }
 
@@ -348,6 +618,16 @@ const bindControls = () => {
 
 const showError = (error) => {
   setBusy(false)
+  if (error.payload?.error === 'operation_in_progress') {
+    const operation = error.payload.operation
+    state.remoteBusy = Boolean(operation && operation.busy)
+    state.remoteOperation = state.remoteBusy ? operation : null
+    setOperation('blocked', error.payload.message || 'Another operation is already running.')
+    $('save-state').textContent = state.remoteBusy ? 'Locked' : 'Ready'
+    $('log-output').textContent = `${error.message}\n\n${$('log-output').textContent}`
+    return
+  }
+  setOperation('error', error.message || 'Check the launcher log for details.')
   $('save-state').textContent = 'Error'
   $('log-output').textContent = `${error.message}\n\n${$('log-output').textContent}`
 }
@@ -355,6 +635,8 @@ const showError = (error) => {
 bindControls()
 refreshState()
   .then(() => {
-    window.setInterval(() => refreshLogsOnly().catch(() => {}), 5000)
+    renderOperation()
+    renderActionButtons()
+    window.setInterval(() => refreshStatusOnly().catch(() => {}), 5000)
   })
   .catch(showError)

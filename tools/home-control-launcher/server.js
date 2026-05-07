@@ -5,7 +5,6 @@ const http = require('http')
 const https = require('https')
 const net = require('net')
 const path = require('path')
-const { pathToFileURL } = require('url')
 
 const args = process.argv.slice(2)
 
@@ -77,6 +76,7 @@ const DEFAULT_OPTIONS = {
   HomeAssistantBridgePort: 8787,
   EnvironmentStatePort: 8790,
   MediapipePort: 8765,
+  MediapipeBrowserMonitorPort: 8770,
   VisionSnapshotProcessorPort: 8776,
   AituberHost: '127.0.0.1',
   AituberPort: 3000,
@@ -108,6 +108,7 @@ const NUMBER_FIELDS = new Set([
   'HomeAssistantBridgePort',
   'EnvironmentStatePort',
   'MediapipePort',
+  'MediapipeBrowserMonitorPort',
   'VisionSnapshotProcessorPort',
   'AituberPort',
   'TouchDesignerGuiPort',
@@ -411,6 +412,12 @@ const buildStackArgs = (options) => {
   addSupportedParam(START_SCRIPT, stackArgs, 'HomeAssistantBridgePort', options.HomeAssistantBridgePort)
   addSupportedParam(START_SCRIPT, stackArgs, 'EnvironmentStatePort', options.EnvironmentStatePort)
   addSupportedParam(START_SCRIPT, stackArgs, 'MediapipePort', options.MediapipePort)
+  addSupportedParam(
+    START_SCRIPT,
+    stackArgs,
+    'MediapipeBrowserMonitorPort',
+    options.MediapipeBrowserMonitorPort
+  )
   addSupportedParam(START_SCRIPT, stackArgs, 'VisionSnapshotProcessorPort', options.VisionSnapshotProcessorPort)
   addSupportedParam(START_SCRIPT, stackArgs, 'AituberHost', options.AituberHost)
   addSupportedParam(START_SCRIPT, stackArgs, 'AituberPort', options.AituberPort)
@@ -468,6 +475,57 @@ const saveConfig = (profileId, options) => {
     options,
     updatedAt: nowIso()
   })
+}
+
+let activeStackOperation = null
+
+const operationState = () =>
+  activeStackOperation
+    ? { busy: true, ...activeStackOperation }
+    : { busy: false, type: 'idle' }
+
+const operationConflictPayload = (requestedType) => ({
+  ok: false,
+  error: 'operation_in_progress',
+  message: `${activeStackOperation.type} is already running. Wait for it to finish before requesting ${requestedType}.`,
+  requestedType,
+  operation: operationState()
+})
+
+const runExclusiveStackOperation = async (type, action) => {
+  if (activeStackOperation) {
+    return {
+      statusCode: 409,
+      payload: operationConflictPayload(type)
+    }
+  }
+
+  const operation = {
+    id: crypto.randomUUID(),
+    type,
+    startedAt: nowIso()
+  }
+  activeStackOperation = operation
+  appendStackLog(`[launcher] ${type} operation started id=${operation.id}\n`)
+
+  try {
+    const payload = await action()
+    const finishedAt = nowIso()
+    appendStackLog(`[launcher] ${type} operation finished id=${operation.id}\n`)
+    return {
+      statusCode: 200,
+      payload: {
+        ...payload,
+        operation: {
+          busy: false,
+          ...operation,
+          finishedAt
+        }
+      }
+    }
+  } finally {
+    activeStackOperation = null
+  }
 }
 
 const startStack = (profileId, optionOverrides = {}) => {
@@ -739,16 +797,11 @@ const getVoicevoxUrl = (options) =>
 
 const getEndpoints = (options) => {
   const voicevoxUrl = getVoicevoxUrl(options).replace(/\/$/, '')
-  const browserMonitorPath = path.join(
-    WORKSPACE_ROOT,
-    'mediapipe-sword-sign',
-    'apps',
-    'browser_camera_hub_viewer.html'
-  )
   const mediaUrl = encodeURIComponent(
     'http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true'
   )
   const wsUrl = encodeURIComponent(`ws://127.0.0.1:${options.MediapipePort}`)
+  const browserMonitorUrl = `http://127.0.0.1:${options.MediapipeBrowserMonitorPort}/browser_camera_hub_viewer.html?mediaUrl=${mediaUrl}&wsUrl=${wsUrl}&target=sword_sign`
   return [
     {
       group: 'Open in browser',
@@ -801,8 +854,8 @@ const getEndpoints = (options) => {
     {
       group: 'Local APIs and feeds',
       name: 'MediaPipe Browser Monitor',
-      url: `${pathToFileURL(browserMonitorPath).href}?mediaUrl=${mediaUrl}&wsUrl=${wsUrl}`,
-      enabled: !options.SkipMediapipe
+      url: browserMonitorUrl,
+      enabled: !options.SkipMediapipe && options.MediapipeMode === 'mediamtx'
     },
     {
       group: 'Local APIs and feeds',
@@ -898,6 +951,7 @@ const getStatus = async () => {
     ok: true,
     timestamp: nowIso(),
     workspaceRoot: WORKSPACE_ROOT,
+    operation: operationState(),
     services: {
       home_assistant_bridge: serviceState({
         entry: pids.home_assistant_bridge,
@@ -977,6 +1031,7 @@ const getState = async () => {
       options
     },
     launcherState: readLauncherState(),
+    operation: operationState(),
     status: await getStatus(),
     endpoints: getEndpoints(options),
     preview,
@@ -1055,15 +1110,20 @@ const handleApi = async (request, response, requestUrl) => {
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/start') {
     const body = await readBody(request)
-    sendJson(
-      response,
-      200,
-      startStack(body.profileId || 'full-stack', body.options || {})
+    const result = await runExclusiveStackOperation(
+      'start',
+      async () => startStack(body.profileId || 'full-stack', body.options || {})
     )
+    sendJson(response, result.statusCode, result.payload)
     return
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/stop') {
-    sendJson(response, 200, await stopStack(await readBody(request)))
+    const body = await readBody(request)
+    const result = await runExclusiveStackOperation(
+      'stop',
+      async () => stopStack(body)
+    )
+    sendJson(response, result.statusCode, result.payload)
     return
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/status-script') {

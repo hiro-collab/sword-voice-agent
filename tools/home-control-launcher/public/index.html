@@ -9,9 +9,13 @@
   <body>
     <main class="app-shell">
       <header class="topbar">
-        <div>
-          <h1>Home Control Launcher</h1>
-          <p id="workspace-root">Loading workspace...</p>
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <p class="system-label">SWORD VOICE AGENT</p>
+            <h1>Home Control Launcher</h1>
+            <p id="workspace-root">Loading workspace...</p>
+          </div>
         </div>
         <div class="topbar-actions">
           <button id="refresh-button" class="secondary" type="button">Refresh</button>
@@ -20,11 +24,49 @@
         </div>
       </header>
 
+      <section
+        id="operation-banner"
+        class="operation-banner"
+        role="status"
+        aria-live="polite"
+        hidden
+      >
+        <span class="operation-light" aria-hidden="true"></span>
+        <div>
+          <strong id="operation-title">Launcher standby</strong>
+          <span id="operation-detail">Waiting for an action.</span>
+        </div>
+      </section>
+
+      <section class="mission-strip" aria-label="Launcher summary">
+        <article class="metric-card read-metric readiness-card" id="readiness-card">
+          <span class="metric-label">Stack readiness</span>
+          <strong id="readiness-label">Loading</strong>
+          <span id="readiness-detail">Checking local services</span>
+        </article>
+        <article class="metric-card read-metric">
+          <span class="metric-label">Active profile</span>
+          <strong id="active-profile-name">-</strong>
+          <span id="active-profile-detail">Configuration pending</span>
+        </article>
+        <article class="metric-card read-metric">
+          <span class="metric-label">Online services</span>
+          <strong id="online-count">-</strong>
+          <span id="online-detail">Awaiting status</span>
+        </article>
+        <article class="metric-card read-metric">
+          <span class="metric-label">Attention</span>
+          <strong id="attention-count">-</strong>
+          <span id="attention-detail">No signal yet</span>
+        </article>
+      </section>
+
       <section class="layout-grid">
-        <aside class="panel launch-panel">
+        <aside class="panel launch-panel control-surface">
           <div class="panel-title">
             <h2>Launch profile</h2>
             <div class="profile-actions">
+              <span class="surface-tag control-tag">CONTROL</span>
               <span id="save-state">Ready</span>
               <button id="save-config" class="secondary compact" type="button">Save</button>
             </div>
@@ -77,53 +119,73 @@
             <label class="field"><span>Vision WS</span><input id="VisionSnapshotProcessorPort" type="number" min="1" /></label>
           </div>
 
-          <div class="section-title">Switches</div>
-          <div class="switch-grid" id="switch-grid"></div>
+          <details class="option-drawer" open>
+            <summary>
+              <span>Runtime switches</span>
+              <small>Services and safety</small>
+            </summary>
+            <div class="switch-grid" id="switch-grid"></div>
+          </details>
 
-          <div class="section-title">Advanced</div>
-          <label class="field">
-            <span>VOICEVOX URL</span>
-            <input id="VoicevoxUrl" type="text" autocomplete="off" placeholder="http://127.0.0.1:50021" />
-          </label>
-          <label class="field">
-            <span>Dify docker root</span>
-            <input id="DifyDockerRoot" type="text" autocomplete="off" />
-          </label>
-          <label class="field">
-            <span>Home control config path</span>
-            <input id="HomeControlConfigPath" type="text" autocomplete="off" />
-          </label>
+          <details class="option-drawer">
+            <summary>
+              <span>Advanced overrides</span>
+              <small>Paths and external services</small>
+            </summary>
+            <label class="field">
+              <span>VOICEVOX URL</span>
+              <input id="VoicevoxUrl" type="text" autocomplete="off" placeholder="http://127.0.0.1:50021" />
+            </label>
+            <label class="field">
+              <span>Dify docker root</span>
+              <input id="DifyDockerRoot" type="text" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>Home control config path</span>
+              <input id="HomeControlConfigPath" type="text" autocomplete="off" />
+            </label>
+          </details>
         </aside>
 
         <section class="main-column">
-          <section class="panel status-panel">
+          <section class="panel status-panel read-surface">
             <div class="panel-title">
               <h2>Services</h2>
-              <span id="status-time">Waiting</span>
+              <div class="title-actions">
+                <span class="surface-tag read-tag">READ</span>
+                <span id="status-time">Waiting</span>
+              </div>
             </div>
             <div id="service-list" class="service-list"></div>
           </section>
 
-          <section class="panel">
+          <section class="panel read-surface reference-panel">
             <div class="panel-title">
               <h2>Reference URLs</h2>
-              <span>Fixed guide</span>
+              <div class="title-actions">
+                <span class="surface-tag read-tag">READ</span>
+                <span>Fixed guide</span>
+              </div>
             </div>
             <div id="endpoint-list" class="endpoint-list"></div>
           </section>
 
-          <section class="panel command-panel">
+          <section class="panel command-panel output-surface">
             <div class="panel-title">
               <h2>Command preview</h2>
-              <button id="copy-command" class="secondary compact" type="button">Copy</button>
+              <div class="title-actions">
+                <span class="surface-tag output-tag">READ</span>
+                <button id="copy-command" class="secondary compact" type="button">Copy</button>
+              </div>
             </div>
             <pre id="command-preview"></pre>
           </section>
 
-          <section class="panel log-panel">
+          <section class="panel log-panel output-surface">
             <div class="panel-title">
               <h2>Launcher log</h2>
               <div class="title-actions">
+                <span class="surface-tag output-tag">READ</span>
                 <span id="log-path">Recent output</span>
                 <button id="copy-log" class="secondary compact" type="button">Copy</button>
               </div>
