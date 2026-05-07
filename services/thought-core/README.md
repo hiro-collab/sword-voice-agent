@@ -147,6 +147,9 @@ $env:THOUGHT_CORE_BASE_URL="http://127.0.0.1:18787"
 uv run sword-thought-core-watch --skip-existing --print-events
 ```
 
+`--skip-existing` は、起動時点で既にある handoff を処理せず、次に保存される handoff を待ちます。
+まだ `.cache/codex/web_latest.json` が無い場合も、そのまま監視し続けます。
+
 現在の handoff を1回だけ処理する場合:
 
 ```powershell

@@ -9,6 +9,8 @@ from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreHandoffError
 from sword_voice_agent.adapters.thought_core import ThoughtCoreStreamEvent
 from sword_voice_agent.apps.watch_handoff_to_thought_core import (
     build_parser,
+    format_missing_handoff_message,
+    format_watch_start_message,
     handoff_signature,
     resolve_handoff_json_path,
     run_once,
@@ -132,6 +134,15 @@ class WatchHandoffToThoughtCoreTest(TestCase):
         with self.assertRaises(AiTalkCoreHandoffError):
             resolve_handoff_json_path(args)
 
+    def test_status_messages_explain_watch_and_missing_handoff(self) -> None:
+        path = Path("..") / "ai-talk-core" / ".cache" / "codex" / "web_latest.json"
+
+        self.assertIn("監視中", format_watch_start_message(path, skip_existing=True))
+        self.assertIn("新規handoffのみ", format_watch_start_message(path, skip_existing=True))
+        missing = format_missing_handoff_message(path)
+        self.assertIn("handoff JSON が見つかりません", missing)
+        self.assertIn("sword-thought-core-handoff", missing)
+
 
 def write_handoff(root: Path, *, command: str, turn_id: str | None = None) -> Path:
     cache_dir = root / ".cache" / "codex"
@@ -157,4 +168,3 @@ def workspace_tempdir():
         yield str(root)
     finally:
         shutil.rmtree(root, ignore_errors=True)
-

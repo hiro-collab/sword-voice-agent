@@ -278,6 +278,7 @@ def resolve_default_cache_dir(args: argparse.Namespace) -> Path | None:
 def run_watch(args: argparse.Namespace) -> None:
     handoff_path = resolve_handoff_json_path(args)
     seen = handoff_signature(handoff_path) if args.skip_existing else None
+    print(format_watch_start_message(handoff_path, skip_existing=args.skip_existing))
     while True:
         current = handoff_signature(handoff_path)
         if current is not None and current != seen:
@@ -305,10 +306,28 @@ def print_result(args: argparse.Namespace, result: dict[str, Any]) -> None:
             print(text)
 
 
+def format_watch_start_message(path: Path, *, skip_existing: bool) -> str:
+    mode = "新規handoffのみ" if skip_existing else "現在のhandoffと新規handoff"
+    return f"[thought-core-watch] 監視中: {path} ({mode})"
+
+
+def format_missing_handoff_message(path: Path) -> str:
+    return (
+        f"handoff JSON が見つかりません: {path}\n"
+        "ai-talk-core側で handoff 保存を有効にして音声入力を処理するか、まずは手入力で "
+        '次の確認を実行してください: uv run sword-thought-core-handoff --text "電気つけて" '
+        "--session-id living_room_main --turn-id turn_manual_001 --print-events"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.once:
+            handoff_path = resolve_handoff_json_path(args)
+            if handoff_signature(handoff_path) is None:
+                print(f"Input error: {format_missing_handoff_message(handoff_path)}")
+                return 1
             result = run_once(args)
             print_result(args, result)
         else:
@@ -321,4 +340,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
