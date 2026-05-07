@@ -1,48 +1,38 @@
 # State Authority
 
-このドキュメントは、各ステージのフラグ、ステート、IDについて「誰が決めるのか」を整理するためのものです。
+この文書は、state、flag、ID の意味をどの module が決めるかを定義します。ほかの層は値を検証、転送、保存、表示できますが、意味を勝手に変更しません。
 
-ここでの authority は、その値の意味を決めてよい唯一の責任者を指します。ほかの層は、値を検証、転送、表示、保存できますが、意味を勝手に変更しません。
+## Principles
 
-## 原則
-
-- `core` は判定の意味を決める。
-- `application` はユースケースとして値をつなぐ。
-- `adapters` は外部 I/O と形式変換だけを担当する。
-- `StatusStore` と console は projection であり、制御の authority ではない。
-- 外部モジュール由来の値は、このリポジトリでは上書きせず、検証して受け取る。
+- 外部モジュール由来の値は、このリポジトリでは上書きしない。
+- `StatusStore`、console、HUD は projection であり、制御の authority ではない。
 - edge command は状態ではなくイベントとして扱う。
+- authority が決まらない値は、実装しないか projection として扱う。
 
 ## Authority Matrix
 
-| Stage | Flag / State | Authority | 主な保存/転送先 | 備考 |
-|---|---|---|---|---|
-| Gesture detector | `GestureState.gestures.sword_sign.active` | `mediapipe-sword-sign` | UDP/HTTP payload | このリポジトリでは bool 型検証だけ行う |
-| Gesture detector | `GestureState.gestures.sword_sign.confidence` | `mediapipe-sword-sign` | UDP/HTTP payload | `0.0 <= confidence <= 1.0` の有限数だけ許可 |
-| Receiver | payload accept/reject | HTTP/UDP receiver | response / log | auth、JSON、protocol validation の責任を持つ |
-| Input gate | `GateDecision.raw_active` | `GestureInputGate` | receiver response / status store | 入力信号と閾値を見た判定結果 |
-| Input gate | `GateDecision.mic_enabled` | `GestureInputGate` | `VoiceState` / input gate payload | activation/release delay を含めた最終ゲート判定 |
-| Input gate | `GateDecision.reason` | `GestureInputGate` | UI / logs / status store | `waiting_for_activation_delay`, `stable` など |
-| Voice state | `VoiceState.phase` | `GestureInputGate` 由来の local pipeline | receiver response / status store | 現状は local gate 由来の簡易フェーズ |
-| Voice state | `VoiceState.mic_enabled` | `GestureInputGate` | ai_talk_core input gate payload | ai_talk_core に送る意図としての mic gate |
-| Voice turn | `VoiceControlCommand.action` | `VoiceTurnController` | receiver response / status store | `start_recording`, `stop_recording`, `none` |
-| Voice turn | `VoiceControlCommand.turn_id` | `VoiceTurnController` | receiver response / `latest_voice_turn.json` | local voice turn のID。Difyには自動送信しない |
-| ai_talk_core input gate | actual browser recording state | `ai_talk_core` | ai_talk_core Web UI / API | このリポジトリは開始/停止意図を送るだけ |
-| STT / handoff | `transcript` | `ai_talk_core` | `.cache/codex/*_latest.json` | 音声認識結果の authority は ai_talk_core |
-| STT / handoff | `command` | `ai_talk_core` | `.cache/codex/*_latest.json` | Difyへ送る既定 field は `command` |
-| Dify request | `AgentRequest.text` | `watch_handoff_to_dify` / manual sender | Dify API request | `--field` で `command`, `transcript`, `prompt` を選ぶ |
-| Dify request | transcript context inclusion | sender CLI option | Dify `inputs` | `--include-transcript-context` 指定時だけ送る |
-| Dify response | `answer`, `conversation_id`, `message_id`, `usage` | Dify | output json/text / status store | Dify応答の authority は Dify |
-| Conversation continuity | persisted conversation id file | watcher policy | `.cache/codex/*_conversation_id.txt` | Difyが発行したIDを次回使うための local selection |
-| Status projection | `latest_gesture.json` | `StatusStore` projection | `.cache/sword_voice_agent` | 表示・デバッグ用。制御の authority ではない |
-| Status projection | `latest_voice_turn.json` | `StatusStore` projection | `.cache/sword_voice_agent` | Dify結果との緩い相関に使う |
-| Status projection | `latest_dify_response.json` | `StatusStore` projection | `.cache/sword_voice_agent` | console表示用。本文を含むためコミット禁止 |
-| Event log | `events.jsonl` | `StatusStore` projection | `.cache/sword_voice_agent` | 履歴用。Dify本文などは redacted |
-| Console | displayed status | console status builder | browser UI | 表示専用。ここから制御状態を決めない |
+| Value | Authority | Transport / Storage | Notes |
+|---|---|---|---|
+| sword sign active/confidence | `mediapipe-sword-sign` | Camera Hub topic, legacy UDP/HTTP payload | このリポジトリでは型と範囲を検証する |
+| Camera Hub topic freshness | Camera Hub publisher | Environment State Server snapshot | 古い topic は stale として扱う |
+| payload accept/reject | sword-voice-agent receiver | response, log | auth、JSON、protocol validation |
+| `GateDecision.raw_active` | `GestureInputGate` | receiver response, status projection | 入力信号と閾値から判定 |
+| `GateDecision.mic_enabled` | `GestureInputGate` | ai-talk-core input gate payload | activation/release delay を含む意図 |
+| `GateDecision.reason` | `GestureInputGate` | UI, logs, status projection | gate の説明 |
+| `VoiceControlCommand.action` | `VoiceTurnController` | receiver response, status projection | `start_recording`, `stop_recording`, `none` |
+| `VoiceControlCommand.turn_id` | `VoiceTurnController` | receiver response, `latest_voice_turn.json` | Dify へ自動送信しない |
+| actual browser recording state | `ai-talk-core` | ai-talk-core Web UI / API | sword-voice-agent は開始/停止意図を送るだけ |
+| transcript / command | `ai-talk-core` | handoff files | STT 結果と Dify へ送る既定 field |
+| Dify request text selection | Dify watcher | Dify API request | `command`, `transcript`, `prompt` の選択 |
+| Dify answer and IDs | Dify | output files, status projection | `answer`, `conversation_id`, `message_id`, `usage` |
+| Home Assistant action result | `home-assistant-server` / Home Assistant | bridge API, Environment State Server | 家電状態の根拠 |
+| Environment snapshots | `environment-state-server` | `/environment/current`, `/indicators/current` | 複数モジュール状態の cache |
+| TTS playback state | `tts-service` | `latest_tts_state.json`, HTTP health | 読み上げ状態 |
+| AITuberKit speech queue | AITuberKit | `/api/messages` | 発話キューと表示 |
+| TouchDesigner visual trigger | TouchDesigner runtime | UDP 9001 | 視覚演出状態 |
+| projection files and event log | `StatusStore` | `.cache/sword_voice_agent` | 表示・デバッグ用 |
 
 ## Turn Lifecycle
-
-`turn_id` の authority は `VoiceTurnController` です。
 
 ```text
 mic_enabled false
@@ -66,62 +56,25 @@ mic_enabled false stable
   -> no turn_id
 ```
 
-`StatusStore` は `stop_recording` の `turn_id` を `latest_voice_turn.json` に残します。これにより、直後にDify watcherが処理した結果へ、最新ターンIDを緩く付与できます。ただし、これは厳密な handoff correlation ではありません。
-
-## Data Flow
-
-```text
-mediapipe-sword-sign
-  owns: sword_sign active/confidence
-  sends: GestureState
-
-sword-voice-agent receiver
-  owns: payload validation, auth decision
-  passes: GestureState
-
-GestureInputGate
-  owns: mic_enabled, gate reason, voice state basis
-  emits: VoiceState
-
-VoiceTurnController
-  owns: start/stop edge and turn_id
-  emits: VoiceControlCommand
-
-ai_talk_core
-  owns: actual browser recording, STT, transcript, command
-  writes: handoff files
-
-watch_handoff_to_dify
-  owns: which handoff field becomes AgentRequest.text
-  sends: Dify request
-
-Dify
-  owns: answer, conversation_id, message_id, usage
-
-StatusStore / console
-  owns: projection files and display
-  does not own: control decisions
-```
+`latest_voice_turn.json` は厳密な handoff correlation ではありません。Dify 連携との相関は時刻と直近 projection による緩い紐づけです。
 
 ## Conflict Resolution
 
-| Conflict | 優先する authority | 理由 |
+| Conflict | Prefer | Reason |
 |---|---|---|
-| `GestureState.active` と console 表示が違う | `GestureState` | console は projection なので遅延や欠落がありうる |
-| local `mic_enabled` と ai_talk_core UI が違う | ai_talk_core for actual recording, local gate for intended command | local は意図、ai_talk_core は実際の録音状態 |
-| `latest_voice_turn.json` と新しい receiver response が違う | receiver response | latest file は過去の projection |
-| Dify response file と `events.jsonl` が違う | Dify response file | event は履歴用に redacted される |
-| conversation id file と Dify最新応答が違う | Dify最新応答 | ファイルは次回継続用の local cache |
+| Camera Hub topic と HUD 表示が違う | Camera Hub topic | HUD は projection で遅延や欠落がありうる |
+| local `mic_enabled` と ai-talk-core UI が違う | ai-talk-core for actual recording, local gate for intended command | local は意図、ai-talk-core は実録音状態 |
+| Environment snapshot と直接 module API が違う | 直接 module API | Environment は cache |
+| Dify response file と event log が違う | Dify response file | event log は履歴用に redacted される |
+| TTS status と AITuberKit 表示が違う | `tts-service` for playback, AITuberKit for avatar speech queue | 責務が違う |
 
-## Adding New Flags
+## Adding Values
 
-新しい flag や state を追加する時は、先に以下を決めます。
+新しい flag、state、ID を追加する時は、先に以下を決めます。
 
-1. その値の authority はどの module か。
-2. その値は state か、edge command か、projection か。
-3. `protocol` に載せるか、adapter固有 payload に留めるか。
-4. `StatusStore` に保存する場合、本文や secret を含まないか。
-5. GUIに出す場合、制御可能にするのか、表示だけにするのか。
+1. authority を持つ module。
+2. state、edge command、projection のどれか。
+3. protocol に載せるか、adapter 固有 payload に留めるか。
+4. secret、本文、個人パスを含まないか。
+5. GUI で制御可能にするのか、表示だけにするのか。
 6. 既存 consumer が未知フィールドを無視できるか。
-
-authority が決まらない値は、実装しないか、まず `StatusStore` の projection として扱います。
