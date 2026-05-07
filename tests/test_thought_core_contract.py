@@ -12,6 +12,7 @@ THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core"
 sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 
 from thought_core.loop import ThoughtLoop  # noqa: E402
+from thought_core.responders import ResponderResult  # noqa: E402
 from thought_core.server import create_server  # noqa: E402
 from thought_core.tools import MockThoughtTools  # noqa: E402
 
@@ -26,6 +27,33 @@ TURN = {
         "voice_turn": "voice_789",
     },
 }
+
+GENERAL_TURN = {
+    **TURN,
+    "text": "マイクテストです。聞こえていますか？",
+    "turn_id": "turn_general_001",
+}
+
+
+class StaticResponder:
+    adapter_kind = "test_responder"
+    provider = "test"
+    model = "test-model"
+
+    def __init__(self, *, used_llm: bool = True) -> None:
+        self.used_llm = used_llm
+
+    def respond(self, turn):  # type: ignore[no-untyped-def]
+        return ResponderResult(
+            speech="聞こえています。応答境界も動いています。",
+            display="聞こえています。応答境界も動いています。",
+            status="llm_response" if self.used_llm else "local_fallback",
+            adapter_kind=self.adapter_kind,
+            provider=self.provider,
+            model=self.model,
+            used_llm=self.used_llm,
+            metadata={"turn_text_len": len(turn.text)},
+        )
 
 
 class ThoughtCoreContractTest(TestCase):
@@ -66,6 +94,35 @@ class ThoughtCoreContractTest(TestCase):
                 "turn.completed",
             ],
         )
+
+    def test_general_turn_uses_responder_boundary(self) -> None:
+        events = ThoughtLoop(responder=StaticResponder()).run_dicts(GENERAL_TURN)
+        event_types = [event["type"] for event in events]
+
+        self.assertEqual(
+            event_types,
+            [
+                "responder.started",
+                "responder.completed",
+                "assistant.speech_delta",
+                "assistant.message",
+                "turn.completed",
+            ],
+        )
+        self.assertEqual(events[0]["data"]["boundary"], "thought-core.turn_responder.v0")
+        self.assertEqual(events[1]["data"]["adapter_kind"], "test_responder")
+        self.assertTrue(events[1]["data"]["used_llm"])
+        self.assertEqual(events[3]["data"]["speech"], "聞こえています。応答境界も動いています。")
+        self.assertEqual(events[-1]["data"]["status"], "llm_response")
+
+    def test_general_turn_can_fall_back_without_llm(self) -> None:
+        events = ThoughtLoop(responder=StaticResponder(used_llm=False)).run_dicts(
+            GENERAL_TURN
+        )
+
+        self.assertEqual(events[-1]["type"], "turn.completed")
+        self.assertEqual(events[-1]["data"]["status"], "local_fallback")
+        self.assertFalse(events[-1]["data"]["used_llm"])
 
     def test_tool_started_and_result_share_tool_call_id(self) -> None:
         events = ThoughtLoop().run_dicts(TURN)

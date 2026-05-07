@@ -6,6 +6,20 @@
 目的は、`sword-voice-agent` から見える API 契約を小さく固定し、内部の実装を Dify、
 OpenAI Agents SDK、LangGraph、または将来の別基盤へ差し替えやすくすることです。
 
+## 境界仕様
+
+外側に見せる主契約は turn/event stream です。内部の LLM 応答は
+`thought-core.turn_responder.v0` という小さな port に分けています。
+
+- `TurnInput` を受け取る
+- `speech` / `display` / `status` を返す
+- tool 実行や Home Assistant の状態捏造はしない
+- 実装は `openai_compatible_chat` / LangGraph / OpenAI Agents SDK / Dify などの adapter に差し替える
+
+最初の adapter は依存なしの OpenAI-compatible HTTP です。`.env` またはプロセス環境で
+`THOUGHT_CORE_LLM_BASE_URL`, `THOUGHT_CORE_LLM_API_KEY`, `THOUGHT_CORE_LLM_MODEL`
+を指定できます。未設定時は local fallback が短い応答を返します。
+
 ## 役割分担
 
 `sword-voice-agent` は外側のランタイムとして、次を担当します。

@@ -5,6 +5,12 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping
 
 from .events import EventFactory, ThoughtEvent
+from .responders import (
+    TURN_RESPONDER_BOUNDARY,
+    EnvironmentTurnResponder,
+    TurnResponder,
+    describe_responder,
+)
 from .schema import TurnInput
 from .tools import MockThoughtTools, ThoughtTools
 
@@ -16,10 +22,12 @@ class ThoughtLoop:
         *,
         max_execute_attempts: int = 2,
         source: str = "thought-core",
+        responder: TurnResponder | None = None,
     ) -> None:
         self.tools = tools or MockThoughtTools()
         self.max_execute_attempts = max(1, max_execute_attempts)
         self.source = source
+        self.responder = responder or EnvironmentTurnResponder.from_env()
 
     def run(self, turn: TurnInput | Mapping[str, Any]) -> list[ThoughtEvent]:
         turn_input = turn if isinstance(turn, TurnInput) else TurnInput.from_mapping(turn)
@@ -27,16 +35,7 @@ class ThoughtLoop:
         events: list[ThoughtEvent] = []
         try:
             if not self._is_home_light_turn_on(turn_input.text):
-                self._emit_message(
-                    events,
-                    factory,
-                    speech="今は家電操作の実験境界だけ動いています。",
-                    display="thought-core mock response",
-                    emotion="neutral",
-                    motion="idle",
-                    priority="normal",
-                )
-                events.append(factory.emit("turn.completed", {"status": "unsupported_intent"}))
+                self._handle_general_turn(events, factory, turn_input)
                 return events
 
             observation = self._call_tool(
@@ -207,6 +206,50 @@ class ThoughtLoop:
         )
         return result
 
+    def _handle_general_turn(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+    ) -> None:
+        events.append(factory.emit("responder.started", describe_responder(self.responder)))
+        result = self.responder.respond(turn_input)
+        events.append(
+            factory.emit(
+                "responder.completed",
+                {
+                    "boundary": TURN_RESPONDER_BOUNDARY,
+                    "adapter_kind": result.adapter_kind,
+                    "provider": result.provider,
+                    "model": result.model,
+                    "status": result.status,
+                    "used_llm": result.used_llm,
+                    "detail": result.detail,
+                    "metadata": result.metadata,
+                },
+            )
+        )
+        self._emit_message(
+            events,
+            factory,
+            speech=result.speech,
+            display=result.display,
+            emotion="neutral",
+            motion="idle",
+            priority="normal",
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {
+                    "status": result.status,
+                    "boundary": TURN_RESPONDER_BOUNDARY,
+                    "adapter_kind": result.adapter_kind,
+                    "used_llm": result.used_llm,
+                },
+            )
+        )
+
     def _emit_message(
         self,
         events: list[ThoughtEvent],
@@ -259,4 +302,3 @@ class ThoughtLoop:
             if device.get("id") == target and device.get("state") == expected_state:
                 return True
         return False
-

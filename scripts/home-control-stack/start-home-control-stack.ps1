@@ -1532,6 +1532,26 @@ if (-not $SkipEnvironmentState) {
         -Role "api" `
         -AllowedProcessNames @("uv", "python")
 }
+$thoughtCoreEnvironment = @{}
+foreach ($name in @(
+    "THOUGHT_CORE_LLM_ENABLED",
+    "THOUGHT_CORE_LLM_BASE_URL",
+    "THOUGHT_CORE_LLM_API_KEY",
+    "THOUGHT_CORE_LLM_MODEL",
+    "THOUGHT_CORE_LLM_TIMEOUT_S",
+    "THOUGHT_CORE_LLM_MAX_CHARS",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL"
+)) {
+    $value = [Environment]::GetEnvironmentVariable($name)
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $value = Get-DotEnvValue -Path $ThoughtCoreEnvPath -Name $name
+    }
+    if (-not [string]::IsNullOrWhiteSpace($value)) {
+        $thoughtCoreEnvironment[$name] = $value
+    }
+}
 if ($StartThoughtCoreService) {
     $specs += New-ServiceSpec `
         -Name "thought_core_api" `
@@ -1551,6 +1571,7 @@ if ($StartThoughtCoreService) {
             $ThoughtCoreStatusDir
         ) `
         -WorkingDirectory $ThoughtCoreRoot `
+        -Environment $thoughtCoreEnvironment `
         -Module "sword-voice-agent" `
         -Role "thought_core_api" `
         -AllowedProcessNames @("pwsh", "powershell", "uv", "python")
