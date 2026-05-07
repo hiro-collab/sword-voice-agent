@@ -156,6 +156,10 @@ uv run sword-thought-core-watch --skip-existing --print-events
 uv run sword-thought-core-watch --ai-talk-core-root ..\ai-talk-core --once --print-events
 ```
 
+watcher は既定で `.cache/sword_voice_agent/latest_thought_core_response.json` と
+`.cache/sword_voice_agent/events.jsonl` に thought-core の進行を書きます。
+status 出力が不要な場合は `--status-dir ""` を指定します。
+
 ## turn input
 
 ```json

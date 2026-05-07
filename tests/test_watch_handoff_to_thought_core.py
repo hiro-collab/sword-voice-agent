@@ -62,6 +62,7 @@ class WatchHandoffToThoughtCoreTest(TestCase):
         with workspace_tempdir() as tmp:
             root = Path(tmp)
             write_handoff(root, command="電気つけて", turn_id="turn-1")
+            status_dir = root / ".cache" / "sword_voice_agent"
             client = FakeThoughtCoreClient()
             args = build_parser().parse_args(
                 [
@@ -70,6 +71,8 @@ class WatchHandoffToThoughtCoreTest(TestCase):
                     "--once",
                     "--session-id",
                     "living_room_main",
+                    "--status-dir",
+                    str(status_dir),
                 ]
             )
 
@@ -88,6 +91,28 @@ class WatchHandoffToThoughtCoreTest(TestCase):
                 (cache_dir / "web_thought_core_latest.txt").read_text(encoding="utf-8"),
                 "了解です",
             )
+            latest_status = json.loads(
+                (status_dir / "latest_thought_core_response.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            status_events = [
+                json.loads(line)
+                for line in (status_dir / "events.jsonl").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            self.assertEqual(latest_status["turn_id"], "turn-1")
+            self.assertEqual(
+                [event["type"] for event in status_events],
+                [
+                    "thought_core.first_message",
+                    "thought_core.completed",
+                    "thought_core.response",
+                ],
+            )
+            self.assertEqual(status_events[0]["payload"]["speech"], "[redacted]")
+            self.assertNotIn("了解です", json.dumps(status_events, ensure_ascii=False))
 
     def test_run_once_skips_no_speech_placeholder_by_default(self) -> None:
         with workspace_tempdir() as tmp:
@@ -99,6 +124,8 @@ class WatchHandoffToThoughtCoreTest(TestCase):
                     "--ai-talk-core-root",
                     str(root),
                     "--once",
+                    "--status-dir",
+                    "",
                 ]
             )
 

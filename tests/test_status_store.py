@@ -111,6 +111,38 @@ class StatusStoreTest(TestCase):
             self.assertEqual(latest["turn_id"], "turn-from-latest-file")
             self.assertEqual(events[0]["turn_id"], "turn-from-latest-file")
 
+    def test_writes_thought_core_response_event(self) -> None:
+        with workspace_tempdir() as tmp:
+            store = StatusStore(tmp)
+            store.write_latest_thought_core_response(
+                {
+                    "request": {"text": "電気つけて", "context": {"turn_id": "turn-1"}},
+                    "turn_payload": {
+                        "text": "電気つけて",
+                        "turn_id": "turn-1",
+                        "session_id": "living_room_main",
+                    },
+                    "response": {
+                        "text": "つけたよ",
+                        "conversation_id": "turn-1",
+                        "raw": {"_streaming": {"event_count": 16}},
+                    },
+                    "skipped": False,
+                }
+            )
+
+            latest = json.loads(
+                store.latest_thought_core_response_path.read_text(encoding="utf-8")
+            )
+            events = store.read_events()
+            self.assertEqual(latest["turn_id"], "turn-1")
+            self.assertEqual(events[0]["type"], "thought_core.response")
+            self.assertEqual(events[0]["turn_id"], "turn-1")
+            self.assertEqual(events[0]["payload"]["request_text"], "[redacted]")
+            self.assertEqual(events[0]["payload"]["turn_text"], "[redacted]")
+            self.assertEqual(events[0]["payload"]["response_text"], "[redacted]")
+            self.assertEqual(events[0]["payload"]["event_count"], 16)
+
     def test_limits_event_history(self) -> None:
         with workspace_tempdir() as tmp:
             store = StatusStore(tmp, max_events=2)
@@ -145,6 +177,7 @@ class StatusStoreTest(TestCase):
             self.assertFalse(store.latest_gesture_diagnostic_path.exists())
             self.assertFalse(store.latest_voice_turn_path.exists())
             self.assertFalse(store.latest_dify_response_path.exists())
+            self.assertFalse(store.latest_thought_core_response_path.exists())
             self.assertFalse(store.events_path.exists())
             self.assertEqual(store.read_module_statuses(), {})
 

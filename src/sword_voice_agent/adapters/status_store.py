@@ -40,6 +40,10 @@ class StatusStore:
         return self.root / "latest_dify_response.json"
 
     @property
+    def latest_thought_core_response_path(self) -> Path:
+        return self.root / "latest_thought_core_response.json"
+
+    @property
     def modules_dir(self) -> Path:
         return self.root / "modules"
 
@@ -125,6 +129,36 @@ class StatusStore:
                 "conversation_id_present": bool(response_payload.get("conversation_id")),
                 "message_id": redacted_text(response_payload.get("message_id", "")),
                 "message_id_present": bool(response_payload.get("message_id")),
+                "skipped": payload.get("skipped", False),
+                "skip_reason": payload.get("skip_reason"),
+            },
+        )
+
+    def write_latest_thought_core_response(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        turn_id: str | None = None,
+    ) -> None:
+        stored_payload = dict(payload)
+        event_turn_id = turn_id or _turn_id_from_thought_core_payload(payload)
+        if event_turn_id:
+            stored_payload["turn_id"] = event_turn_id
+        self.write_json(self.latest_thought_core_response_path, stored_payload)
+        request_payload = _mapping(payload.get("request"))
+        turn_payload = _mapping(payload.get("turn_payload"))
+        response_payload = _mapping(payload.get("response"))
+        raw_payload = _mapping(response_payload.get("raw"))
+        streaming_payload = _mapping(raw_payload.get("_streaming"))
+        self.append_event(
+            "thought_core.response",
+            source="watch_handoff_to_thought_core",
+            turn_id=event_turn_id,
+            payload={
+                "request_text": redacted_text(request_payload.get("text", "")),
+                "turn_text": redacted_text(turn_payload.get("text", "")),
+                "response_text": redacted_text(response_payload.get("text", "")),
+                "event_count": streaming_payload.get("event_count"),
                 "skipped": payload.get("skipped", False),
                 "skip_reason": payload.get("skip_reason"),
             },
@@ -216,6 +250,7 @@ class StatusStore:
             self.latest_gesture_diagnostic_path,
             self.latest_voice_turn_path,
             self.latest_dify_response_path,
+            self.latest_thought_core_response_path,
             self.events_path,
         ):
             try:
@@ -293,6 +328,17 @@ def redacted_text(value: object) -> str:
 def _turn_id_from_request(request_payload: Mapping[str, Any]) -> str | None:
     context = _mapping(request_payload.get("context"))
     return _optional_text(context.get("turn_id"))
+
+
+def _turn_id_from_thought_core_payload(payload: Mapping[str, Any]) -> str | None:
+    turn_payload = _mapping(payload.get("turn_payload"))
+    response_payload = _mapping(payload.get("response"))
+    request_payload = _mapping(payload.get("request"))
+    return (
+        _optional_text(turn_payload.get("turn_id"))
+        or _optional_text(response_payload.get("conversation_id"))
+        or _turn_id_from_request(request_payload)
+    )
 
 
 def _gesture_event_key(payload: Mapping[str, Any] | None) -> tuple[object, ...] | None:
