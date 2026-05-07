@@ -78,6 +78,67 @@ Content-Type: application/json
 `GET /turn/stream` は、将来ブラウザの `EventSource` で読む形を試すための軽い入口です。
 現時点の主契約は、turn payload を送れる `POST /turn` です。
 
+## sword-voice-agent client
+
+`sword-voice-agent` 側からは `ThoughtCoreClient` で `POST /turn?stream=true` を読みます。
+
+```powershell
+$env:THOUGHT_CORE_BASE_URL="http://127.0.0.1:18787"
+```
+
+```python
+from sword_voice_agent.adapters.thought_core import ThoughtCoreClient
+from sword_voice_agent.protocol.messages import AgentRequest
+
+client = ThoughtCoreClient.from_env()
+events = []
+response = client.send_agent_request_streaming(
+    AgentRequest(
+        text="電気つけて",
+        context={
+            "turn_id": "turn_001",
+            "session_id": "living_room_main",
+            "locale": "ja-JP",
+            "context_refs": {"voice_turn": "voice_789"},
+        },
+    ),
+    on_event=events.append,
+)
+
+print(response.text)
+```
+
+`on_event` には `assistant.speech_delta`、`tool.started`、`observation.received`、
+`turn.completed` などの event が順番に渡ります。TTS や画面表示へつなぐ層は、
+`assistant.speech_delta` または `assistant.message` を使います。
+
+ai_talk_core の handoff JSON から動作確認する場合は、別の PowerShell で次を実行します。
+
+```powershell
+$env:THOUGHT_CORE_BASE_URL="http://127.0.0.1:18787"
+uv run sword-thought-core-handoff --handoff-json tests/fixtures/handoff.json --print-events
+```
+
+実際の ai_talk_core キャッシュを読む場合は、`AI_TALK_CORE_ROOT` を設定してから実行します。
+
+```powershell
+$env:AI_TALK_CORE_ROOT="..\ai-talk-core"
+$env:THOUGHT_CORE_BASE_URL="http://127.0.0.1:18787"
+uv run sword-thought-core-handoff --field command --print-events
+```
+
+送信前の payload だけ確認したい場合:
+
+```powershell
+uv run sword-thought-core-handoff --handoff-json tests/fixtures/handoff.json --dry-run
+```
+
+ai_talk_core を経由せず、手入力で thought-core の最小デモを確認する場合:
+
+```powershell
+uv run sword-thought-core-handoff --text "電気つけて" --session-id living_room_main --turn-id turn_manual_001 --print-events
+```
+
 ## turn input
 
 ```json
