@@ -1,6 +1,6 @@
 param(
     [string]$WorkspaceRoot = "",
-    [string]$DifyDockerRoot = "C:\Users\kawai\works\dify\docker",
+    [string]$DifyDockerRoot = "",
     [switch]$StopDify,
     [switch]$Force,
     [switch]$DryRun
@@ -11,6 +11,10 @@ Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot "resolve-home-control-workspace.ps1")
 $WorkspaceRoot = Resolve-HomeControlWorkspaceRoot -WorkspaceRoot $WorkspaceRoot -ScriptRoot $PSScriptRoot
+
+if ([string]::IsNullOrWhiteSpace($DifyDockerRoot)) {
+    $DifyDockerRoot = [Environment]::GetEnvironmentVariable("DIFY_DOCKER_ROOT")
+}
 
 $StateDir = Join-Path $WorkspaceRoot ".cache\home-control-stack"
 $PidFile = Join-Path $StateDir "pids.json"
@@ -275,6 +279,10 @@ if (-not $DryRun -and (Test-Path -LiteralPath $PidFile -PathType Leaf)) {
 }
 
 if ($StopDify) {
+    if ([string]::IsNullOrWhiteSpace($DifyDockerRoot)) {
+        Write-Warning "Dify docker directory is not configured. Pass -DifyDockerRoot or set DIFY_DOCKER_ROOT."
+        return
+    }
     if (-not (Test-Path -LiteralPath $DifyDockerRoot -PathType Container)) {
         Write-Warning "Dify docker directory not found: $DifyDockerRoot"
         return

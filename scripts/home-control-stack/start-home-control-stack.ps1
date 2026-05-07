@@ -7,7 +7,7 @@ param(
     [string]$TouchDesignerGuiRoot = "",
     [string]$DifyWatchRoot = "",
     [string]$EnvironmentStateServerRoot = "",
-    [string]$DifyDockerRoot = "C:\Users\kawai\works\dify\docker",
+    [string]$DifyDockerRoot = "",
     [int]$HomeAssistantBridgePort = 8787,
     [string]$HomeAssistantBridgeHost = "127.0.0.1",
     [string]$HomeControlConfigPath = "",
@@ -51,6 +51,10 @@ $OutputEncoding = $utf8NoBom
 
 . (Join-Path $PSScriptRoot "resolve-home-control-workspace.ps1")
 $WorkspaceRoot = Resolve-HomeControlWorkspaceRoot -WorkspaceRoot $WorkspaceRoot -ScriptRoot $PSScriptRoot
+
+if ([string]::IsNullOrWhiteSpace($DifyDockerRoot)) {
+    $DifyDockerRoot = [Environment]::GetEnvironmentVariable("DIFY_DOCKER_ROOT")
+}
 
 if ([string]::IsNullOrWhiteSpace($HomeAssistantServerRoot)) {
     $HomeAssistantServerRoot = Join-Path $WorkspaceRoot "home-assistant-server"
@@ -1350,6 +1354,9 @@ if (-not $SkipEnvironmentState) {
 }
 
 if (-not $SkipDify) {
+    if ([string]::IsNullOrWhiteSpace($DifyDockerRoot)) {
+        throw "Dify docker directory is not configured. Pass -DifyDockerRoot, set DIFY_DOCKER_ROOT, or use -SkipDify."
+    }
     if (-not (Test-Path -LiteralPath $DifyDockerRoot -PathType Container)) {
         throw "Dify docker directory not found: $DifyDockerRoot. Use -SkipDify to skip the Dify check/start."
     }
