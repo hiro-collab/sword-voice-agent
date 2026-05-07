@@ -14,6 +14,9 @@
 | Value | Authority | Transport / Storage | Notes |
 |---|---|---|---|
 | sword sign active/confidence | `mediapipe-sword-sign` | Camera Hub topic, legacy UDP/HTTP payload | このリポジトリでは型と範囲を検証する |
+| room light state/confidence | `vision-snapshot-processor` | Vision Snapshot Processor topic | Environment State Server は cache、stale 判定、Dify 向け `state_queries.room_light` projection だけを行う |
+| room light state query | `environment-state-server` | `/environment/current` | `authority=vision_snapshot_processor` を明示し、Dify は Home Assistant の実スイッチ状態と混ぜない |
+| room light user feedback | user via Dify | `POST /feedback/state-query`, feedback JSONL | `authority=user_feedback` の学習用ラベル。`idempotency_key` と stale warning を持ち、即時に vision authority を上書きしない |
 | Camera Hub topic freshness | Camera Hub publisher | Environment State Server snapshot | 古い topic は stale として扱う |
 | payload accept/reject | sword-voice-agent receiver | response, log | auth、JSON、protocol validation |
 | `GateDecision.raw_active` | `GestureInputGate` | receiver response, status projection | 入力信号と閾値から判定 |

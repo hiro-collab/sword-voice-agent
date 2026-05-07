@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Home Control Launcher</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>Home Control Launcher</h1>
+          <p id="workspace-root">Loading workspace...</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="refresh-button" class="secondary" type="button">Refresh</button>
+          <button id="stop-button" class="danger" type="button">Stop Stack</button>
+          <button id="start-button" class="primary" type="button">Start Stack</button>
+        </div>
+      </header>
+
+      <section class="layout-grid">
+        <aside class="panel launch-panel">
+          <div class="panel-title">
+            <h2>Launch profile</h2>
+            <div class="profile-actions">
+              <span id="save-state">Ready</span>
+              <button id="save-config" class="secondary compact" type="button">Save</button>
+            </div>
+          </div>
+
+          <label class="field">
+            <span>Profile</span>
+            <select id="profile-select"></select>
+          </label>
+          <p id="profile-description" class="description"></p>
+
+          <div class="section-title">MediaPipe startup</div>
+          <div class="segmented" id="mediapipe-mode">
+            <button
+              type="button"
+              data-value="mediamtx"
+              title="Normal: MediaMTX video plus CameraHub WebSocket"
+            >
+              Normal
+            </button>
+            <button
+              type="button"
+              data-value="camera-hub"
+              title="Diagnostics: CameraHub WebSocket only"
+            >
+              CameraHub only
+            </button>
+            <button
+              type="button"
+              data-value="gui"
+              title="Diagnostics: CameraHub plus Python GUI"
+            >
+              Python GUI
+            </button>
+          </div>
+
+          <label class="field">
+            <span>Camera name</span>
+            <input id="MediapipeCameraName" type="text" autocomplete="off" />
+          </label>
+
+          <div class="section-title">Ports</div>
+          <div class="port-grid">
+            <label class="field"><span>AITuber</span><input id="AituberPort" type="number" min="1" /></label>
+            <label class="field"><span>Dify</span><input id="DifyPort" type="number" min="1" /></label>
+            <label class="field"><span>TD GUI</span><input id="TouchDesignerGuiPort" type="number" min="1" /></label>
+            <label class="field"><span>HA bridge</span><input id="HomeAssistantBridgePort" type="number" min="1" /></label>
+            <label class="field"><span>Environment</span><input id="EnvironmentStatePort" type="number" min="1" /></label>
+            <label class="field"><span>MediaPipe</span><input id="MediapipePort" type="number" min="1" /></label>
+            <label class="field"><span>Vision WS</span><input id="VisionSnapshotProcessorPort" type="number" min="1" /></label>
+          </div>
+
+          <div class="section-title">Switches</div>
+          <div class="switch-grid" id="switch-grid"></div>
+
+          <div class="section-title">Advanced</div>
+          <label class="field">
+            <span>VOICEVOX URL</span>
+            <input id="VoicevoxUrl" type="text" autocomplete="off" placeholder="http://127.0.0.1:50021" />
+          </label>
+          <label class="field">
+            <span>Dify docker root</span>
+            <input id="DifyDockerRoot" type="text" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Home control config path</span>
+            <input id="HomeControlConfigPath" type="text" autocomplete="off" />
+          </label>
+        </aside>
+
+        <section class="main-column">
+          <section class="panel status-panel">
+            <div class="panel-title">
+              <h2>Services</h2>
+              <span id="status-time">Waiting</span>
+            </div>
+            <div id="service-list" class="service-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-title">
+              <h2>Reference URLs</h2>
+              <span>Fixed guide</span>
+            </div>
+            <div id="endpoint-list" class="endpoint-list"></div>
+          </section>
+
+          <section class="panel command-panel">
+            <div class="panel-title">
+              <h2>Command preview</h2>
+              <button id="copy-command" class="secondary compact" type="button">Copy</button>
+            </div>
+            <pre id="command-preview"></pre>
+          </section>
+
+          <section class="panel log-panel">
+            <div class="panel-title">
+              <h2>Launcher log</h2>
+              <div class="title-actions">
+                <span id="log-path">Recent output</span>
+                <button id="copy-log" class="secondary compact" type="button">Copy</button>
+              </div>
+            </div>
+            <pre id="log-output"></pre>
+          </section>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -86,6 +86,18 @@ $health = Invoke-JsonGet -Url "$BaseUrl/health"
 $environment = Invoke-JsonGet -Url "$BaseUrl/environment/current" -Headers $headers
 $indicators = Invoke-JsonGet -Url "$BaseUrl/indicators/current"
 
+$stateQueryProperties = @()
+$roomLightQuery = $null
+$stateQueriesProperty = $environment.Json.PSObject.Properties["state_queries"]
+if ($null -ne $stateQueriesProperty -and $null -ne $stateQueriesProperty.Value) {
+    $stateQueries = $stateQueriesProperty.Value
+    $stateQueryProperties = @($stateQueries.PSObject.Properties)
+    $roomLightProperty = $stateQueries.PSObject.Properties["room_light"]
+    if ($null -ne $roomLightProperty) {
+        $roomLightQuery = $roomLightProperty.Value
+    }
+}
+
 $summary = [ordered]@{
     base_url = $BaseUrl
     health_status = $health.StatusCode
@@ -95,6 +107,8 @@ $summary = [ordered]@{
     observed_at = $environment.Json.observed_at
     appliance_count = @($environment.Json.appliances.PSObject.Properties).Count
     vision_count = @($environment.Json.vision.PSObject.Properties).Count
+    state_query_count = $stateQueryProperties.Count
+    room_light_query = $roomLightQuery
     source_names = @($environment.Json.sources.PSObject.Properties.Name)
     node_names = @($indicators.Json.nodes.PSObject.Properties.Name)
 }
@@ -108,6 +122,9 @@ Write-Host "[environment-state] OK: $BaseUrl"
 Write-Host "  /health              HTTP $($health.StatusCode)"
 Write-Host "  /environment/current HTTP $($environment.StatusCode) stale=$($summary.environment_stale) observed_at=$($summary.observed_at)"
 Write-Host "  /indicators/current  HTTP $($indicators.StatusCode)"
-Write-Host "  appliances=$($summary.appliance_count) vision=$($summary.vision_count)"
+Write-Host "  appliances=$($summary.appliance_count) vision=$($summary.vision_count) state_queries=$($summary.state_query_count)"
+if ($null -ne $summary.room_light_query) {
+    Write-Host "  room_light_query state=$($summary.room_light_query.state) confidence=$($summary.room_light_query.confidence_label) stale=$($summary.room_light_query.stale) authority=$($summary.room_light_query.authority)"
+}
 Write-Host "  sources=$([string]::Join(', ', @($summary.source_names)))"
 Write-Host "  nodes=$([string]::Join(', ', @($summary.node_names)))"

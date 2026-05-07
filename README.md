@@ -62,14 +62,87 @@ Copy-Item .env.example .env
 notepad .env
 ```
 
-`.env` では少なくとも次を確認します。
+`<workspace>\sword-voice-agent\.env` では少なくとも次を確認します。
 
 - `DIFY_BASE_URL`
 - `DIFY_API_KEY`
 - `MEDIAPIPE_SWORD_SIGN_MODEL_PATH`
 - 各モジュールの `*_ROOT`
-- `HOME_CONTROL_API_TOKEN`
 - `AITUBER_MESSAGE_URL`
+
+`HOME_CONTROL_API_TOKEN` や Dify Studio 側の `ENV` は、次の Environment Variables を参照します。
+
+## Environment Variables
+
+秘密値は Git に入れません。`DIFY_API_KEY` と `HOME_CONTROL_API_TOKEN` は別物です。Dify のアプリAPIを呼ぶ鍵が `DIFY_API_KEY`、Dify workflow からローカルの Home Assistant bridge / Environment State Server を呼ぶ鍵が `HOME_CONTROL_API_TOKEN` です。
+
+| 書き込み場所 | 読むもの | 主な値 | 備考 |
+|---|---|---|---|
+| `<workspace>\sword-voice-agent\.env` | sword-voice-agent / dify watcher / 診断スクリプト | `DIFY_BASE_URL`, `DIFY_API_KEY`, `DIFY_USER`, `DIFY_RESPONSE_MODE`, `AITUBER_MESSAGE_URL` | Dify API Access の app key を入れる。`HOME_CONTROL_API_TOKEN` は通常ここではなく `home-assistant-server\.env` に置く。 |
+| `<workspace>\aituber-kit\.env` | AITuberKit Next.js API | `NEXT_PUBLIC_SELECT_AI_SERVICE=dify`, `DIFY_URL` または `DIFY_API_URL`, `DIFY_API_KEY` または `DIFY_KEY`, `VOICEVOX_SERVER_URL` | 画面から Dify に直接投げる経路の設定。`DIFY_URL` は例: `http://127.0.0.1:8080/v1`。 |
+| `<workspace>\home-assistant-server\.env` | home-assistant-server / environment-state-server | `HOME_CONTROL_API_TOKEN` | 32文字以上のランダム値。起動スクリプトは Environment State Server もこの env file で起動する。 |
+| Dify Studio のアプリ `ENV` | Dify workflow HTTP nodes | `HOME_CONTROL_API_TOKEN`, `ENVIRONMENT_STATE_URL`, `ENVIRONMENT_RELATIONS_URL`, `ENVIRONMENT_FEEDBACK_URL` | YAMLをインポートしても secret の実値は入らないため、公開前にDify画面で設定する。 |
+
+Dify Studio の `ENV` は次を基準にします。
+
+```text
+HOME_CONTROL_API_TOKEN=<workspace>\home-assistant-server\.env と同じ値
+ENVIRONMENT_STATE_URL=http://host.docker.internal:8790/environment/current
+ENVIRONMENT_RELATIONS_URL=http://host.docker.internal:8790/environment/relations
+ENVIRONMENT_FEEDBACK_URL=http://host.docker.internal:8790/feedback/state-query
+```
+
+`ENVIRONMENT_API_TOKEN` を Environment State Server 専用に分けることもできますが、現在の Dify YAML は `HOME_CONTROL_API_TOKEN` を使って Environment と Home Assistant bridge の両方を呼びます。分離する場合は Dify YAML 側の env/header も合わせて変更してください。
+
+### Environment Checkpoints
+
+1. Dify API key が正しいか:
+
+```powershell
+cd <workspace>
+.\start-home-control-stack.bat -StopExisting
+```
+
+起動ログに次が出れば、`<workspace>\sword-voice-agent\.env` と `<workspace>\aituber-kit\.env` の Dify API key は通っています。
+
+```text
+[dify] DIFY_API_KEY valid ...
+[aituber_kit] DIFY_API_KEY valid ...
+```
+
+2. Home Control token があるか:
+
+起動ログに次が出れば、`<workspace>\home-assistant-server\.env` の `HOME_CONTROL_API_TOKEN` は読み込めています。
+
+```text
+[home_assistant_bridge] HOME_CONTROL_API_TOKEN present ...
+[environment_state_server] API token present ...
+```
+
+3. Dify に最新YAMLと Environment が見えているか:
+
+```powershell
+cd <workspace>\sword-voice-agent
+.\scripts\home-control-stack\check-dify-home-control-workflow.ps1
+```
+
+正常時は `ok` になり、`version match: True` と `Dify sees env: ... room_light=True` が出ます。
+
+```text
+[hca-dify-check] ok
+  version match:  True
+  Environment:    direct_ok=True status=200 room_light=True
+  Dify sees env:  status=200 room_light=True
+```
+
+代表的な診断結果:
+
+| 表示 | 見る場所 |
+|---|---|
+| `workflow_version_mismatch` | `dify-apps\Home Control Assistant.issue-iteration.yml` をDifyへ再インポートし、公開する。 |
+| `diagnostic_marker_missing` | Difyが古いYAMLを実行している可能性が高い。再インポート、公開、API keyの対象アプリを確認する。 |
+| `dify_environment_state_not_visible` | Dify Studio の `ENV` で `HOME_CONTROL_API_TOKEN`, `ENVIRONMENT_STATE_URL`, `ENVIRONMENT_RELATIONS_URL` を確認する。 |
+| `environment_room_light_missing` | Dify以前に Environment State Server / Vision Snapshot Processor 側を確認する。 |
 
 AITuberKit は別アプリとして準備します。
 
@@ -121,6 +194,7 @@ Chrome のマイク権限を許可します。Projection Visual では、STT、G
 | Home Assistant bridge | `http://127.0.0.1:8787` |
 | TTS HTTP source | `http://127.0.0.1:8765` |
 | Camera Hub topics | `ws://127.0.0.1:8765` |
+| Vision Snapshot Processor topics | `ws://127.0.0.1:8776` |
 | MediaMTX browser video | `http://127.0.0.1:8889/cam0` |
 
 ## Checks
@@ -136,6 +210,15 @@ Home Control Stack の失敗注入を含む確認:
 cd <workspace>
 .\scripts\run-home-control-fault-e2e.ps1 -NoOpenBrowser -DelayBetweenCasesSeconds 1
 ```
+
+Dify に最新 workflow YAML が反映されているか、また Dify 実行時に Environment State Server の `state_queries.room_light` が見えているかを確認:
+
+```powershell
+cd <workspace>\sword-voice-agent
+.\scripts\home-control-stack\check-dify-home-control-workflow.ps1
+```
+
+`workflow_version_mismatch` または `diagnostic_marker_missing` の場合は、`dify-apps\Home Control Assistant.issue-iteration.yml` をDifyへ再インポートし、公開してから再実行します。
 
 Environment State Server の疎通確認:
 

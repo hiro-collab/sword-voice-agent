@@ -23,9 +23,10 @@
 | Camera status topic | `/camera/status` |
 | Room light topic | `/vision/room_light/state` |
 | Video display | MediaMTX WebRTC/HLS, usually `http://127.0.0.1:8889/cam0` |
-| Inference input | Camera Hub reads MediaMTX RTSP with `ffmpeg-pipe` |
+| Camera Hub inference input | Camera Hub reads MediaMTX RTSP with `ffmpeg-pipe` |
+| Snapshot processor input | Vision Snapshot Processor reads MediaMTX RTSP as a stream consumer |
 
-Camera Hub owns physical camera capture, frame reading, landmark inference, gesture inference, and room-light inference. Other modules subscribe to topics.
+Camera Hub owns physical camera capture, frame reading, landmark inference, and gesture inference. Vision Snapshot Processor owns snapshot-style vision inference such as room-light state. Other modules subscribe to topics.
 
 ## Environment State Server
 
@@ -33,11 +34,67 @@ Camera Hub owns physical camera capture, frame reading, landmark inference, gest
 |---|---|---|
 | `GET /environment/current` | Dify | Requires Bearer token |
 | `GET /environment/relations` | Dify | Related metadata only |
+| `POST /feedback/state-query` | Dify | User correction for the immediately preceding state query; non-authoritative learning data |
+| `GET /feedback/state-query/recent` | Dify / debug | Recent feedback records; Requires Bearer token |
+| `GET /feedback/state-query/summary` | Dify / debug | Feedback label/status counts; Requires Bearer token |
 | `GET /indicators/current` | HUD / Cube / display-runtime | Loopback display-safe API |
 | `GET /health` | launcher / checks | Diagnostics |
 | `GET /ready` | launcher / checks | Fails when required state is stale |
 
-Environment State Server subscribes to Camera Hub topics and Home Assistant bridge events. It does not open the camera.
+Environment State Server subscribes to Camera Hub topics, Vision Snapshot Processor topics, and Home Assistant bridge events. It does not open the camera.
+
+For room-light state queries, Dify reads `state_queries.room_light` from `/environment/current`. `vision_snapshot_processor` remains the authority for image-derived `on/off/unknown`, `lighting_type`, and probability values; `environment_state_server` only projects them into `available`, `stale`, `confidence_label`, `answer_hint`, `authority`, `projected_by`, and normalized `evidence`.
+
+When Dify asks a follow-up such as "実際はついてる?", the user's next short correction is sent to `POST /feedback/state-query`. The payload includes `target=room_light`, `snapshot_id`, `current_snapshot_id`, `predicted_state`, `predicted_confidence_label`, `user_label`, `user_text`, `workflow_version`, `feedback_reason`, `idempotency_key`, and the original projected evidence. Environment should store this as `authority=user_feedback` training material without rewriting the authoritative vision state for that snapshot. Dify only sends feedback while the pending state query is fresh, currently within 120 seconds; stale corrections ask the user to re-check state instead.
+
+Example:
+
+```json
+{
+  "type": "state_query_feedback",
+  "target": "room_light",
+  "state_query_id": "room_light",
+  "idempotency_key": "state-query-feedback:<conversation_id>:<snapshot_id>:on",
+  "snapshot_id": "env_...",
+  "current_snapshot_id": "env_...",
+  "predicted_state": "unknown",
+  "predicted_confidence_label": "low",
+  "user_label": "on",
+  "user_text": "ついてるよ",
+  "authority": "user_feedback",
+  "source": "dify",
+  "workflow_version": "hca-issue-iteration-state-feedback-...",
+  "feedback_reason": "user_correction_after_state_query",
+  "pending": {
+    "authority": "vision_snapshot_processor",
+    "projected_by": "environment_state_server",
+    "created_at": "2026-05-07T14:15:00+09:00",
+    "observed_at": "2026-05-07T14:15:00+09:00",
+    "updated_at": "2026-05-07T14:15:00+09:00",
+    "answer_hint": "日光の影響が強そうだ。",
+    "evidence": {}
+  }
+}
+```
+
+Accepted `user_label` values are `on`, `off`, `daylight`, and `unknown`. Environment adds `received_at` and `received_snapshot_id` at receive time. If `idempotency_key` is repeated, Environment returns the same `feedback_id` with `duplicate=true` and does not append a second JSONL line. If `pending.created_at` / `updated_at` / `observed_at` or `snapshot_id` is older than 120 seconds, Environment stores the record as `status=accepted_with_warning` with `warnings=["pending_stale"]`.
+
+The Dify diagnostic query (`__HCA_DIAGNOSTIC__`) includes `feedback_contract.state_query_feedback=true`, `ttl_seconds`, `idempotency_key_format`, and `feedback_reason` so launcher-side checks can confirm the published YAML matches this contract.
+
+Successful response:
+
+```json
+{
+  "ok": true,
+  "feedback_id": "sqf_...",
+  "received_snapshot_id": "env_...",
+  "duplicate": false,
+  "status": "accepted",
+  "warnings": []
+}
+```
+
+If persistence is unavailable, return a non-2xx status with a short `error`; Dify treats this endpoint as best-effort and continues the conversation. Debug endpoints accept `target=room_light`; `recent` also accepts `limit`. `summary` returns `status_counts` with fixed keys for `accepted`, `accepted_with_warning`, `duplicate`, and `rejected`; duplicate/rejected counts are runtime diagnostics and may reset when Environment State Server restarts.
 
 ## Dify
 
@@ -49,8 +106,11 @@ Environment State Server subscribes to Camera Hub topics and Home Assistant brid
 | `DIFY_RESPONSE_MODE` | `streaming` or `blocking` |
 | `ENVIRONMENT_STATE_URL` | Dify-side URL for `/environment/current` |
 | `ENVIRONMENT_RELATIONS_URL` | Dify-side URL for `/environment/relations` |
+| `ENVIRONMENT_FEEDBACK_URL` | Dify-side URL for `/feedback/state-query` |
 
 When Dify runs in Docker on the same machine, use `host.docker.internal` for host services.
+
+State lookups such as "電気ついてる?" must not execute Home Assistant actions. Dify should set `action_id` to `none` and answer from `state_queries.room_light`; `available=false` or `stale=true` means the current sensor state cannot be confirmed.
 
 ## AITuberKit
 

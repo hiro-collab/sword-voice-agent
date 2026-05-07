@@ -30,6 +30,23 @@ SHORT_ASCII_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z'-]*")
 STRIPPABLE_ASCII_PUNCTUATION = " \t\r\n.,!?;:\"'`“”‘’()[]{}<>"
 RESPONSE_MODES = {"blocking", "streaming"}
 SPEECH_MARKER_PATTERN = re.compile(r"\[\[SPEECH:[A-Z0-9_-]+\]\]")
+KNOWN_MOTION_TAGS = frozenset(
+    (
+        "listening",
+        "think",
+        "cheer",
+        "cross",
+        "mouth_cover",
+        "crossed_arms",
+        "bow",
+        "shrug",
+        "shy",
+        "wave",
+        "clap",
+    )
+)
+MOTION_TAG_PATTERN = re.compile(r"\[motion:([A-Za-z_][A-Za-z0-9_-]*)\]", re.I)
+BARE_TAG_PATTERN = re.compile(r"\[([A-Za-z_][A-Za-z0-9_-]*)\]")
 SPEECH_END_CHARS = "。．.!?！？\n"
 SPEECH_SOFT_BREAK_CHARS = "、,， "
 
@@ -839,11 +856,28 @@ def soft_speech_boundary(text: str, *, max_chars: int) -> int:
 
 
 def clean_speech_message(text: str) -> str:
-    cleaned = SPEECH_MARKER_PATTERN.sub("", text).strip()
+    cleaned = normalize_motion_tags(SPEECH_MARKER_PATTERN.sub("", text)).strip()
     visible = visible_speech_text(cleaned)
     if not visible:
         return ""
     return cleaned
+
+
+def normalize_motion_tags(text: str) -> str:
+    def normalize_motion(match: re.Match[str]) -> str:
+        motion_name = match.group(1).lower()
+        if motion_name in KNOWN_MOTION_TAGS:
+            return f"[motion:{motion_name}]"
+        return match.group(0)
+
+    def normalize_bare_tag(match: re.Match[str]) -> str:
+        tag_name = match.group(1).lower()
+        if tag_name in KNOWN_MOTION_TAGS:
+            return f"[motion:{tag_name}]"
+        return match.group(0)
+
+    normalized = MOTION_TAG_PATTERN.sub(normalize_motion, text)
+    return BARE_TAG_PATTERN.sub(normalize_bare_tag, normalized)
 
 
 def visible_speech_text(text: str) -> str:

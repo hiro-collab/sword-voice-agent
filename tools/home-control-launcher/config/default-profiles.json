@@ -1,0 +1,67 @@
+[
+  {
+    "id": "full-stack",
+    "name": "Home Control Stack",
+    "description": "Start the normal Home Control Stack with AITuber, Dify watcher, MediaPipe, environment state, and TD GUI.",
+    "options": {
+      "StopExisting": true,
+      "MediapipeMode": "mediamtx",
+      "MediapipeNoBrowser": true
+    }
+  },
+  {
+    "id": "dify-external",
+    "name": "Dify external",
+    "description": "Use an already-running Dify instance and start the rest of the stack.",
+    "options": {
+      "StopExisting": true,
+      "SkipDify": true,
+      "MediapipeMode": "mediamtx",
+      "MediapipeNoBrowser": true
+    }
+  },
+  {
+    "id": "no-touchdesigner",
+    "name": "No TouchDesigner GUI",
+    "description": "Start the stack without the TouchDesigner control web GUI.",
+    "options": {
+      "StopExisting": true,
+      "SkipTouchDesignerGui": true,
+      "MediapipeMode": "mediamtx",
+      "MediapipeNoBrowser": true
+    }
+  },
+  {
+    "id": "aituber-only",
+    "name": "AITuber only",
+    "description": "Start only AITuber Kit for UI and voice-output checks.",
+    "options": {
+      "StopExisting": true,
+      "SkipDify": true,
+      "SkipVoicevoxCheck": true,
+      "SkipHomeAssistantBridge": true,
+      "SkipEnvironmentState": true,
+      "SkipMediapipe": true,
+      "SkipVisionSnapshotProcessor": true,
+      "SkipDifyWatch": true,
+      "SkipTouchDesignerGui": true
+    }
+  },
+  {
+    "id": "camera-debug",
+    "name": "Camera debug",
+    "description": "Start MediaPipe and vision-state pieces without AITuber or Dify.",
+    "options": {
+      "StopExisting": true,
+      "SkipDify": true,
+      "SkipVoicevoxCheck": true,
+      "SkipHomeAssistantBridge": true,
+      "SkipAituber": true,
+      "SkipDifyWatch": true,
+      "SkipTouchDesignerGui": true,
+      "MediapipeMode": "mediamtx",
+      "MediapipeOpenBrowser": true,
+      "MediapipeNoBrowser": false
+    }
+  }
+]

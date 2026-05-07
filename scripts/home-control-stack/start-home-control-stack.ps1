@@ -2,6 +2,7 @@ param(
     [string]$WorkspaceRoot = "",
     [string]$HomeAssistantServerRoot = "",
     [string]$MediapipeRoot = "",
+    [string]$VisionSnapshotProcessorRoot = "",
     [string]$AituberRoot = "",
     [string]$TouchDesignerGuiRoot = "",
     [string]$DifyWatchRoot = "",
@@ -12,6 +13,7 @@ param(
     [string]$HomeControlConfigPath = "",
     [int]$EnvironmentStatePort = 8790,
     [int]$MediapipePort = 8765,
+    [int]$VisionSnapshotProcessorPort = 8776,
     [int]$AituberPort = 3000,
     [string]$AituberHost = "127.0.0.1",
     [int]$TouchDesignerGuiPort = 8788,
@@ -19,8 +21,9 @@ param(
     [int]$DifyPort = 8080,
     [string]$VoicevoxUrl = "",
     [ValidateSet("gui", "headless", "camera-hub", "mediamtx")]
-    [string]$MediapipeMode = "camera-hub",
+    [string]$MediapipeMode = "mediamtx",
     [string]$MediapipeCameraName = "HD Pro Webcam C920",
+    [switch]$MediapipeOpenBrowser,
     [switch]$MediapipeNoBrowser,
     [switch]$MediapipePythonGui,
     [switch]$SkipDify,
@@ -28,6 +31,7 @@ param(
     [switch]$SkipHomeAssistantBridge,
     [switch]$SkipEnvironmentState,
     [switch]$SkipMediapipe,
+    [switch]$SkipVisionSnapshotProcessor,
     [switch]$SkipAituber,
     [switch]$SkipDifyWatch,
     [switch]$SkipTouchDesignerGui,
@@ -53,6 +57,9 @@ if ([string]::IsNullOrWhiteSpace($HomeAssistantServerRoot)) {
 if ([string]::IsNullOrWhiteSpace($MediapipeRoot)) {
     $MediapipeRoot = Join-Path $WorkspaceRoot "mediapipe-sword-sign"
 }
+if ([string]::IsNullOrWhiteSpace($VisionSnapshotProcessorRoot)) {
+    $VisionSnapshotProcessorRoot = Join-Path $WorkspaceRoot "vision-snapshot-processor"
+}
 if ([string]::IsNullOrWhiteSpace($AituberRoot)) {
     $AituberRoot = Join-Path $WorkspaceRoot "aituber-kit"
 }
@@ -73,12 +80,28 @@ $HomeAssistantEnvPath = Join-Path $HomeAssistantServerRoot ".env"
 $TouchDesignerGuiToolsRoot = Join-Path $TouchDesignerGuiRoot "tools"
 $DifyWatchScript = Join-Path $DifyWatchRoot "scripts\start-dify-watch.ps1"
 $DifyWatchEnvPath = Join-Path $DifyWatchRoot ".env"
+$LaunchVisionSnapshotProcessor = ((-not $SkipVisionSnapshotProcessor) -and (-not $SkipMediapipe) -and ($MediapipeMode -eq "mediamtx"))
 
 $StateDir = Join-Path $WorkspaceRoot ".cache\home-control-stack"
 $LogDir = Join-Path $StateDir "logs"
 $PidFile = Join-Path $StateDir "pids.json"
 $StopScript = Join-Path $PSScriptRoot "stop-home-control-stack.ps1"
 $DifyWatchStatusDir = Join-Path $StateDir "dify-watcher"
+$MediapipeCameraHubChildProcessFile = Join-Path $StateDir "modules\mediapipe_camera_hub_stack\processes.json"
+$StateQueryFeedbackPath = Join-Path $StateDir "feedback\state-query.jsonl"
+
+$ExternalProcessDenyList = @(
+    "chrome",
+    "msedge",
+    "firefox",
+    "brave",
+    "brave-browser",
+    "opera",
+    "vivaldi",
+    "updater",
+    "googleupdate",
+    "microsoftedgeupdate"
+)
 
 function Resolve-Tool {
     param([Parameter(Mandatory = $true)][string]$Name)
@@ -624,6 +647,96 @@ function Get-PortConflicts {
     )
 }
 
+function Test-ExternalProcessDenied {
+    param([string]$ProcessName)
+    $normalized = Normalize-ProcessName -Name $ProcessName
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return $false
+    }
+    return $ExternalProcessDenyList -contains $normalized
+}
+
+function Normalize-ProcessName {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return ""
+    }
+    $normalized = $Name.ToLowerInvariant()
+    if ($normalized.EndsWith(".exe")) {
+        $normalized = $normalized.Substring(0, $normalized.Length - 4)
+    }
+    return $normalized
+}
+
+function Get-ObjectProperty {
+    param(
+        [object]$Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [object]$Default = $null
+    )
+    if ($null -eq $Object) {
+        return $Default
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        return $Default
+    }
+    return $property.Value
+}
+
+function ConvertTo-StringArray {
+    param([object]$Value)
+    if ($null -eq $Value) {
+        return @()
+    }
+    return @($Value | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+
+function Test-ProcessStartTimeMatches {
+    param(
+        [Parameter(Mandatory = $true)][object]$Process,
+        [string]$RecordedAt,
+        [int]$GraceSeconds = 60
+    )
+    if ([string]::IsNullOrWhiteSpace($RecordedAt)) {
+        return $true
+    }
+    try {
+        $recorded = [DateTimeOffset]::Parse($RecordedAt)
+        $processStarted = [DateTimeOffset]$Process.StartTime
+        return (
+            $processStarted -ge $recorded.AddSeconds(-10) -and
+            $processStarted -le $recorded.AddSeconds($GraceSeconds)
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
+function Test-RecordedProcessEntryAlive {
+    param([Parameter(Mandatory = $true)][object]$Entry)
+    $pidValue = [int](Get-ObjectProperty -Object $Entry -Name "pid" -Default 0)
+    if ($pidValue -le 0) {
+        return $false
+    }
+    $process = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
+    if ($null -eq $process) {
+        return $false
+    }
+    $startedAt = [string](Get-ObjectProperty -Object $Entry -Name "started_at" -Default "")
+    if (-not (Test-ProcessStartTimeMatches -Process $process -RecordedAt $startedAt -GraceSeconds 60)) {
+        return $false
+    }
+    $allowedNames = @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $Entry -Name "allowed_process_names" -Default @()))
+    if ($allowedNames.Count -eq 0) {
+        return -not (Test-ExternalProcessDenied -ProcessName ([string]$process.ProcessName))
+    }
+    $processName = Normalize-ProcessName -Name ([string]$process.ProcessName)
+    $allowed = @($allowedNames | ForEach-Object { Normalize-ProcessName -Name $_ })
+    return $allowed -contains $processName
+}
+
 function Resolve-PortConflicts {
     param(
         [Parameter(Mandatory = $true)][object[]]$PortSpecs
@@ -641,40 +754,15 @@ function Resolve-PortConflicts {
         Out-String -Width 240 |
         Write-Host
 
+    $summary = @($conflicts | ForEach-Object { "$($_.Label):$($_.Port) PID $($_.PID) $($_.ProcessName)" }) -join ", "
     if ($DryRun) {
-        throw "Required ports are in use. DryRun will not stop existing processes."
+        throw "Required ports are in use. DryRun will not stop unrecorded processes: $summary"
     }
-
-    $shouldStop = $StopExisting
-    if (-not $shouldStop) {
-        $answer = Read-Host "Stop these existing processes and continue? [y/N]"
-        $shouldStop = $answer -match "^(y|yes)$"
-    }
-    if (-not $shouldStop) {
-        throw "Canceled because required ports are in use."
-    }
-
-    $pids = @($conflicts | Select-Object -ExpandProperty PID -Unique | Sort-Object -Descending)
-    foreach ($pidValue in $pids) {
-        $process = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
-        if ($null -eq $process) {
-            continue
-        }
-        try {
-            Stop-Process -Id $pidValue -Force -ErrorAction Stop
-            Write-Host "stopped PID $pidValue $($process.ProcessName)"
-        }
-        catch {
-            Write-Warning "failed to stop PID $pidValue $($process.ProcessName): $($_.Exception.Message)"
-        }
-    }
-
-    Start-Sleep -Milliseconds 500
-    $remaining = @(Get-PortConflicts -PortSpecs $PortSpecs)
-    if ($remaining.Count -gt 0) {
-        $summary = @($remaining | ForEach-Object { "$($_.Label):$($_.Port) PID $($_.PID)" }) -join ", "
-        throw "Some required ports are still in use: $summary"
-    }
+    throw (
+        "Required ports are still in use after recorded stack cleanup. " +
+        "These processes are outside the current Home Control process registry, " +
+        "so they were not stopped automatically: $summary"
+    )
 }
 
 function Read-PidState {
@@ -689,14 +777,116 @@ function Read-PidState {
     }
 }
 
+function Read-JsonFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+    try {
+        return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-PathUnderDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Directory
+    )
+    try {
+        $fullPath = [System.IO.Path]::GetFullPath($Path)
+        $fullDirectory = [System.IO.Path]::GetFullPath($Directory).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        return $fullPath.StartsWith($fullDirectory + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Clear-ChildProcessManifest {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return
+    }
+    if (-not (Test-PathUnderDirectory -Path $Path -Directory $StateDir)) {
+        throw "Refusing to clear child process manifest outside state dir: $Path"
+    }
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        Remove-Item -LiteralPath $Path -Force
+    }
+}
+
+function Test-ManifestFreshForChild {
+    param(
+        [Parameter(Mandatory = $true)][object]$Manifest,
+        [Parameter(Mandatory = $true)][object]$Child
+    )
+    $updatedAt = [string](Get-ObjectProperty -Object $Manifest -Name "updated_at" -Default "")
+    if ([string]::IsNullOrWhiteSpace($updatedAt)) {
+        return $false
+    }
+    try {
+        $manifestTime = [DateTimeOffset]::Parse($updatedAt)
+        $childStarted = [DateTimeOffset]::Parse([string]$Child.StartedAt)
+        return $manifestTime -ge $childStarted.AddSeconds(-2)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Wait-CameraHubStackReady {
+    param(
+        [Parameter(Mandatory = $true)][object]$Child,
+        [int]$TimeoutSeconds = 35
+    )
+    $manifestPath = [string]$Child.ChildProcessFile
+    if ([string]::IsNullOrWhiteSpace($manifestPath)) {
+        return
+    }
+
+    Write-Host "[$($Child.Name)] waiting for Camera Hub topics readiness..."
+    $deadline = [DateTimeOffset]::Now.AddSeconds($TimeoutSeconds)
+    $lastDetail = "waiting for process manifest"
+    while ([DateTimeOffset]::Now -lt $deadline) {
+        if ($Child.Process.HasExited) {
+            throw "$($Child.Name) exited before Camera Hub topics became ready. Last detail: $lastDetail"
+        }
+
+        $manifest = Read-JsonFile -Path $manifestPath
+        if ($null -ne $manifest) {
+            if (-not (Test-ManifestFreshForChild -Manifest $manifest -Child $Child)) {
+                $lastDetail = "waiting for fresh Camera Hub process manifest"
+                Start-Sleep -Milliseconds 500
+                continue
+            }
+
+            $lastDetail = [string](Get-ObjectProperty -Object $manifest -Name "ready_detail" -Default "waiting for Camera Hub topics")
+            $ready = [bool](Get-ObjectProperty -Object $manifest -Name "ready" -Default $false)
+            if ($ready) {
+                if ([string]::IsNullOrWhiteSpace($lastDetail)) {
+                    $lastDetail = "ready"
+                }
+                Write-Host "[$($Child.Name)] Camera Hub topics ready: $lastDetail"
+                return
+            }
+        }
+
+        Start-Sleep -Milliseconds 500
+    }
+
+    throw "$($Child.Name) did not report Camera Hub topics ready within ${TimeoutSeconds}s. Last detail: $lastDetail"
+}
+
 function Test-RecordedProcessesAlive {
     $state = Read-PidState
     if ($null -eq $state -or $null -eq $state.processes) {
         return $false
     }
     foreach ($entry in $state.processes) {
-        $pidValue = [int]$entry.pid
-        if ($null -ne (Get-Process -Id $pidValue -ErrorAction SilentlyContinue)) {
+        if (Test-RecordedProcessEntryAlive -Entry $entry) {
             return $true
         }
     }
@@ -707,15 +897,22 @@ function Save-PidState {
     param([Parameter(Mandatory = $true)][object[]]$Children)
     New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
     $state = [pscustomobject]@{
+        schema_version = 2
         started_at = [DateTimeOffset]::Now.ToString("o")
         workspace_root = $WorkspaceRoot
         processes = @(
             $Children | ForEach-Object {
                 [pscustomobject]@{
                     name = $_.Name
+                    module = $_.Module
+                    role = $_.Role
                     pid = $_.Process.Id
                     working_directory = $_.WorkingDirectory
                     command = $_.CommandLine
+                    started_at = $_.StartedAt
+                    stop_strategy = $_.StopStrategy
+                    allowed_process_names = @($_.AllowedProcessNames)
+                    child_process_file = $_.ChildProcessFile
                 }
             }
         )
@@ -807,7 +1004,7 @@ function Write-StackEndpointGuide {
         Write-GuideItem `
             -Name "MediaPipe Browser Monitor" `
             -Target $browserMonitorUrl `
-            -Description "MediaMTX の映像と Camera Hub の topic を同時に見るブラウザ GUI。mediamtx モードでは自動で開く。"
+            -Description "MediaMTX の映像と Camera Hub の topic を同時に見るブラウザ GUI。必要なときだけ手動で開く。"
         Write-GuideItem `
             -Name "MediaMTX video" `
             -Target "http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true" `
@@ -825,13 +1022,19 @@ function Write-StackEndpointGuide {
         Write-GuideItem `
             -Name "MediaPipe Browser Monitor" `
             -Target (Join-Path $MediapipeRoot "apps\browser_camera_hub_viewer.html") `
-            -Description "Camera Hub を見るブラウザ GUI。開いたら WebSocket に ws://127.0.0.1:$MediapipePort を指定。"
+            -Description "Camera Hub topic の状態確認用。camera-hub モードではMediaMTX映像は起動しないため、映像paneは空になる。"
     }
     elseif (-not $SkipMediapipe) {
         Write-GuideItem `
             -Name "MediaPipe WebSocket" `
             -Target "ws://127.0.0.1:$MediapipePort" `
             -Description "ジェスチャー状態の WebSocket。ブラウザで直接開く画面ではない。"
+    }
+    if ($LaunchVisionSnapshotProcessor) {
+        Write-GuideItem `
+            -Name "Vision Snapshot Processor WebSocket" `
+            -Target "ws://127.0.0.1:$VisionSnapshotProcessorPort" `
+            -Description "snapshot vision state topic の WebSocket。room_light などを配信する。"
     }
     if (-not $SkipVoicevoxCheck -and -not $SkipAituber) {
         Write-GuideItem `
@@ -892,7 +1095,12 @@ function New-ServiceSpec {
         [Parameter(Mandatory = $true)][string]$FilePath,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [Parameter(Mandatory = $true)][string]$WorkingDirectory,
-        [hashtable]$Environment = @{}
+        [hashtable]$Environment = @{},
+        [string]$Module = "",
+        [string]$Role = "service",
+        [string]$StopStrategy = "managed_tree",
+        [string[]]$AllowedProcessNames = @(),
+        [string]$ChildProcessFile = ""
     )
     return [pscustomobject]@{
         Name = $Name
@@ -900,11 +1108,18 @@ function New-ServiceSpec {
         Arguments = $Arguments
         WorkingDirectory = $WorkingDirectory
         Environment = $Environment
+        Module = $Module
+        Role = $Role
+        StopStrategy = $StopStrategy
+        AllowedProcessNames = @($AllowedProcessNames)
+        ChildProcessFile = $ChildProcessFile
     }
 }
 
 function Start-SupervisedProcess {
     param([Parameter(Mandatory = $true)][object]$Spec)
+
+    Clear-ChildProcessManifest -Path $Spec.ChildProcessFile
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $Spec.FilePath
@@ -977,11 +1192,17 @@ function Start-SupervisedProcess {
 
     return [pscustomobject]@{
         Name = $Spec.Name
+        Module = $Spec.Module
+        Role = $Spec.Role
         Process = $process
         StdoutEvent = $stdoutEvent
         StderrEvent = $stderrEvent
         WorkingDirectory = $Spec.WorkingDirectory
         CommandLine = $commandLine
+        StartedAt = [DateTimeOffset]::Now.ToString("o")
+        StopStrategy = $Spec.StopStrategy
+        AllowedProcessNames = @($Spec.AllowedProcessNames)
+        ChildProcessFile = $Spec.ChildProcessFile
         NotifiedExit = $false
     }
 }
@@ -1008,6 +1229,9 @@ New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 Assert-Directory -Path $HomeAssistantServerRoot -Label "home-assistant-server"
 Assert-Directory -Path $MediapipeRoot -Label "mediapipe-sword-sign"
+if ($LaunchVisionSnapshotProcessor) {
+    Assert-Directory -Path $VisionSnapshotProcessorRoot -Label "vision-snapshot-processor"
+}
 Assert-Directory -Path $AituberRoot -Label "aituber-kit"
 if (-not $SkipEnvironmentState) {
     Assert-Directory -Path $EnvironmentStateServerRoot -Label "environment-state-server"
@@ -1066,6 +1290,12 @@ if (-not $DryRun) {
         $requiredPorts += [pscustomobject]@{
             Label = "mediapipe-sword-sign"
             Port = $MediapipePort
+        }
+    }
+    if ($LaunchVisionSnapshotProcessor) {
+        $requiredPorts += [pscustomobject]@{
+            Label = "vision-snapshot-processor"
+            Port = $VisionSnapshotProcessorPort
         }
     }
     if (-not $SkipAituber) {
@@ -1181,7 +1411,10 @@ if (-not $SkipHomeAssistantBridge) {
             [string]$HomeAssistantBridgePort
         ) `
         -WorkingDirectory $HomeAssistantServerRoot `
-        -Environment $homeAssistantBridgeEnvironment
+        -Environment $homeAssistantBridgeEnvironment `
+        -Module "home-assistant-server" `
+        -Role "api" `
+        -AllowedProcessNames @("uv", "uvicorn", "python")
 }
 if (-not $SkipEnvironmentState) {
     $environmentStateArgs = @(
@@ -1197,6 +1430,8 @@ if (-not $SkipEnvironmentState) {
         [string]$EnvironmentStatePort,
         "--ha-events-path",
         (Join-Path $HomeAssistantServerRoot ".cache\home_control\events.jsonl"),
+        "--state-query-feedback-path",
+        $StateQueryFeedbackPath,
         "--camera-hub-url",
         "ws://127.0.0.1:$MediapipePort",
         "--home-assistant-health-url",
@@ -1214,11 +1449,20 @@ if (-not $SkipEnvironmentState) {
     if ($SkipMediapipe) {
         $environmentStateArgs += "--disable-camera-hub"
     }
+    if ($LaunchVisionSnapshotProcessor) {
+        $environmentStateArgs += @(
+            "--vision-topic-url",
+            "ws://127.0.0.1:$VisionSnapshotProcessorPort"
+        )
+    }
     $specs += New-ServiceSpec `
         -Name "environment_state_server" `
         -FilePath $uv `
         -Arguments $environmentStateArgs `
-        -WorkingDirectory $EnvironmentStateServerRoot
+        -WorkingDirectory $EnvironmentStateServerRoot `
+        -Module "environment-state-server" `
+        -Role "api" `
+        -AllowedProcessNames @("uv", "python")
 }
 if (-not $SkipMediapipe) {
     $cameraHubServerPath = Join-Path $MediapipeRoot "apps\serve_camera_hub.py"
@@ -1243,7 +1487,7 @@ if (-not $SkipMediapipe) {
         if ($StopExisting) {
             $cameraHubStackArgs += "--force-stop-existing"
         }
-        if ($MediapipeNoBrowser) {
+        if ($MediapipeNoBrowser -or -not $MediapipeOpenBrowser) {
             $cameraHubStackArgs += "--no-browser"
         }
         if ($MediapipePythonGui) {
@@ -1255,7 +1499,11 @@ if (-not $SkipMediapipe) {
             -Name "mediapipe_camera_hub_stack" `
             -FilePath $uv `
             -Arguments $cameraHubStackArgs `
-            -WorkingDirectory $MediapipeRoot
+            -WorkingDirectory $MediapipeRoot `
+            -Module "mediapipe-sword-sign" `
+            -Role "camera_hub_stack" `
+            -AllowedProcessNames @("uv", "python", "mediamtx", "ffmpeg") `
+            -ChildProcessFile $MediapipeCameraHubChildProcessFile
         $mediapipeCameraHubLaunched = $true
         $mediapipeMediaMtxStackLaunched = $true
     }
@@ -1278,9 +1526,13 @@ if (-not $SkipMediapipe) {
                 "--gesture-every",
                 "0.1",
                 "--gesture-model-complexity",
-                "0"
+                "0",
+                "--publish-landmarks"
             ) `
-            -WorkingDirectory $MediapipeRoot
+            -WorkingDirectory $MediapipeRoot `
+            -Module "mediapipe-sword-sign" `
+            -Role "camera_hub" `
+            -AllowedProcessNames @("uv", "python")
         $mediapipeCameraHubLaunched = $true
 
         if ($MediapipeMode -eq "gui" -and (Test-Path -LiteralPath $cameraHubGuiPath -PathType Leaf)) {
@@ -1292,7 +1544,10 @@ if (-not $SkipMediapipe) {
                     "python",
                     "apps\camera_hub_gui.py"
                 ) `
-                -WorkingDirectory $MediapipeRoot
+                -WorkingDirectory $MediapipeRoot `
+                -Module "mediapipe-sword-sign" `
+                -Role "camera_hub_gui" `
+                -AllowedProcessNames @("uv", "python")
             $mediapipeMonitorGuiLaunched = $true
         }
     }
@@ -1312,9 +1567,42 @@ if (-not $SkipMediapipe) {
                 "--port",
                 [string]$MediapipePort
             ) `
-            -WorkingDirectory $MediapipeRoot
+            -WorkingDirectory $MediapipeRoot `
+            -Module "mediapipe-sword-sign" `
+            -Role "legacy_websocket" `
+            -AllowedProcessNames @("uv", "python")
         $mediapipeLegacyWebSocketLaunched = $true
     }
+}
+if ($LaunchVisionSnapshotProcessor) {
+    $visionSnapshotEntrypoint = Join-Path $VisionSnapshotProcessorRoot "src\vision_snapshot_processor\main.py"
+    if (-not (Test-Path -LiteralPath $visionSnapshotEntrypoint -PathType Leaf)) {
+        throw "Vision Snapshot Processor entrypoint not found: src\vision_snapshot_processor\main.py"
+    }
+
+    $specs += New-ServiceSpec `
+        -Name "vision_snapshot_processor" `
+        -FilePath $uv `
+        -Arguments @(
+            "run",
+            "python",
+            "-m",
+            "vision_snapshot_processor.main",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            [string]$VisionSnapshotProcessorPort,
+            "--camera-source",
+            "rtsp://127.0.0.1:8554/cam0",
+            "--frame-id",
+            "cam0",
+            "--processor",
+            "room_light"
+        ) `
+        -WorkingDirectory $VisionSnapshotProcessorRoot `
+        -Module "vision-snapshot-processor" `
+        -Role "vision_snapshot_processor" `
+        -AllowedProcessNames @("uv", "python")
 }
 if (-not $SkipAituber) {
     $specs += New-ServiceSpec `
@@ -1329,7 +1617,10 @@ if (-not $SkipAituber) {
             "--port",
             [string]$AituberPort
         ) `
-        -WorkingDirectory $AituberRoot
+        -WorkingDirectory $AituberRoot `
+        -Module "aituber-kit" `
+        -Role "frontend" `
+        -AllowedProcessNames @("cmd", "node", "npm")
 }
 if (-not $SkipDifyWatch) {
     $specs += New-ServiceSpec `
@@ -1347,7 +1638,10 @@ if (-not $SkipDifyWatch) {
             "-StatusDir",
             $DifyWatchStatusDir
         ) `
-        -WorkingDirectory $DifyWatchRoot
+        -WorkingDirectory $DifyWatchRoot `
+        -Module "sword-voice-agent" `
+        -Role "dify_watcher" `
+        -AllowedProcessNames @("pwsh", "powershell", "python")
 }
 if (-not $SkipTouchDesignerGui) {
     $specs += New-ServiceSpec `
@@ -1362,7 +1656,10 @@ if (-not $SkipTouchDesignerGui) {
             "--host",
             $TouchDesignerGuiHost
         ) `
-        -WorkingDirectory $TouchDesignerGuiToolsRoot
+        -WorkingDirectory $TouchDesignerGuiToolsRoot `
+        -Module "touchdesigner-ai-controller" `
+        -Role "display_runtime" `
+        -AllowedProcessNames @("node")
 }
 
 if ($DryRun) {
@@ -1380,6 +1677,9 @@ try {
     foreach ($spec in $specs) {
         $children += Start-SupervisedProcess -Spec $spec
         Save-PidState -Children $children
+        if ($spec.Name -eq "mediapipe_camera_hub_stack") {
+            Wait-CameraHubStackReady -Child $children[-1]
+        }
         Start-Sleep -Milliseconds 500
     }
 

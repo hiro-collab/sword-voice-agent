@@ -328,6 +328,19 @@ class WatchHandoffToDifyTest(TestCase):
         )
         self.assertEqual(clean_speech_message("[neutral]"), "")
 
+    def test_clean_speech_message_normalizes_bare_motion_tags(self) -> None:
+        self.assertEqual(
+            clean_speech_message(
+                "[neutral]おっ、またお辞儀か！[bow]はい、どうぞ！"
+            ),
+            "[neutral]おっ、またお辞儀か！[motion:bow]はい、どうぞ！",
+        )
+        self.assertEqual(
+            clean_speech_message("[motion:Bow]どうぞ。"),
+            "[motion:bow]どうぞ。",
+        )
+        self.assertEqual(clean_speech_message("[bow]"), "")
+
     @patch("sword_voice_agent.apps.watch_handoff_to_dify.request.urlopen")
     def test_aituber_forwarder_posts_sentence_sized_direct_send_messages(
         self,

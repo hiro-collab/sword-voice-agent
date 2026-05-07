@@ -3,6 +3,7 @@ param(
     [int]$HomeAssistantBridgePort = 8787,
     [int]$EnvironmentStatePort = 8790,
     [int]$MediapipePort = 8765,
+    [int]$VisionSnapshotProcessorPort = 8776,
     [int]$AituberPort = 3000,
     [int]$TouchDesignerGuiPort = 8788,
     [int]$DifyPort = 8080,
@@ -56,13 +57,88 @@ function Read-PidState {
     }
 }
 
+function Normalize-ProcessName {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return ""
+    }
+    $normalized = $Name.ToLowerInvariant()
+    if ($normalized.EndsWith(".exe")) {
+        $normalized = $normalized.Substring(0, $normalized.Length - 4)
+    }
+    return $normalized
+}
+
+function Get-ObjectProperty {
+    param(
+        [object]$Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [object]$Default = $null
+    )
+    if ($null -eq $Object) {
+        return $Default
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        return $Default
+    }
+    return $property.Value
+}
+
+function ConvertTo-StringArray {
+    param([object]$Value)
+    if ($null -eq $Value) {
+        return @()
+    }
+    return @($Value | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+
+function Test-ProcessStartTimeMatches {
+    param(
+        [Parameter(Mandatory = $true)][object]$Process,
+        [string]$RecordedAt,
+        [int]$GraceSeconds = 60
+    )
+    if ([string]::IsNullOrWhiteSpace($RecordedAt)) {
+        return $true
+    }
+    try {
+        $recorded = [DateTimeOffset]::Parse($RecordedAt)
+        $processStarted = [DateTimeOffset]$Process.StartTime
+        return (
+            $processStarted -ge $recorded.AddSeconds(-10) -and
+            $processStarted -le $recorded.AddSeconds($GraceSeconds)
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
 function Test-ProcessAlive {
     param([object]$Entry)
     if ($null -eq $Entry) {
         return $false
     }
-    $pidValue = [int]$Entry.pid
-    return $null -ne (Get-Process -Id $pidValue -ErrorAction SilentlyContinue)
+    $pidValue = [int](Get-ObjectProperty -Object $Entry -Name "pid" -Default 0)
+    if ($pidValue -le 0) {
+        return $false
+    }
+    $process = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
+    if ($null -eq $process) {
+        return $false
+    }
+    $startedAt = [string](Get-ObjectProperty -Object $Entry -Name "started_at" -Default "")
+    if (-not (Test-ProcessStartTimeMatches -Process $process -RecordedAt $startedAt -GraceSeconds 60)) {
+        return $false
+    }
+    $allowedNames = @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $Entry -Name "allowed_process_names" -Default @()))
+    if ($allowedNames.Count -eq 0) {
+        return $true
+    }
+    $processName = Normalize-ProcessName -Name ([string]$process.ProcessName)
+    $allowed = @($allowedNames | ForEach-Object { Normalize-ProcessName -Name $_ })
+    return $allowed -contains $processName
 }
 
 function Test-TcpListen {
@@ -112,6 +188,50 @@ function Invoke-JsonHealthCheck {
             Ok = $false
             Detail = $_.Exception.Message
         }
+    }
+}
+
+function Read-JsonFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+    try {
+        return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-CameraHubReadyStatus {
+    param([object]$Entry)
+    $path = [string](Get-ObjectProperty -Object $Entry -Name "child_process_file" -Default "")
+    if ([string]::IsNullOrWhiteSpace($path)) {
+        return [pscustomobject]@{
+            Known = $false
+            Ready = $false
+            Detail = ""
+        }
+    }
+
+    $manifest = Read-JsonFile -Path $path
+    if ($null -eq $manifest) {
+        return [pscustomobject]@{
+            Known = $true
+            Ready = $false
+            Detail = "waiting for Camera Hub process manifest"
+        }
+    }
+
+    $detail = [string]$manifest.ready_detail
+    if ([string]::IsNullOrWhiteSpace($detail)) {
+        $detail = if ($manifest.ready -eq $true) { "Camera Hub topics ready" } else { "waiting for Camera Hub topics" }
+    }
+    return [pscustomobject]@{
+        Known = $true
+        Ready = ($manifest.ready -eq $true)
+        Detail = $detail
     }
 }
 
@@ -192,12 +312,40 @@ function Get-StatusText {
         $mediapipeEntry = $pidState["mediapipe_ws"]
     }
     $mediapipeListen = Test-TcpListen -Port $MediapipePort
+    $cameraHubReady = Get-CameraHubReadyStatus -Entry $mediapipeEntry
+    $mediapipeReady = if ($cameraHubReady.Known) { $cameraHubReady.Ready } else { $mediapipeListen }
+    $mediapipeDetail = if ($mediapipeReady -and $mediapipeListen) {
+        if ($cameraHubReady.Known) { $cameraHubReady.Detail } else { "ws://127.0.0.1:$MediapipePort listening" }
+    }
+    elseif ($mediapipeListen) {
+        "ws://127.0.0.1:$MediapipePort listening; $($cameraHubReady.Detail)"
+    }
+    else {
+        "waiting for Camera Hub WebSocket"
+    }
     $rows += New-StatusRow `
         -Name "mediapipe" `
         -ProcessAlive (Test-ProcessAlive -Entry $mediapipeEntry) `
-        -PortListening $mediapipeListen `
+        -PortListening ($mediapipeListen -and $mediapipeReady) `
         -HttpOk $false `
-        -Detail $(if ($mediapipeListen) { "ws://127.0.0.1:$MediapipePort listening" } else { "waiting for MediaPipe WebSocket" })
+        -Detail $mediapipeDetail
+
+    $visionSnapshotEntry = $pidState["vision_snapshot_processor"]
+    $visionSnapshotListen = Test-TcpListen -Port $VisionSnapshotProcessorPort
+    if ($null -ne $visionSnapshotEntry -or $visionSnapshotListen) {
+        $visionSnapshotDetail = if ($visionSnapshotListen) {
+            "ws://127.0.0.1:$VisionSnapshotProcessorPort listening"
+        }
+        else {
+            "waiting for vision snapshot processor"
+        }
+        $rows += New-StatusRow `
+            -Name "vision_snapshot" `
+            -ProcessAlive (Test-ProcessAlive -Entry $visionSnapshotEntry) `
+            -PortListening $visionSnapshotListen `
+            -HttpOk $false `
+            -Detail $visionSnapshotDetail
+    }
 
     $aituberEntry = $pidState["aituber_kit"]
     $aituberHealth = Invoke-HttpCheck -Url "http://127.0.0.1:$AituberPort"

@@ -7,6 +7,7 @@
 ## Success Conditions
 
 - Camera Hub が刀印状態を topic として配信する。
+- Vision Snapshot Processor が室内照明などの snapshot vision state を topic として配信する。
 - sword-voice-agent が gesture topic を受けて、録音開始/停止の意図を生成する。
 - ai-talk-core が録音、STT、handoff 保存を担当する。
 - Dify watcher が handoff を Dify Chat App に送り、応答を受け取る。
@@ -19,6 +20,7 @@
 ## Non Goals
 
 - Camera Hub 以外が物理カメラを開くこと。
+- Vision Snapshot Processor が物理カメラを直接開くこと。
 - Environment State Server が gesture 推論や映像配信を行うこと。
 - Projection や HUD が制御 state の authority になること。
 - archives 配下の履歴文書を要求仕様として使うこと。
