@@ -17,7 +17,6 @@ Camera Hub gesture topic
 - [module-responsibilities.md](docs/module-responsibilities.md): 各モジュールの責務境界。
 - [state_authority.md](docs/state_authority.md): state、flag、ID の authority。
 - [retired-paths.md](docs/retired-paths.md): 互換、保留、検証専用の導線。
-- [module-maintainer-requests.md](docs/module-maintainer-requests.md): 別担当モジュールへ渡す文書整理依頼。
 
 `archives/` は履歴退避先です。通常の実装判断では読まなくても大丈夫です。必要なときだけ履歴確認として参照します。
 

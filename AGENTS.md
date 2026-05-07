@@ -16,7 +16,6 @@
 - `docs/module-responsibilities.md`: 各モジュールの責務境界。
 - `docs/state_authority.md`: state、flag、ID の authority。
 - `docs/retired-paths.md`: 互換、保留、検証専用の導線。
-- `docs/module-maintainer-requests.md`: 別担当モジュールへ渡す文書整理依頼。
 
 ## Architecture Rules
 
