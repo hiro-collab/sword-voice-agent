@@ -4,8 +4,12 @@
   "logical_service": "display-runtime",
   "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
   "repo_path": "touchdesigner-ai-controller",
-  "contracts": ["expression"],
+  "contracts": ["expression", "access-control"],
   "adapters": ["touchdesigner"],
+  "memory": {
+    "reads": ["M1", "M5"],
+    "writes": ["M1", "M3"]
+  },
   "pid_names": ["touchdesigner_control_gui"],
   "start": {
     "type": "stack-script"

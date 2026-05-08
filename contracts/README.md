@@ -16,6 +16,8 @@ consumers.
 | `environment/` | Environment snapshots and feedback surfaces consumed by Dify/thought-core. |
 | `home-control/` | Safe home action preview/execute boundary. |
 | `expression/` | Current TTS and AITuberKit presentation payloads. |
+| `memory/` | M4 retrieval, candidate, and commit protocol shapes. |
+| `access-control/` | Capability authorization decision and audit payloads. |
 
 ## Current Sources
 
@@ -43,3 +45,7 @@ Expression contracts are extracted from:
 
 - `src/sword_voice_agent/apps/watch_handoff_to_thought_core.py`
 - `docs/integration-contract.md`
+
+Memory and access-control contracts are policy-first skeletons. They define the
+boundary shape before a standalone `memory-core` or authorization service is
+introduced.

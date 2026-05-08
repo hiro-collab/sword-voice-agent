@@ -4,8 +4,12 @@
   "logical_service": "sword-voice-agent",
   "current_owner": "scripts/start-thought-core-watch.ps1",
   "repo_path": "sword-voice-agent",
-  "contracts": ["turn", "events", "expression"],
+  "contracts": ["turn", "events", "expression", "memory", "access-control"],
   "adapters": ["ai-talk-core", "aituber-kit", "tts-service"],
+  "memory": {
+    "reads": ["M1", "M2", "M5"],
+    "writes": ["M1", "M3"]
+  },
   "pid_names": ["thought_core_watcher"],
   "start": {
     "type": "script",

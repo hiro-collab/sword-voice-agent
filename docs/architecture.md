@@ -53,6 +53,8 @@ contracts/
   environment
   home-control
   expression
+  memory
+  access-control
 
 runtime/
   logs
@@ -95,6 +97,26 @@ diagnostics.
 
 `ops` holds launch, stop, status, manifest, and process registry concerns.
 
+## Memory Layers
+
+Memory management is wider than long-term AI memory. It separates fast signals,
+current state, core working memory, append-only journals, durable memory,
+human-managed configuration, policy, and secrets.
+
+| Layer | Name | Speed / size | Owner pattern | Current / target location |
+|---|---|---|---|---|
+| `M0` | Raw signal buffer | streaming, high-volume, very short TTL | sensing modules only | Camera/audio buffers inside reflex/environment inputs |
+| `M1` | Module state | snapshot, small to medium | each service writes only its own state | `.cache/...`, future `runtime/state/` |
+| `M2` | Core working memory | turn/task-local, small to medium | reflex/thought/deep cores | in-process, optional checkpoint |
+| `M3` | Event journal | append-heavy, growing | services append facts | `.cache/.../*.jsonl`, future `runtime/logs/events/` |
+| `M4` | Semantic / episodic memory | indexed retrieval, durable | `memory-core` commits | future `local/memory/` |
+| `M5` | Config / policy | low-write, reviewed | humans / ops-managed policy | `.env.example`, future `local/config/`, `policies/` |
+| `M6` | Secrets | isolated, tiny | ops/adapter runtime only | `.env`, OS secret store, local-only secret files |
+
+The rule of thumb is: high-speed layers stay short-lived and local; meaning-rich
+layers are summarized, indexed, and permissioned. `thought-core` should retrieve
+selected M4 facts or summaries, not scan raw M0 signals or full M3 journals.
+
 ## Core Services
 
 | Logical service | Purpose | Current implementation |
@@ -119,6 +141,10 @@ diagnostics.
   `home-control-server`; the Home Assistant client itself is an adapter.
 - Runtime files should not become design inputs. If a generated log or state
   file becomes part of a contract, document the contract separately.
+- `memory-core` is the commit authority for M4. Other cores may create memory
+  candidates, but should not directly commit long-term memory.
+- Config, policy, and secrets are not learned memory. They stay separate from
+  M4 and require explicit human/ops control.
 
 ## Existing Source Documents
 

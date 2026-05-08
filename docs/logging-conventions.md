@@ -41,6 +41,36 @@ Prefer a top-level `layer` field when adding new JSON/JSONL records:
 For thought-core events, `layer` is optional and defined by
 `contracts/events/layer.schema.json`.
 
+## Event Journal
+
+The cross-service event journal is M3. It records operational facts, not raw
+signals or committed long-term memory. Prefer
+`contracts/events/system-event.schema.json` for new shared journal records.
+
+Journal records should be append-only and include enough correlation to replay
+or audit an action path:
+
+```json
+{
+  "schema_version": "system.event.v0",
+  "event_id": "evt_001",
+  "ts": "2026-05-08T12:00:00+09:00",
+  "trace_id": "trace_001",
+  "turn_id": "turn_001",
+  "service": "thought-core",
+  "layer": "turn",
+  "event": "tool.started",
+  "level": "info",
+  "payload": {
+    "tool": "environment.observe"
+  }
+}
+```
+
+Do not append M0 frames, secrets, or full prompt drafts to the journal. If a
+journal pattern becomes useful long-term knowledge, create a memory candidate
+and let `memory-core` decide whether to commit it.
+
 ## Text Logs
 
 For text logs, put the layer in the prefix or logger name:

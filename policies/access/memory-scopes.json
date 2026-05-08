@@ -1,0 +1,53 @@
+{
+  "schema_version": "access.memory_scopes.v0",
+  "scopes": {
+    "session": {
+      "layer": "M2",
+      "readable_by": ["svc.thought-core", "svc.memory-core"],
+      "writable_by": ["svc.memory-core"],
+      "write_requires_confirmation": false
+    },
+    "semantic": {
+      "layer": "M4",
+      "readable_by": ["svc.thought-core", "svc.deep-core", "svc.memory-core"],
+      "writable_by": ["svc.memory-core"],
+      "write_requires_confirmation": false
+    },
+    "episodic": {
+      "layer": "M4",
+      "readable_by": ["svc.deep-core", "svc.memory-core"],
+      "writable_by": ["svc.memory-core"],
+      "write_requires_confirmation": false
+    },
+    "user_preferences": {
+      "layer": "M4",
+      "readable_by": ["svc.thought-core", "svc.aituber-ui", "svc.display-runtime", "svc.memory-core"],
+      "writable_by": ["svc.memory-core"],
+      "write_requires_confirmation": true
+    },
+    "device_aliases": {
+      "layer": "M5",
+      "readable_by": ["svc.thought-core", "svc.environment-server", "svc.home-control-server", "svc.memory-core"],
+      "writable_by": ["svc.ops"],
+      "write_requires_confirmation": true
+    },
+    "failure_patterns": {
+      "layer": "M4",
+      "readable_by": ["svc.thought-core", "svc.deep-core", "svc.home-control-server", "svc.memory-core"],
+      "writable_by": ["svc.memory-core"],
+      "write_requires_confirmation": false
+    },
+    "design_notes": {
+      "layer": "M4",
+      "readable_by": ["svc.deep-core", "svc.memory-core", "svc.ops"],
+      "writable_by": ["svc.memory-core"],
+      "write_requires_confirmation": false
+    },
+    "secrets": {
+      "layer": "M6",
+      "readable_by": [],
+      "writable_by": ["svc.ops"],
+      "write_requires_confirmation": true
+    }
+  }
+}

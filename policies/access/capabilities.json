@@ -1,0 +1,77 @@
+{
+  "schema_version": "access.capabilities.v0",
+  "capabilities": {
+    "state.read": {
+      "description": "Read service or module state projections."
+    },
+    "state.write.own": {
+      "description": "Write only the caller's own module state."
+    },
+    "events.append": {
+      "description": "Append structured operational events."
+    },
+    "diagnostics.write": {
+      "description": "Write local diagnostics without changing authority."
+    },
+    "config.read": {
+      "description": "Read reviewed configuration and policy."
+    },
+    "config.propose_change": {
+      "description": "Propose configuration changes without applying them."
+    },
+    "runtime.status.read": {
+      "description": "Read runtime process/status projections."
+    },
+    "runtime.status.write": {
+      "description": "Write own runtime process/status projections."
+    },
+    "reflex.emit": {
+      "description": "Emit meaning-level reflex events."
+    },
+    "environment.observe": {
+      "description": "Read environment observations through the environment boundary."
+    },
+    "home.preview": {
+      "description": "Preview an approved home action."
+    },
+    "home.execute.low_risk": {
+      "description": "Execute an approved low-risk action request."
+    },
+    "home.execute.requires_approval": {
+      "description": "Execute an action only after approval policy is satisfied."
+    },
+    "expression.emit": {
+      "description": "Send speech/display/motion expression events."
+    },
+    "expression.interrupt": {
+      "description": "Interrupt expression for reflex or safety reasons."
+    },
+    "memory.read.session": {
+      "description": "Read selected session-scoped memory."
+    },
+    "memory.read.semantic": {
+      "description": "Read selected semantic memory."
+    },
+    "memory.read.episodic": {
+      "description": "Read selected episodic memory."
+    },
+    "memory.write.candidate": {
+      "description": "Write a memory candidate, not a committed memory."
+    },
+    "memory.write.confirmed": {
+      "description": "Commit memory after policy and confirmation requirements."
+    },
+    "memory.summarize": {
+      "description": "Summarize journal or memory items."
+    },
+    "web.search": {
+      "description": "Use external research tools."
+    },
+    "ops.start_stop_status": {
+      "description": "Start, stop, and status managed services."
+    },
+    "secrets.use.adapter": {
+      "description": "Use secret material inside an adapter or ops boundary without exposing values."
+    }
+  }
+}

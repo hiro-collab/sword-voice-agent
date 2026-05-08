@@ -231,6 +231,31 @@ function Get-ServiceState {
     return "stopped"
 }
 
+function Get-ServiceMemorySummary {
+    param([object]$Manifest)
+    $memory = Get-ObjectProperty -Object $Manifest -Name "memory" -Default $null
+    if ($null -eq $memory) {
+        return "none"
+    }
+    $reads = @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $memory -Name "reads" -Default @()))
+    $writes = @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $memory -Name "writes" -Default @()))
+    $candidates = @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $memory -Name "candidates" -Default @()))
+    $parts = @()
+    if ($reads.Count -gt 0) {
+        $parts += ("read:" + ($reads -join ","))
+    }
+    if ($writes.Count -gt 0) {
+        $parts += ("write:" + ($writes -join ","))
+    }
+    if ($candidates.Count -gt 0) {
+        $parts += ("candidate:" + ($candidates -join ","))
+    }
+    if ($parts.Count -eq 0) {
+        return "none"
+    }
+    return $parts -join "/"
+}
+
 function Test-ServiceSelected {
     param(
         [string[]]$Services,
@@ -437,13 +462,15 @@ function Write-ManifestStatus {
         $logical = [string](Get-ObjectProperty -Object $manifest -Name "logical_service" -Default "")
         $state = Get-ServiceState -Manifest $manifest -PidMap $pidMap
         $pidNames = ConvertTo-StringArray -Value (Get-ObjectProperty -Object $manifest -Name "pid_names" -Default @())
+        $memorySummary = Get-ServiceMemorySummary -Manifest $manifest
         Write-Host (
-            "[ops] service={0} layer={1} logical={2} state={3} pid_names={4}" -f
+            "[ops] service={0} layer={1} logical={2} state={3} pid_names={4} memory={5}" -f
             $serviceId,
             $layer,
             $logical,
             $state,
-            ($pidNames -join ",")
+            ($pidNames -join ","),
+            $memorySummary
         )
     }
 }

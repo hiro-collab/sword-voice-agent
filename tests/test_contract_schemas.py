@@ -233,6 +233,135 @@ REFLEX_STATUS_EVENT = {
     "payload": GESTURE_RECEIVER_STATUS,
 }
 
+SYSTEM_EVENT = {
+    "schema_version": "system.event.v0",
+    "event_id": "evt_system_schema_001",
+    "ts": "2026-05-08T12:00:00+09:00",
+    "trace_id": "trace_schema_001",
+    "turn_id": "turn_schema_001",
+    "service": "thought-core",
+    "layer": "turn",
+    "event": "tool.started",
+    "level": "info",
+    "payload": {
+        "tool": "environment.observe",
+        "tool_call_id": "tc_schema_001",
+    },
+}
+
+MEMORY_ITEM = {
+    "schema_version": "memory.item.v0",
+    "memory_id": "mcand_schema_001",
+    "memory_type": "failure_pattern",
+    "scope": "failure_patterns",
+    "status": "candidate",
+    "content": {
+        "pattern": "room_light observation may lag after light_off",
+        "recommended_wait_ms": 2000,
+    },
+    "source": {
+        "service": "thought-core",
+        "trace_id": "trace_schema_001",
+        "turn_id": "turn_schema_001",
+        "event_id": "evt_system_schema_001",
+    },
+    "confidence": 0.82,
+    "requires_user_confirmation": False,
+    "created_at": "2026-05-08T12:00:01+09:00",
+}
+
+MEMORY_RETRIEVE_REQUEST = {
+    "schema_version": "memory.retrieve.request.v0",
+    "request_id": "memreq_schema_001",
+    "requester": "svc.thought-core",
+    "scopes": ["failure_patterns", "user_preferences"],
+    "query": {
+        "text": "電気を消して",
+        "action_id": "light_off",
+    },
+    "limit": 5,
+    "trace_id": "trace_schema_001",
+    "turn_id": "turn_schema_001",
+}
+
+MEMORY_RETRIEVE_RESULT = {
+    "schema_version": "memory.retrieve.result.v0",
+    "request_id": "memreq_schema_001",
+    "ok": True,
+    "items": [MEMORY_ITEM],
+    "warnings": [],
+}
+
+MEMORY_WRITE_CANDIDATE_REQUEST = {
+    "schema_version": "memory.write_candidate.request.v0",
+    "request_id": "memcandreq_schema_001",
+    "requester": "svc.thought-core",
+    "candidate": MEMORY_ITEM,
+}
+
+MEMORY_WRITE_CANDIDATE_RESULT = {
+    "schema_version": "memory.write_candidate.result.v0",
+    "request_id": "memcandreq_schema_001",
+    "ok": True,
+    "candidate_id": "mcand_schema_001",
+    "status": "accepted",
+    "warnings": [],
+}
+
+MEMORY_COMMIT_REQUEST = {
+    "schema_version": "memory.commit.request.v0",
+    "request_id": "memcommitreq_schema_001",
+    "requester": "svc.memory-core",
+    "candidate_id": "mcand_schema_001",
+    "decision": "commit",
+    "reason": "policy accepted failure pattern",
+}
+
+MEMORY_COMMIT_RESULT = {
+    "schema_version": "memory.commit.result.v0",
+    "request_id": "memcommitreq_schema_001",
+    "ok": True,
+    "memory_id": "mem_schema_001",
+    "status": "committed",
+}
+
+AUTHORIZATION_REQUEST = {
+    "schema_version": "access.authorization.request.v0",
+    "request_id": "authreq_schema_001",
+    "subject": "svc.thought-core",
+    "capability": "memory.write.candidate",
+    "resource": {
+        "type": "memory_scope",
+        "scope": "failure_patterns",
+    },
+    "context": {
+        "trace_id": "trace_schema_001",
+    },
+}
+
+AUTHORIZATION_DECISION = {
+    "schema_version": "access.authorization.decision.v0",
+    "request_id": "authreq_schema_001",
+    "allowed": True,
+    "reason": "subject has memory.write.candidate",
+    "decided_by": "policy.access.v0",
+    "audit_required": True,
+}
+
+ACCESS_AUDIT_EVENT = {
+    "schema_version": "access.audit.event.v0",
+    "event_id": "evt_access_schema_001",
+    "ts": "2026-05-08T12:00:02+09:00",
+    "subject": "svc.thought-core",
+    "capability": "memory.write.candidate",
+    "resource": {
+        "type": "memory_scope",
+        "scope": "failure_patterns",
+    },
+    "decision": "allowed",
+    "reason": "candidate write is allowed",
+}
+
 
 class ContractSchemaTest(TestCase):
     def test_contract_json_files_are_valid_json(self) -> None:
@@ -271,6 +400,12 @@ class ContractSchemaTest(TestCase):
 
         self.assertEqual(validate_schema(LAYERED_EVENT, schema_path), [])
         self.assertTrue(validate_schema({**LAYERED_EVENT, "layer": "unknown"}, schema_path))
+
+    def test_system_event_schema_accepts_journal_payload(self) -> None:
+        schema_path = REPO_ROOT / "contracts" / "events" / "system-event.schema.json"
+
+        self.assertEqual(validate_schema(SYSTEM_EVENT, schema_path), [])
+        self.assertTrue(validate_schema({**SYSTEM_EVENT, "layer": "unknown"}, schema_path))
 
     def test_tool_schemas_accept_current_thought_core_tool_events(self) -> None:
         call_schema = REPO_ROOT / "contracts" / "tools" / "tool-call.schema.json"
@@ -409,6 +544,41 @@ class ContractSchemaTest(TestCase):
         }
 
         self.assertTrue(validate_schema(invalid, state_schema))
+
+    def test_memory_schemas_accept_representative_payloads(self) -> None:
+        memory_dir = REPO_ROOT / "contracts" / "memory"
+
+        for filename, payload in {
+            "memory-item.schema.json": MEMORY_ITEM,
+            "retrieve-request.schema.json": MEMORY_RETRIEVE_REQUEST,
+            "retrieve-result.schema.json": MEMORY_RETRIEVE_RESULT,
+            "write-candidate-request.schema.json": MEMORY_WRITE_CANDIDATE_REQUEST,
+            "write-candidate-result.schema.json": MEMORY_WRITE_CANDIDATE_RESULT,
+            "commit-request.schema.json": MEMORY_COMMIT_REQUEST,
+            "commit-result.schema.json": MEMORY_COMMIT_RESULT,
+        }.items():
+            with self.subTest(filename=filename):
+                self.assertEqual(validate_schema(payload, memory_dir / filename), [])
+
+    def test_memory_candidate_rejects_secret_scope(self) -> None:
+        schema_path = REPO_ROOT / "contracts" / "memory" / "memory-item.schema.json"
+        secret_candidate = {
+            **MEMORY_ITEM,
+            "scope": "secrets",
+        }
+
+        self.assertTrue(validate_schema(secret_candidate, schema_path))
+
+    def test_access_control_schemas_accept_representative_payloads(self) -> None:
+        access_dir = REPO_ROOT / "contracts" / "access-control"
+
+        for filename, payload in {
+            "authorization-request.schema.json": AUTHORIZATION_REQUEST,
+            "authorization-decision.schema.json": AUTHORIZATION_DECISION,
+            "audit-event.schema.json": ACCESS_AUDIT_EVENT,
+        }.items():
+            with self.subTest(filename=filename):
+                self.assertEqual(validate_schema(payload, access_dir / filename), [])
 
 
 def validate_schema(value: Any, schema_path: Path) -> list[str]:

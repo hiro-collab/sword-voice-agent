@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/access-control/audit-event.schema.json",
+  "title": "Access Audit Event",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "ts",
+    "subject",
+    "capability",
+    "resource",
+    "decision",
+    "reason"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "access.audit.event.v0"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^evt_.+"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "subject": {
+      "type": "string",
+      "minLength": 1
+    },
+    "capability": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["allowed", "denied"]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": true
+}

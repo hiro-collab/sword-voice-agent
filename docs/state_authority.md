@@ -8,6 +8,9 @@
 - `StatusStore`、console、HUD は projection であり、制御の authority ではない。
 - edge command は状態ではなくイベントとして扱う。
 - authority が決まらない値は、実装しないか projection として扱う。
+- 長期記憶は `memory-core` が commit authority を持つ。`thought-core` や
+  `deep-core` は candidate を出せるが、M4 を直接確定しない。
+- config/policy/secrets は learned memory ではない。M4 と混ぜない。
 
 ## Authority Matrix
 
@@ -34,6 +37,32 @@
 | AITuberKit speech queue | AITuberKit | `/api/messages` | 発話キューと表示 |
 | TouchDesigner visual trigger | TouchDesigner runtime | UDP 9001 | 視覚演出状態 |
 | projection files and event log | `StatusStore` | `.cache/sword_voice_agent` | 表示・デバッグ用 |
+
+## Memory And Policy Authority
+
+| Area | Authority | Current / target storage | Rule |
+|---|---|---|---|
+| M0 raw signal | Source module such as Camera Hub, STT, or vision processor | in-memory buffers | Do not journal or send to thought-core unless summarized. |
+| M1 module state | Each owning service | `.cache/...`, future `runtime/state/` | A service writes only its own state. Other services observe or project it. |
+| M2 core working memory | The owning core | in-process, optional checkpoint | Expires with the turn/task unless explicitly summarized. |
+| M3 event journal | Appending service; schema owned by contracts | `.cache/.../*.jsonl`, future `runtime/logs/events/` | Append-only facts; rotate or summarize, do not treat as learned memory. |
+| M4 semantic/episodic memory | `memory-core` | future `local/memory/` | Writes go through candidate -> policy -> optional confirmation -> commit. |
+| M5 config/policy | Human/ops-controlled config and policy files | `.env.example`, future `local/config/`, `policies/` | AI may propose changes; direct edits require explicit implementation/review. |
+| M6 secrets | Ops / OS secret store / local env | `.env`, OS secret store, local-only files | Never log, never commit, never expose to memory-core or thought-core. |
+
+## Capability Rules
+
+- `reflex-core` may emit reflex events and write its own state, but must not
+  read long-term memory or execute home actions.
+- `thought-core` may call `environment.observe`, `home.preview`,
+  approved `home.execute`, and `memory.write_candidate`; it must not call
+  `memory.commit` or read secrets.
+- `deep-core` may research and write memory candidates, but must not execute
+  home actions directly.
+- `memory-core` may commit M4 memory under policy, but must not handle M6
+  secrets or home actions.
+- `expression-core` may read selected preference memory, but must not commit
+  memory or decide action success.
 
 ## Turn Lifecycle
 
@@ -81,3 +110,4 @@ mic_enabled false stable
 4. secret、本文、個人パスを含まないか。
 5. GUI で制御可能にするのか、表示だけにするのか。
 6. 既存 consumer が未知フィールドを無視できるか。
+7. どの M0-M6 layer に属し、どの capability が読める/書けるか。

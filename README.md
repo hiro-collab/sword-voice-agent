@@ -21,6 +21,7 @@ Camera Hub gesture topic
 - [start-stop-control-plan.md](docs/start-stop-control-plan.md): 全体起動・停止を `ops` レイヤーへまとめる計画。
 - [integration-contract.md](docs/integration-contract.md): 接続先、payload、ポート、認証。
 - [contracts/](contracts/README.md): thought-core turn/event stream の機械検証できる境界仕様。
+- [policies/](policies/README.md): capability、memory scope、action approval の reviewed policy。
 - [runtime-layout.md](docs/runtime-layout.md): `.cache` 互換 path と将来の `runtime/` 分類。
 - [module-responsibilities.md](docs/module-responsibilities.md): 各モジュールの責務境界。
 - [repository-sources.md](docs/repository-sources.md): GitHub保存先とローカル専用ファイル。

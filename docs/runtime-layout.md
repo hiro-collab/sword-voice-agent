@@ -19,6 +19,14 @@ runtime/
     screenshots/
     surfaces/
   diagnostics/
+
+local/
+  memory/
+  config/
+  secrets/
+
+policies/
+  access/
 ```
 
 ## Current Compatibility Mapping
@@ -34,6 +42,15 @@ runtime/
 | `.cache/home-control-stack/pids.json` | process registry state | `runtime/pids/home-control-stack.json` |
 | `.cache/diagnostics/` | diagnostics | `runtime/diagnostics/` |
 | `.cache/*.png` | UI screenshots/cache | `runtime/cache/screenshots/` |
+
+## Local And Policy Layout
+
+| Target path | Category | Source control rule |
+|---|---|---|
+| `local/memory/` | M4 memory candidates, facts, episodes, summaries | Local data ignored; README/examples only. |
+| `local/config/` | M5 user/device/service configuration | Local data ignored unless intentionally promoted as example config. |
+| `local/secrets/` | M6 local-only secret material | Prefer `.env` or OS secret store; do not commit secret values. |
+| `policies/access/` | M5 capability and memory-scope policy | Commit reviewed policy files. |
 
 ## Module-Local Runtime Paths Not Yet Mapped
 
@@ -59,6 +76,9 @@ change.
   after a default path change.
 - Treat generated audio, Dify payloads, screenshots, event logs, and local paths
   as local-sensitive data.
+- Treat M4 memory files as local-sensitive by default. Commit only fixtures or
+  examples that have been scrubbed.
+- Keep M6 out of logs, memory candidates, examples, and screenshots.
 
 ## Source Control Policy
 
