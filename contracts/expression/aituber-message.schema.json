@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-agent.local/contracts/expression/aituber-message.schema.json",
+  "title": "AITuberKit Direct Message",
+  "description": "Body sent to AITuberKit /api/messages?clientId=<id>&type=direct_send.",
+  "type": "object",
+  "required": ["messages"],
+  "properties": {
+    "messages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "\\S"
+      }
+    }
+  },
+  "additionalProperties": false
+}

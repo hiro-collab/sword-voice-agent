@@ -111,6 +111,28 @@ HOME_CONTROL_EXECUTE_RESULT = {
     },
 }
 
+TTS_SPEECH_CHUNK = {
+    "event": "assistant.speech_delta",
+    "delta": "了解、",
+    "final": False,
+    "turn_id": "turn_schema_001",
+    "message_id": "evt_schema_001",
+    "conversation_id": "turn_schema_001",
+    "elapsed_s": 0.12,
+}
+
+TTS_FINAL_CHUNK = {
+    "event": "turn.completed",
+    "final": True,
+    "turn_id": "turn_schema_001",
+    "message_id": "evt_schema_done",
+    "conversation_id": "turn_schema_001",
+}
+
+AITUBER_MESSAGE = {
+    "messages": ["了解、電気をつけるね。"],
+}
+
 
 class ContractSchemaTest(TestCase):
     def test_contract_json_files_are_valid_json(self) -> None:
@@ -212,6 +234,26 @@ class ContractSchemaTest(TestCase):
 
         self.assertTrue(validate_schema(unsafe_request, request_schema))
 
+    def test_expression_schemas_accept_current_adapter_payloads(self) -> None:
+        speech_schema = (
+            REPO_ROOT / "contracts" / "expression" / "speech-chunk.schema.json"
+        )
+        aituber_schema = (
+            REPO_ROOT / "contracts" / "expression" / "aituber-message.schema.json"
+        )
+
+        self.assertEqual(validate_schema(TTS_SPEECH_CHUNK, speech_schema), [])
+        self.assertEqual(validate_schema(TTS_FINAL_CHUNK, speech_schema), [])
+        self.assertEqual(validate_schema(AITUBER_MESSAGE, aituber_schema), [])
+
+    def test_expression_message_schema_rejects_empty_chunks(self) -> None:
+        aituber_schema = (
+            REPO_ROOT / "contracts" / "expression" / "aituber-message.schema.json"
+        )
+
+        self.assertTrue(validate_schema({"messages": []}, aituber_schema))
+        self.assertTrue(validate_schema({"messages": ["   "]}, aituber_schema))
+
 
 def validate_schema(value: Any, schema_path: Path) -> list[str]:
     schema = _load_json(schema_path)
@@ -252,12 +294,20 @@ def _validate(value: Any, schema: dict[str, Any], base_dir: Path, path: str) -> 
                         errors.append(f"{path}: unexpected property {key!r}")
 
     if isinstance(value, list):
+        min_items = schema.get("minItems")
+        if isinstance(min_items, int) and len(value) < min_items:
+            errors.append(f"{path}: expected minItems {min_items}")
+
         item_schema = schema.get("items")
         if isinstance(item_schema, dict):
             for index, item in enumerate(value):
                 errors.extend(_validate(item, item_schema, base_dir, f"{path}[{index}]"))
 
     if isinstance(value, str):
+        enum = schema.get("enum")
+        if isinstance(enum, list) and value not in enum:
+            errors.append(f"{path}: expected enum value")
+
         min_length = schema.get("minLength")
         if isinstance(min_length, int) and len(value) < min_length:
             errors.append(f"{path}: expected minLength {min_length}")

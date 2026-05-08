@@ -13,6 +13,7 @@ consumers.
 | `events/` | Common thought-core event envelope. |
 | `environment/` | Environment snapshots and feedback surfaces consumed by Dify/thought-core. |
 | `home-control/` | Safe home action preview/execute boundary. |
+| `expression/` | Current TTS and AITuberKit presentation payloads. |
 
 ## Current Sources
 
@@ -30,5 +31,7 @@ and tests:
 - `../home-assistant-server/docs/integration-contract.md`
 - `../home-assistant-server/tests/test_bridge.py`
 
-Future schemas for expression should be added from the corresponding module docs
-before implementation paths are moved.
+Expression contracts are extracted from:
+
+- `src/sword_voice_agent/apps/watch_handoff_to_thought_core.py`
+- `docs/integration-contract.md`
