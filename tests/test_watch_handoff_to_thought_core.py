@@ -377,7 +377,7 @@ class WatchHandoffToThoughtCoreTest(TestCase):
             resolve_handoff_json_path(args)
 
     def test_status_messages_explain_watch_and_missing_handoff(self) -> None:
-        path = Path("..") / "ai-talk-core" / ".cache" / "codex" / "web_latest.json"
+        path = Path("..") / "organs" / "voice" / "ai-talk-core" / ".cache" / "codex" / "web_latest.json"
 
         self.assertIn("監視中", format_watch_start_message(path, skip_existing=True))
         self.assertIn("新規handoffのみ", format_watch_start_message(path, skip_existing=True))

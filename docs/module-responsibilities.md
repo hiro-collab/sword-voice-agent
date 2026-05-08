@@ -8,7 +8,7 @@ inside each module's own docs.
 | Module | Owns | Does Not Own |
 |---|---|---|
 | `sword-voice-agent` | Integration runtime, gesture gate policy, Dify/thought-core watcher entrypoints, local status projection, launcher-facing scripts | Physical camera capture, STT implementation, Home Assistant device semantics, avatar rendering internals |
-| `sword-voice-agent/services/thought-core` | Canonical turn service v0, turn event stream, tool orchestration loop, responder boundary; package code under `src/thought_core` | STT, camera capture, Home Assistant implementation, display rendering |
+| `sword-control-plane/services/thought-core` | Canonical turn service v0, turn event stream, tool orchestration loop, responder boundary; package code under `src/thought_core` | STT, camera capture, Home Assistant implementation, display rendering |
 | `ai-talk-core` | Browser/microphone recording, STT, transcript, handoff files | Dify request policy, home actions, gesture inference |
 | `mediapipe-sword-sign` | Camera Hub, gesture model inference, Camera Hub topics, MediaMTX helper stack | STT, Dify, TTS, Home Assistant action state |
 | `vision-snapshot-processor` | Snapshot-style vision inference from MediaMTX streams | Camera ownership, gesture inference, environment aggregation |

@@ -1,16 +1,35 @@
 {
   "service_id": "thought_core_watcher",
   "layer": "app",
-  "logical_service": "sword-voice-agent",
+  "logical_service": "sword-control-plane",
   "current_owner": "scripts/start-thought-core-watch.ps1",
-  "repo_path": "sword-voice-agent",
-  "contracts": ["turn", "events", "expression", "memory", "access-control"],
-  "adapters": ["ai-talk-core", "aituber-kit", "tts-service"],
+  "repo_path": "sword-control-plane",
+  "contracts": [
+    "turn",
+    "events",
+    "expression",
+    "memory",
+    "access-control"
+  ],
+  "adapters": [
+    "ai-talk-core",
+    "aituber-kit",
+    "tts-service"
+  ],
   "memory": {
-    "reads": ["M1", "M2", "M5"],
-    "writes": ["M1", "M3"]
+    "reads": [
+      "M1",
+      "M2",
+      "M5"
+    ],
+    "writes": [
+      "M1",
+      "M3"
+    ]
   },
-  "pid_names": ["thought_core_watcher"],
+  "pid_names": [
+    "thought_core_watcher"
+  ],
   "start": {
     "type": "script",
     "script": "scripts/start-thought-core-watch.ps1"
@@ -22,5 +41,7 @@
   "stop": {
     "strategy": "owned_pid"
   },
-  "depends_on": ["thought_core_api"]
+  "depends_on": [
+    "thought_core_api"
+  ]
 }

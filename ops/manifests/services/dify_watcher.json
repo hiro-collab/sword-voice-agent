@@ -3,14 +3,33 @@
   "layer": "adapter",
   "logical_service": "dify-adapter",
   "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
-  "repo_path": "sword-voice-agent",
-  "contracts": ["events", "environment", "home-control", "expression", "access-control"],
-  "adapters": ["dify", "aituber-kit", "tts-service"],
+  "repo_path": "sword-control-plane",
+  "contracts": [
+    "events",
+    "environment",
+    "home-control",
+    "expression",
+    "access-control"
+  ],
+  "adapters": [
+    "dify",
+    "aituber-kit",
+    "tts-service"
+  ],
   "memory": {
-    "reads": ["M1", "M2", "M5", "M6"],
-    "writes": ["M3"]
+    "reads": [
+      "M1",
+      "M2",
+      "M5",
+      "M6"
+    ],
+    "writes": [
+      "M3"
+    ]
   },
-  "pid_names": ["dify_watcher"],
+  "pid_names": [
+    "dify_watcher"
+  ],
   "start": {
     "type": "stack-script"
   },
@@ -21,5 +40,8 @@
   "stop": {
     "strategy": "owned_pid"
   },
-  "depends_on": ["home_assistant_bridge", "environment_state_server"]
+  "depends_on": [
+    "home_assistant_bridge",
+    "environment_state_server"
+  ]
 }

@@ -59,6 +59,10 @@ function Ensure-ValidationClone {
     )
 
     $target = Join-Path $WorkspaceRoot $Name
+    $targetParent = Split-Path -Parent $target
+    if (-not [string]::IsNullOrWhiteSpace($targetParent)) {
+        New-Item -ItemType Directory -Force -Path $targetParent | Out-Null
+    }
     if (-not (Test-Path -LiteralPath $target)) {
         Invoke-GitCommand -Command @("git", "clone", $RepoUrl, $target)
         return
@@ -128,11 +132,11 @@ function Update-ValidationEnv {
     else {
         Get-Content -LiteralPath (Join-Path (Get-SwordRepoRoot) ".env.example")
     })
-    $lines = Set-EnvLine -Lines $lines -Name "AI_TALK_CORE_ROOT" -Value "..\ai-talk-core"
-    $lines = Set-EnvLine -Lines $lines -Name "MEDIAPIPE_SWORD_SIGN_ROOT" -Value "..\mediapipe-sword-sign"
-    $lines = Set-EnvLine -Lines $lines -Name "TTS_SERVICE_ROOT" -Value "..\tts-service"
-    $lines = Set-EnvLine -Lines $lines -Name "AVATAR_SERVICE_ROOT" -Value "..\avatar-service"
-    $lines = Set-EnvLine -Lines $lines -Name "SYSTEM_HOUSE_RENDERER_ROOT" -Value "..\system-house-renderer"
+    $lines = Set-EnvLine -Lines $lines -Name "AI_TALK_CORE_ROOT" -Value "..\organs\voice\ai-talk-core"
+    $lines = Set-EnvLine -Lines $lines -Name "MEDIAPIPE_SWORD_SIGN_ROOT" -Value "..\organs\reflex\mediapipe-sword-sign"
+    $lines = Set-EnvLine -Lines $lines -Name "TTS_SERVICE_ROOT" -Value "..\organs\expression\tts-service"
+    $lines = Set-EnvLine -Lines $lines -Name "AVATAR_SERVICE_ROOT" -Value "..\organs\expression\avatar-service"
+    $lines = Set-EnvLine -Lines $lines -Name "SYSTEM_HOUSE_RENDERER_ROOT" -Value "..\organs\diagnostics\system-house-renderer"
     $lines = Set-EnvLine -Lines $lines -Name "AI_TALK_CORE_RUNTIME_STATUS_FILE" -Value ".cache\sword_voice_agent\runtime\ai_talk_core.json"
     $lines = Set-EnvLine -Lines $lines -Name "MEDIAPIPE_SWORD_SIGN_RUNTIME_STATUS_FILE" -Value ".cache\sword_voice_agent\runtime\mediapipe_udp_publisher.json"
     $lines = Set-EnvLine -Lines $lines -Name "MEDIAPIPE_SWORD_SIGN_CONTROL_HTTP_HOST" -Value "127.0.0.1"
@@ -154,28 +158,28 @@ function Update-ValidationEnv {
 }
 
 New-Item -ItemType Directory -Force -Path $WorkspaceRoot | Out-Null
-Ensure-ValidationClone -Name "ai-talk-core" -RepoUrl $AiTalkCoreRepoUrl
-Ensure-ValidationClone -Name "mediapipe-sword-sign" -RepoUrl $MediapipeSwordSignRepoUrl
-Ensure-ValidationClone -Name "tts-service" -RepoUrl $TtsServiceRepoUrl
-Ensure-ValidationClone -Name "avatar-service" -RepoUrl $AvatarServiceRepoUrl
-Ensure-ValidationClone -Name "environment-state-server" -RepoUrl $EnvironmentStateServerRepoUrl
-Ensure-ValidationClone -Name "home-assistant-server" -RepoUrl $HomeAssistantServerRepoUrl
-Ensure-ValidationClone -Name "aituber-kit" -RepoUrl $AituberKitRepoUrl
-Ensure-ValidationClone -Name "touchdesigner-ai-controller" -RepoUrl $TouchDesignerAiControllerRepoUrl
-Ensure-ValidationClone -Name "system-house-renderer" -RepoUrl $SystemHouseRendererRepoUrl
+Ensure-ValidationClone -Name "organs\voice\ai-talk-core" -RepoUrl $AiTalkCoreRepoUrl
+Ensure-ValidationClone -Name "organs\reflex\mediapipe-sword-sign" -RepoUrl $MediapipeSwordSignRepoUrl
+Ensure-ValidationClone -Name "organs\expression\tts-service" -RepoUrl $TtsServiceRepoUrl
+Ensure-ValidationClone -Name "organs\expression\avatar-service" -RepoUrl $AvatarServiceRepoUrl
+Ensure-ValidationClone -Name "organs\environment\environment-state-server" -RepoUrl $EnvironmentStateServerRepoUrl
+Ensure-ValidationClone -Name "organs\action\home-assistant-server" -RepoUrl $HomeAssistantServerRepoUrl
+Ensure-ValidationClone -Name "organs\expression\aituber-kit" -RepoUrl $AituberKitRepoUrl
+Ensure-ValidationClone -Name "organs\display\touchdesigner-ai-controller" -RepoUrl $TouchDesignerAiControllerRepoUrl
+Ensure-ValidationClone -Name "organs\diagnostics\system-house-renderer" -RepoUrl $SystemHouseRendererRepoUrl
 
 if ($UpdateEnv) {
     Update-ValidationEnv
 }
 
 Write-Host "validation module roots:"
-Write-Host "AI_TALK_CORE_ROOT=..\ai-talk-core"
-Write-Host "MEDIAPIPE_SWORD_SIGN_ROOT=..\mediapipe-sword-sign"
-Write-Host "TTS_SERVICE_ROOT=..\tts-service"
-Write-Host "AVATAR_SERVICE_ROOT=..\avatar-service"
-Write-Host "SYSTEM_HOUSE_RENDERER_ROOT=..\system-house-renderer"
+Write-Host "AI_TALK_CORE_ROOT=..\organs\voice\ai-talk-core"
+Write-Host "MEDIAPIPE_SWORD_SIGN_ROOT=..\organs\reflex\mediapipe-sword-sign"
+Write-Host "TTS_SERVICE_ROOT=..\organs\expression\tts-service"
+Write-Host "AVATAR_SERVICE_ROOT=..\organs\expression\avatar-service"
+Write-Host "SYSTEM_HOUSE_RENDERER_ROOT=..\organs\diagnostics\system-house-renderer"
 Write-Host "additional sibling clones:"
-Write-Host "environment-state-server"
-Write-Host "home-assistant-server"
-Write-Host "aituber-kit"
-Write-Host "touchdesigner-ai-controller"
+Write-Host "organs\environment\environment-state-server"
+Write-Host "organs\action\home-assistant-server"
+Write-Host "organs\expression\aituber-kit"
+Write-Host "organs\display\touchdesigner-ai-controller"

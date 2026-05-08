@@ -44,7 +44,7 @@ function Resolve-StackStateDir {
 $WorkspaceRoot = Resolve-HomeControlWorkspaceRoot -WorkspaceRoot $WorkspaceRoot -ScriptRoot $PSScriptRoot
 $StackStateDir = Resolve-StackStateDir -WorkspaceRoot $WorkspaceRoot -StackStateDir $StackStateDir
 $PidFile = Join-Path $StackStateDir "pids.json"
-$AituberEnvPath = Join-Path $WorkspaceRoot "aituber-kit\.env"
+$AituberEnvPath = Join-Path $WorkspaceRoot "organs\expression\aituber-kit\.env"
 
 function Get-DotEnvValue {
     param(

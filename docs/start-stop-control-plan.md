@@ -10,7 +10,7 @@ The active lifecycle entrypoints are:
 | Surface | Current path | Role |
 |---|---|---|
 | Ops facade | `ops/scripts/system.ps1` | Profile-aware start/status/stop entrypoint. |
-| Root shortcuts | `<workspace>/start-home-control-stack.bat`, `status-home-control-stack.bat`, `stop-home-control-stack.bat` | Human-friendly compatibility entrypoints. |
+| Root shortcuts | `<cell>/start-home-control-stack.bat`, `status-home-control-stack.bat`, `stop-home-control-stack.bat` | Human-friendly compatibility entrypoints. |
 | Stack scripts | `ops/scripts/home-control-stack/start-home-control-stack.ps1`, `status-home-control-stack.ps1`, `stop-home-control-stack.ps1` | Authoritative inherited supervisor implementation. |
 | Legacy wrappers | `scripts/home-control-stack/` | Compatibility wrappers that forward to `ops`. |
 | Launcher | `tools/home-control-launcher/` | Browser UI that calls the ops facade. |
@@ -77,12 +77,12 @@ Each service manifest should describe process ownership, not business behavior.
 {
   "service_id": "thought-core",
   "layer": "turn",
-  "repo_path": "sword-voice-agent",
-  "cwd": "sword-voice-agent",
+  "repo_path": "sword-control-plane",
+  "cwd": "sword-control-plane",
   "start": {
     "command": "uv",
     "args": ["run", "python", "-m", "thought_core"],
-    "python_path": "sword-voice-agent/services/thought-core/src"
+    "python_path": "sword-control-plane/services/thought-core/src"
   },
   "health": {
     "type": "http",

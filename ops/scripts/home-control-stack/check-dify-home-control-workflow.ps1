@@ -21,13 +21,13 @@ $OutputEncoding = $utf8NoBom
 
 . (Join-Path $PSScriptRoot "resolve-home-control-workspace.ps1")
 $WorkspaceRoot = Resolve-HomeControlWorkspaceRoot -WorkspaceRoot $WorkspaceRoot -ScriptRoot $PSScriptRoot
-$RepoRoot = Join-Path $WorkspaceRoot "sword-voice-agent"
+$RepoRoot = Join-Path $WorkspaceRoot "sword-control-plane"
 
 if ([string]::IsNullOrWhiteSpace($SwordEnvPath)) {
     $SwordEnvPath = Join-Path $RepoRoot ".env"
 }
 if ([string]::IsNullOrWhiteSpace($HomeAssistantEnvPath)) {
-    $HomeAssistantEnvPath = Join-Path $WorkspaceRoot "home-assistant-server\.env"
+    $HomeAssistantEnvPath = Join-Path $WorkspaceRoot "organs\action\home-assistant-server\.env"
 }
 if ([string]::IsNullOrWhiteSpace($WorkflowPath)) {
     $WorkflowPath = Join-Path $RepoRoot "dify-apps\Home Control Assistant.issue-iteration.yml"

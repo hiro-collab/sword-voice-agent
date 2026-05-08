@@ -37,9 +37,9 @@ function Resolve-StackStateDir {
 $WorkspaceRoot = Resolve-HomeControlWorkspaceRoot -WorkspaceRoot $WorkspaceRoot -ScriptRoot $PSScriptRoot
 $StackStateDir = Resolve-StackStateDir -WorkspaceRoot $WorkspaceRoot -StackStateDir $StackStateDir
 
-$HomeAssistantRoot = Join-Path $WorkspaceRoot "home-assistant-server"
+$HomeAssistantRoot = Join-Path $WorkspaceRoot "organs\action\home-assistant-server"
 $HomeAssistantConfigPath = Join-Path $HomeAssistantRoot "config\home-control.yaml"
-$AituberEnvPath = Join-Path $WorkspaceRoot "aituber-kit\.env"
+$AituberEnvPath = Join-Path $WorkspaceRoot "organs\expression\aituber-kit\.env"
 $CacheDir = Join-Path $StackStateDir "fault-e2e"
 $LogDir = Join-Path $StackStateDir "logs"
 $StartScript = Join-Path $PSScriptRoot "start-home-control-stack.ps1"
@@ -298,7 +298,7 @@ const resultPath = process.env.TEST_RESULT_PATH;
 const expectedStatuses = JSON.parse(process.env.TEST_EXPECTED_STATUSES || '[]');
 const expectedStatusSequences = JSON.parse(process.env.TEST_EXPECTED_STATUS_SEQUENCES || '[]');
 const startedMs = Date.now() - 2000;
-const homeEventsPath = `${workspaceRoot}/home-assistant-server/.cache/home_control/events.jsonl`.replaceAll('\\', '/');
+const homeEventsPath = `${workspaceRoot}/organs/action/home-assistant-server/.cache/home_control/events.jsonl`.replaceAll('\\', '/');
 
 if (!resultPath) {
   throw new Error('TEST_RESULT_PATH is required');

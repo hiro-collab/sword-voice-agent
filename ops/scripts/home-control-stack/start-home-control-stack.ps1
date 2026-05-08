@@ -81,28 +81,28 @@ if ([string]::IsNullOrWhiteSpace($DifyDockerRoot)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($HomeAssistantServerRoot)) {
-    $HomeAssistantServerRoot = Join-Path $WorkspaceRoot "home-assistant-server"
+    $HomeAssistantServerRoot = Join-Path $WorkspaceRoot "organs\action\home-assistant-server"
 }
 if ([string]::IsNullOrWhiteSpace($MediapipeRoot)) {
-    $MediapipeRoot = Join-Path $WorkspaceRoot "mediapipe-sword-sign"
+    $MediapipeRoot = Join-Path $WorkspaceRoot "organs\reflex\mediapipe-sword-sign"
 }
 if ([string]::IsNullOrWhiteSpace($VisionSnapshotProcessorRoot)) {
-    $VisionSnapshotProcessorRoot = Join-Path $WorkspaceRoot "vision-snapshot-processor"
+    $VisionSnapshotProcessorRoot = Join-Path $WorkspaceRoot "organs\environment\vision-snapshot-processor"
 }
 if ([string]::IsNullOrWhiteSpace($AituberRoot)) {
-    $AituberRoot = Join-Path $WorkspaceRoot "aituber-kit"
+    $AituberRoot = Join-Path $WorkspaceRoot "organs\expression\aituber-kit"
 }
 if ([string]::IsNullOrWhiteSpace($TouchDesignerGuiRoot)) {
-    $TouchDesignerGuiRoot = Join-Path $WorkspaceRoot "touchdesigner-ai-controller"
+    $TouchDesignerGuiRoot = Join-Path $WorkspaceRoot "organs\display\touchdesigner-ai-controller"
 }
 if ([string]::IsNullOrWhiteSpace($DifyWatchRoot)) {
-    $DifyWatchRoot = Join-Path $WorkspaceRoot "sword-voice-agent"
+    $DifyWatchRoot = Join-Path $WorkspaceRoot "sword-control-plane"
 }
 if ([string]::IsNullOrWhiteSpace($ThoughtCoreRoot)) {
-    $ThoughtCoreRoot = Join-Path $WorkspaceRoot "sword-voice-agent"
+    $ThoughtCoreRoot = Join-Path $WorkspaceRoot "sword-control-plane"
 }
 if ([string]::IsNullOrWhiteSpace($EnvironmentStateServerRoot)) {
-    $EnvironmentStateServerRoot = Join-Path $WorkspaceRoot "environment-state-server"
+    $EnvironmentStateServerRoot = Join-Path $WorkspaceRoot "organs\environment\environment-state-server"
 }
 if ([string]::IsNullOrWhiteSpace($HomeControlConfigPath)) {
     $HomeControlConfigPath = Join-Path $HomeAssistantServerRoot "config\home-control.yaml"
@@ -115,7 +115,7 @@ $DifyWatchEnvPath = Join-Path $DifyWatchRoot ".env"
 $ThoughtCoreScript = Join-Path $ThoughtCoreRoot "scripts\start-thought-core.ps1"
 $ThoughtCoreWatchScript = Join-Path $ThoughtCoreRoot "scripts\start-thought-core-watch.ps1"
 $ThoughtCoreEnvPath = Join-Path $ThoughtCoreRoot ".env"
-$AiTalkCoreRoot = Join-Path $WorkspaceRoot "ai-talk-core"
+$AiTalkCoreRoot = Join-Path $WorkspaceRoot "organs\voice\ai-talk-core"
 $LaunchVisionSnapshotProcessor = ((-not $SkipVisionSnapshotProcessor) -and (-not $SkipMediapipe) -and ($MediapipeMode -eq "mediamtx"))
 
 $StateDir = $StackStateDir
@@ -1287,13 +1287,13 @@ if (-not $SkipEnvironmentState) {
     Assert-Directory -Path $EnvironmentStateServerRoot -Label "environment-state-server"
 }
 if (-not $SkipDifyWatch) {
-    Assert-Directory -Path $DifyWatchRoot -Label "sword-voice-agent"
+    Assert-Directory -Path $DifyWatchRoot -Label "sword-control-plane"
     if (-not (Test-Path -LiteralPath $DifyWatchScript -PathType Leaf)) {
         throw "Dify watcher script not found: $DifyWatchScript"
     }
 }
 if ($EnableThoughtCore -or $EnableThoughtCoreWatch) {
-    Assert-Directory -Path $ThoughtCoreRoot -Label "sword-voice-agent"
+    Assert-Directory -Path $ThoughtCoreRoot -Label "sword-control-plane"
 }
 if ($EnableThoughtCore) {
     if (-not (Test-Path -LiteralPath $ThoughtCoreScript -PathType Leaf)) {
@@ -1621,7 +1621,7 @@ if ($StartThoughtCoreService) {
         ) `
         -WorkingDirectory $ThoughtCoreRoot `
         -Environment $thoughtCoreEnvironment `
-        -Module "sword-voice-agent" `
+        -Module "sword-control-plane" `
         -Role "thought_core_api" `
         -AllowedProcessNames @("pwsh", "powershell", "uv", "python")
 }
@@ -1818,7 +1818,7 @@ if (-not $SkipDifyWatch) {
             $DifyWatchStatusDir
         ) `
         -WorkingDirectory $DifyWatchRoot `
-        -Module "sword-voice-agent" `
+        -Module "sword-control-plane" `
         -Role "dify_watcher" `
         -AllowedProcessNames @("pwsh", "powershell", "python")
 }
@@ -1848,7 +1848,7 @@ if ($EnableThoughtCoreWatch) {
         -FilePath $powerShell `
         -Arguments $thoughtCoreWatchArgs `
         -WorkingDirectory $ThoughtCoreRoot `
-        -Module "sword-voice-agent" `
+        -Module "sword-control-plane" `
         -Role "thought_core_watcher" `
         -AllowedProcessNames @("pwsh", "powershell", "uv", "python")
 }

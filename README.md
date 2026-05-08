@@ -1,10 +1,10 @@
-# sword-voice-agent
+# sword-control-plane
 
 刀印ジェスチャーを入力ゲートにして、STT、Dify、Home Assistant、TTS、AITuberKit、TouchDesigner 表示をつなぐローカル統合アプリです。
 
 ```text
 Camera Hub gesture topic
-  -> sword-voice-agent input gate
+  -> sword-control-plane input gate
   -> ai-talk-core STT / handoff
   -> Dify
   -> Home Assistant / TTS / AITuberKit / TouchDesigner
@@ -48,23 +48,23 @@ Camera Hub gesture topic
 兄弟ディレクトリに次のモジュールを配置します。
 
 ```text
-<workspace>\
-  sword-voice-agent\
-  ai-talk-core\
-  mediapipe-sword-sign\
-  tts-service\
-  avatar-service\
-  environment-state-server\
-  home-assistant-server\
-  aituber-kit\
-  touchdesigner-ai-controller\
-  system-house-renderer\
+<cell>\
+  sword-control-plane\
+  organs\voice\ai-talk-core\
+  organs\reflex\mediapipe-sword-sign\
+  organs\expression\tts-service\
+  organs\expression\avatar-service\
+  organs\environment\environment-state-server\
+  organs\action\home-assistant-server\
+  organs\expression\aituber-kit\
+  organs\display\touchdesigner-ai-controller\
+  organs\diagnostics\system-house-renderer\
 ```
 
 Git管理している兄弟モジュールは次で clone または pull できます。GitHubに入れない秘密値やローカル専用アセットは [repository-sources.md](docs/repository-sources.md) を参照してください。
 
 ```powershell
-cd <workspace>\sword-voice-agent
+cd <cell>\sword-voice-agent
 .\scripts\setup-validation-modules.ps1 -DryRun
 .\scripts\setup-validation-modules.ps1 -UpdateEnv
 ```
@@ -72,13 +72,13 @@ cd <workspace>\sword-voice-agent
 ## Setup
 
 ```powershell
-cd <workspace>\sword-voice-agent
+cd <cell>\sword-voice-agent
 uv sync
 Copy-Item .env.example .env
 notepad .env
 ```
 
-`<workspace>\sword-voice-agent\.env` では少なくとも次を確認します。
+`<cell>\sword-control-plane\.env` では少なくとも次を確認します。
 
 - `DIFY_BASE_URL`
 - `DIFY_API_KEY`
@@ -94,15 +94,15 @@ notepad .env
 
 | 書き込み場所 | 読むもの | 主な値 | 備考 |
 |---|---|---|---|
-| `<workspace>\sword-voice-agent\.env` | sword-voice-agent / dify watcher / thought-core / 診断スクリプト | `DIFY_BASE_URL`, `DIFY_API_KEY`, `THOUGHT_CORE_BASE_URL`, `THOUGHT_CORE_LLM_*` | Dify app key と Thought Core responder adapter を置く。`HOME_CONTROL_API_TOKEN` は通常ここではなく `home-assistant-server\.env`。 |
-| `<workspace>\aituber-kit\.env` | AITuberKit Next.js API / Projection Visual | `NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE`, `THOUGHT_CORE_BASE_URL`, `NEXT_PUBLIC_THOUGHT_CORE_BASE_URL`, `DIFY_URL`, `DIFY_API_KEY`, `VOICEVOX_SERVER_URL` | Projection Visual の主経路は `thought-core` / `dify` で切り替える。Launcher 起動時は一部を自動注入する。 |
-| `<workspace>\home-assistant-server\.env` | home-assistant-server / environment-state-server | `HOME_CONTROL_API_TOKEN`, `ENVIRONMENT_API_TOKEN`, `HOME_ASSISTANT_TOKEN` | `HOME_CONTROL_API_TOKEN` は32文字以上のランダム値。`ENVIRONMENT_API_TOKEN` は空なら同じ値を使う。 |
+| `<cell>\sword-control-plane\.env` | sword-control-plane / dify watcher / thought-core / 診断スクリプト | `DIFY_BASE_URL`, `DIFY_API_KEY`, `THOUGHT_CORE_BASE_URL`, `THOUGHT_CORE_LLM_*` | Dify app key と Thought Core responder adapter を置く。`HOME_CONTROL_API_TOKEN` は通常ここではなく `organs\action\home-assistant-server\.env`。 |
+| `<cell>\organs\expression\aituber-kit\.env` | AITuberKit Next.js API / Projection Visual | `NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE`, `THOUGHT_CORE_BASE_URL`, `NEXT_PUBLIC_THOUGHT_CORE_BASE_URL`, `DIFY_URL`, `DIFY_API_KEY`, `VOICEVOX_SERVER_URL` | Projection Visual の主経路は `thought-core` / `dify` で切り替える。Launcher 起動時は一部を自動注入する。 |
+| `<cell>\organs\action\organs\action\home-assistant-server\.env` | home-assistant-server / environment-state-server | `HOME_CONTROL_API_TOKEN`, `ENVIRONMENT_API_TOKEN`, `HOME_ASSISTANT_TOKEN` | `HOME_CONTROL_API_TOKEN` は32文字以上のランダム値。`ENVIRONMENT_API_TOKEN` は空なら同じ値を使う。 |
 | Dify Studio のアプリ `ENV` | Dify workflow HTTP nodes | `HOME_CONTROL_API_TOKEN`, `ENVIRONMENT_STATE_URL`, `ENVIRONMENT_RELATIONS_URL`, `ENVIRONMENT_FEEDBACK_URL` | YAMLをインポートしても secret の実値は入らないため、公開前にDify画面で設定する。 |
 
 Thought Core を主経路にする最小構成は次です。
 
 ```text
-# <workspace>\sword-voice-agent\.env
+# <cell>\sword-control-plane\.env
 THOUGHT_CORE_BASE_URL=http://127.0.0.1:18787
 THOUGHT_CORE_LLM_ENABLED=true
 THOUGHT_CORE_LLM_BASE_URL=https://api.openai.com/v1
@@ -111,7 +111,7 @@ THOUGHT_CORE_LLM_MODEL=gpt-4o-mini
 ```
 
 ```text
-# <workspace>\aituber-kit\.env
+# <cell>\organs\expression\aituber-kit\.env
 NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE=thought-core
 THOUGHT_CORE_BASE_URL=http://127.0.0.1:18787
 NEXT_PUBLIC_THOUGHT_CORE_BASE_URL=http://127.0.0.1:18787
@@ -120,7 +120,7 @@ VOICEVOX_SERVER_URL=http://127.0.0.1:50021
 ```
 
 ```text
-# <workspace>\home-assistant-server\.env
+# <cell>\organs\action\organs\action\home-assistant-server\.env
 HOME_CONTROL_API_TOKEN=<32文字以上のランダム値>
 ENVIRONMENT_API_TOKEN=
 HOME_ASSISTANT_TOKEN=<Home Assistant long-lived access token>
@@ -129,7 +129,7 @@ HOME_ASSISTANT_TOKEN=<Home Assistant long-lived access token>
 Dify Studio の `ENV` は次を基準にします。
 
 ```text
-HOME_CONTROL_API_TOKEN=<workspace>\home-assistant-server\.env と同じ値
+HOME_CONTROL_API_TOKEN=<cell>\organs\action\organs\action\home-assistant-server\.env と同じ値
 ENVIRONMENT_STATE_URL=http://host.docker.internal:8790/environment/current
 ENVIRONMENT_RELATIONS_URL=http://host.docker.internal:8790/environment/relations
 ENVIRONMENT_FEEDBACK_URL=http://host.docker.internal:8790/feedback/state-query
@@ -142,11 +142,11 @@ ENVIRONMENT_FEEDBACK_URL=http://host.docker.internal:8790/feedback/state-query
 1. Dify API key が正しいか:
 
 ```powershell
-cd <workspace>
+cd <cell>
 .\start-home-control-stack.bat -StopExisting
 ```
 
-起動ログに次が出れば、`<workspace>\sword-voice-agent\.env` と `<workspace>\aituber-kit\.env` の Dify API key は通っています。
+起動ログに次が出れば、`<cell>\sword-control-plane\.env` と `<cell>\organs\expression\aituber-kit\.env` の Dify API key は通っています。
 
 ```text
 [dify] DIFY_API_KEY valid ...
@@ -155,7 +155,7 @@ cd <workspace>
 
 2. Home Control token があるか:
 
-起動ログに次が出れば、`<workspace>\home-assistant-server\.env` の `HOME_CONTROL_API_TOKEN` は読み込めています。
+起動ログに次が出れば、`<cell>\organs\action\organs\action\home-assistant-server\.env` の `HOME_CONTROL_API_TOKEN` は読み込めています。
 
 ```text
 [home_assistant_bridge] HOME_CONTROL_API_TOKEN present ...
@@ -165,7 +165,7 @@ cd <workspace>
 3. Dify に最新YAMLと Environment が見えているか:
 
 ```powershell
-cd <workspace>\sword-voice-agent
+cd <cell>\sword-voice-agent
 .\ops\scripts\home-control-stack\check-dify-home-control-workflow.ps1
 ```
 
@@ -190,16 +190,16 @@ cd <workspace>\sword-voice-agent
 AITuberKit は別アプリとして準備します。
 
 ```powershell
-cd <workspace>\aituber-kit
+cd <cell>\aituber-kit
 npm install
 ```
 
 ## Start
 
-`<workspace>` 直下から Home Control Stack を起動します。
+`<cell>` 直下から Home Control Stack を起動します。
 
 ```powershell
-cd <workspace>
+cd <cell>
 .\start-home-control-stack.bat -StopExisting
 ```
 
@@ -214,21 +214,21 @@ cd <workspace>
 どう変換されるか確認できます。
 
 ```powershell
-cd <workspace>\sword-voice-agent
+cd <cell>\sword-voice-agent
 .\ops\scripts\system.ps1 start  -Profile thought-core-v0 -DryRun
 .\ops\scripts\system.ps1 status -Profile thought-core-v0
 .\ops\scripts\system.ps1 stop   -Profile thought-core-v0 -DryRun
 ```
 
-起動スクリプトの本体は `sword-voice-agent\ops\scripts\home-control-stack\` にあります。
-`<workspace>` 直下の `.bat` と `sword-voice-agent\scripts\home-control-stack\` は互換入口です。
+起動スクリプトの本体は `sword-control-plane\ops\scripts\home-control-stack\` にあります。
+`<cell>` 直下の `.bat` と `sword-control-plane\scripts\home-control-stack\` は互換入口です。
 
 ## User Surface
 
 AITuberKit を起動し、Projection Visual を開きます。
 
 ```powershell
-cd <workspace>\aituber-kit
+cd <cell>\aituber-kit
 npm run dev
 ```
 
@@ -254,21 +254,21 @@ Chrome のマイク権限を許可します。Projection Visual では、STT、G
 ## Checks
 
 ```powershell
-cd <workspace>\sword-voice-agent
+cd <cell>\sword-voice-agent
 .\scripts\check.ps1
 ```
 
 Home Control Stack の失敗注入を含む確認:
 
 ```powershell
-cd <workspace>
+cd <cell>
 .\scripts\run-home-control-fault-e2e.ps1 -NoOpenBrowser -DelayBetweenCasesSeconds 1
 ```
 
 Dify に最新 workflow YAML が反映されているか、また Dify 実行時に Environment State Server の `state_queries.room_light` が見えているかを確認:
 
 ```powershell
-cd <workspace>\sword-voice-agent
+cd <cell>\sword-voice-agent
 .\ops\scripts\home-control-stack\check-dify-home-control-workflow.ps1
 ```
 
@@ -277,7 +277,7 @@ cd <workspace>\sword-voice-agent
 Environment State Server の疎通確認:
 
 ```powershell
-.\sword-voice-agent\ops\scripts\home-control-stack\check-environment-state-server.ps1
+.\sword-control-plane\ops\scripts\home-control-stack\check-environment-state-server.ps1
 ```
 
 ## Model Notice

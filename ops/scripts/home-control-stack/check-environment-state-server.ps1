@@ -26,7 +26,7 @@ if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
 $BaseUrl = $BaseUrl.TrimEnd("/")
 
 if ([string]::IsNullOrWhiteSpace($TokenEnvPath)) {
-    $TokenEnvPath = Join-Path $WorkspaceRoot "home-assistant-server\.env"
+    $TokenEnvPath = Join-Path $WorkspaceRoot "organs\action\home-assistant-server\.env"
 }
 
 function Get-DotEnvValue {

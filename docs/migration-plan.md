@@ -79,9 +79,9 @@ Exit criteria:
 Scope:
 
 - Keep the current implementation at
-  `<workspace>/sword-voice-agent/services/thought-core` until a split is chosen.
+  `<cell>/sword-control-plane/services/thought-core` until a split is chosen.
 - Keep package code under `src/thought_core` inside that service root.
-- Do not create a second implementation under `<workspace>/services/thought-core`.
+- Do not create a second implementation under `<cell>/services/thought-core`.
 - If a split repo is needed later, update tests, launcher scripts, and docs in
   one migration.
 - Keep a short compatibility shim only if external scripts already reference the

@@ -14,13 +14,13 @@ is not yet a meta repository.
 Keep the canonical service root at:
 
 ```text
-sword-voice-agent/services/thought-core/
+sword-control-plane/services/thought-core/
 ```
 
 Move package code under:
 
 ```text
-sword-voice-agent/services/thought-core/src/thought_core/
+sword-control-plane/services/thought-core/src/thought_core/
 ```
 
 The external API contract does not change. `POST /turn`, `POST /turn/stream`,
