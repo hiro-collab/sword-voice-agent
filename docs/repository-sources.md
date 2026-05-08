@@ -38,6 +38,7 @@ Do not commit these files or directories:
 - root shortcut files generated from `sword-voice-agent\ops\scripts\home-control-stack\install-root-shortcuts.ps1`
 - temporary workspace-root planning folders such as `docs\`, `contracts\`,
   `ops\`, and `runtime\`, unless a root meta repository is created
-- local SDK unpack directories such as `CubismSdkForWeb-5-r.5\`
+- local SDK unpack directories under `external\`, such as
+  `external\CubismSdkForWeb-5-r.5\`
 
 When a local-only asset is required for a feature, document the expected path and acquisition/setup step instead of committing the file itself.
