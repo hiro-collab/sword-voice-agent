@@ -870,7 +870,7 @@ def detect_home_action_intent(
         ),
         (
             ("エアコン", "冷房", "暖房", "空調"),
-            ("消し", "消す", "オフ", "切っ", "切る"),
+            ("消し", "消す", "止め", "停止", "オフ", "切っ", "切る"),
             HomeLightIntent(
                 action_id="aircon_off",
                 expected_state="off",
