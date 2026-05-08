@@ -19,8 +19,12 @@ $thoughtCorePath = Join-Path $repoRoot "services\thought-core"
 if (-not (Test-Path -LiteralPath $thoughtCorePath -PathType Container)) {
     throw "thought-core service directory not found: $thoughtCorePath"
 }
+$thoughtCoreSrcPath = Join-Path $thoughtCorePath "src"
+if (-not (Test-Path -LiteralPath $thoughtCoreSrcPath -PathType Container)) {
+    throw "thought-core src directory not found: $thoughtCoreSrcPath"
+}
 
-$env:PYTHONPATH = $thoughtCorePath
+$env:PYTHONPATH = $thoughtCoreSrcPath
 $command = @(
     "uv",
     "run",

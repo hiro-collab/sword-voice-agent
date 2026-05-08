@@ -80,12 +80,22 @@ service 名や entity 名は Thought Core 側では生成しません。
 
 ## 起動方法
 
+現在の service root は次の layout です。
+
+```text
+services/thought-core/
+  README.md
+  flows/
+  src/
+    thought_core/
+```
+
 この初期実装は Python 標準ライブラリだけで動きます。
 
 リポジトリ本体のルートから実行します。
 
 ```powershell
-$env:PYTHONPATH="services/thought-core"
+$env:PYTHONPATH="services/thought-core/src"
 uv run python -m thought_core --host 127.0.0.1 --port 18787
 ```
 

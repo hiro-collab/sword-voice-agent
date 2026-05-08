@@ -9,7 +9,7 @@ from unittest import TestCase
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core"
+THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core" / "src"
 sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 
 from thought_core.loop import ThoughtLoop  # noqa: E402

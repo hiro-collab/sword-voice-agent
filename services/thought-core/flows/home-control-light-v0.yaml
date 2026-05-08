@@ -4,7 +4,7 @@
   "name": "Home Control Thought Core v0",
   "description": "Visual draft of the current ThoughtLoop home-control path, including Dify-derived environment state queries and action registry behavior. This file is JSON-compatible YAML so the exporter can run with Python standard library only.",
   "source": {
-    "implementation": "services/thought-core/thought_core/loop.py",
+    "implementation": "services/thought-core/src/thought_core/loop.py",
     "class": "ThoughtLoop",
     "contract": "services/thought-core/README.md"
   },

@@ -74,7 +74,8 @@ Each service manifest should describe process ownership, not business behavior.
   "cwd": "sword-voice-agent",
   "start": {
     "command": "uv",
-    "args": ["run", "sword-thought-core-server"]
+    "args": ["run", "python", "-m", "thought_core"],
+    "python_path": "sword-voice-agent/services/thought-core/src"
   },
   "health": {
     "type": "http",

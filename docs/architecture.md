@@ -96,7 +96,7 @@ diagnostics.
 | Logical service | Purpose | Current implementation |
 |---|---|---|
 | `reflex-core` | Fast reactions that do not wait for an LLM | `mediapipe-sword-sign` plus gesture gate policy in this repo. |
-| `thought-core` | One-turn reasoning, tool choice, response shaping | `sword-voice-agent/services/thought-core`. |
+| `thought-core` | One-turn reasoning, tool choice, response shaping | `sword-voice-agent/services/thought-core/src/thought_core`. |
 | `deep-core` | Long-running analysis, research, review, planning | Future boundary only. |
 | `environment-server` | Observes world and module state | `environment-state-server`. |
 | `home-control-server` | Executes approved actions | `home-assistant-server`. |

@@ -20,8 +20,8 @@ consumers.
 
 The initial contract files mirror these implementation files:
 
-- `services/thought-core/thought_core/schema.py`
-- `services/thought-core/thought_core/events.py`
+- `services/thought-core/src/thought_core/schema.py`
+- `services/thought-core/src/thought_core/events.py`
 - `tests/test_thought_core_contract.py`
 
 Environment and home-control contracts are extracted from sibling module docs

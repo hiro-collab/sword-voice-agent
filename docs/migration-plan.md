@@ -77,6 +77,7 @@ Scope:
 
 - Keep the current implementation at
   `<workspace>/sword-voice-agent/services/thought-core` until a split is chosen.
+- Keep package code under `src/thought_core` inside that service root.
 - Do not create a second implementation under `<workspace>/services/thought-core`.
 - If a split repo is needed later, update tests, launcher scripts, and docs in
   one migration.
