@@ -2,6 +2,11 @@
 
 このワークスペースは複数の兄弟リポジトリで構成します。環境移行時は、ソースコードをGitHubから復元し、秘密値や再配布できないアセットはローカルで別途用意します。
 
+`sword-voice-agent` は、workspace root が Git 管理の meta repository になるまで、
+workspace-level docs と contracts の正規管理場所でもあります。root 直下に一時的な
+`docs\`、`contracts\`、`ops\`、`runtime\` が存在する場合でも、commit 済みの正は
+この repository 側です。
+
 ## Git-managed modules
 
 | Directory | Repository | Notes |
@@ -31,6 +36,8 @@ Do not commit these files or directories:
 - custom or redistribution-sensitive VRM files, including `aituber-kit\public\vrm\Nutachisan.vrm` and `mediapipe-sword-sign\.vrm\`
 - `.cache\`, `logs\`, `archives\`, `.venv\`, `node_modules\`, and build outputs
 - root shortcut files generated from `sword-voice-agent\scripts\home-control-stack\install-root-shortcuts.ps1`
+- temporary workspace-root planning folders such as `docs\`, `contracts\`,
+  `ops\`, and `runtime\`, unless a root meta repository is created
 - local SDK unpack directories such as `CubismSdkForWeb-5-r.5\`
 
 When a local-only asset is required for a feature, document the expected path and acquisition/setup step instead of committing the file itself.

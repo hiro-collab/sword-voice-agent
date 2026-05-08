@@ -13,8 +13,12 @@ Camera Hub gesture topic
 ## Document Map
 
 - [system-requirements.md](docs/system-requirements.md): 目的、成功条件、前提。
+- [architecture.md](docs/architecture.md): workspace全体の論理構成。
+- [component-map.md](docs/component-map.md): 現在のモジュールと将来境界の対応表。
+- [migration-plan.md](docs/migration-plan.md): 大移動を避ける段階的な整理順。
 - [integration-contract.md](docs/integration-contract.md): 接続先、payload、ポート、認証。
 - [contracts/](contracts/README.md): thought-core turn/event stream の機械検証できる境界仕様。
+- [runtime-layout.md](docs/runtime-layout.md): `.cache` 互換 path と将来の `runtime/` 分類。
 - [module-responsibilities.md](docs/module-responsibilities.md): 各モジュールの責務境界。
 - [repository-sources.md](docs/repository-sources.md): GitHub保存先とローカル専用ファイル。
 - [state_authority.md](docs/state_authority.md): state、flag、ID の authority。
