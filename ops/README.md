@@ -12,6 +12,8 @@ registry documentation. It is not the active script location yet.
 | Launcher server | `tools/home-control-launcher/` |
 | Validation module setup | `scripts/setup-validation-modules.ps1` |
 
+See `docs/start-stop-control-plan.md` for the proposed control-plane shape.
+
 ## Migration Rule
 
 Do not move active scripts into `ops/` until the root shortcuts, launcher,
