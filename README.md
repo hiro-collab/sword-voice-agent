@@ -32,6 +32,8 @@ Camera Hub gesture topic
 `ops/` は profile-aware な起動・停止・状態確認の入口です。起動 supervisor の実体は
 `ops/scripts/home-control-stack/` に集約し、`scripts/home-control-stack/` は互換 wrapper として残しています。
 `runtime/` は `.cache` 互換 path を将来分類するための足場です。
+`tests/system/` は memory/access kernel など、単一アプリではなく OS 的な境界を
+検査するテストの置き場です。
 
 ## Requirements
 

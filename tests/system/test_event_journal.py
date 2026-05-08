@@ -6,7 +6,7 @@ from sword_voice_agent.system.event_journal import EventJournal
 from sword_voice_agent.system.access_control import PolicyStore
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 POLICY_ROOT = REPO_ROOT / "policies" / "access"
 
 

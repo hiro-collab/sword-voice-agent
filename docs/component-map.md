@@ -24,7 +24,7 @@ planning document only: paths listed here are not moved by this change.
 | `<workspace>/scripts/` and root `*.bat` | Root launch shortcuts | `ops/scripts` | Keep shortcuts stable until migration is explicit. |
 | `<workspace>/archives/` | Historical snapshots and retired artifacts | `archives/` | Not part of active architecture. |
 | `<workspace>/logs/` | Existing runtime-style logs | `runtime/logs` | Audit before moving; may contain local-sensitive data. |
-| `<workspace>/tests/` | Workspace-level tests and future contract tests | `tests/contract`, `tests/e2e`, `tests/fixtures` | Expand after contracts are formalized. |
+| `<workspace>/tests/` | Workspace-level tests, legacy module tests, and system-boundary tests | `tests/system`, future `tests/contract`, `tests/e2e`, `tests/fixtures` | Keep legacy-compatible root tests stable; put cross-cutting memory/access tests under `tests/system`. |
 
 ## Layer View
 

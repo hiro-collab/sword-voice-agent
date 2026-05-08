@@ -147,6 +147,10 @@ Add or extend mock tests before touching live startup scripts:
 - Denied authorization decisions are written as `access.decision` events.
 - All tests use `TemporaryDirectory` for runtime/logs/local data.
 
+Current home for these tests is `tests/system/`. Keep root-level tests for
+current module compatibility and use `tests/system/` for cross-cutting
+memory/access/kernel behavior.
+
 ## Rollout Gate
 
 Do not enable kernel wiring in the normal `thought-core-v0` profile until:

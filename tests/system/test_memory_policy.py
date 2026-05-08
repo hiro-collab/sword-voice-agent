@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest import TestCase
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 POLICY_ROOT = REPO_ROOT / "policies" / "access"
 MANIFEST_ROOT = REPO_ROOT / "ops" / "manifests"
 MEMORY_LAYERS = {"M0", "M1", "M2", "M3", "M4", "M5", "M6"}
