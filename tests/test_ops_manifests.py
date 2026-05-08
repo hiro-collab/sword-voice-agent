@@ -40,6 +40,29 @@ class OpsManifestTest(TestCase):
                 for service_id in manifest["services"]:
                     self.assertIn(service_id, services)
 
+    def test_profile_service_sets_match_current_lifecycle_modes(self) -> None:
+        profiles = _load_profile_manifests()
+
+        full_local = set(profiles["full-local"]["services"])
+        self.assertIn("dify_stack", full_local)
+        self.assertIn("dify_watcher", full_local)
+        self.assertNotIn("thought_core_api", full_local)
+
+        thought_core = set(profiles["thought-core-experimental"]["services"])
+        self.assertIn("thought_core_api", thought_core)
+        self.assertIn("thought_core_watcher", thought_core)
+        self.assertNotIn("dify_stack", thought_core)
+        self.assertNotIn("dify_watcher", thought_core)
+
+        camera_debug = set(profiles["camera-debug"]["services"])
+        self.assertEqual(
+            camera_debug,
+            {"mediapipe_camera_hub_stack", "vision_snapshot_processor"},
+        )
+
+        aituber_only = set(profiles["aituber-only"]["services"])
+        self.assertEqual(aituber_only, {"aituber_kit"})
+
 
 def _allowed_layers() -> set[str]:
     schema_path = REPO_ROOT / "contracts" / "events" / "layer.schema.json"

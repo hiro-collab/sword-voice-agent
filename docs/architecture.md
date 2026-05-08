@@ -9,8 +9,10 @@
 正規管理場所です。workspace root 直下に一時的な `docs/` や `contracts/` が存在する
 場合でも、root 自体が Git 管理されるまでは、この repository 側を canonical とします。
 
-コード移動や起動経路の変更は、この文書だけでは行いません。既存の標準起動は
-引き続き workspace 直下の `start-home-control-stack.bat` から行います。
+既存の標準起動は引き続き workspace 直下の `start-home-control-stack.bat` から行えます。
+構成整理用の入口として、`sword-voice-agent/ops/scripts/system.ps1` も
+`start/status/stop -Profile <profile>` を受け付けます。この `ops` 入口は現行の
+`scripts/home-control-stack/` supervisor を継承して呼び出します。
 
 ## Logical Layout
 

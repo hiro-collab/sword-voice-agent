@@ -1,6 +1,6 @@
 # 0002 Ops Control Plane For Lifecycle
 
-Status: proposed
+Status: accepted
 
 ## Context
 
@@ -12,13 +12,16 @@ between scripts, launcher UI, status checks, and docs.
 ## Decision
 
 Introduce an `ops` control-plane concept before moving scripts. The current
-`scripts/home-control-stack/` files remain authoritative for now, but future
-start/status/stop behavior should converge on manifests and a single ops facade.
+`scripts/home-control-stack/` files remain the inherited supervisor engine, and
+`ops/scripts/system.ps1` is the profile-aware facade for start/status/stop.
 
 ## Consequences
 
 - Root shortcuts remain compatibility aliases.
 - The launcher should eventually call the same ops facade as CLI users.
+- Profiles in `ops/manifests/profiles/` define which current stack components
+  are selected; the facade translates that into the current `-Skip...` and
+  `-Enable...` arguments.
 - Process records should include `service_id`, `layer`, command, cwd, PID, log
   paths, and ownership.
 - Stop logic must use owned process records first and avoid killing unrelated

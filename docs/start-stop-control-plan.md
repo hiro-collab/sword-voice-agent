@@ -10,12 +10,14 @@ The active lifecycle entrypoints are:
 
 | Surface | Current path | Role |
 |---|---|---|
+| Ops facade | `ops/scripts/system.ps1` | Profile-aware start/status/stop entrypoint. |
 | Root shortcuts | `<workspace>/start-home-control-stack.bat`, `status-home-control-stack.bat`, `stop-home-control-stack.bat` | Human-friendly compatibility entrypoints. |
 | Stack scripts | `scripts/home-control-stack/start-home-control-stack.ps1`, `status-home-control-stack.ps1`, `stop-home-control-stack.ps1` | Authoritative current start/status/stop implementation. |
 | Launcher | `tools/home-control-launcher/` | Browser UI that wraps the stack scripts. |
 | Runtime registry | `.cache/home-control-stack/pids.json` by default | Current process ownership record. |
 
-All current paths should remain compatible until an `ops` control plane is ready.
+All current paths remain compatible. The first `ops` control surface now wraps
+the inherited stack scripts instead of replacing their supervisor logic.
 
 ## Target Shape
 
@@ -51,7 +53,7 @@ runtime/
     services/
 ```
 
-The future `ops/scripts/system.ps1` should be a thin facade:
+`ops/scripts/system.ps1` is a thin facade:
 
 ```powershell
 .\ops\scripts\system.ps1 start  -Profile full-local
@@ -134,31 +136,40 @@ Phase A: Keep current scripts authoritative.
 
 - Done: add `-StackStateDir` / `HOME_CONTROL_STACK_STATE_DIR` compatibility.
 - Keep root shortcuts and launcher behavior stable.
-- Document `ops/` as future control plane.
+- Document `ops/` as the control plane that inherits the current supervisor.
 
-Phase B: Introduce manifests in read-only mode.
+Phase B: Introduce manifests and manifest status.
 
-- Generate a status view from manifests plus current `pids.json`.
-- Do not start or stop from manifests yet.
-- Compare manifest status with current status script output.
+- Done: generate a status view from manifests plus current `pids.json`.
+- Done: compare manifest status with current status script output.
 - Current entrypoint: `ops/scripts/system.ps1 status -Profile <profile>`.
 
-Phase C: Make `ops/scripts/system.ps1 status` authoritative.
+Phase C: Move start/stop behind ops facade.
 
-- Launcher status calls the ops status surface.
-- Existing `status-home-control-stack.ps1` becomes a compatibility wrapper.
+- Done: `ops/scripts/system.ps1 start|stop|status -Profile <profile>` delegates
+  to the inherited `scripts/home-control-stack/` implementation.
+- Profile membership controls `-Skip...` and `-Enable...` arguments.
+- Next: run real start/status/stop verification from the ops facade.
 
-Phase D: Move start/stop behind ops facade.
+Phase D: Make root shortcuts and launcher call the ops facade.
 
-- `start-home-control-stack.ps1` and `stop-home-control-stack.ps1` call the ops
-  facade or become compatibility wrappers.
 - Root `.bat` shortcuts stay as human-friendly aliases.
+- Launcher start/status/stop calls `ops/scripts/system.ps1`.
+- Existing `scripts/home-control-stack/*.ps1` remain as the inherited supervisor
+  engine until a manifest-native process manager is ready.
 
-Phase E: Optional physical layout cleanup.
+Phase E: Optional manifest-native process manager.
+
+- Replace profile-to-legacy-argument translation with service-level manifest
+  start commands.
+- Keep one process registry format.
+- Archive retired full-stack scripts only after references are removed.
+
+Phase F: Optional physical layout cleanup.
 
 - Move active lifecycle scripts under `ops/scripts/`.
+- Root `.bat` shortcuts stay as human-friendly aliases.
 - Archive retired full-stack scripts only after references are removed.
-- Keep one process registry format.
 
 ## Logging
 

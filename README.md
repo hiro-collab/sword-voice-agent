@@ -27,11 +27,13 @@ Camera Hub gesture topic
 - [retired-paths.md](docs/retired-paths.md): 互換、保留、検証専用の導線。
 
 `archives/` は履歴退避先です。通常の実装判断では読まなくても大丈夫です。必要なときだけ履歴確認として参照します。
-`ops/` と `runtime/` は将来配置の足場です。現行の起動スクリプトはまだ `scripts/home-control-stack/` が正です。
+`ops/` は profile-aware な起動・停止・状態確認の入口です。現行 supervisor の実体は
+まだ `scripts/home-control-stack/` にあり、`ops/scripts/system.ps1` がそれを継承して呼び出します。
+`runtime/` は `.cache` 互換 path を将来分類するための足場です。
 
 ## Requirements
 
-- Windows + PowerShell
+- Windows + PowerShell 7 (`pwsh`) for lifecycle scripts
 - Python と `uv`
 - Node.js / npm
 - Chrome
@@ -204,7 +206,17 @@ cd <workspace>
 .\stop-home-control-stack.bat
 ```
 
-起動スクリプトの本体は `sword-voice-agent\scripts\home-control-stack\` にあります。`<workspace>` 直下の `.bat` と `scripts\*.ps1` はショートカットです。
+構成整理中の新しい入口は `ops` レイヤーです。まず dry-run で profile から現行起動引数へ
+どう変換されるか確認できます。
+
+```powershell
+cd <workspace>\sword-voice-agent
+.\ops\scripts\system.ps1 start  -Profile thought-core-experimental -DryRun
+.\ops\scripts\system.ps1 status -Profile thought-core-experimental
+.\ops\scripts\system.ps1 stop   -Profile thought-core-experimental -DryRun
+```
+
+起動スクリプトの本体は `sword-voice-agent\scripts\home-control-stack\` にあります。`<workspace>` 直下の `.bat` と `ops\scripts\system.ps1` は互換入口です。
 
 ## User Surface
 

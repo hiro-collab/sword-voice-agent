@@ -1,31 +1,68 @@
 # Ops
 
-`ops/` is the future home for process manifests, launch policy, and process
-registry documentation. It is not the active script location yet.
+`ops/` is the home for process manifests, launch policy, and process registry
+documentation. The active start/stop implementation is still inherited from the
+current Home Control Stack scripts, but `ops/scripts/system.ps1` is now the
+profile-aware control surface.
 
 ## Current Active Locations
 
 | Concern | Current path |
 |---|---|
-| Home Control Stack start/status/stop | `scripts/home-control-stack/` |
+| Profile-aware start/status/stop facade | `ops/scripts/system.ps1` |
+| Home Control Stack supervisor implementation | `scripts/home-control-stack/` |
 | Root shortcut installer | `scripts/home-control-stack/install-root-shortcuts.ps1` |
 | Launcher server | `tools/home-control-launcher/` |
 | Validation module setup | `scripts/setup-validation-modules.ps1` |
 
-See `docs/start-stop-control-plan.md` for the proposed control-plane shape.
-Initial read-only manifests live under `ops/manifests/`.
+See `docs/start-stop-control-plan.md` for the control-plane shape. Manifests
+live under `ops/manifests/`.
 
-Read-only manifest status is available with:
+Use the facade from this repository root:
 
 ```powershell
+.\ops\scripts\system.ps1 start  -Profile thought-core-experimental -DryRun
 .\ops\scripts\system.ps1 status -Profile thought-core-experimental
+.\ops\scripts\system.ps1 stop   -Profile thought-core-experimental -DryRun
 ```
 
-This reports manifest services and current PID registry state only. Start/stop
-still belongs to the current Home Control Stack scripts.
+`status` prints a layer-aware manifest/PID summary, then delegates to the
+current health status script unless `-ManifestOnly` is passed. `start` and
+`stop` translate the selected profile into the current stack script arguments.
+The facade prefers PowerShell 7 (`pwsh`) when delegating because the inherited
+supervisor scripts use PowerShell 7 syntax.
+
+## Profiles
+
+| Profile | Intended use |
+|---|---|
+| `full-local` | Current Dify-based full local stack. |
+| `thought-core-experimental` | Thought Core API and watcher path, with Dify stack/watcher skipped. |
+| `camera-debug` | Camera Hub and Vision Snapshot Processor only. |
+| `aituber-only` | AITuber Kit surface only. |
+
+When another stack is already running, use alternate ports for dry-run
+verification instead of stopping user-owned processes:
+
+```powershell
+.\ops\scripts\system.ps1 start `
+  -Profile thought-core-experimental `
+  -DryRun `
+  -SkipVoicevoxCheck `
+  -HomeAssistantBridgePort 18887 `
+  -EnvironmentStatePort 18890 `
+  -MediapipePort 18865 `
+  -MediapipeBrowserMonitorPort 18870 `
+  -VisionSnapshotProcessorPort 18876 `
+  -AituberPort 13000 `
+  -TouchDesignerGuiPort 18889 `
+  -ThoughtCorePort 18888 `
+  -StackStateDir .cache\home-control-stack-system-test
+```
 
 ## Migration Rule
 
-Do not move active scripts into `ops/` until the root shortcuts, launcher,
-README, and tests are updated in the same change. Until then, `ops/` is a
-planning and manifest area only.
+Do not delete or move `scripts/home-control-stack/` until the root shortcuts and
+launcher call `ops/scripts/system.ps1` and real start/status/stop verification
+has passed. Until then, `ops` is the stable control surface and the current
+stack scripts remain the inherited supervisor engine.

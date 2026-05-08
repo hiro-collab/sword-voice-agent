@@ -1,15 +1,17 @@
 # Ops Manifests
 
-These manifests are read-only planning data for the future `ops` control plane.
-The current authoritative lifecycle implementation remains
-`scripts/home-control-stack/`.
+These manifests describe the named profiles and service identities used by the
+`ops` control plane. The current supervisor implementation is still inherited
+from `scripts/home-control-stack/`, while `ops/scripts/system.ps1` translates a
+profile into the matching start/status/stop arguments.
 
 ## Directories
 
 | Path | Purpose |
 |---|---|
 | `services/` | Stable service records, current script owner, layer, health, stop strategy, dependencies. |
-| `profiles/` | Named service sets that should become start/status/stop profiles. |
+| `profiles/` | Named service sets accepted by `ops/scripts/system.ps1 -Profile`. |
 
 The `service_id` values intentionally match current PID registry names where
-possible, so migration can compare manifests against `.cache/home-control-stack/pids.json`.
+possible, so `system.ps1 status` can compare manifests against
+`.cache/home-control-stack/pids.json`.
