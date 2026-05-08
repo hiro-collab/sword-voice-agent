@@ -2,7 +2,7 @@
   "service_id": "aituber_kit",
   "layer": "expression",
   "logical_service": "aituber-ui",
-  "current_owner": "scripts/home-control-stack/start-home-control-stack.ps1",
+  "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
   "repo_path": "aituber-kit",
   "pid_names": ["aituber_kit"],
   "start": {

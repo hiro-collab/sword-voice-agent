@@ -2,7 +2,7 @@
   "service_id": "vision_snapshot_processor",
   "layer": "environment",
   "logical_service": "environment-input",
-  "current_owner": "scripts/home-control-stack/start-home-control-stack.ps1",
+  "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
   "repo_path": "vision-snapshot-processor",
   "pid_names": ["vision_snapshot_processor"],
   "start": {

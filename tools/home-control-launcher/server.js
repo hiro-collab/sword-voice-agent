@@ -46,10 +46,8 @@ const OPEN_BROWSER =
 
 const PUBLIC_DIR = path.join(__dirname, 'public')
 const PROFILE_FILE = path.join(__dirname, 'config', 'default-profiles.json')
-const SCRIPT_ROOT = path.join(PROJECT_ROOT, 'scripts', 'home-control-stack')
-const START_SCRIPT = path.join(SCRIPT_ROOT, 'start-home-control-stack.ps1')
-const STOP_SCRIPT = path.join(SCRIPT_ROOT, 'stop-home-control-stack.ps1')
-const STATUS_SCRIPT = path.join(SCRIPT_ROOT, 'status-home-control-stack.ps1')
+const OPS_SCRIPT_ROOT = path.join(PROJECT_ROOT, 'ops', 'scripts')
+const SYSTEM_SCRIPT = path.join(OPS_SCRIPT_ROOT, 'system.ps1')
 const STATE_DIR = resolveStackStateDir()
 const LOG_DIR = path.join(STATE_DIR, 'logs')
 const PID_FILE = path.join(STATE_DIR, 'pids.json')
@@ -118,6 +116,18 @@ const DEFAULT_OPTIONS = {
   StopExisting: true,
   EnableHomeControlFaultInjection: false
 }
+
+const OPS_PROFILE_BY_LAUNCHER_PROFILE = {
+  'full-stack': 'full-local',
+  'dify-external': 'full-local',
+  'no-touchdesigner': 'full-local',
+  'thought-core-experimental': 'thought-core-experimental',
+  'aituber-only': 'aituber-only',
+  'camera-debug': 'camera-debug'
+}
+
+const opsProfileFor = (profileId) =>
+  OPS_PROFILE_BY_LAUNCHER_PROFILE[profileId] || profileId || 'full-local'
 
 const NUMBER_FIELDS = new Set([
   'HomeAssistantBridgePort',
@@ -423,42 +433,64 @@ const addSupportedSwitch = (scriptPath, args, name) => {
   }
 }
 
-const buildStackArgs = (options) => {
-  const stackArgs = []
-  addSupportedParam(START_SCRIPT, stackArgs, 'HomeAssistantBridgeHost', options.HomeAssistantBridgeHost)
-  addSupportedParam(START_SCRIPT, stackArgs, 'HomeAssistantBridgePort', options.HomeAssistantBridgePort)
-  addSupportedParam(START_SCRIPT, stackArgs, 'EnvironmentStatePort', options.EnvironmentStatePort)
-  addSupportedParam(START_SCRIPT, stackArgs, 'MediapipePort', options.MediapipePort)
+const buildSystemStartArgs = (profileId, options) => {
+  const stackArgs = ['start', '-Profile', opsProfileFor(profileId)]
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'HomeAssistantBridgeHost', options.HomeAssistantBridgeHost)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'HomeAssistantBridgePort', options.HomeAssistantBridgePort)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'EnvironmentStatePort', options.EnvironmentStatePort)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipePort', options.MediapipePort)
   addSupportedParam(
-    START_SCRIPT,
+    SYSTEM_SCRIPT,
     stackArgs,
     'MediapipeBrowserMonitorPort',
     options.MediapipeBrowserMonitorPort
   )
-  addSupportedParam(START_SCRIPT, stackArgs, 'VisionSnapshotProcessorPort', options.VisionSnapshotProcessorPort)
-  addSupportedParam(START_SCRIPT, stackArgs, 'AituberHost', options.AituberHost)
-  addSupportedParam(START_SCRIPT, stackArgs, 'AituberPort', options.AituberPort)
-  addSupportedParam(START_SCRIPT, stackArgs, 'TouchDesignerGuiHost', options.TouchDesignerGuiHost)
-  addSupportedParam(START_SCRIPT, stackArgs, 'TouchDesignerGuiPort', options.TouchDesignerGuiPort)
-  addSupportedParam(START_SCRIPT, stackArgs, 'DifyPort', options.DifyPort)
-  addSupportedParam(START_SCRIPT, stackArgs, 'ThoughtCoreHost', options.ThoughtCoreHost)
-  addSupportedParam(START_SCRIPT, stackArgs, 'ThoughtCorePort', options.ThoughtCorePort)
-  addSupportedParam(START_SCRIPT, stackArgs, 'MediapipeMode', options.MediapipeMode)
-  addSupportedParam(START_SCRIPT, stackArgs, 'MediapipeCameraName', options.MediapipeCameraName)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'VisionSnapshotProcessorPort', options.VisionSnapshotProcessorPort)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'AituberHost', options.AituberHost)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'AituberPort', options.AituberPort)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'TouchDesignerGuiHost', options.TouchDesignerGuiHost)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'TouchDesignerGuiPort', options.TouchDesignerGuiPort)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'DifyPort', options.DifyPort)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'ThoughtCoreHost', options.ThoughtCoreHost)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'ThoughtCorePort', options.ThoughtCorePort)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeMode', options.MediapipeMode)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeCameraName', options.MediapipeCameraName)
 
   if (options.VoicevoxUrl) {
-    addSupportedParam(START_SCRIPT, stackArgs, 'VoicevoxUrl', options.VoicevoxUrl)
+    addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'VoicevoxUrl', options.VoicevoxUrl)
   }
   if (options.DifyDockerRoot) {
-    addSupportedParam(START_SCRIPT, stackArgs, 'DifyDockerRoot', options.DifyDockerRoot)
+    addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'DifyDockerRoot', options.DifyDockerRoot)
   }
   if (options.HomeControlConfigPath) {
-    addSupportedParam(START_SCRIPT, stackArgs, 'HomeControlConfigPath', options.HomeControlConfigPath)
+    addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'HomeControlConfigPath', options.HomeControlConfigPath)
   }
   for (const key of SWITCH_FIELDS) {
     if (options[key]) {
-      addSupportedSwitch(START_SCRIPT, stackArgs, key)
+      addSupportedSwitch(SYSTEM_SCRIPT, stackArgs, key)
     }
+  }
+  return stackArgs
+}
+
+const buildSystemStatusArgs = (profileId, options) => {
+  const stackArgs = ['status', '-Profile', opsProfileFor(profileId)]
+  for (const key of NUMBER_FIELDS) {
+    addSupportedParam(SYSTEM_SCRIPT, stackArgs, key, options[key])
+  }
+  for (const key of [
+    'VoicevoxUrl',
+    'ThoughtCoreHost'
+  ]) {
+    if (options[key]) {
+      addSupportedParam(SYSTEM_SCRIPT, stackArgs, key, options[key])
+    }
+  }
+  if (options.EnableThoughtCore) {
+    addSupportedSwitch(SYSTEM_SCRIPT, stackArgs, 'EnableThoughtCore')
+  }
+  if (options.EnableThoughtCoreWatch) {
+    addSupportedSwitch(SYSTEM_SCRIPT, stackArgs, 'EnableThoughtCoreWatch')
   }
   return stackArgs
 }
@@ -478,10 +510,11 @@ const buildPowerShellCommand = (scriptPath, scriptArgs = []) => [
 
 const previewCommand = (profileId, optionOverrides = {}) => {
   const options = normalizeOptions(profileId, optionOverrides)
-  const command = buildPowerShellCommand(START_SCRIPT, buildStackArgs(options))
+  const command = buildPowerShellCommand(SYSTEM_SCRIPT, buildSystemStartArgs(profileId, options))
   return {
     ok: true,
     profileId,
+    opsProfile: opsProfileFor(profileId),
     options,
     command,
     commandLine: formatCommand(command)
@@ -671,11 +704,13 @@ const runScriptAndCollect = (scriptPath, scriptArgs = [], timeoutMs = 30000) =>
   })
 
 const stopStack = async (body) => {
-  const scriptArgs = ['-Force']
+  const config = readLauncherConfig()
+  const profileId = (body && body.profileId) || config.selectedProfileId || 'full-stack'
+  const scriptArgs = ['stop', '-Profile', opsProfileFor(profileId), '-Force']
   if (body && body.stopDify) {
     scriptArgs.push('-StopDify')
   }
-  const result = await runScriptAndCollect(STOP_SCRIPT, scriptArgs, 45000)
+  const result = await runScriptAndCollect(SYSTEM_SCRIPT, scriptArgs, 45000)
   writeJsonFile(LAUNCHER_STATE_FILE, {
     ...readLauncherState(),
     stoppedAt: nowIso(),
@@ -1188,7 +1223,18 @@ const handleApi = async (request, response, requestUrl) => {
     return
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/status-script') {
-    sendJson(response, 200, await runScriptAndCollect(STATUS_SCRIPT, [], 30000))
+    const config = readLauncherConfig()
+    const profileId = config.selectedProfileId || 'full-stack'
+    const options = normalizeOptions(profileId, config.options || {})
+    sendJson(
+      response,
+      200,
+      await runScriptAndCollect(
+        SYSTEM_SCRIPT,
+        buildSystemStatusArgs(profileId, options),
+        30000
+      )
+    )
     return
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/shutdown') {

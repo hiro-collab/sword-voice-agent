@@ -103,7 +103,8 @@ Future:
 Current:
 
 - `start-home-control-stack.bat`
-- `sword-voice-agent/scripts/home-control-stack/`
+- `sword-voice-agent/ops/scripts/home-control-stack/`
+- `sword-voice-agent/scripts/home-control-stack/` compatibility wrappers
 - `.cache/home-control-stack/`
 - launcher process registry and status files
 

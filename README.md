@@ -27,8 +27,8 @@ Camera Hub gesture topic
 - [retired-paths.md](docs/retired-paths.md): 互換、保留、検証専用の導線。
 
 `archives/` は履歴退避先です。通常の実装判断では読まなくても大丈夫です。必要なときだけ履歴確認として参照します。
-`ops/` は profile-aware な起動・停止・状態確認の入口です。現行 supervisor の実体は
-まだ `scripts/home-control-stack/` にあり、`ops/scripts/system.ps1` がそれを継承して呼び出します。
+`ops/` は profile-aware な起動・停止・状態確認の入口です。起動 supervisor の実体は
+`ops/scripts/home-control-stack/` に集約し、`scripts/home-control-stack/` は互換 wrapper として残しています。
 `runtime/` は `.cache` 互換 path を将来分類するための足場です。
 
 ## Requirements
@@ -162,7 +162,7 @@ cd <workspace>
 
 ```powershell
 cd <workspace>\sword-voice-agent
-.\scripts\home-control-stack\check-dify-home-control-workflow.ps1
+.\ops\scripts\home-control-stack\check-dify-home-control-workflow.ps1
 ```
 
 正常時は `ok` になり、`version match: True` と `Dify sees env: ... room_light=True` が出ます。
@@ -206,7 +206,7 @@ cd <workspace>
 .\stop-home-control-stack.bat
 ```
 
-構成整理中の新しい入口は `ops` レイヤーです。まず dry-run で profile から現行起動引数へ
+起動系の正規入口は `ops` レイヤーです。まず dry-run で profile から supervisor 引数へ
 どう変換されるか確認できます。
 
 ```powershell
@@ -216,7 +216,8 @@ cd <workspace>\sword-voice-agent
 .\ops\scripts\system.ps1 stop   -Profile thought-core-experimental -DryRun
 ```
 
-起動スクリプトの本体は `sword-voice-agent\scripts\home-control-stack\` にあります。`<workspace>` 直下の `.bat` と `ops\scripts\system.ps1` は互換入口です。
+起動スクリプトの本体は `sword-voice-agent\ops\scripts\home-control-stack\` にあります。
+`<workspace>` 直下の `.bat` と `sword-voice-agent\scripts\home-control-stack\` は互換入口です。
 
 ## User Surface
 
@@ -264,7 +265,7 @@ Dify に最新 workflow YAML が反映されているか、また Dify 実行時
 
 ```powershell
 cd <workspace>\sword-voice-agent
-.\scripts\home-control-stack\check-dify-home-control-workflow.ps1
+.\ops\scripts\home-control-stack\check-dify-home-control-workflow.ps1
 ```
 
 `workflow_version_mismatch` または `diagnostic_marker_missing` の場合は、`dify-apps\Home Control Assistant.issue-iteration.yml` をDifyへ再インポートし、公開してから再実行します。
@@ -272,7 +273,7 @@ cd <workspace>\sword-voice-agent
 Environment State Server の疎通確認:
 
 ```powershell
-.\sword-voice-agent\scripts\home-control-stack\check-environment-state-server.ps1
+.\sword-voice-agent\ops\scripts\home-control-stack\check-environment-state-server.ps1
 ```
 
 ## Model Notice

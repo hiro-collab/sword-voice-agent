@@ -35,7 +35,7 @@ Do not commit these files or directories:
 - `aituber-kit\public\scripts\live2dcubismcore.min.js`
 - custom or redistribution-sensitive VRM files, including `aituber-kit\public\vrm\Nutachisan.vrm` and `mediapipe-sword-sign\.vrm\`
 - `.cache\`, `logs\`, `archives\`, `.venv\`, `node_modules\`, and build outputs
-- root shortcut files generated from `sword-voice-agent\scripts\home-control-stack\install-root-shortcuts.ps1`
+- root shortcut files generated from `sword-voice-agent\ops\scripts\home-control-stack\install-root-shortcuts.ps1`
 - temporary workspace-root planning folders such as `docs\`, `contracts\`,
   `ops\`, and `runtime\`, unless a root meta repository is created
 - local SDK unpack directories such as `CubismSdkForWeb-5-r.5\`

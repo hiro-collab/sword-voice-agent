@@ -2,7 +2,7 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet("status", "start", "stop")]
     [string]$Command = "status",
-    [string]$Profile = "thought-core-experimental",
+    [string]$Profile = "full-local",
     [string]$WorkspaceRoot = "",
     [string]$StackStateDir = "",
     [string]$HomeControlConfigPath = "",
@@ -27,8 +27,19 @@ param(
     [switch]$MediapipeOpenBrowser,
     [switch]$MediapipeNoBrowser,
     [switch]$MediapipePythonGui,
+    [switch]$SkipDify,
+    [switch]$SkipHomeAssistantBridge,
+    [switch]$SkipEnvironmentState,
+    [switch]$SkipMediapipe,
+    [switch]$SkipVisionSnapshotProcessor,
+    [switch]$SkipAituber,
+    [switch]$SkipDifyWatch,
+    [switch]$SkipTouchDesignerGui,
+    [switch]$EnableThoughtCore,
+    [switch]$EnableThoughtCoreWatch,
     [switch]$StopExisting,
     [switch]$SkipVoicevoxCheck,
+    [switch]$EnableHomeControlFaultInjection,
     [switch]$StopDify,
     [switch]$Force,
     [switch]$DryRun,
@@ -209,6 +220,31 @@ function Test-ServiceSelected {
     return $Services -contains $ServiceId
 }
 
+function Resolve-EffectiveServices {
+    param([Parameter(Mandatory = $true)][string[]]$Services)
+    $selected = @{}
+    foreach ($service in $Services) {
+        $selected[$service] = $true
+    }
+
+    if ($SkipDify) { $selected["dify_stack"] = $false }
+    if ($SkipHomeAssistantBridge) { $selected["home_assistant_bridge"] = $false }
+    if ($SkipEnvironmentState) { $selected["environment_state_server"] = $false }
+    if ($SkipMediapipe) { $selected["mediapipe_camera_hub_stack"] = $false }
+    if ($SkipVisionSnapshotProcessor) { $selected["vision_snapshot_processor"] = $false }
+    if ($SkipAituber) { $selected["aituber_kit"] = $false }
+    if ($SkipDifyWatch) { $selected["dify_watcher"] = $false }
+    if ($SkipTouchDesignerGui) { $selected["touchdesigner_control_gui"] = $false }
+    if ($EnableThoughtCore) { $selected["thought_core_api"] = $true }
+    if ($EnableThoughtCoreWatch) { $selected["thought_core_watcher"] = $true }
+
+    return [string[]]@(
+        $selected.Keys |
+            Where-Object { $selected[$_] -eq $true } |
+            Sort-Object
+    )
+}
+
 function Add-ArgumentIf {
     param(
         [System.Collections.Generic.List[string]]$Arguments,
@@ -302,6 +338,7 @@ function New-StackStartArguments {
     Add-ArgumentIf -Arguments $arguments -Condition $MediapipePythonGui.IsPresent -Name "-MediapipePythonGui"
     Add-ArgumentIf -Arguments $arguments -Condition $StopExisting.IsPresent -Name "-StopExisting"
     Add-ArgumentIf -Arguments $arguments -Condition $SkipVoicevoxCheck.IsPresent -Name "-SkipVoicevoxCheck"
+    Add-ArgumentIf -Arguments $arguments -Condition $EnableHomeControlFaultInjection.IsPresent -Name "-EnableHomeControlFaultInjection"
     Add-ArgumentIf -Arguments $arguments -Condition $DryRun.IsPresent -Name "-DryRun"
     return [string[]]$arguments.ToArray()
 }
@@ -347,7 +384,7 @@ function Invoke-StackScript {
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [Parameter(Mandatory = $true)][string]$Operation
     )
-    $scriptPath = Join-Path (Resolve-RepoRoot) "scripts\home-control-stack\$ScriptName"
+    $scriptPath = Join-Path (Resolve-RepoRoot) "ops\scripts\home-control-stack\$ScriptName"
     if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
         throw "Stack script not found: $scriptPath"
     }
@@ -398,7 +435,7 @@ $stackStateDir = Resolve-StackStateDir -WorkspaceRoot $workspaceRoot -Value $Sta
 $manifestRoot = Join-Path $repoRoot "ops\manifests"
 $profilePath = Join-Path $manifestRoot "profiles\$Profile.json"
 $profileManifest = Read-JsonObject -Path $profilePath
-$services = @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $profileManifest -Name "services" -Default @()))
+$services = @(Resolve-EffectiveServices -Services @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $profileManifest -Name "services" -Default @())))
 
 if ($services.Count -eq 0) {
     throw "Profile has no services: $Profile"

@@ -2,7 +2,7 @@
   "service_id": "touchdesigner_control_gui",
   "layer": "expression",
   "logical_service": "display-runtime",
-  "current_owner": "scripts/home-control-stack/start-home-control-stack.ps1",
+  "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
   "repo_path": "touchdesigner-ai-controller",
   "pid_names": ["touchdesigner_control_gui"],
   "start": {

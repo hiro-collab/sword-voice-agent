@@ -1,8 +1,8 @@
 # Ops Manifests
 
 These manifests describe the named profiles and service identities used by the
-`ops` control plane. The current supervisor implementation is still inherited
-from `scripts/home-control-stack/`, while `ops/scripts/system.ps1` translates a
+`ops` control plane. The current supervisor implementation is inherited under
+`ops/scripts/home-control-stack/`, while `ops/scripts/system.ps1` translates a
 profile into the matching start/status/stop arguments.
 
 ## Directories

@@ -11,8 +11,9 @@
 
 既存の標準起動は引き続き workspace 直下の `start-home-control-stack.bat` から行えます。
 構成整理用の入口として、`sword-voice-agent/ops/scripts/system.ps1` も
-`start/status/stop -Profile <profile>` を受け付けます。この `ops` 入口は現行の
-`scripts/home-control-stack/` supervisor を継承して呼び出します。
+`start/status/stop -Profile <profile>` を受け付けます。supervisor 実体は
+`ops/scripts/home-control-stack/` に集約し、旧 `scripts/home-control-stack/` は
+互換 wrapper として残します。
 
 ## Logical Layout
 

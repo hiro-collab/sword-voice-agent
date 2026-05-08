@@ -16,7 +16,9 @@ map across modules.
 .\stop-home-control-stack.bat
 ```
 
-起動スクリプト本体は `sword-voice-agent\scripts\home-control-stack\` にある。root の `.bat` と `scripts\*.ps1` はショートカット。
+起動入口は `sword-voice-agent\ops\scripts\system.ps1`。supervisor 実体は
+`sword-voice-agent\ops\scripts\home-control-stack\` にある。root の `.bat` と
+`sword-voice-agent\scripts\home-control-stack\*.ps1` は互換ショートカット。
 
 Runtime state defaults to `.cache\home-control-stack`. Advanced runs can point
 start/status/stop scripts at another compatible state directory with

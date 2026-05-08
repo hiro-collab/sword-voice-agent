@@ -2,7 +2,7 @@
   "service_id": "dify_watcher",
   "layer": "adapter",
   "logical_service": "dify-adapter",
-  "current_owner": "scripts/home-control-stack/start-home-control-stack.ps1",
+  "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
   "repo_path": "sword-voice-agent",
   "pid_names": ["dify_watcher"],
   "start": {

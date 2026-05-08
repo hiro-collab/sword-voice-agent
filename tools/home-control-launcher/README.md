@@ -7,14 +7,16 @@ It serves a browser UI for:
 - choosing launch profiles
 - editing common startup options and ports
 - previewing the exact PowerShell command
-- starting and stopping the existing stack scripts
+- starting and stopping through the ops lifecycle facade
 - keeping reference URLs visible after logs scroll
 
-The launcher intentionally wraps the existing scripts instead of replacing them:
+The launcher calls the ops facade, which then delegates to the inherited
+supervisor implementation:
 
-- `scripts/home-control-stack/start-home-control-stack.ps1`
-- `scripts/home-control-stack/status-home-control-stack.ps1`
-- `scripts/home-control-stack/stop-home-control-stack.ps1`
+- `ops/scripts/system.ps1`
+- `ops/scripts/home-control-stack/start-home-control-stack.ps1`
+- `ops/scripts/home-control-stack/status-home-control-stack.ps1`
+- `ops/scripts/home-control-stack/stop-home-control-stack.ps1`
 
 Runtime state is written under `.cache/home-control-stack/` by default:
 
@@ -27,7 +29,7 @@ Runtime state is written under `.cache/home-control-stack/` by default:
 
 To test an alternate compatible state directory, set
 `HOME_CONTROL_STACK_STATE_DIR` before starting the launcher or pass
-`-StackStateDir` to the wrapped stack scripts. Relative paths are resolved from
+`-StackStateDir` to the ops lifecycle command. Relative paths are resolved from
 the workspace root. The launcher passes the resolved state directory to
 start/status/stop child processes so they read the same `pids.json`.
 
@@ -72,7 +74,7 @@ Stop the stack itself separately:
 Or from this repository:
 
 ```powershell
-.\scripts\home-control-stack\start-home-control-launcher.ps1
+.\ops\scripts\home-control-stack\start-home-control-launcher.ps1
 ```
 
 Use `-ReuseExisting` when you only want to open or reuse the already-running

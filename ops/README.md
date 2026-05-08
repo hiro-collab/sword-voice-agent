@@ -2,16 +2,18 @@
 
 `ops/` is the home for process manifests, launch policy, and process registry
 documentation. The active start/stop implementation is still inherited from the
-current Home Control Stack scripts, but `ops/scripts/system.ps1` is now the
-profile-aware control surface.
+Home Control Stack supervisor, and that supervisor now lives under
+`ops/scripts/home-control-stack/`. `ops/scripts/system.ps1` is the profile-aware
+control surface.
 
 ## Current Active Locations
 
 | Concern | Current path |
 |---|---|
 | Profile-aware start/status/stop facade | `ops/scripts/system.ps1` |
-| Home Control Stack supervisor implementation | `scripts/home-control-stack/` |
-| Root shortcut installer | `scripts/home-control-stack/install-root-shortcuts.ps1` |
+| Home Control Stack supervisor implementation | `ops/scripts/home-control-stack/` |
+| Root shortcut installer | `ops/scripts/home-control-stack/install-root-shortcuts.ps1` |
+| Compatibility wrappers | `scripts/home-control-stack/` |
 | Launcher server | `tools/home-control-launcher/` |
 | Validation module setup | `scripts/setup-validation-modules.ps1` |
 
@@ -62,7 +64,6 @@ verification instead of stopping user-owned processes:
 
 ## Migration Rule
 
-Do not delete or move `scripts/home-control-stack/` until the root shortcuts and
-launcher call `ops/scripts/system.ps1` and real start/status/stop verification
-has passed. Until then, `ops` is the stable control surface and the current
-stack scripts remain the inherited supervisor engine.
+Do not delete `scripts/home-control-stack/` until external references have had
+at least one migration phase to update. Those files are compatibility wrappers;
+new lifecycle work belongs under `ops/scripts/`.

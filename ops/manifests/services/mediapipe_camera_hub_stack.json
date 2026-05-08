@@ -2,7 +2,7 @@
   "service_id": "mediapipe_camera_hub_stack",
   "layer": "reflex",
   "logical_service": "reflex-core",
-  "current_owner": "scripts/home-control-stack/start-home-control-stack.ps1",
+  "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
   "repo_path": "mediapipe-sword-sign",
   "pid_names": [
     "mediapipe_camera_hub_stack",

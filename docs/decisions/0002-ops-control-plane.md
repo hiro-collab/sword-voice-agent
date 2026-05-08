@@ -12,8 +12,9 @@ between scripts, launcher UI, status checks, and docs.
 ## Decision
 
 Introduce an `ops` control-plane concept before moving scripts. The current
-`scripts/home-control-stack/` files remain the inherited supervisor engine, and
+`ops/scripts/home-control-stack/` holds the inherited supervisor engine, and
 `ops/scripts/system.ps1` is the profile-aware facade for start/status/stop.
+`scripts/home-control-stack/` remains only as compatibility wrappers.
 
 ## Consequences
 

@@ -63,6 +63,33 @@ class OpsManifestTest(TestCase):
         aituber_only = set(profiles["aituber-only"]["services"])
         self.assertEqual(aituber_only, {"aituber_kit"})
 
+    def test_lifecycle_scripts_are_consolidated_under_ops(self) -> None:
+        script_names = {
+            "start-home-control-stack.ps1",
+            "status-home-control-stack.ps1",
+            "stop-home-control-stack.ps1",
+            "start-home-control-launcher.ps1",
+            "stop-home-control-launcher.ps1",
+            "install-root-shortcuts.ps1",
+            "resolve-home-control-workspace.ps1",
+        }
+        ops_script_dir = REPO_ROOT / "ops" / "scripts" / "home-control-stack"
+        wrapper_dir = REPO_ROOT / "scripts" / "home-control-stack"
+
+        for script_name in script_names:
+            with self.subTest(script_name=script_name):
+                self.assertTrue((ops_script_dir / script_name).is_file())
+                self.assertTrue((wrapper_dir / script_name).is_file())
+
+        for script_name, command in {
+            "start-home-control-stack.ps1": "start",
+            "status-home-control-stack.ps1": "status",
+            "stop-home-control-stack.ps1": "stop",
+        }.items():
+            text = (wrapper_dir / script_name).read_text(encoding="utf-8")
+            self.assertIn("ops\\scripts\\system.ps1", text)
+            self.assertIn(command, text)
+
 
 def _allowed_layers() -> set[str]:
     schema_path = REPO_ROOT / "contracts" / "events" / "layer.schema.json"

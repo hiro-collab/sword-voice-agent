@@ -1,8 +1,7 @@
 # Start/Stop Control Plan
 
-This plan belongs to the `ops` layer. It describes how to consolidate system
-startup, shutdown, status, and launcher behavior without immediately moving the
-current scripts.
+This plan belongs to the `ops` layer. It describes how system startup,
+shutdown, status, and launcher behavior are consolidated.
 
 ## Current State
 
@@ -12,12 +11,14 @@ The active lifecycle entrypoints are:
 |---|---|---|
 | Ops facade | `ops/scripts/system.ps1` | Profile-aware start/status/stop entrypoint. |
 | Root shortcuts | `<workspace>/start-home-control-stack.bat`, `status-home-control-stack.bat`, `stop-home-control-stack.bat` | Human-friendly compatibility entrypoints. |
-| Stack scripts | `scripts/home-control-stack/start-home-control-stack.ps1`, `status-home-control-stack.ps1`, `stop-home-control-stack.ps1` | Authoritative current start/status/stop implementation. |
-| Launcher | `tools/home-control-launcher/` | Browser UI that wraps the stack scripts. |
+| Stack scripts | `ops/scripts/home-control-stack/start-home-control-stack.ps1`, `status-home-control-stack.ps1`, `stop-home-control-stack.ps1` | Authoritative inherited supervisor implementation. |
+| Legacy wrappers | `scripts/home-control-stack/` | Compatibility wrappers that forward to `ops`. |
+| Launcher | `tools/home-control-launcher/` | Browser UI that calls the ops facade. |
 | Runtime registry | `.cache/home-control-stack/pids.json` by default | Current process ownership record. |
 
-All current paths remain compatible. The first `ops` control surface now wraps
-the inherited stack scripts instead of replacing their supervisor logic.
+All current paths remain compatible. The `ops` control surface owns the
+lifecycle entrypoint, while `ops/scripts/home-control-stack/` keeps the
+inherited supervisor logic in one place.
 
 ## Target Shape
 
@@ -25,9 +26,13 @@ the inherited stack scripts instead of replacing their supervisor logic.
 ops/
   scripts/
     system.ps1
-    start.ps1
-    stop.ps1
-    status.ps1
+    home-control-stack/
+      start-home-control-stack.ps1
+      status-home-control-stack.ps1
+      stop-home-control-stack.ps1
+      start-home-control-launcher.ps1
+      stop-home-control-launcher.ps1
+      install-root-shortcuts.ps1
   manifests/
     profiles/
       minimal.json
@@ -61,7 +66,7 @@ runtime/
 .\ops\scripts\system.ps1 stop   -Profile full-local
 ```
 
-The launcher should call the same control surface instead of having separate
+The launcher calls the same control surface instead of having separate
 lifecycle logic.
 
 ## Service Manifest
@@ -147,16 +152,15 @@ Phase B: Introduce manifests and manifest status.
 Phase C: Move start/stop behind ops facade.
 
 - Done: `ops/scripts/system.ps1 start|stop|status -Profile <profile>` delegates
-  to the inherited `scripts/home-control-stack/` implementation.
+  to the inherited `ops/scripts/home-control-stack/` implementation.
 - Profile membership controls `-Skip...` and `-Enable...` arguments.
-- Next: run real start/status/stop verification from the ops facade.
 
 Phase D: Make root shortcuts and launcher call the ops facade.
 
-- Root `.bat` shortcuts stay as human-friendly aliases.
-- Launcher start/status/stop calls `ops/scripts/system.ps1`.
-- Existing `scripts/home-control-stack/*.ps1` remain as the inherited supervisor
-  engine until a manifest-native process manager is ready.
+- Done: root `.bat` shortcuts stay as human-friendly aliases and are generated
+  by `ops/scripts/home-control-stack/install-root-shortcuts.ps1`.
+- Done: launcher start/status/stop calls `ops/scripts/system.ps1`.
+- Done: `scripts/home-control-stack/*.ps1` are compatibility wrappers.
 
 Phase E: Optional manifest-native process manager.
 
@@ -167,7 +171,7 @@ Phase E: Optional manifest-native process manager.
 
 Phase F: Optional physical layout cleanup.
 
-- Move active lifecycle scripts under `ops/scripts/`.
+- Done: move active lifecycle scripts under `ops/scripts/`.
 - Root `.bat` shortcuts stay as human-friendly aliases.
 - Archive retired full-stack scripts only after references are removed.
 
