@@ -14,6 +14,7 @@ Camera Hub gesture topic
 
 - [system-requirements.md](docs/system-requirements.md): 目的、成功条件、前提。
 - [integration-contract.md](docs/integration-contract.md): 接続先、payload、ポート、認証。
+- [contracts/](contracts/README.md): thought-core turn/event stream の機械検証できる境界仕様。
 - [module-responsibilities.md](docs/module-responsibilities.md): 各モジュールの責務境界。
 - [repository-sources.md](docs/repository-sources.md): GitHub保存先とローカル専用ファイル。
 - [state_authority.md](docs/state_authority.md): state、flag、ID の authority。

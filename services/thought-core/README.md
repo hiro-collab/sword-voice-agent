@@ -259,6 +259,8 @@ uv run python -c "import json; from pathlib import Path; from sword_voice_agent.
 ## event schema
 
 すべての event は共通メタデータを持ちます。
+機械検証用の schema は `contracts/events/event.schema.json` と
+`contracts/turn/turn-response-events.schema.json` にあります。
 
 ```json
 {

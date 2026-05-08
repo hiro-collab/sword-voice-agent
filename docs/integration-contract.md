@@ -2,6 +2,10 @@
 
 この文書は、モジュール間の接続契約だけを扱います。設計背景や検討履歴は置きません。
 
+Machine-readable schema files for the current thought-core turn/event stream
+live under `contracts/`. This document remains the human-readable integration
+map across modules.
+
 ## Process Entry
 
 通常の統合起動は workspace 直下から行う。
