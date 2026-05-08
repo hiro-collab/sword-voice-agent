@@ -18,6 +18,11 @@ map across modules.
 
 起動スクリプト本体は `sword-voice-agent\scripts\home-control-stack\` にある。root の `.bat` と `scripts\*.ps1` はショートカット。
 
+Runtime state defaults to `.cache\home-control-stack`. Advanced runs can point
+start/status/stop scripts at another compatible state directory with
+`-StackStateDir <path>` or `HOME_CONTROL_STACK_STATE_DIR`. Relative paths are
+resolved from the workspace root. The default path remains unchanged.
+
 ## Camera Hub
 
 | Item | Contract |
@@ -195,6 +200,8 @@ TouchDesigner owns visual effect state. It does not decide Dify or Home Assistan
 ## Runtime Status
 
 Long running services write runtime status files when launched by integration scripts. These files are for process management and status display, not authority for business state.
+The stack state directory is the compatibility root for `pids.json`, launcher
+state, per-module status directories, feedback JSONL, and service logs.
 
 ## Security
 

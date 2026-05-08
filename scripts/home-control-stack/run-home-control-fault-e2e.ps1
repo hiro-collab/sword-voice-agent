@@ -9,20 +9,39 @@ param(
     [string]$ClientId = "sword-local",
     [int]$StartupWaitSeconds = 8,
     [int]$DelayBetweenCasesSeconds = 8,
-    [string]$WorkspaceRoot = ""
+    [string]$WorkspaceRoot = "",
+    [string]$StackStateDir = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function Resolve-StackStateDir {
+    param(
+        [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
+        [string]$StackStateDir = ""
+    )
+    if ([string]::IsNullOrWhiteSpace($StackStateDir)) {
+        $StackStateDir = [Environment]::GetEnvironmentVariable("HOME_CONTROL_STACK_STATE_DIR")
+    }
+    if ([string]::IsNullOrWhiteSpace($StackStateDir)) {
+        return Join-Path $WorkspaceRoot ".cache\home-control-stack"
+    }
+    if ([System.IO.Path]::IsPathRooted($StackStateDir)) {
+        return $StackStateDir
+    }
+    return Join-Path $WorkspaceRoot $StackStateDir
+}
+
 . (Join-Path $PSScriptRoot "resolve-home-control-workspace.ps1")
 $WorkspaceRoot = Resolve-HomeControlWorkspaceRoot -WorkspaceRoot $WorkspaceRoot -ScriptRoot $PSScriptRoot
+$StackStateDir = Resolve-StackStateDir -WorkspaceRoot $WorkspaceRoot -StackStateDir $StackStateDir
 
 $HomeAssistantRoot = Join-Path $WorkspaceRoot "home-assistant-server"
 $HomeAssistantConfigPath = Join-Path $HomeAssistantRoot "config\home-control.yaml"
 $AituberEnvPath = Join-Path $WorkspaceRoot "aituber-kit\.env"
-$CacheDir = Join-Path $WorkspaceRoot ".cache\home-control-stack\fault-e2e"
-$LogDir = Join-Path $WorkspaceRoot ".cache\home-control-stack\logs"
+$CacheDir = Join-Path $StackStateDir "fault-e2e"
+$LogDir = Join-Path $StackStateDir "logs"
 $StartScript = Join-Path $PSScriptRoot "start-home-control-stack.ps1"
 $RunStamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $script:BrowserOpenedForFaultE2e = $false
@@ -233,7 +252,9 @@ function Start-HomeControlStackForTest {
         "Bypass",
         "-File",
         $StartScript,
-        "-StopExisting"
+        "-StopExisting",
+        "-StackStateDir",
+        $StackStateDir
     )
     if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
         $arguments += @("-HomeControlConfigPath", $ConfigPath, "-EnableHomeControlFaultInjection")

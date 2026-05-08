@@ -1,5 +1,6 @@
 param(
     [string]$WorkspaceRoot = "",
+    [string]$StackStateDir = "",
     [string]$DifyDockerRoot = "",
     [switch]$StopDify,
     [switch]$Force,
@@ -9,14 +10,32 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+function Resolve-StackStateDir {
+    param(
+        [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
+        [string]$StackStateDir = ""
+    )
+    if ([string]::IsNullOrWhiteSpace($StackStateDir)) {
+        $StackStateDir = [Environment]::GetEnvironmentVariable("HOME_CONTROL_STACK_STATE_DIR")
+    }
+    if ([string]::IsNullOrWhiteSpace($StackStateDir)) {
+        return Join-Path $WorkspaceRoot ".cache\home-control-stack"
+    }
+    if ([System.IO.Path]::IsPathRooted($StackStateDir)) {
+        return $StackStateDir
+    }
+    return Join-Path $WorkspaceRoot $StackStateDir
+}
+
 . (Join-Path $PSScriptRoot "resolve-home-control-workspace.ps1")
 $WorkspaceRoot = Resolve-HomeControlWorkspaceRoot -WorkspaceRoot $WorkspaceRoot -ScriptRoot $PSScriptRoot
+$StackStateDir = Resolve-StackStateDir -WorkspaceRoot $WorkspaceRoot -StackStateDir $StackStateDir
 
 if ([string]::IsNullOrWhiteSpace($DifyDockerRoot)) {
     $DifyDockerRoot = [Environment]::GetEnvironmentVariable("DIFY_DOCKER_ROOT")
 }
 
-$StateDir = Join-Path $WorkspaceRoot ".cache\home-control-stack"
+$StateDir = $StackStateDir
 $PidFile = Join-Path $StateDir "pids.json"
 
 $ExternalProcessDenyList = @(

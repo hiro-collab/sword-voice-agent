@@ -16,7 +16,7 @@ The launcher intentionally wraps the existing scripts instead of replacing them:
 - `scripts/home-control-stack/status-home-control-stack.ps1`
 - `scripts/home-control-stack/stop-home-control-stack.ps1`
 
-Runtime state is written under:
+Runtime state is written under `.cache/home-control-stack/` by default:
 
 ```text
 .cache/home-control-stack/
@@ -24,6 +24,12 @@ Runtime state is written under:
   launcher-state.json
   logs/launcher-stack.log
 ```
+
+To test an alternate compatible state directory, set
+`HOME_CONTROL_STACK_STATE_DIR` before starting the launcher or pass
+`-StackStateDir` to the wrapped stack scripts. Relative paths are resolved from
+the workspace root. The launcher passes the resolved state directory to
+start/status/stop child processes so they read the same `pids.json`.
 
 `launcher-stack.log` is rotated by the launcher server. The active log is
 kept to 5 MB by default, with 3 backup files:

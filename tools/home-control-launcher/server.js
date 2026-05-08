@@ -50,7 +50,7 @@ const SCRIPT_ROOT = path.join(PROJECT_ROOT, 'scripts', 'home-control-stack')
 const START_SCRIPT = path.join(SCRIPT_ROOT, 'start-home-control-stack.ps1')
 const STOP_SCRIPT = path.join(SCRIPT_ROOT, 'stop-home-control-stack.ps1')
 const STATUS_SCRIPT = path.join(SCRIPT_ROOT, 'status-home-control-stack.ps1')
-const STATE_DIR = path.join(WORKSPACE_ROOT, '.cache', 'home-control-stack')
+const STATE_DIR = resolveStackStateDir()
 const LOG_DIR = path.join(STATE_DIR, 'logs')
 const PID_FILE = path.join(STATE_DIR, 'pids.json')
 const LAUNCHER_CONFIG_FILE = path.join(STATE_DIR, 'launcher-config.json')
@@ -62,6 +62,17 @@ const STACK_LOG_MAX_BYTES = Number(
 const STACK_LOG_BACKUPS = Number(
   process.env.HOME_CONTROL_LAUNCHER_STACK_LOG_BACKUPS || 3
 )
+
+function resolveStackStateDir() {
+  const configured = process.env.HOME_CONTROL_STACK_STATE_DIR || ''
+  if (!configured.trim()) {
+    return path.join(WORKSPACE_ROOT, '.cache', 'home-control-stack')
+  }
+  if (path.isAbsolute(configured)) {
+    return configured
+  }
+  return path.join(WORKSPACE_ROOT, configured)
+}
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -558,7 +569,8 @@ const startStack = (profileId, optionOverrides = {}) => {
       windowsHide: true,
       env: {
         ...process.env,
-        HOME_CONTROL_WORKSPACE_ROOT: WORKSPACE_ROOT
+        HOME_CONTROL_WORKSPACE_ROOT: WORKSPACE_ROOT,
+        HOME_CONTROL_STACK_STATE_DIR: STATE_DIR
       }
     })
   } catch (error) {
@@ -615,7 +627,8 @@ const runScriptAndCollect = (scriptPath, scriptArgs = [], timeoutMs = 30000) =>
       windowsHide: true,
       env: {
         ...process.env,
-        HOME_CONTROL_WORKSPACE_ROOT: WORKSPACE_ROOT
+        HOME_CONTROL_WORKSPACE_ROOT: WORKSPACE_ROOT,
+        HOME_CONTROL_STACK_STATE_DIR: STATE_DIR
       }
     })
     let stdout = ''
