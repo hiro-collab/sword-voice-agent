@@ -827,7 +827,8 @@ button:focus-visible {
   border-radius: 8px;
   color: inherit;
   display: grid;
-  gap: 6px;
+  gap: 10px;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
   min-height: 66px;
   padding: 10px;
   text-decoration: none;
@@ -854,12 +855,73 @@ button:focus-visible {
   pointer-events: none;
 }
 
-.endpoint-link strong {
+.endpoint-icon {
+  align-items: center;
+  align-self: start;
+  background: rgba(91, 183, 255, 0.1);
+  border: 1px solid rgba(91, 183, 255, 0.22);
+  border-radius: 8px;
+  color: var(--read);
+  display: inline-flex;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.endpoint-icon svg {
+  fill: none;
+  height: 19px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.9;
+  width: 19px;
+}
+
+.endpoint-link[data-kind="thought"] .endpoint-icon {
+  background: rgba(40, 230, 209, 0.12);
+  border-color: rgba(40, 230, 209, 0.3);
+  color: var(--accent-strong);
+}
+
+.endpoint-link[data-kind="ui"] .endpoint-icon,
+.endpoint-link[data-kind="display"] .endpoint-icon {
+  background: rgba(156, 167, 255, 0.12);
+  border-color: rgba(156, 167, 255, 0.3);
+  color: #d2d6ff;
+}
+
+.endpoint-link[data-kind="camera"] .endpoint-icon,
+.endpoint-link[data-kind="websocket"] .endpoint-icon {
+  background: rgba(255, 209, 102, 0.12);
+  border-color: rgba(255, 209, 102, 0.32);
+  color: var(--warn);
+}
+
+.endpoint-link[data-kind="speech"] .endpoint-icon {
+  background: rgba(85, 249, 157, 0.11);
+  border-color: rgba(85, 249, 157, 0.3);
+  color: var(--ok);
+}
+
+.endpoint-link[data-kind="legacy"] .endpoint-icon {
+  background: rgba(147, 161, 161, 0.12);
+  border-color: rgba(147, 161, 161, 0.28);
+  color: var(--down);
+}
+
+.endpoint-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.endpoint-copy strong {
   color: var(--text);
   font-size: 13px;
 }
 
-.endpoint-link span {
+.endpoint-copy span {
   color: var(--muted);
   font-family: Consolas, "Cascadia Mono", monospace;
   font-size: 11px;
@@ -867,11 +929,13 @@ button:focus-visible {
 }
 
 .endpoint-status {
+  align-self: start;
   color: var(--read);
   font-family: "Segoe UI", system-ui, sans-serif;
   font-size: 10px;
   font-style: normal;
   font-weight: 800;
+  line-height: 34px;
 }
 
 pre {

@@ -519,11 +519,15 @@ const renderEndpoints = (endpoints) => {
             : 'href="#" aria-disabled="true" tabindex="-1"'
           const status = endpoint.enabled ? (canOpen ? 'open' : 'reference') : 'skipped'
           const className = endpoint.enabled ? (canOpen ? '' : 'reference-only') : 'disabled'
+          const kind = endpointKind(endpoint)
           return `
-            <a class="endpoint-link ${className}" ${attrs}>
-              <strong>${escapeHtml(endpoint.name)}</strong>
+            <a class="endpoint-link ${className}" data-kind="${kind}" ${attrs}>
+              <span class="endpoint-icon" aria-hidden="true">${endpointIcon(kind)}</span>
+              <span class="endpoint-copy">
+                <strong>${escapeHtml(endpoint.name)}</strong>
+                <span>${escapeHtml(endpoint.url)}</span>
+              </span>
               <em class="endpoint-status">${status}</em>
-              <span>${escapeHtml(endpoint.url)}</span>
             </a>
           `
         })
@@ -536,6 +540,36 @@ const renderEndpoints = (endpoints) => {
       `
     })
     .join('')
+}
+
+const endpointKind = (endpoint) => {
+  const name = String(endpoint.name || '').toLowerCase()
+  const url = String(endpoint.url || '').toLowerCase()
+  if (name.includes('dify')) return 'legacy'
+  if (url.startsWith('ws:') || name.includes('websocket')) return 'websocket'
+  if (name.includes('thought-core')) return 'thought'
+  if (name.includes('aituber') || name.includes('projection')) return 'ui'
+  if (name.includes('td control') || name.includes('touchdesigner')) return 'display'
+  if (name.includes('voicevox')) return 'speech'
+  if (name.includes('mediapipe') || name.includes('mediamtx') || name.includes('camera')) return 'camera'
+  if (name.includes('health') || name.includes('environment') || url.includes('/api/')) return 'api'
+  return endpoint.group === 'Background links' ? 'background' : 'link'
+}
+
+const endpointIcon = (kind) => {
+  const icons = {
+    ui: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="12" rx="2"></rect><path d="M8 21h8"></path><path d="M12 17v4"></path></svg>',
+    api: '<svg viewBox="0 0 24 24"><path d="M7 8l-4 4 4 4"></path><path d="M17 8l4 4-4 4"></path><path d="M14 4l-4 16"></path></svg>',
+    websocket: '<svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 14 0"></path><path d="M8 12a4 4 0 0 1 8 0"></path><path d="M12 12h.01"></path><path d="M12 16v4"></path></svg>',
+    thought: '<svg viewBox="0 0 24 24"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M8 14a6 6 0 1 1 8 0c-.8.6-1 1.3-1 2H9c0-.7-.2-1.4-1-2z"></path></svg>',
+    display: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8"></path><path d="M12 16v4"></path><path d="M7 8h10"></path></svg>',
+    speech: '<svg viewBox="0 0 24 24"><path d="M11 5L6 9H3v6h3l5 4z"></path><path d="M15 9a4 4 0 0 1 0 6"></path><path d="M18 6a8 8 0 0 1 0 12"></path></svg>',
+    camera: '<svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"></path><circle cx="12" cy="13" r="3"></circle></svg>',
+    legacy: '<svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M7 7v13"></path><path d="M17 7v13"></path><path d="M9 4h6l2 3H7z"></path><path d="M10 11h4"></path></svg>',
+    background: '<svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"></path><path d="M8 10h8"></path><path d="M8 14h5"></path></svg>',
+    link: '<svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"></path><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"></path></svg>'
+  }
+  return icons[kind] || icons.link
 }
 
 const refreshPreview = async () => {
