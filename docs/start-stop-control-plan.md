@@ -141,6 +141,7 @@ Phase B: Introduce manifests in read-only mode.
 - Generate a status view from manifests plus current `pids.json`.
 - Do not start or stop from manifests yet.
 - Compare manifest status with current status script output.
+- Current entrypoint: `ops/scripts/system.ps1 status -Profile <profile>`.
 
 Phase C: Make `ops/scripts/system.ps1 status` authoritative.
 

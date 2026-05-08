@@ -15,6 +15,15 @@ registry documentation. It is not the active script location yet.
 See `docs/start-stop-control-plan.md` for the proposed control-plane shape.
 Initial read-only manifests live under `ops/manifests/`.
 
+Read-only manifest status is available with:
+
+```powershell
+.\ops\scripts\system.ps1 status -Profile thought-core-experimental
+```
+
+This reports manifest services and current PID registry state only. Start/stop
+still belongs to the current Home Control Stack scripts.
+
 ## Migration Rule
 
 Do not move active scripts into `ops/` until the root shortcuts, launcher,
