@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/home-control/execute-result.schema.json",
+  "title": "Home Control Execute Result",
+  "description": "Response body returned by POST /actions/{action_id}/execute.",
+  "type": "object",
+  "required": [
+    "ok",
+    "executed"
+  ],
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "action_id": {
+      "type": "string"
+    },
+    "execution_id": {
+      "type": "string"
+    },
+    "request_id": {
+      "type": "string"
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string"
+    },
+    "executed": {
+      "type": "boolean"
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "confirmation_required": {
+      "type": "boolean"
+    },
+    "confirmation_token": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "domain": {
+      "type": "string"
+    },
+    "service": {
+      "type": "string"
+    },
+    "entity_id": {
+      "type": "string"
+    },
+    "expected_state": {
+      "type": "string"
+    },
+    "expected_effect": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

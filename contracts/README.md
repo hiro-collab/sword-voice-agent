@@ -11,6 +11,8 @@ consumers.
 |---|---|
 | `turn/` | Turn request and turn response event stream. |
 | `events/` | Common thought-core event envelope. |
+| `environment/` | Environment snapshots and feedback surfaces consumed by Dify/thought-core. |
+| `home-control/` | Safe home action preview/execute boundary. |
 
 ## Current Sources
 
@@ -20,6 +22,13 @@ The initial contract files mirror these implementation files:
 - `services/thought-core/thought_core/events.py`
 - `tests/test_thought_core_contract.py`
 
-Future schemas for environment, home-control, and expression should be added
-from the corresponding module docs before implementation paths are moved.
+Environment and home-control contracts are extracted from sibling module docs
+and tests:
 
+- `../environment-state-server/README.md`
+- `../environment-state-server/tests/test_http_api.py`
+- `../home-assistant-server/docs/integration-contract.md`
+- `../home-assistant-server/tests/test_bridge.py`
+
+Future schemas for expression should be added from the corresponding module docs
+before implementation paths are moved.

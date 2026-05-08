@@ -25,6 +25,92 @@ TURN = {
     },
 }
 
+ENVIRONMENT_CURRENT = {
+    "schema_version": 1,
+    "snapshot_id": "env_001",
+    "sequence": 1,
+    "stale": False,
+    "age_ms": 12,
+    "capabilities": {"actions": True},
+    "actions": [{"action_id": "light_on", "label": "照明をつける"}],
+    "state_queries": {
+        "room_light": {
+            "available": True,
+            "state": "on",
+            "authority": "vision_snapshot_processor",
+        }
+    },
+    "wait_result": {
+        "target": "room_light",
+        "matched": True,
+        "after": "2026-05-07T14:15:00+09:00",
+        "timeout_ms": 1500,
+        "observed_at": "2026-05-07T14:15:00.320000+09:00",
+        "elapsed_ms": 320,
+        "reason": "matched",
+    },
+}
+
+STATE_QUERY_FEEDBACK_REQUEST = {
+    "type": "state_query_feedback",
+    "target": "room_light",
+    "state_query_id": "room_light",
+    "idempotency_key": "state-query-feedback:conversation:snapshot:on",
+    "snapshot_id": "env_001",
+    "predicted_state": "unknown",
+    "predicted_confidence_label": "low",
+    "user_label": "on",
+    "user_text": "ついてるよ",
+    "authority": "user_feedback",
+    "source": "dify",
+    "feedback_reason": "user_correction_after_state_query",
+}
+
+STATE_QUERY_FEEDBACK_RESPONSE = {
+    "ok": True,
+    "feedback_id": "sqf_001",
+    "received_snapshot_id": "env_001",
+    "duplicate": False,
+    "status": "accepted",
+    "warnings": [],
+}
+
+HOME_CONTROL_REQUEST = {
+    "source": "dify",
+    "request_id": "req-001",
+    "user_text": "照明をつけて",
+}
+
+HOME_CONTROL_PREVIEW_RESULT = {
+    "ok": True,
+    "action_id": "light_on",
+    "executed": False,
+    "preview": {
+        "ha_service": "script.turn_on",
+        "ha_script": "script.demo_light_on",
+    },
+}
+
+HOME_CONTROL_EXECUTE_RESULT = {
+    "ok": True,
+    "action_id": "light_on",
+    "execution_id": "2c9f9f6a-1f4b-43aa-89ef-4e1c7c73f9d2",
+    "request_id": "req-001",
+    "issued_at": "2026-05-07T14:15:00+00:00",
+    "status": "submitted",
+    "executed": True,
+    "domain": "light",
+    "service": "turn_on",
+    "entity_id": "light.demo_room",
+    "expected_state": "on",
+    "expected_effect": {
+        "domain": "light",
+        "service": "turn_on",
+        "entity_id": "light.demo_room",
+        "expected_state": "on",
+    },
+}
+
 
 class ContractSchemaTest(TestCase):
     def test_contract_json_files_are_valid_json(self) -> None:
@@ -69,6 +155,63 @@ class ContractSchemaTest(TestCase):
 
         self.assertEqual(validate_schema(response, schema_path), [])
 
+    def test_environment_schemas_accept_representative_payloads(self) -> None:
+        current_schema = (
+            REPO_ROOT
+            / "contracts"
+            / "environment"
+            / "environment-current.schema.json"
+        )
+        feedback_request_schema = (
+            REPO_ROOT
+            / "contracts"
+            / "environment"
+            / "state-query-feedback-request.schema.json"
+        )
+        feedback_response_schema = (
+            REPO_ROOT
+            / "contracts"
+            / "environment"
+            / "state-query-feedback-response.schema.json"
+        )
+
+        self.assertEqual(validate_schema(ENVIRONMENT_CURRENT, current_schema), [])
+        self.assertEqual(
+            validate_schema(STATE_QUERY_FEEDBACK_REQUEST, feedback_request_schema),
+            [],
+        )
+        self.assertEqual(
+            validate_schema(STATE_QUERY_FEEDBACK_RESPONSE, feedback_response_schema),
+            [],
+        )
+
+    def test_home_control_schemas_accept_representative_payloads(self) -> None:
+        request_schema = (
+            REPO_ROOT / "contracts" / "home-control" / "action-request.schema.json"
+        )
+        preview_schema = (
+            REPO_ROOT / "contracts" / "home-control" / "preview-result.schema.json"
+        )
+        execute_schema = (
+            REPO_ROOT / "contracts" / "home-control" / "execute-result.schema.json"
+        )
+
+        self.assertEqual(validate_schema(HOME_CONTROL_REQUEST, request_schema), [])
+        self.assertEqual(validate_schema(HOME_CONTROL_PREVIEW_RESULT, preview_schema), [])
+        self.assertEqual(validate_schema(HOME_CONTROL_EXECUTE_RESULT, execute_schema), [])
+
+    def test_home_control_request_schema_rejects_adapter_escape_fields(self) -> None:
+        request_schema = (
+            REPO_ROOT / "contracts" / "home-control" / "action-request.schema.json"
+        )
+        unsafe_request = {
+            **HOME_CONTROL_REQUEST,
+            "ha_script": "script.not_allowed",
+            "entity_id": "lock.front_door",
+        }
+
+        self.assertTrue(validate_schema(unsafe_request, request_schema))
+
 
 def validate_schema(value: Any, schema_path: Path) -> list[str]:
     schema = _load_json(schema_path)
@@ -103,6 +246,10 @@ def _validate(value: Any, schema: dict[str, Any], base_dir: Path, path: str) -> 
                     errors.extend(
                         _validate(value[key], property_schema, base_dir, f"{path}.{key}")
                     )
+            if schema.get("additionalProperties") is False:
+                for key in value:
+                    if key not in properties:
+                        errors.append(f"{path}: unexpected property {key!r}")
 
     if isinstance(value, list):
         item_schema = schema.get("items")
