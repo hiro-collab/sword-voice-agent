@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib import request
+from urllib.parse import parse_qs, urlsplit
 
 from unittest import TestCase
 
@@ -85,24 +86,19 @@ class ThoughtCoreContractTest(TestCase):
                 "assistant.message",
                 "input.understood",
                 "thought.stage",
-                "assistant.speech_delta",
                 "tool.started",
                 "tool.result",
                 "memory.retrieved",
                 "thought.stage",
-                "assistant.speech_delta",
                 "tool.started",
                 "tool.result",
                 "observation.received",
                 "thought.stage",
-                "assistant.speech_delta",
                 "target_state.imagined",
                 "thought.stage",
-                "assistant.speech_delta",
                 "tool.started",
                 "tool.result",
                 "thought.stage",
-                "assistant.speech_delta",
                 "command.planned",
                 "action.proposed",
                 "assistant.speech_delta",
@@ -110,12 +106,10 @@ class ThoughtCoreContractTest(TestCase):
                 "tool.started",
                 "tool.result",
                 "thought.stage",
-                "assistant.speech_delta",
                 "tool.started",
                 "tool.result",
                 "observation.received",
                 "thought.stage",
-                "assistant.speech_delta",
                 "action.reviewed",
                 "assistant.speech_delta",
                 "assistant.message",
@@ -764,6 +758,7 @@ class ThoughtCoreContractTest(TestCase):
                             "message": "done",
                             "speak": "done",
                             "execution_id": "exec_test",
+                            "issued_at": "2026-05-08T00:00:00+00:00",
                             "expected_state": "off",
                             "expected_effect": {"expected_state": "off"},
                         }
@@ -796,11 +791,19 @@ class ThoughtCoreContractTest(TestCase):
                     timeout_s=2,
                 )
             )
-            events = ThoughtLoop(tools=tools).run_dicts(
+            loop = ThoughtLoop(tools=tools)
+            events = loop.run_dicts(
                 {
                     **TURN,
                     "text": "リビングの電気を消して",
                     "turn_id": "turn_bridge_light_off",
+                }
+            )
+            review_events = loop.run_dicts(
+                {
+                    **TURN,
+                    "text": "確認して",
+                    "turn_id": "turn_bridge_light_off_review",
                 }
             )
         finally:
@@ -808,23 +811,64 @@ class ThoughtCoreContractTest(TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-        self.assertEqual(events[-1]["data"]["status"], "success")
+        self.assertEqual(events[-1]["data"]["status"], "verification_pending")
+        self.assertIn("action.review_pending", [event["type"] for event in events])
+        self.assertEqual(review_events[-1]["data"]["status"], "success")
         post_paths = [call["path"] for call in calls if call["method"] == "POST"]
         self.assertEqual(post_paths, ["/actions/light_off/preview", "/actions/light_off/execute"])
         get_paths = [str(call["path"]) for call in calls if call["method"] == "GET"]
         self.assertEqual(get_paths[0], "/environment/current")
-        self.assertTrue(
-            any(
-                path.startswith("/environment/current?")
-                and "wait_for=room_light" in path
-                and "timeout_ms=1500" in path
-                for path in get_paths
-            )
+        wait_paths = [
+            path for path in get_paths if path.startswith("/environment/current?")
+        ]
+        self.assertEqual(len(wait_paths), 1)
+        query = parse_qs(urlsplit(wait_paths[0]).query)
+        self.assertEqual(query["wait_for"], ["room_light"])
+        self.assertEqual(query["after"], ["2026-05-08T00:00:02+00:00"])
+        self.assertGreaterEqual(
+            int(query["timeout_ms"][0]),
+            1500,
         )
         execute_call = calls[2]
         self.assertEqual(execute_call["authorization"], "Bearer bridge-token")
         self.assertEqual(execute_call["body"]["source"], "thought-core")
         self.assertEqual(execute_call["body"]["request_id"], "turn_bridge_light_off-attempt-1")
+
+    def test_action_review_checkpoints_use_two_and_five_second_snapshots(self) -> None:
+        tools = HomeControlHttpTools(
+            HomeControlToolConfig(
+                bridge_base_url="http://127.0.0.1:1",
+                api_token="bridge-token",
+                environment_state_url="http://127.0.0.1:1/environment/current",
+                environment_api_token="environment-token",
+            )
+        )
+        loop = ThoughtLoop(tools=tools)
+        turn = TurnInput.from_mapping({**TURN, "turn_id": "turn_checkpoint"})
+        policy = loop._action_review_policy({"action_id": "light_on"})
+
+        first = loop._prepare_action_review_checkpoint(
+            turn,
+            {"issued_at": "2026-05-08T00:00:00+00:00"},
+            policy=policy,
+            observations_done=0,
+        )
+        second = loop._prepare_action_review_checkpoint(
+            turn,
+            {"issued_at": "2026-05-08T00:00:00+00:00"},
+            policy=policy,
+            observations_done=1,
+        )
+
+        self.assertEqual(policy["checkpoint_ms"], [2000, 5000])
+        self.assertEqual(first["checkpoint_ms"], 2000)
+        self.assertEqual(first["wait_after"], "2026-05-08T00:00:02+00:00")
+        self.assertEqual(second["checkpoint_ms"], 5000)
+        self.assertEqual(second["wait_after"], "2026-05-08T00:00:05+00:00")
+        self.assertEqual(
+            tools.room_light_wait_after_by_turn["turn_checkpoint"],
+            "2026-05-08T00:00:05+00:00",
+        )
 
     def test_confirm_required_action_waits_for_user_confirmation(self) -> None:
         calls: list[dict[str, object]] = []
@@ -1092,7 +1136,133 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(len(retry_budget_items), 1)
         self.assertEqual(retry_budget_items[0]["retry_budget"]["auto_retries"], 1)
 
-    def test_stream_progress_uses_continuations_for_repeated_review_messages(self) -> None:
+    def test_uncertain_room_light_review_does_not_retry_light_off(self) -> None:
+        class UncertainRoomLightTools(MockThoughtTools):
+            def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+                room_light = {
+                    "available": True,
+                    "stale": False,
+                    "state": "unknown",
+                    "confidence_label": "low",
+                    "authority": "vision_snapshot_processor.mock",
+                    "projected_by": "environment_state_server.mock",
+                    "answer_hint": "映像推定では断定できない。",
+                    "observed_at": "2026-05-08T00:00:00+00:00",
+                    "updated_at": "2026-05-08T00:00:00+00:00",
+                    "evidence": {
+                        "source": "mock",
+                        "topic": "/vision/room_light/state",
+                        "lighting_type": "daylight",
+                    },
+                }
+                return {
+                    "status": "ok",
+                    "observation_ref": f"obs_{len(self.execute_calls)}_{reason}",
+                    "observation_source": "environment-state-server.mock",
+                    "facts": {
+                        "devices": [],
+                        "state_queries": {"room_light": room_light},
+                    },
+                    "environment": {
+                        "appliances": {},
+                        "state_queries": {"room_light": room_light},
+                    },
+                }
+
+            def home_execute(self, turn, action):  # type: ignore[no-untyped-def]
+                self.execute_calls.append(action)
+                return {
+                    "status": "accepted",
+                    "executed": True,
+                    "retryable": False,
+                    "command_id": f"cmd_{len(self.execute_calls)}",
+                    "attempt": len(self.execute_calls),
+                    "expected_state": action.get("expected_state"),
+                }
+
+        tools = UncertainRoomLightTools(light_on=True)
+        events = ThoughtLoop(tools=tools).run_dicts(
+            {
+                **TURN,
+                "text": "電気を消して",
+                "turn_id": "turn_light_off_uncertain_review",
+            }
+        )
+        event_types = [event["type"] for event in events]
+        retry_budget_items = [
+            item
+            for item in tools.short_memory_write_calls
+            if item["retry_budget"]["status"] == "review_budget_opened"
+        ]
+        feedback_event = next(
+            event for event in events if event["type"] == "feedback.requested"
+        )
+
+        self.assertNotIn("action.retrying", event_types)
+        self.assertEqual(len(tools.execute_calls), 1)
+        self.assertEqual(tools.execute_calls[0]["action_id"], "light_off")
+        self.assertEqual(events[-1]["data"]["status"], "needs_feedback")
+        self.assertEqual(retry_budget_items[0]["retry_budget"]["auto_retries"], 0)
+        self.assertEqual(
+            feedback_event["data"]["last_review"]["reason"],
+            "target_state_unverified",
+        )
+
+    def test_uncertain_target_state_review_does_not_retry_light_on(self) -> None:
+        class UncertainRoomLightTools(MockThoughtTools):
+            def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+                room_light = {
+                    "available": True,
+                    "stale": False,
+                    "state": "unknown",
+                    "confidence_label": "low",
+                    "authority": "vision_snapshot_processor.mock",
+                    "projected_by": "environment_state_server.mock",
+                    "answer_hint": "映像推定では断定できない。",
+                    "observed_at": "2026-05-08T00:00:00+00:00",
+                    "updated_at": "2026-05-08T00:00:00+00:00",
+                }
+                return {
+                    "status": "ok",
+                    "observation_ref": f"obs_{len(self.execute_calls)}_{reason}",
+                    "observation_source": "environment-state-server.mock",
+                    "facts": {
+                        "devices": [],
+                        "state_queries": {"room_light": room_light},
+                    },
+                    "environment": {
+                        "appliances": {},
+                        "state_queries": {"room_light": room_light},
+                    },
+                }
+
+            def home_execute(self, turn, action):  # type: ignore[no-untyped-def]
+                self.execute_calls.append(action)
+                return {
+                    "status": "accepted",
+                    "executed": True,
+                    "retryable": False,
+                    "command_id": f"cmd_{len(self.execute_calls)}",
+                    "attempt": len(self.execute_calls),
+                    "expected_state": action.get("expected_state"),
+                }
+
+        tools = UncertainRoomLightTools(light_on=False)
+        events = ThoughtLoop(tools=tools).run_dicts(
+            {
+                **TURN,
+                "text": "電気をつけて",
+                "turn_id": "turn_light_on_uncertain_review",
+            }
+        )
+        event_types = [event["type"] for event in events]
+
+        self.assertNotIn("action.retrying", event_types)
+        self.assertEqual(len(tools.execute_calls), 1)
+        self.assertEqual(tools.execute_calls[0]["action_id"], "light_on")
+        self.assertEqual(events[-1]["data"]["status"], "needs_feedback")
+
+    def test_internal_stage_progress_stays_out_of_user_speech(self) -> None:
         class UnobservableLightTools(MockThoughtTools):
             def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
                 return {
@@ -1125,10 +1295,10 @@ class ThoughtCoreContractTest(TestCase):
             for event in events
             if event["type"] == "assistant.speech_delta"
         )
-        stage_stream = [
-            event["data"]["delta"]
+        stage_events = [
+            event
             for event in events
-            if event["type"] == "assistant.speech_delta" and event["data"].get("stage")
+            if event["type"] == "thought.stage"
         ]
 
         self.assertEqual(speech_stream.count("操作は送信しました"), 1)
@@ -1136,8 +1306,17 @@ class ThoughtCoreContractTest(TestCase):
             speech_stream.count("まだ環境で結果を確認しきれていない"),
             1,
         )
-        self.assertTrue(stage_stream[0].startswith("まず、"))
-        self.assertTrue(any(delta.startswith("次に、") for delta in stage_stream))
+        self.assertTrue(stage_events)
+        self.assertTrue(all(not event["data"].get("audible") for event in stage_events))
+        self.assertFalse(
+            any(
+                event["type"] == "assistant.speech_delta" and event["data"].get("stage")
+                for event in events
+            )
+        )
+        self.assertNotIn("関連しそうな記憶を短く確認します", speech_stream)
+        self.assertNotIn("いまの環境を短く見ています", speech_stream)
+        self.assertNotIn("望む状態を組み立てます", speech_stream)
         self.assertIn("あと1回くらい見直します。", speech_stream)
         self.assertEqual(events[-1]["data"]["status"], "needs_feedback")
 
@@ -1349,7 +1528,6 @@ class ThoughtCoreContractTest(TestCase):
                 "assistant.message",
                 "input.understood",
                 "thought.stage",
-                "assistant.speech_delta",
                 "tool.started",
                 "tool.result",
                 "memory.retrieved",

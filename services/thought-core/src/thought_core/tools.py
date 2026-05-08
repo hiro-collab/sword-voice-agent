@@ -393,6 +393,8 @@ class HomeControlHttpTools:
     config: HomeControlToolConfig
     execute_attempts_by_turn: dict[str, int] = field(default_factory=dict)
     last_execute_issued_at_by_turn: dict[str, str] = field(default_factory=dict)
+    room_light_wait_after_by_turn: dict[str, str] = field(default_factory=dict)
+    room_light_wait_timeout_ms_by_turn: dict[str, int] = field(default_factory=dict)
 
     def environment_observe(self, turn: TurnInput, *, reason: str) -> dict[str, Any]:
         if not self.config.environment_state_url or not self.config.environment_api_token:
@@ -404,14 +406,21 @@ class HomeControlHttpTools:
             }
         url = self.config.environment_state_url
         if reason == "after_action":
-            issued_at = self.last_execute_issued_at_by_turn.get(turn.turn_id, "")
-            if issued_at:
+            wait_after = (
+                self.room_light_wait_after_by_turn.pop(turn.turn_id, "")
+                or self.last_execute_issued_at_by_turn.get(turn.turn_id, "")
+            )
+            wait_timeout_ms = self.room_light_wait_timeout_ms_by_turn.pop(
+                turn.turn_id,
+                self.config.room_light_wait_timeout_ms,
+            )
+            if wait_after:
                 url = _url_with_query(
                     url,
                     {
                         "wait_for": "room_light",
-                        "after": issued_at,
-                        "timeout_ms": str(self.config.room_light_wait_timeout_ms),
+                        "after": wait_after,
+                        "timeout_ms": str(wait_timeout_ms),
                     },
                 )
         try:
@@ -609,6 +618,13 @@ class HomeControlHttpTools:
         }
 
     def short_memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
+        if not self.config.memory_root:
+            return {
+                "status": "skipped",
+                "written": False,
+                "scope": "short_memory",
+                "reason": "memory_root_unconfigured",
+            }
         payload = dict(item)
         payload.setdefault("type", "short_memory")
         payload.setdefault("scope", "session")
@@ -688,6 +704,8 @@ class HomeControlHttpTools:
         }
 
     def _recent_short_memory(self, turn: TurnInput, *, limit: int) -> list[dict[str, Any]]:
+        if not self.config.memory_root:
+            return []
         path = Path(self.config.memory_root) / "short_memory.jsonl"
         items = []
         scan_lines = max(limit * 64, 256)
@@ -713,6 +731,8 @@ class HomeControlHttpTools:
         return items
 
     def _committed_memory(self, turn: TurnInput, *, limit: int) -> list[dict[str, Any]]:
+        if not self.config.memory_root:
+            return []
         scopes = turn.context_refs.get("memory_scopes")
         if not isinstance(scopes, list):
             scopes = ["failure_patterns", "user_preferences", "device_aliases"]

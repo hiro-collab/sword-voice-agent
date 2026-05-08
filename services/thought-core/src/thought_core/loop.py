@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Mapping
 
 from .events import EventFactory, ThoughtEvent
@@ -357,6 +357,44 @@ class ThoughtLoop:
                     "home.execute",
                     lambda: self.tools.home_execute(turn_input, action),
                 )
+                if self._should_defer_action_review(action, execute_result):
+                    pending_review = self._begin_deferred_action_review(
+                        events,
+                        factory,
+                        turn_input,
+                        action=action,
+                        execute_result=execute_result,
+                        execute_attempts=attempt,
+                    )
+                    speech = self._action_sent_review_speech(action)
+                    self._emit_message(
+                        events,
+                        factory,
+                        speech=speech,
+                        display=speech,
+                        emotion="focused",
+                        motion="small_nod",
+                        priority="immediate",
+                    )
+                    events.append(
+                        factory.emit(
+                            "turn.completed",
+                            {
+                                "status": "verification_pending",
+                                "attempts": attempt,
+                                "action": action,
+                                "execute_status": execute_result.get("status"),
+                                "review_deferred": True,
+                                "review_delay_ms": pending_review.get("delay_ms", 0),
+                                "review_checkpoint_ms": pending_review.get(
+                                    "checkpoint_ms",
+                                    0,
+                                ),
+                            },
+                        )
+                    )
+                    return events
+
                 self._emit_stage_update(
                     events,
                     factory,
@@ -2134,6 +2172,91 @@ class ThoughtLoop:
         )
         return True
 
+    def _begin_deferred_action_review(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        *,
+        action: dict[str, Any],
+        execute_result: dict[str, Any],
+        execute_attempts: int,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        policy = self._action_review_policy(action)
+        review = {
+            "status": "pending",
+            "reason": "verification_deferred",
+            "action_id": str(action.get("action_id") or ""),
+            "expected_state": str(
+                action.get("expected_state")
+                or execute_result.get("expected_state")
+                or ""
+            ),
+            "execute_status": execute_result.get("status"),
+        }
+        self._write_short_memory(
+            events,
+            factory,
+            turn_input,
+            action=action,
+            status="review_budget_opened",
+            retry_scope="review",
+            policy=policy,
+            progress={
+                "observations_done": 0,
+                "execute_attempts": execute_attempts,
+                "confirmed": confirmed,
+            },
+            review=review,
+        )
+        self.pending_action_reviews[turn_input.session_id] = {
+            "action": dict(action),
+            "execute_result": dict(execute_result),
+            "last_review": dict(review),
+            "observations_done": 0,
+            "execute_attempts": execute_attempts,
+            "confirmed": confirmed,
+            "policy": dict(policy),
+            "origin_turn_id": turn_input.turn_id,
+            "created_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        pending = self._action_review_pending_payload(
+            action,
+            review,
+            policy,
+            observations_done=0,
+            execute_attempts=execute_attempts,
+            confirmed=confirmed,
+        )
+        pending["deferred"] = True
+        events.append(factory.emit("action.review_pending", pending))
+        return pending
+
+    def _action_review_pending_payload(
+        self,
+        action: dict[str, Any],
+        review: dict[str, Any],
+        policy: dict[str, Any],
+        *,
+        observations_done: int,
+        execute_attempts: int,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        checkpoint_ms = self._checkpoint_ms_for_observation(policy, observations_done)
+        return {
+            "action": action,
+            "review": review,
+            "observations_done": observations_done,
+            "observation_attempts": policy["observation_attempts"],
+            "settle_ms": policy["settle_ms"],
+            "checkpoint_ms": checkpoint_ms,
+            "delay_ms": checkpoint_ms or policy["settle_ms"],
+            "execute_attempts": execute_attempts,
+            "confirmed": confirmed,
+        }
+
     def _begin_pending_action_review(
         self,
         events: list[ThoughtEvent],
@@ -2183,15 +2306,14 @@ class ThoughtLoop:
         events.append(
             factory.emit(
                 "action.review_pending",
-                {
-                    "action": action,
-                    "review": review,
-                    "observations_done": observations_done,
-                    "observation_attempts": policy["observation_attempts"],
-                    "settle_ms": policy["settle_ms"],
-                    "execute_attempts": execute_attempts,
-                    "confirmed": confirmed,
-                },
+                self._action_review_pending_payload(
+                    action,
+                    review,
+                    policy,
+                    observations_done=observations_done,
+                    execute_attempts=execute_attempts,
+                    confirmed=confirmed,
+                ),
             )
         )
         self._emit_message(
@@ -2554,11 +2676,21 @@ class ThoughtLoop:
             "evidence": evidence,
         }
 
-    def _action_review_policy(self, action: dict[str, Any]) -> dict[str, int]:
+    def _action_review_policy(self, action: dict[str, Any]) -> dict[str, Any]:
         action_id = str(action.get("action_id") or "")
         profiles = {
-            "light_on": {"settle_ms": 1500, "observation_attempts": 2, "auto_retries": 1},
-            "light_off": {"settle_ms": 1500, "observation_attempts": 2, "auto_retries": 1},
+            "light_on": {
+                "settle_ms": 2000,
+                "observation_attempts": 2,
+                "auto_retries": 1,
+                "checkpoint_ms": [2000, 5000],
+            },
+            "light_off": {
+                "settle_ms": 2000,
+                "observation_attempts": 2,
+                "auto_retries": 0,
+                "checkpoint_ms": [2000, 5000],
+            },
             "fan_on": {"settle_ms": 2500, "observation_attempts": 2, "auto_retries": 1},
             "fan_off": {"settle_ms": 2500, "observation_attempts": 2, "auto_retries": 1},
             "aircon_on": {"settle_ms": 8000, "observation_attempts": 3, "auto_retries": 0},
@@ -2589,12 +2721,43 @@ class ThoughtLoop:
                 or expected_effect.get("verification_attempts"),
                 policy["observation_attempts"],
             )
+            checkpoints = (
+                expected_effect.get("checkpoint_ms")
+                or expected_effect.get("checkpoints_ms")
+                or expected_effect.get("verification_checkpoints_ms")
+            )
+            if isinstance(checkpoints, list):
+                policy["checkpoint_ms"] = checkpoints
         if action.get("confirm_required"):
             policy["auto_retries"] = 0
         policy["settle_ms"] = max(0, policy["settle_ms"])
         policy["observation_attempts"] = max(1, policy["observation_attempts"])
         policy["auto_retries"] = max(0, policy["auto_retries"])
+        checkpoints = self._review_checkpoints_ms(policy)
+        if checkpoints:
+            policy["checkpoint_ms"] = checkpoints[: policy["observation_attempts"]]
         return policy
+
+    def _review_checkpoints_ms(self, policy: dict[str, Any]) -> list[int]:
+        raw = policy.get("checkpoint_ms") or policy.get("checkpoints_ms")
+        if not isinstance(raw, list):
+            return []
+        checkpoints: list[int] = []
+        for item in raw:
+            value = self._int_value(item, 0)
+            if value > 0:
+                checkpoints.append(value)
+        return checkpoints
+
+    def _checkpoint_ms_for_observation(
+        self,
+        policy: dict[str, Any],
+        observations_done: int,
+    ) -> int:
+        checkpoints = self._review_checkpoints_ms(policy)
+        if observations_done < len(checkpoints):
+            return checkpoints[observations_done]
+        return self._int_value(policy.get("settle_ms"), 0)
 
     def _should_auto_continue_action_review(
         self,
@@ -2617,10 +2780,91 @@ class ThoughtLoop:
             else {}
         )
         issued_at = str(execute_result.get("issued_at") or pending.get("issued_at") or "")
-        issued_by_turn = getattr(self.tools, "last_execute_issued_at_by_turn", None)
-        if issued_at and isinstance(issued_by_turn, dict):
-            issued_by_turn[turn_input.turn_id] = issued_at
+        policy = (
+            pending.get("policy")
+            if isinstance(pending.get("policy"), dict)
+            else self._action_review_policy(
+                pending.get("action") if isinstance(pending.get("action"), dict) else {}
+            )
+        )
+        if issued_at:
+            execute_result = {**execute_result, "issued_at": issued_at}
+        self._prepare_action_review_checkpoint(
+            turn_input,
+            execute_result,
+            policy=policy,
+            observations_done=int(pending.get("observations_done") or 0),
+        )
         return self.tools.environment_observe(turn_input, reason="after_action")
+
+    def _prepare_action_review_checkpoint(
+        self,
+        turn_input: TurnInput,
+        execute_result: dict[str, Any],
+        *,
+        policy: dict[str, Any],
+        observations_done: int,
+    ) -> dict[str, Any]:
+        issued_at_text = str(execute_result.get("issued_at") or "").strip()
+        checkpoint_ms = self._checkpoint_ms_for_observation(policy, observations_done)
+        checkpoint_after = self._checkpoint_after_iso(issued_at_text, checkpoint_ms)
+        wait_after = checkpoint_after or issued_at_text
+        if not wait_after:
+            return {}
+
+        timeout_ms = self._checkpoint_wait_timeout_ms(wait_after)
+        wait_after_by_turn = getattr(self.tools, "room_light_wait_after_by_turn", None)
+        if isinstance(wait_after_by_turn, dict):
+            wait_after_by_turn[turn_input.turn_id] = wait_after
+        wait_timeout_by_turn = getattr(
+            self.tools,
+            "room_light_wait_timeout_ms_by_turn",
+            None,
+        )
+        if isinstance(wait_timeout_by_turn, dict):
+            wait_timeout_by_turn[turn_input.turn_id] = timeout_ms
+        return {
+            "checkpoint_ms": checkpoint_ms,
+            "wait_after": wait_after,
+            "wait_timeout_ms": timeout_ms,
+        }
+
+    def _checkpoint_after_iso(self, issued_at_text: str, checkpoint_ms: int) -> str:
+        issued_at = self._parse_iso_datetime(issued_at_text)
+        if issued_at is None or checkpoint_ms <= 0:
+            return issued_at_text
+        return (issued_at + timedelta(milliseconds=checkpoint_ms)).isoformat()
+
+    def _checkpoint_wait_timeout_ms(self, wait_after_text: str) -> int:
+        base_timeout_ms = 1500
+        config = getattr(self.tools, "config", None)
+        configured = self._int_value(
+            getattr(config, "room_light_wait_timeout_ms", None),
+            base_timeout_ms,
+        )
+        base_timeout_ms = max(500, configured)
+        wait_after = self._parse_iso_datetime(wait_after_text)
+        if wait_after is None:
+            return base_timeout_ms
+        remaining_ms = max(
+            0,
+            int((wait_after - datetime.now(UTC)).total_seconds() * 1000),
+        )
+        return max(base_timeout_ms, remaining_ms + base_timeout_ms)
+
+    def _parse_iso_datetime(self, text: str) -> datetime | None:
+        value = str(text or "").strip()
+        if not value:
+            return None
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
 
     def _pending_review_speech(
         self,
@@ -2646,6 +2890,27 @@ class ThoughtLoop:
             f"まだ環境で結果を確認しきれていないので、少し待ってから確認します。{tail}"
         )
 
+    def _action_sent_review_speech(self, action: dict[str, Any]) -> str:
+        phrase = str(
+            action.get("pre_action_phrase")
+            or action.get("target_name")
+            or action.get("action_id")
+            or "この操作"
+        )
+        policy = self._action_review_policy(action)
+        checkpoints = self._review_checkpoints_ms(policy)
+        delay_ms = (
+            checkpoints[0]
+            if checkpoints
+            else self._int_value(policy.get("settle_ms"), 0)
+        )
+        seconds = max(1, round(delay_ms / 1000)) if delay_ms else 1
+        return (
+            f"{phrase}の操作は送信しました。"
+            f"反映には{seconds}秒くらいかかる見込みです。"
+            "少し待ってから環境を見直します。"
+        )
+
     def _can_retry_review_action(
         self,
         action: dict[str, Any],
@@ -2653,6 +2918,23 @@ class ThoughtLoop:
         policy: dict[str, int],
     ) -> bool:
         if action.get("confirm_required"):
+            return False
+        last_review = (
+            pending.get("last_review")
+            if isinstance(pending.get("last_review"), dict)
+            else {}
+        )
+        reason = str(last_review.get("reason") or "")
+        status = str(last_review.get("status") or "")
+        uncertain_reasons = {
+            "accepted_but_unverified",
+            "environment_wait_timeout",
+            "target_state_unverified",
+            "room_light_low_confidence",
+            "room_light_unavailable_or_stale",
+            "device_state_stale",
+        }
+        if status == "pending" and reason in uncertain_reasons:
             return False
         execute_attempts = int(pending.get("execute_attempts") or 1)
         return execute_attempts <= policy["auto_retries"]
@@ -2662,6 +2944,20 @@ class ThoughtLoop:
         if bool(execute_result.get("executed")) or bool(execute_result.get("verified_by_bridge")):
             return True
         return status in {"accepted", "submitted", "duplicate"}
+
+    def _should_defer_action_review(
+        self,
+        action: dict[str, Any],
+        execute_result: dict[str, Any],
+    ) -> bool:
+        if not self._execution_was_accepted(execute_result):
+            return False
+        issued_at = str(execute_result.get("issued_at") or "")
+        if self._parse_iso_datetime(issued_at) is None:
+            return False
+        if action.get("confirm_required"):
+            return False
+        return bool(self._review_checkpoints_ms(self._action_review_policy(action)))
 
     def _input_requests_home_action(
         self,
@@ -3190,23 +3486,30 @@ class ThoughtLoop:
         stage: str,
         speech: str,
         detail: dict[str, Any] | None = None,
+        stream_to_speech: bool = False,
     ) -> None:
         previous_fragment = self._last_spoken_fragment(events) or self._last_issue_fragment()
-        speech = self._coherent_stream_speech(events, speech, stage=stage)
+        stage_speech = str(speech or "")
+        audible_speech = (
+            self._coherent_stream_speech(events, stage_speech, stage=stage)
+            if stream_to_speech
+            else ""
+        )
         payload = {
             "stage": stage,
-            "speech": speech,
-            "streamed": True,
+            "speech": stage_speech,
+            "streamed": bool(audible_speech),
+            "audible": bool(audible_speech),
         }
         if detail:
             payload["detail"] = detail
         events.append(factory.emit("thought.stage", payload))
-        if speech:
+        if audible_speech:
             events.append(
                 factory.emit(
                     "assistant.speech_delta",
                     {
-                        "delta": speech,
+                        "delta": audible_speech,
                         "channel": "speech",
                         "stage": stage,
                         "partial": True,
@@ -3217,7 +3520,7 @@ class ThoughtLoop:
                     },
                 )
             )
-            self._remember_stream_speech(speech)
+            self._remember_stream_speech(audible_speech)
 
     def _call_tool(
         self,
