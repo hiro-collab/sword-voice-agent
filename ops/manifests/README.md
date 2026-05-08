@@ -19,3 +19,7 @@ possible, so `system.ps1 status` can compare manifests against
 `contracts` and `adapters` are descriptive metadata. They do not make the
 current inherited supervisor manifest-native yet; they keep status output and
 future physical moves aligned with the architecture map.
+
+Profiles may use `alias_for` for compatibility names. Alias profiles should not
+carry their own service list; `ops/scripts/system.ps1` resolves them to the
+canonical profile before translating services into supervisor arguments.

@@ -212,9 +212,9 @@ cd <workspace>
 
 ```powershell
 cd <workspace>\sword-voice-agent
-.\ops\scripts\system.ps1 start  -Profile thought-core-experimental -DryRun
-.\ops\scripts\system.ps1 status -Profile thought-core-experimental
-.\ops\scripts\system.ps1 stop   -Profile thought-core-experimental -DryRun
+.\ops\scripts\system.ps1 start  -Profile thought-core-v0 -DryRun
+.\ops\scripts\system.ps1 status -Profile thought-core-v0
+.\ops\scripts\system.ps1 stop   -Profile thought-core-v0 -DryRun
 ```
 
 起動スクリプトの本体は `sword-voice-agent\ops\scripts\home-control-stack\` にあります。

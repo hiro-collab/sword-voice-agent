@@ -105,6 +105,25 @@ function Read-JsonObject {
     return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
 }
 
+function Resolve-ProfileManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestRoot,
+        [Parameter(Mandatory = $true)][string]$Profile,
+        [string[]]$Seen = @()
+    )
+    if ($Seen -contains $Profile) {
+        $chain = @($Seen + $Profile) -join " -> "
+        throw "Profile alias loop detected: $chain"
+    }
+    $profilePath = Join-Path $ManifestRoot "profiles\$Profile.json"
+    $manifest = Read-JsonObject -Path $profilePath
+    $aliasFor = [string](Get-ObjectProperty -Object $manifest -Name "alias_for" -Default "")
+    if (-not [string]::IsNullOrWhiteSpace($aliasFor)) {
+        return Resolve-ProfileManifest -ManifestRoot $ManifestRoot -Profile $aliasFor -Seen ($Seen + $Profile)
+    }
+    return $manifest
+}
+
 function Get-ObjectProperty {
     param(
         [object]$Object,
@@ -433,12 +452,16 @@ $repoRoot = Resolve-RepoRoot
 $workspaceRoot = Resolve-WorkspaceRoot -Value $WorkspaceRoot
 $stackStateDir = Resolve-StackStateDir -WorkspaceRoot $workspaceRoot -Value $StackStateDir
 $manifestRoot = Join-Path $repoRoot "ops\manifests"
-$profilePath = Join-Path $manifestRoot "profiles\$Profile.json"
-$profileManifest = Read-JsonObject -Path $profilePath
+$profileManifest = Resolve-ProfileManifest -ManifestRoot $manifestRoot -Profile $Profile
+$effectiveProfile = [string](Get-ObjectProperty -Object $profileManifest -Name "profile_id" -Default $Profile)
 $services = @(Resolve-EffectiveServices -Services @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $profileManifest -Name "services" -Default @())))
 
 if ($services.Count -eq 0) {
     throw "Profile has no services: $Profile"
+}
+
+if ($effectiveProfile -ne $Profile) {
+    Write-Host ("[ops] profile_alias={0} layer=ops effective_profile={1}" -f $Profile, $effectiveProfile)
 }
 
 switch ($Command) {

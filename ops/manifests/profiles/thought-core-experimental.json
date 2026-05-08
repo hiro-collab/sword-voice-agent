@@ -1,15 +1,7 @@
 {
   "profile_id": "thought-core-experimental",
   "layer": "ops",
-  "description": "Current experimental stack using thought-core API and watcher instead of Dify watcher.",
-  "services": [
-    "home_assistant_bridge",
-    "environment_state_server",
-    "thought_core_api",
-    "mediapipe_camera_hub_stack",
-    "vision_snapshot_processor",
-    "aituber_kit",
-    "thought_core_watcher",
-    "touchdesigner_control_gui"
-  ]
+  "description": "Deprecated compatibility alias for thought-core-v0.",
+  "alias_for": "thought-core-v0",
+  "deprecated": true
 }

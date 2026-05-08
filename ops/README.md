@@ -23,9 +23,9 @@ live under `ops/manifests/`.
 Use the facade from this repository root:
 
 ```powershell
-.\ops\scripts\system.ps1 start  -Profile thought-core-experimental -DryRun
-.\ops\scripts\system.ps1 status -Profile thought-core-experimental
-.\ops\scripts\system.ps1 stop   -Profile thought-core-experimental -DryRun
+.\ops\scripts\system.ps1 start  -Profile thought-core-v0 -DryRun
+.\ops\scripts\system.ps1 status -Profile thought-core-v0
+.\ops\scripts\system.ps1 stop   -Profile thought-core-v0 -DryRun
 ```
 
 `status` prints a layer-aware manifest/PID summary, then delegates to the
@@ -39,7 +39,8 @@ supervisor scripts use PowerShell 7 syntax.
 | Profile | Intended use |
 |---|---|
 | `full-local` | Current Dify-based full local stack. |
-| `thought-core-experimental` | Thought Core API and watcher path, with Dify stack/watcher skipped. |
+| `thought-core-v0` | Thought Core API and watcher path, with Dify stack/watcher skipped. |
+| `thought-core-experimental` | Deprecated compatibility alias for `thought-core-v0`. |
 | `camera-debug` | Camera Hub and Vision Snapshot Processor only. |
 | `aituber-only` | AITuber Kit surface only. |
 
@@ -48,7 +49,7 @@ verification instead of stopping user-owned processes:
 
 ```powershell
 .\ops\scripts\system.ps1 start `
-  -Profile thought-core-experimental `
+  -Profile thought-core-v0 `
   -DryRun `
   -SkipVoicevoxCheck `
   -HomeAssistantBridgePort 18887 `

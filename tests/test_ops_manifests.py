@@ -42,8 +42,13 @@ class OpsManifestTest(TestCase):
                 self.assertEqual(manifest["profile_id"], profile_id)
                 self.assertIn(manifest["layer"], layers)
                 self.assertIsInstance(manifest.get("description"), str)
-                self.assertGreater(len(manifest.get("services", [])), 0)
-                for service_id in manifest["services"]:
+                alias_for = manifest.get("alias_for")
+                if alias_for:
+                    self.assertIn(alias_for, profiles)
+                    continue
+                services_in_profile = manifest.get("services", [])
+                self.assertGreater(len(services_in_profile), 0)
+                for service_id in services_in_profile:
                     self.assertIn(service_id, services)
 
     def test_profile_service_sets_match_current_lifecycle_modes(self) -> None:
@@ -54,11 +59,15 @@ class OpsManifestTest(TestCase):
         self.assertIn("dify_watcher", full_local)
         self.assertNotIn("thought_core_api", full_local)
 
-        thought_core = set(profiles["thought-core-experimental"]["services"])
+        thought_core = _resolve_profile_services("thought-core-v0", profiles)
         self.assertIn("thought_core_api", thought_core)
         self.assertIn("thought_core_watcher", thought_core)
         self.assertNotIn("dify_stack", thought_core)
         self.assertNotIn("dify_watcher", thought_core)
+        self.assertEqual(
+            _resolve_profile_services("thought-core-experimental", profiles),
+            thought_core,
+        )
 
         camera_debug = set(profiles["camera-debug"]["services"])
         self.assertEqual(
@@ -123,6 +132,23 @@ def _load_profile_manifests() -> dict[str, dict]:
         path.stem: _load_json(path)
         for path in sorted((MANIFEST_ROOT / "profiles").glob("*.json"))
     }
+
+
+def _resolve_profile_services(profile_id: str, profiles: dict[str, dict]) -> set[str]:
+    seen: set[str] = set()
+    current = profile_id
+    while True:
+        if current in seen:
+            raise AssertionError(f"profile alias loop: {current}")
+        seen.add(current)
+        manifest = profiles[current]
+        alias_for = manifest.get("alias_for")
+        if alias_for:
+            if alias_for not in profiles:
+                raise AssertionError(f"unknown profile alias target: {alias_for}")
+            current = alias_for
+            continue
+        return set(manifest["services"])
 
 
 def _load_json(path: Path) -> dict:
