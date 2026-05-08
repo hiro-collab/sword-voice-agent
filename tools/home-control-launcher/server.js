@@ -60,6 +60,7 @@ const STACK_LOG_MAX_BYTES = Number(
 const STACK_LOG_BACKUPS = Number(
   process.env.HOME_CONTROL_LAUNCHER_STACK_LOG_BACKUPS || 3
 )
+const PRIMARY_PROFILE_ID = 'thought-core-experimental'
 
 function resolveStackStateDir() {
   const configured = process.env.HOME_CONTROL_STACK_STATE_DIR || ''
@@ -127,7 +128,7 @@ const OPS_PROFILE_BY_LAUNCHER_PROFILE = {
 }
 
 const opsProfileFor = (profileId) =>
-  OPS_PROFILE_BY_LAUNCHER_PROFILE[profileId] || profileId || 'full-local'
+  OPS_PROFILE_BY_LAUNCHER_PROFILE[profileId] || profileId || PRIMARY_PROFILE_ID
 
 const NUMBER_FIELDS = new Set([
   'HomeAssistantBridgePort',
@@ -233,7 +234,7 @@ const readProfiles = () => readJsonFile(PROFILE_FILE, [])
 
 const readLauncherConfig = () =>
   readJsonFile(LAUNCHER_CONFIG_FILE, {
-    selectedProfileId: 'full-stack',
+    selectedProfileId: PRIMARY_PROFILE_ID,
     options: {}
   })
 
@@ -588,7 +589,7 @@ const startStack = (profileId, optionOverrides = {}) => {
   appendStackLog(
     [
       '',
-      `===== Home Control Launcher start ${nowIso()} =====`,
+      `===== Sword System Launcher start ${nowIso()} =====`,
       preview.commandLine,
       ''
     ].join('\n')
@@ -705,7 +706,7 @@ const runScriptAndCollect = (scriptPath, scriptArgs = [], timeoutMs = 30000) =>
 
 const stopStack = async (body) => {
   const config = readLauncherConfig()
-  const profileId = (body && body.profileId) || config.selectedProfileId || 'full-stack'
+  const profileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
   const scriptArgs = ['stop', '-Profile', opsProfileFor(profileId), '-Force']
   if (body && body.stopDify) {
     scriptArgs.push('-StopDify')
@@ -844,7 +845,7 @@ const pidMap = () => {
 
 const effectiveStatusOptions = () => {
   const config = readLauncherConfig()
-  return normalizeOptions(config.selectedProfileId || 'full-stack', config.options || {})
+  return normalizeOptions(config.selectedProfileId || PRIMARY_PROFILE_ID, config.options || {})
 }
 
 const getVoicevoxUrl = (options) =>
@@ -884,7 +885,7 @@ const getEndpoints = (options) => {
     },
     {
       group: 'Open in browser',
-      name: 'Dify',
+      name: 'Dify legacy UI',
       url: `http://127.0.0.1:${options.DifyPort}`,
       enabled: !options.SkipDify
     },
@@ -959,7 +960,7 @@ const getEndpoints = (options) => {
     },
     {
       group: 'Background links',
-      name: 'Dify watcher',
+      name: 'Dify watcher (legacy)',
       url: 'no browser URL',
       enabled: !options.SkipDifyWatch
     },
@@ -1113,7 +1114,7 @@ const readTextTail = (filePath, maxBytes = 128 * 1024) => {
 
 const getState = async () => {
   const config = readLauncherConfig()
-  const selectedProfileId = config.selectedProfileId || 'full-stack'
+  const selectedProfileId = config.selectedProfileId || PRIMARY_PROFILE_ID
   const options = normalizeOptions(selectedProfileId, config.options || {})
   const preview = previewCommand(selectedProfileId, options)
   return {
@@ -1192,13 +1193,13 @@ const handleApi = async (request, response, requestUrl) => {
     sendJson(
       response,
       200,
-      previewCommand(body.profileId || 'full-stack', body.options || {})
+      previewCommand(body.profileId || PRIMARY_PROFILE_ID, body.options || {})
     )
     return
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/save-config') {
     const body = await readBody(request)
-    const profileId = body.profileId || 'full-stack'
+    const profileId = body.profileId || PRIMARY_PROFILE_ID
     const options = normalizeOptions(profileId, body.options || {})
     saveConfig(profileId, options)
     sendJson(response, 200, { ok: true, profileId, options })
@@ -1208,7 +1209,7 @@ const handleApi = async (request, response, requestUrl) => {
     const body = await readBody(request)
     const result = await runExclusiveStackOperation(
       'start',
-      async () => startStack(body.profileId || 'full-stack', body.options || {})
+      async () => startStack(body.profileId || PRIMARY_PROFILE_ID, body.options || {})
     )
     sendJson(response, result.statusCode, result.payload)
     return
@@ -1224,7 +1225,7 @@ const handleApi = async (request, response, requestUrl) => {
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/status-script') {
     const config = readLauncherConfig()
-    const profileId = config.selectedProfileId || 'full-stack'
+    const profileId = config.selectedProfileId || PRIMARY_PROFILE_ID
     const options = normalizeOptions(profileId, config.options || {})
     sendJson(
       response,
@@ -1303,7 +1304,7 @@ const openBrowser = (targetUrl) => {
 server.on('error', (error) => {
   if (error && error.code === 'EADDRINUSE') {
     const url = `http://${HOST}:${PORT}`
-    console.log(`Home Control Launcher is already running: ${url}`)
+    console.log(`Sword System Launcher is already running: ${url}`)
     console.log('Run .\\stop-home-control-launcher.bat, or restart via .\\start-home-control-launcher.bat from the workspace root.')
     if (OPEN_BROWSER) {
       openBrowser(url)
@@ -1318,7 +1319,7 @@ server.on('error', (error) => {
 ensureRuntimeDirs()
 server.listen(PORT, HOST, () => {
   const url = `http://${HOST}:${PORT}`
-  console.log(`Home Control Launcher: ${url}`)
+  console.log(`Sword System Launcher: ${url}`)
   console.log(`Workspace root: ${WORKSPACE_ROOT}`)
   if (OPEN_BROWSER) {
     openBrowser(url)

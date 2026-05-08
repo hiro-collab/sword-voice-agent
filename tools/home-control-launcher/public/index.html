@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Home Control Launcher</title>
+    <title>Sword System Launcher</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -12,8 +12,8 @@
         <div class="brand-lockup">
           <span class="brand-mark" aria-hidden="true"></span>
           <div>
-            <p class="system-label">SWORD VOICE AGENT</p>
-            <h1>Home Control Launcher</h1>
+            <p class="system-label">SYSTEM CELL CONTROL PLANE</p>
+            <h1>Sword System Launcher</h1>
             <p id="workspace-root">Loading workspace...</p>
           </div>
         </div>
@@ -65,7 +65,7 @@
       <section class="layout-grid">
         <aside class="panel launch-panel control-surface">
           <div class="panel-title">
-            <h2>Launch profile</h2>
+            <h2>System profile</h2>
             <div class="profile-actions">
               <span class="surface-tag control-tag">CONTROL</span>
               <span id="save-state">Ready</span>
@@ -109,10 +109,9 @@
             <input id="MediapipeCameraName" type="text" autocomplete="off" />
           </label>
 
-          <div class="section-title">Ports</div>
+          <div class="section-title">Core ports</div>
           <div class="port-grid">
             <label class="field"><span>AITuber</span><input id="AituberPort" type="number" min="1" /></label>
-            <label class="field"><span>Dify</span><input id="DifyPort" type="number" min="1" /></label>
             <label class="field"><span>Thought Core</span><input id="ThoughtCorePort" type="number" min="1" /></label>
             <label class="field"><span>TD GUI</span><input id="TouchDesignerGuiPort" type="number" min="1" /></label>
             <label class="field"><span>HA bridge</span><input id="HomeAssistantBridgePort" type="number" min="1" /></label>
@@ -123,10 +122,33 @@
 
           <details class="option-drawer" open>
             <summary>
-              <span>Runtime switches</span>
-              <small>Services and safety</small>
+              <span>Core services</span>
+              <small>Normal system cell controls</small>
             </summary>
-            <div class="switch-grid" id="switch-grid"></div>
+            <div class="switch-grid" id="core-switch-grid"></div>
+          </details>
+
+          <details class="option-drawer">
+            <summary>
+              <span>Diagnostics</span>
+              <small>Camera and test-mode controls</small>
+            </summary>
+            <div class="switch-grid" id="diagnostic-switch-grid"></div>
+          </details>
+
+          <details class="option-drawer">
+            <summary>
+              <span>Legacy Dify compatibility</span>
+              <small>Only for older watcher flows</small>
+            </summary>
+            <div class="switch-grid" id="legacy-switch-grid"></div>
+            <div class="port-grid legacy-port-grid">
+              <label class="field"><span>Dify port</span><input id="DifyPort" type="number" min="1" /></label>
+            </div>
+            <label class="field">
+              <span>Dify docker root</span>
+              <input id="DifyDockerRoot" type="text" autocomplete="off" />
+            </label>
           </details>
 
           <details class="option-drawer">
@@ -137,10 +159,6 @@
             <label class="field">
               <span>VOICEVOX URL</span>
               <input id="VoicevoxUrl" type="text" autocomplete="off" placeholder="http://127.0.0.1:50021" />
-            </label>
-            <label class="field">
-              <span>Dify docker root</span>
-              <input id="DifyDockerRoot" type="text" autocomplete="off" />
             </label>
             <label class="field">
               <span>Home control config path</span>

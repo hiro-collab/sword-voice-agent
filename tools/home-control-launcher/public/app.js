@@ -1,6 +1,6 @@
 const state = {
   profiles: [],
-  selectedProfileId: 'full-stack',
+  selectedProfileId: 'thought-core-experimental',
   options: {},
   busy: false,
   operation: 'idle',
@@ -9,24 +9,27 @@ const state = {
   remoteOperation: null
 }
 
-const switchFields = [
+const coreSwitchFields = [
   'StopExisting',
-  'MediapipeOpenBrowser',
-  'MediapipeNoBrowser',
-  'MediapipePythonGui',
-  'SkipDify',
-  'SkipVoicevoxCheck',
+  'EnableThoughtCore',
+  'EnableThoughtCoreWatch',
+  'SkipAituber',
   'SkipHomeAssistantBridge',
   'SkipEnvironmentState',
   'SkipMediapipe',
   'SkipVisionSnapshotProcessor',
-  'SkipAituber',
-  'SkipDifyWatch',
   'SkipTouchDesignerGui',
-  'EnableThoughtCore',
-  'EnableThoughtCoreWatch',
+  'SkipVoicevoxCheck'
+]
+
+const diagnosticSwitchFields = [
+  'MediapipeOpenBrowser',
+  'MediapipeNoBrowser',
+  'MediapipePythonGui',
   'EnableHomeControlFaultInjection'
 ]
+
+const legacySwitchFields = ['SkipDify', 'SkipDifyWatch']
 
 const portFields = [
   'AituberPort',
@@ -47,16 +50,35 @@ const textFields = [
 ]
 
 const serviceLabels = {
-  home_assistant_bridge: 'Home Assistant Bridge',
-  environment_state_server: 'Environment State',
-  mediapipe: 'MediaPipe',
-  vision_snapshot_processor: 'Vision Snapshot',
-  aituber_kit: 'AITuber Kit',
-  touchdesigner_control_gui: 'TouchDesigner GUI',
-  dify: 'Dify',
-  thought_core_api: 'thought-core API',
-  thought_core_watcher: 'thought-core watcher',
+  home_assistant_bridge: 'Home-control server',
+  environment_state_server: 'Environment server',
+  mediapipe: 'Reflex MediaPipe',
+  vision_snapshot_processor: 'Vision snapshot',
+  aituber_kit: 'Expression UI',
+  touchdesigner_control_gui: 'Display control GUI',
+  dify: 'Dify legacy runtime',
+  thought_core_api: 'Thought Core API',
+  thought_core_watcher: 'Thought Core watcher',
   voicevox: 'VOICEVOX'
+}
+
+const fieldLabels = {
+  StopExisting: 'Restart managed services first',
+  EnableThoughtCore: 'Thought Core API',
+  EnableThoughtCoreWatch: 'Thought Core watcher',
+  SkipAituber: 'Disable expression UI',
+  SkipHomeAssistantBridge: 'Disable home-control server',
+  SkipEnvironmentState: 'Disable environment server',
+  SkipMediapipe: 'Disable reflex MediaPipe',
+  SkipVisionSnapshotProcessor: 'Disable vision snapshot',
+  SkipTouchDesignerGui: 'Disable display control GUI',
+  SkipVoicevoxCheck: 'Skip VOICEVOX readiness check',
+  MediapipeOpenBrowser: 'Open MediaPipe monitor',
+  MediapipeNoBrowser: 'Keep MediaPipe monitor hidden',
+  MediapipePythonGui: 'Use Python camera GUI',
+  EnableHomeControlFaultInjection: 'Enable home-control fault injection',
+  SkipDify: 'Use external Dify / skip local start',
+  SkipDifyWatch: 'Disable Dify watcher'
 }
 
 const enableFieldsByService = {
@@ -242,11 +264,17 @@ const setOption = (key, value) => {
 
 const renderControls = () => {
   const profileSelect = $('profile-select')
-  profileSelect.innerHTML = state.profiles
-    .map(
-      (profile) =>
-        `<option value="${profile.id}">${escapeHtml(profile.name)}</option>`
-    )
+  const profilesByGroup = groupProfiles(state.profiles)
+  profileSelect.innerHTML = profilesByGroup
+    .map(([group, profiles]) => {
+      const options = profiles
+        .map(
+          (profile) =>
+            `<option value="${profile.id}">${escapeHtml(profile.name)}</option>`
+        )
+        .join('')
+      return `<optgroup label="${escapeHtml(group)}">${options}</optgroup>`
+    })
     .join('')
   profileSelect.value = state.selectedProfileId
   const profile = state.profiles.find((item) => item.id === state.selectedProfileId)
@@ -268,8 +296,26 @@ const renderControls = () => {
     button.classList.toggle('active', button.dataset.value === state.options.MediapipeMode)
   })
 
-  const switchGrid = $('switch-grid')
-  switchGrid.innerHTML = switchFields
+  renderSwitchGroup('core-switch-grid', coreSwitchFields)
+  renderSwitchGroup('diagnostic-switch-grid', diagnosticSwitchFields)
+  renderSwitchGroup('legacy-switch-grid', legacySwitchFields)
+}
+
+const groupProfiles = (profiles) => {
+  const groups = new Map()
+  for (const profile of profiles || []) {
+    const group = profile.group || 'Other'
+    if (!groups.has(group)) {
+      groups.set(group, [])
+    }
+    groups.get(group).push(profile)
+  }
+  return Array.from(groups.entries())
+}
+
+const renderSwitchGroup = (elementId, fields) => {
+  const switchGrid = $(elementId)
+  switchGrid.innerHTML = fields
     .map(
       (field) => `
         <label class="switch-row">
@@ -288,6 +334,7 @@ const renderControls = () => {
 }
 
 const labelFor = (value) =>
+  fieldLabels[value] ||
   value
     .replace(/^Skip/, 'Skip ')
     .replace(/^Stop/, 'Stop ')
@@ -510,7 +557,7 @@ const refreshPreview = async () => {
 const refreshState = async () => {
   const payload = await api('/api/state')
   state.profiles = payload.profiles || []
-  state.selectedProfileId = payload.config?.selectedProfileId || 'full-stack'
+  state.selectedProfileId = payload.config?.selectedProfileId || 'thought-core-experimental'
   state.options = payload.config?.options || {}
   $('workspace-root').textContent = payload.workspaceRoot
   $('status-time').textContent = payload.status?.timestamp || 'Unknown'
@@ -573,12 +620,12 @@ const stopStack = async () => {
 
 const stopLauncher = async () => {
   const confirmed = window.confirm(
-    'Stop Home Control Launcher? Stack services are not stopped by this button.'
+    'Stop Sword System Launcher? System cell services are not stopped by this button.'
   )
   if (!confirmed) {
     return
   }
-  setOperation('stopping', 'Launcher server is shutting down. Stack services are unchanged.')
+  setOperation('stopping', 'Launcher server is shutting down. System cell services are unchanged.')
   setBusy(true, 'Stopping')
   try {
     await api('/api/shutdown', { method: 'POST' })

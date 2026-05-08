@@ -1,6 +1,6 @@
-# Home Control Launcher
+# Sword System Launcher
 
-Local web launcher for the Home Control Stack.
+Local web launcher for the Sword Agent System cell.
 
 It serves a browser UI for:
 
@@ -9,6 +9,10 @@ It serves a browser UI for:
 - previewing the exact PowerShell command
 - starting and stopping through the ops lifecycle facade
 - keeping reference URLs visible after logs scroll
+
+The primary profile is `System Cell (Thought Core)`. Older Dify-based flows are
+kept as `Legacy / compatibility` profiles so existing workflows remain
+recoverable, but normal operation should use the Thought Core profile.
 
 The launcher calls the ops facade, which then delegates to the inherited
 supervisor implementation:
@@ -57,7 +61,7 @@ Start it from the workspace root:
 If another launcher is already running on the same port, the start shortcut
 stops that launcher first and then starts a fresh launcher in the current
 terminal. After that, `Ctrl+C` in that terminal stops the launcher server.
-This does not stop the Home Control Stack services.
+This does not stop the system cell services.
 
 Stop only the launcher server from the workspace root:
 
