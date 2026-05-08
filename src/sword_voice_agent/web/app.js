@@ -135,6 +135,12 @@ function formatStoredEvent(event) {
     if (data.skipped) return `thought-core${turn}: skipped ${data.skip_reason || ""}`;
     return `thought-core${turn}: ${short(data.response_text || "", 96)}`;
   }
+  if (event.type === "thought_core.stream_event") {
+    const elapsed = data.elapsed_s === null || data.elapsed_s === undefined ? "" : ` ${Number(data.elapsed_s).toFixed(2)}s`;
+    const delta = data.delta_elapsed_s === null || data.delta_elapsed_s === undefined ? "" : ` +${Number(data.delta_elapsed_s).toFixed(2)}s`;
+    const label = data.stage || data.tool || data.status || data.event_type || data.phase || "event";
+    return `thought-core${turn}: ${data.phase || "flow"} ${label}${elapsed}${delta}`;
+  }
   if (event.type === "thought_core.first_message") {
     const elapsed = data.elapsed_s === null || data.elapsed_s === undefined ? "" : ` ${Number(data.elapsed_s).toFixed(2)}s`;
     return `thought-core${turn}: first message${elapsed}`;

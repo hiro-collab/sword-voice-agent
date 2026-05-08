@@ -68,15 +68,15 @@ def create_server(
             return
 
         def _handle_turn(self, payload: dict[str, Any], *, stream: bool) -> None:
+            if stream:
+                self._send_sse_live(payload)
+                return
             try:
                 events = loop.run_dicts(payload)
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
-            if stream:
-                self._send_sse(events)
-            else:
-                self._send_json({"events": events})
+            self._send_json({"events": events})
 
         def _read_json_body(self) -> dict[str, Any]:
             length_raw = self.headers.get("Content-Length", "0")
@@ -110,11 +110,37 @@ def create_server(
             self.send_header("Connection", "close")
             self.end_headers()
             for event in events:
-                self.wfile.write(f"id: {event['event_id']}\n".encode("utf-8"))
-                self.wfile.write(f"event: {event['type']}\n".encode("utf-8"))
-                data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
-                self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
-                self.wfile.flush()
+                self._write_sse_event(event)
+
+        def _send_sse_live(self, payload: dict[str, Any]) -> None:
+            self.send_response(HTTPStatus.OK.value)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                loop.run_dicts(payload, event_sink=self._write_sse_event)
+            except ValueError as exc:
+                self._write_sse_event(
+                    {
+                        "schema_version": "thought-core.event.v0",
+                        "event_id": "evt_bad_request",
+                        "turn_id": str(payload.get("turn_id") or ""),
+                        "session_id": str(payload.get("session_id") or ""),
+                        "seq": 1,
+                        "timestamp": "",
+                        "source": "thought-core",
+                        "type": "turn.error",
+                        "data": {"code": "bad_request", "message": str(exc)},
+                    }
+                )
+
+        def _write_sse_event(self, event: dict[str, Any]) -> None:
+            self.wfile.write(f"id: {event['event_id']}\n".encode("utf-8"))
+            self.wfile.write(f"event: {event['type']}\n".encode("utf-8"))
+            data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+            self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
+            self.wfile.flush()
 
     return ThreadingHTTPServer((host, port), ThoughtCoreHandler)
 

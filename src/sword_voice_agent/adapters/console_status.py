@@ -114,6 +114,11 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
         else empty_file_state()
     )
     events = read_console_events(config, limit=40)
+    conversation_log = (
+        status_store.read_conversation_log(limit=80)
+        if status_store is not None
+        else []
+    )
     module_statuses = (
         status_store.read_module_statuses() if status_store is not None else {}
     )
@@ -177,6 +182,7 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
             stale_after_s=config.module_stale_after_s,
         ),
         "events": events,
+        "conversation_log": conversation_log,
         "files": {
             "handoff_json": strip_payload(handoff_json),
             "handoff_text": strip_payload(handoff_text),
@@ -258,7 +264,80 @@ def redact_console_status(status: Mapping[str, Any]) -> dict[str, Any]:
         for event in redacted.get("events", [])
         if isinstance(event, Mapping)
     ]
+    redacted["conversation_log"] = [
+        redact_conversation_entry(entry)
+        for entry in redacted.get("conversation_log", [])
+        if isinstance(entry, Mapping)
+    ]
     return redacted
+
+
+def redact_conversation_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    item = dict(entry)
+    item["text"] = _redact_scalar(item.get("text"))
+    item["turn_id"] = _redact_scalar(item.get("turn_id"))
+    item["session_id"] = _redact_scalar(item.get("session_id"))
+    item["issue_id"] = _redact_scalar(item.get("issue_id"))
+    metadata = mapping(item.get("metadata"))
+    if metadata:
+        item["metadata"] = redact_conversation_metadata(metadata)
+    return item
+
+
+def redact_conversation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key in ("seq", "elapsed_s", "status"):
+        if key in metadata:
+            safe[key] = metadata.get(key)
+    timing = mapping(metadata.get("timing"))
+    if timing:
+        safe["timing"] = redact_timing_summary(timing)
+    return safe or {"redacted": True}
+
+
+def redact_timing_summary(timing: Mapping[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key in (
+        "event_count",
+        "speech_delta_count",
+        "first_event_elapsed_s",
+        "first_speech_elapsed_s",
+        "first_message_elapsed_s",
+        "completed_elapsed_s",
+        "max_gap_s",
+    ):
+        if key in timing:
+            safe[key] = timing.get(key)
+    slowest_gap = mapping(timing.get("slowest_gap"))
+    if slowest_gap:
+        safe["slowest_gap"] = {
+            "after_event_seq": slowest_gap.get("after_event_seq"),
+            "event_type": slowest_gap.get("event_type"),
+            "delta_elapsed_s": slowest_gap.get("delta_elapsed_s"),
+        }
+    timeline = timing.get("timeline")
+    if isinstance(timeline, list):
+        safe["timeline"] = [
+            redact_timing_timeline_item(item)
+            for item in timeline[-80:]
+            if isinstance(item, Mapping)
+        ]
+    return safe
+
+
+def redact_timing_timeline_item(item: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "event_type": item.get("event_type"),
+        "seq": item.get("seq"),
+        "phase": item.get("phase"),
+        "elapsed_s": item.get("elapsed_s"),
+        "delta_elapsed_s": item.get("delta_elapsed_s"),
+        "stage": item.get("stage"),
+        "status": item.get("status"),
+        "tool": item.get("tool"),
+        "speech_present": item.get("speech_present"),
+        "speech_chars": item.get("speech_chars"),
+    }
 
 
 def redact_event(event: Mapping[str, Any]) -> dict[str, Any]:
@@ -295,8 +374,13 @@ def redact_event(event: Mapping[str, Any]) -> dict[str, Any]:
                 "event_type": data.get("event_type"),
                 "seq": data.get("seq"),
                 "elapsed_s": data.get("elapsed_s"),
+                "delta_elapsed_s": data.get("delta_elapsed_s"),
+                "phase": data.get("phase"),
+                "stage": data.get("stage"),
+                "partial": data.get("partial"),
                 "speech_present": data.get("speech_present"),
                 "speech": _redact_scalar(data.get("speech")),
+                "speech_chars": data.get("speech_chars"),
                 "status": data.get("status"),
                 "tool": data.get("tool"),
                 "tool_call_id": _redact_scalar(data.get("tool_call_id")),

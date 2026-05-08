@@ -180,7 +180,7 @@ class LocalActionReasoner:
 
 
 class OpenAICompatibleActionReviewer:
-    adapter_kind = "openai_compatible_action_reviewer"
+    adapter_kind = "openai_compatible_action_reasoner"
     provider = "openai-compatible"
 
     def __init__(
@@ -235,6 +235,102 @@ class OpenAICompatibleActionReviewer:
             timeout_s=_float_env("THOUGHT_CORE_ACTION_LLM_TIMEOUT_S", 12.0),
         )
 
+    def imagine_target_state(
+        self,
+        turn: TurnInput,
+        observation: dict[str, Any],
+        local_target_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are the Target State generator inside thought-core. "
+                        "Return JSON only. Build a compact Target State projection "
+                        "from user prompt, Environment State, and relevant memory. "
+                        "Only required values belong in bindings; unrelated values "
+                        "are ANY. Do not invent tools or device IDs."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "prompt": turn.text,
+                            "environment": _compact_observation(observation),
+                            "local_target_state": local_target_state,
+                            "instruction": (
+                                "Return JSON with status, rationale, optional bindings, "
+                                "and brief. If unsure, keep local_target_state semantics."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "temperature": 0.1,
+            "max_tokens": 260,
+        }
+        decision = self._chat_json(payload)
+        return {
+            "status": str(decision.get("status") or local_target_state.get("status") or "ok"),
+            "rationale": str(decision.get("rationale") or decision.get("brief") or ""),
+            "bindings": decision.get("bindings"),
+            "judge": self._judge_metadata(),
+        }
+
+    def plan_command(
+        self,
+        turn: TurnInput,
+        observation: dict[str, Any],
+        target_state: dict[str, Any],
+        preview: dict[str, Any],
+        local_plan: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are the command planner inside thought-core. Return JSON only. "
+                        "Use the allowlisted preview action; do not invent service calls. "
+                        "Decide whether the preview action is needed to close the Target "
+                        "State diff."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "prompt": turn.text,
+                            "environment": _compact_observation(observation),
+                            "target_state": target_state,
+                            "preview": _safe_preview(preview),
+                            "local_plan": local_plan,
+                            "instruction": (
+                                "Return JSON with status, action_id, reason, and brief. "
+                                "action_id must match preview.action.action_id when present."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "temperature": 0.0,
+            "max_tokens": 220,
+        }
+        decision = self._chat_json(payload)
+        return {
+            "status": str(decision.get("status") or local_plan.get("status") or "ready"),
+            "action_id": decision.get("action_id"),
+            "reason": str(decision.get("reason") or decision.get("brief") or ""),
+            "brief": str(decision.get("brief") or ""),
+            "judge": self._judge_metadata(),
+        }
+
     def review_target_state(
         self,
         turn: TurnInput,
@@ -280,6 +376,19 @@ class OpenAICompatibleActionReviewer:
             "temperature": 0.0,
             "max_tokens": 220,
         }
+        decision = self._chat_json(payload)
+        status = str(decision.get("status") or "").strip()
+        if status not in {"succeeded", "mismatch", "pending", "execute_failed"}:
+            raise ValueError("action reviewer returned invalid status")
+        return {
+            "status": status,
+            "reason": str(decision.get("reason") or "llm_target_state_review"),
+            "confidence": decision.get("confidence"),
+            "brief": str(decision.get("brief") or ""),
+            "judge": self._judge_metadata(),
+        }
+
+    def _chat_json(self, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -296,22 +405,15 @@ class OpenAICompatibleActionReviewer:
         with request.urlopen(req, timeout=self.timeout_s) as response:
             response_payload = json.loads(response.read().decode("utf-8"))
         content = _extract_chat_completion_text(response_payload).strip()
-        decision = _parse_json_object(content)
-        status = str(decision.get("status") or "").strip()
-        if status not in {"succeeded", "mismatch", "pending", "execute_failed"}:
-            raise ValueError("action reviewer returned invalid status")
+        return _parse_json_object(content)
+
+    def _judge_metadata(self) -> dict[str, Any]:
         return {
-            "status": status,
-            "reason": str(decision.get("reason") or "llm_target_state_review"),
-            "confidence": decision.get("confidence"),
-            "brief": str(decision.get("brief") or ""),
-            "judge": {
-                "adapter_kind": self.adapter_kind,
-                "provider": self.provider,
-                "model": self.model,
-                "used_llm": True,
-                "base_url": _safe_base_url(self.base_url),
-            },
+            "adapter_kind": self.adapter_kind,
+            "provider": self.provider,
+            "model": self.model,
+            "used_llm": True,
+            "base_url": _safe_base_url(self.base_url),
         }
 
 
@@ -338,7 +440,26 @@ class EnvironmentActionReasoner:
         turn: TurnInput,
         observation: dict[str, Any],
     ) -> dict[str, Any]:
-        return self.fallback.imagine_target_state(turn, observation)
+        local_target_state = self.fallback.imagine_target_state(turn, observation)
+        if self.reviewer is None:
+            return local_target_state
+        try:
+            llm_target_state = self.reviewer.imagine_target_state(
+                turn,
+                observation,
+                local_target_state,
+            )
+        except (OSError, ValueError, json.JSONDecodeError, error.URLError) as exc:
+            fallback = dict(local_target_state)
+            fallback["judge"] = {
+                "adapter_kind": self.fallback.adapter_kind,
+                "provider": self.fallback.provider,
+                "model": self.fallback.model,
+                "used_llm": False,
+                "fallback_after_llm_error": str(exc)[:240],
+            }
+            return fallback
+        return _merge_llm_target_state(local_target_state, llm_target_state)
 
     def plan_command(
         self,
@@ -347,7 +468,28 @@ class EnvironmentActionReasoner:
         target_state: dict[str, Any],
         preview: dict[str, Any],
     ) -> dict[str, Any]:
-        return self.fallback.plan_command(turn, observation, target_state, preview)
+        local_plan = self.fallback.plan_command(turn, observation, target_state, preview)
+        if self.reviewer is None:
+            return local_plan
+        try:
+            llm_plan = self.reviewer.plan_command(
+                turn,
+                observation,
+                target_state,
+                preview,
+                local_plan,
+            )
+        except (OSError, ValueError, json.JSONDecodeError, error.URLError) as exc:
+            fallback = dict(local_plan)
+            fallback["judge"] = {
+                "adapter_kind": self.fallback.adapter_kind,
+                "provider": self.fallback.provider,
+                "model": self.fallback.model,
+                "used_llm": False,
+                "fallback_after_llm_error": str(exc)[:240],
+            }
+            return fallback
+        return _merge_llm_command_plan(local_plan, llm_plan, preview)
 
     def review_target_state(
         self,
@@ -435,6 +577,10 @@ def evaluate_target_state(
             continue
         if observed.get("stale"):
             unknowns.append({**item, "reason": "state_stale"})
+            continue
+        confidence = str(observed.get("confidence_label") or "").lower()
+        if "confidence_label" in observed and confidence in {"", "low", "very_low", "unknown"}:
+            unknowns.append({**item, "reason": "state_low_confidence"})
             continue
         expected = binding.get("value")
         actual = observed.get("state")
@@ -620,6 +766,77 @@ def _merge_llm_review(
     return merged
 
 
+def _merge_llm_target_state(
+    local_target_state: dict[str, Any],
+    llm_target_state: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(local_target_state)
+    merged["llm_status"] = llm_target_state.get("status")
+    merged["judge"] = llm_target_state.get("judge", {})
+    if llm_target_state.get("rationale"):
+        merged["llm_rationale"] = llm_target_state.get("rationale")
+        merged["rationale"] = str(llm_target_state.get("rationale"))
+    bindings = llm_target_state.get("bindings")
+    if isinstance(bindings, list) and _bindings_are_compatible(
+        local_target_state.get("bindings"),
+        bindings,
+    ):
+        merged["bindings"] = bindings
+    elif isinstance(bindings, list):
+        merged["llm_bindings_rejected"] = True
+    return merged
+
+
+def _merge_llm_command_plan(
+    local_plan: dict[str, Any],
+    llm_plan: dict[str, Any],
+    preview: dict[str, Any],
+) -> dict[str, Any]:
+    action = preview.get("action") if isinstance(preview.get("action"), dict) else {}
+    allowed_action_id = str(action.get("action_id") or local_plan.get("action_id") or "")
+    llm_action_id = str(llm_plan.get("action_id") or "")
+    merged = dict(local_plan)
+    merged["llm_status"] = llm_plan.get("status")
+    merged["judge"] = llm_plan.get("judge", {})
+    if llm_plan.get("reason"):
+        merged["reason"] = llm_plan.get("reason")
+    if llm_plan.get("brief"):
+        merged["brief"] = llm_plan.get("brief")
+    if llm_action_id and llm_action_id != allowed_action_id:
+        merged["llm_action_id_rejected"] = llm_action_id
+        return merged
+    local_status = str(local_plan.get("status") or "")
+    llm_status = str(llm_plan.get("status") or "")
+    if llm_status == local_status and llm_status in {
+        "ready",
+        "already_satisfied",
+        "unavailable",
+    }:
+        merged["status"] = llm_status
+    elif llm_status and llm_status != local_status:
+        merged["llm_status_rejected"] = llm_status
+    return merged
+
+
+def _bindings_are_compatible(local_bindings: Any, llm_bindings: list[Any]) -> bool:
+    if not isinstance(local_bindings, list) or not local_bindings:
+        return False
+    if len(local_bindings) != len(llm_bindings):
+        return False
+    for local, proposed in zip(local_bindings, llm_bindings, strict=False):
+        if not isinstance(local, dict) or not isinstance(proposed, dict):
+            return False
+        if str(local.get("kind") or "") != str(proposed.get("kind") or ""):
+            return False
+        if str(local.get("target") or "") != str(proposed.get("target") or ""):
+            return False
+        if _normalize_state(local.get("value")) != _normalize_state(proposed.get("value")):
+            return False
+        if str(proposed.get("scope") or "required") != "required":
+            return False
+    return True
+
+
 def _safe_action(action: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "action",
@@ -647,6 +864,15 @@ def _safe_execute_result(execute_result: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in execute_result.items() if key in allowed}
 
 
+def _safe_preview(preview: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": preview.get("status"),
+        "should_execute": preview.get("should_execute"),
+        "action": _safe_action(preview.get("action") if isinstance(preview.get("action"), dict) else {}),
+        "error": preview.get("error"),
+    }
+
+
 def _compact_observation(observation: dict[str, Any]) -> dict[str, Any]:
     compact = {
         "facts": observation.get("facts", {}),
@@ -658,6 +884,15 @@ def _compact_observation(observation: dict[str, Any]) -> dict[str, Any]:
             "appliances": environment.get("appliances", {}),
             "state_queries": environment.get("state_queries", {}),
             "wait_result": environment.get("wait_result", {}),
+        }
+    memory_context = observation.get("memory_context")
+    if isinstance(memory_context, dict):
+        compact["memory_context"] = {
+            "summary": memory_context.get("summary"),
+            "item_count": memory_context.get("item_count", 0),
+            "items": memory_context.get("items", [])[:6]
+            if isinstance(memory_context.get("items"), list)
+            else [],
         }
     return compact
 

@@ -51,6 +51,10 @@ class StatusStore:
     def events_path(self) -> Path:
         return self.root / "events.jsonl"
 
+    @property
+    def conversation_log_path(self) -> Path:
+        return self.root / "conversation-log.jsonl"
+
     def write_latest_gesture(self, payload: Mapping[str, Any]) -> None:
         response = _mapping(payload.get("response"))
         diagnostic = _mapping(response.get("diagnostic"))
@@ -187,6 +191,52 @@ class StatusStore:
             },
         )
 
+    def append_conversation_entry(
+        self,
+        role: str,
+        text: object,
+        *,
+        source: str,
+        turn_id: str | None = None,
+        session_id: str | None = None,
+        issue_id: str | None = None,
+        event_type: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        timestamp: float | None = None,
+    ) -> None:
+        clean_text = str(text or "").strip()
+        if not clean_text:
+            return
+        self.root.mkdir(parents=True, exist_ok=True)
+        entry: dict[str, Any] = {
+            "entry_id": uuid4().hex,
+            "timestamp": timestamp if timestamp is not None else now_timestamp(),
+            "role": str(role or "log"),
+            "text": clean_text,
+            "source": source,
+            "turn_id": turn_id,
+            "session_id": session_id,
+            "issue_id": issue_id,
+            "event_type": event_type,
+            "metadata": dict(metadata or {}),
+        }
+        with self.conversation_log_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(entry, ensure_ascii=False))
+            stream.write("\n")
+        self.trim_conversation_log()
+
+    def trim_conversation_log(self) -> None:
+        try:
+            lines = self.conversation_log_path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return
+        if len(lines) <= self.max_events:
+            return
+        self.conversation_log_path.write_text(
+            "\n".join(lines[-self.max_events :]) + "\n",
+            encoding="utf-8",
+        )
+
     def read_module_statuses(self) -> dict[str, dict[str, Any]]:
         if not self.modules_dir.exists():
             return {}
@@ -253,6 +303,7 @@ class StatusStore:
             self.latest_dify_response_path,
             self.latest_thought_core_response_path,
             self.events_path,
+            self.conversation_log_path,
         ):
             try:
                 path.unlink()
@@ -279,6 +330,21 @@ class StatusStore:
             if isinstance(payload, dict):
                 events.append(payload)
         return events
+
+    def read_conversation_log(self, limit: int = 50) -> list[dict[str, Any]]:
+        try:
+            lines = self.conversation_log_path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return []
+        entries: list[dict[str, Any]] = []
+        for line in lines[-max(1, limit) :]:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                entries.append(payload)
+        return entries
 
     def read_events_after(
         self,

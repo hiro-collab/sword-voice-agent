@@ -6,6 +6,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Protocol
 from urllib import error, request
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
@@ -180,7 +181,16 @@ class MockThoughtTools:
         return result
 
     def memory_retrieve(self, turn: TurnInput) -> dict[str, Any]:
-        return {"status": "ok", "items": []}
+        items = turn.context_refs.get("mock_memory_items", [])
+        if not isinstance(items, list):
+            items = []
+        summary = turn.context_refs.get("mock_memory_summary")
+        return {
+            "status": "ok",
+            "items": list(items),
+            "summary": summary if isinstance(summary, str) else "",
+            "source": "mock_memory",
+        }
 
     def state_query_feedback(
         self,
@@ -203,7 +213,7 @@ class MockThoughtTools:
 
     def memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
         self.memory_write_calls.append(dict(item))
-        return self.short_memory_write(turn, item)
+        return {"status": "ok", "written": True, "candidate": True}
 
     def web_search(self, turn: TurnInput, query: str) -> dict[str, Any]:
         return {"status": "ok", "query": query, "results": []}
@@ -310,6 +320,9 @@ class HomeControlToolConfig:
     environment_state_url: str = ""
     environment_api_token: str = ""
     environment_feedback_url: str = ""
+    memory_root: str = ""
+    memory_policy_root: str = ""
+    memory_retrieve_limit: int = 8
     timeout_s: float = 3.0
     room_light_wait_timeout_ms: int = 1500
 
@@ -339,12 +352,29 @@ class HomeControlToolConfig:
             _env_first("THOUGHT_CORE_ROOM_LIGHT_WAIT_TIMEOUT_MS"),
             1500,
         )
+        repo_root = _repo_root_from_here()
+        memory_root = _env_first(
+            "THOUGHT_CORE_MEMORY_ROOT",
+            "SWORD_MEMORY_ROOT",
+            default=str(repo_root / "local" / "memory"),
+        )
+        memory_policy_root = _env_first(
+            "THOUGHT_CORE_MEMORY_POLICY_ROOT",
+            default=str(repo_root / "policies" / "access"),
+        )
+        memory_retrieve_limit = _optional_int(
+            _env_first("THOUGHT_CORE_MEMORY_RETRIEVE_LIMIT"),
+            8,
+        )
         return cls(
             bridge_base_url=bridge_base_url,
             api_token=api_token,
             environment_state_url=environment_state_url,
             environment_api_token=environment_api_token,
             environment_feedback_url=environment_feedback_url,
+            memory_root=memory_root,
+            memory_policy_root=memory_policy_root,
+            memory_retrieve_limit=memory_retrieve_limit,
             timeout_s=timeout_s,
             room_light_wait_timeout_ms=room_light_wait_timeout_ms,
         )
@@ -564,13 +594,136 @@ class HomeControlHttpTools:
         }
 
     def memory_retrieve(self, turn: TurnInput) -> dict[str, Any]:
-        return {"status": "ok", "items": []}
+        limit = max(1, int(self.config.memory_retrieve_limit or 8))
+        items: list[dict[str, Any]] = []
+        items.extend(self._recent_short_memory(turn, limit=limit))
+        remaining = max(0, limit - len(items))
+        if remaining:
+            items.extend(self._committed_memory(turn, limit=remaining))
+        return {
+            "status": "ok",
+            "items": items[:limit],
+            "source": "local_memory",
+            "summary": _memory_result_summary(items[:limit]),
+        }
 
     def short_memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
-        return {"status": "ok", "written": True, "scope": "short_memory"}
+        payload = dict(item)
+        payload.setdefault("type", "short_memory")
+        payload.setdefault("scope", "session")
+        payload.setdefault("session_id", turn.session_id)
+        payload.setdefault("turn_id", turn.turn_id)
+        payload.setdefault("created_at", datetime.now(UTC).isoformat())
+        path = Path(self.config.memory_root) / "short_memory.jsonl"
+        try:
+            _append_jsonl(path, payload)
+        except OSError as exc:
+            return {
+                "status": "failed",
+                "written": False,
+                "scope": "short_memory",
+                "error": "short_memory_write_failed",
+                "detail": str(exc)[:240],
+            }
+        return {
+            "status": "ok",
+            "written": True,
+            "scope": "short_memory",
+            "path": str(path),
+        }
 
     def memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
-        return self.short_memory_write(turn, item)
+        if item.get("type") == "short_memory" or item.get("kind") == "retry_budget":
+            return self.short_memory_write(turn, item)
+        candidate = dict(item)
+        candidate.setdefault("schema_version", "memory.item.v0")
+        candidate.setdefault("scope", "failure_patterns")
+        candidate.setdefault("status", "candidate")
+        candidate.setdefault("created_at", datetime.now(UTC).isoformat())
+        source = candidate.get("source") if isinstance(candidate.get("source"), dict) else {}
+        source = dict(source)
+        source.setdefault("service", "thought-core")
+        source.setdefault(
+            "trace_id",
+            str(turn.context_refs.get("trace_id") or f"trace_{turn.turn_id}"),
+        )
+        source.setdefault("turn_id", turn.turn_id)
+        candidate["source"] = source
+        try:
+            store = _memory_store(self.config.memory_root, self.config.memory_policy_root)
+        except ImportError as exc:  # pragma: no cover - standalone thought-core fallback
+            path = Path(self.config.memory_root) / "candidates.jsonl"
+            try:
+                _append_jsonl(path, candidate)
+            except OSError:
+                return {
+                    "status": "failed",
+                    "written": False,
+                    "error": "memory_candidate_write_failed",
+                    "detail": str(exc)[:240],
+                }
+            return {
+                "status": "accepted",
+                "written": True,
+                "candidate": True,
+                "fallback": "jsonl",
+                "path": str(path),
+                "detail": str(exc)[:240],
+            }
+        try:
+            result = store.write_candidate(requester="thought_core_api", item=candidate)
+        except Exception as exc:  # pragma: no cover - defensive adapter boundary
+            return {
+                "status": "failed",
+                "written": False,
+                "candidate": True,
+                "error": "memory_candidate_write_failed",
+                "detail": str(exc)[:240],
+            }
+        return {
+            **result,
+            "written": bool(result.get("ok")),
+            "candidate": True,
+        }
+
+    def _recent_short_memory(self, turn: TurnInput, *, limit: int) -> list[dict[str, Any]]:
+        path = Path(self.config.memory_root) / "short_memory.jsonl"
+        items = []
+        for item in reversed(_read_jsonl(path)):
+            if item.get("session_id") not in {turn.session_id, None, ""}:
+                continue
+            items.append(
+                {
+                    "schema_version": "memory.item.v0",
+                    "memory_type": "short_memory",
+                    "scope": "session",
+                    "status": "active",
+                    "content": item,
+                    "source": {
+                        "service": "thought-core",
+                        "turn_id": item.get("turn_id"),
+                    },
+                    "created_at": item.get("created_at"),
+                }
+            )
+            if len(items) >= limit:
+                break
+        return items
+
+    def _committed_memory(self, turn: TurnInput, *, limit: int) -> list[dict[str, Any]]:
+        scopes = turn.context_refs.get("memory_scopes")
+        if not isinstance(scopes, list):
+            scopes = ["failure_patterns", "user_preferences", "device_aliases"]
+        safe_scopes = [str(scope) for scope in scopes if str(scope or "").strip()]
+        try:
+            store = _memory_store(self.config.memory_root, self.config.memory_policy_root)
+            return store.retrieve(
+                requester="thought_core_api",
+                scopes=safe_scopes,
+                limit=limit,
+            )
+        except Exception:
+            return []
 
 
     def web_search(self, turn: TurnInput, query: str) -> dict[str, Any]:
@@ -1103,4 +1256,55 @@ def _url_with_query(url: str, values: dict[str, str]) -> str:
             urlencode(query),
             parts.fragment,
         )
+    )
+
+
+def _repo_root_from_here() -> Path:
+    # tools.py -> thought_core -> src -> thought-core -> services -> repo root
+    return Path(__file__).resolve().parents[4]
+
+
+def _memory_store(memory_root: str, policy_root: str):
+    from sword_voice_agent.system.access_control import PolicyStore
+    from sword_voice_agent.system.memory_store import MemoryStore
+
+    return MemoryStore(
+        Path(memory_root),
+        policy=PolicyStore(Path(policy_root)),
+    )
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        stream.write("\n")
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    values: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            values.append(value)
+    return values
+
+
+def _memory_result_summary(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return "No relevant memory items were retrieved."
+    scopes = sorted({str(item.get("scope") or "unknown") for item in items})
+    types = sorted(
+        {str(item.get("memory_type") or item.get("type") or "unknown") for item in items}
+    )
+    return (
+        f"Retrieved {len(items)} memory item(s). "
+        f"scopes={', '.join(scopes)}; types={', '.join(types)}."
     )

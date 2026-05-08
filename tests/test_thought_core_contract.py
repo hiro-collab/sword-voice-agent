@@ -81,21 +81,39 @@ class ThoughtCoreContractTest(TestCase):
                 "input.acknowledged",
                 "assistant.speech_delta",
                 "assistant.message",
+                "input.understood",
+                "thought.stage",
+                "assistant.speech_delta",
+                "tool.started",
+                "tool.result",
+                "memory.retrieved",
+                "thought.stage",
+                "assistant.speech_delta",
                 "tool.started",
                 "tool.result",
                 "observation.received",
+                "thought.stage",
+                "assistant.speech_delta",
                 "target_state.imagined",
+                "thought.stage",
+                "assistant.speech_delta",
                 "tool.started",
                 "tool.result",
+                "thought.stage",
+                "assistant.speech_delta",
                 "command.planned",
                 "action.proposed",
                 "assistant.speech_delta",
                 "assistant.message",
                 "tool.started",
                 "tool.result",
+                "thought.stage",
+                "assistant.speech_delta",
                 "tool.started",
                 "tool.result",
                 "observation.received",
+                "thought.stage",
+                "assistant.speech_delta",
                 "action.reviewed",
                 "assistant.speech_delta",
                 "assistant.message",
@@ -130,6 +148,41 @@ class ThoughtCoreContractTest(TestCase):
         self.assertIn("了解、リビングの電気を消すね。", speeches)
         self.assertIn("リビングの電気を消したよ。", speeches)
         self.assertEqual(events[-1]["data"]["status"], "success")
+
+    def test_retrieved_memory_is_attached_to_action_context(self) -> None:
+        tools = MockThoughtTools(light_on=False)
+        turn = {
+            **TURN,
+            "text": "リビングの電気をつけて",
+            "turn_id": "turn_memory_context",
+            "context_refs": {
+                **TURN["context_refs"],
+                "mock_memory_items": [
+                    {
+                        "scope": "failure_patterns",
+                        "memory_type": "failure_pattern",
+                        "content": {
+                            "action_id": "light_on",
+                            "target": "light",
+                            "expected_state": "on",
+                            "summary": "照明の反映には少し待つ必要がある。",
+                        },
+                    }
+                ],
+            },
+        }
+
+        events = ThoughtLoop(tools=tools).run_dicts(turn)
+        memory_event = next(event for event in events if event["type"] == "memory.retrieved")
+        action_event = next(event for event in events if event["type"] == "action.proposed")
+        memory_context = action_event["data"]["action"]["memory_context"]
+
+        self.assertEqual(memory_event["data"]["item_count"], 1)
+        self.assertEqual(memory_context["item_count"], 1)
+        self.assertEqual(
+            memory_context["items"][0]["content"]["summary"],
+            "照明の反映には少し待つ必要がある。",
+        )
 
     def test_target_state_projection_only_constrains_required_values(self) -> None:
         class NoisyEnvironmentTools(MockThoughtTools):
@@ -173,6 +226,29 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(review_event["data"]["target_state_diff"]["status"], "matched")
         self.assertEqual(review_event["data"]["review_basis"], "target_state")
         self.assertEqual(events[-1]["data"]["status"], "success")
+
+    def test_target_state_already_satisfied_skips_execute(self) -> None:
+        tools = MockThoughtTools(light_on=True)
+        events = ThoughtLoop(tools=tools).run_dicts(
+            {
+                **TURN,
+                "text": "リビングの電気をつけて",
+                "turn_id": "turn_already_satisfied",
+            }
+        )
+        plan_event = next(event for event in events if event["type"] == "command.planned")
+        skipped_event = next(event for event in events if event["type"] == "action.skipped")
+        tool_names = [
+            event["data"]["tool"]
+            for event in events
+            if event["type"] in {"tool.started", "tool.result"}
+        ]
+
+        self.assertEqual(plan_event["data"]["command_plan"]["status"], "already_satisfied")
+        self.assertEqual(skipped_event["data"]["reason"], "target_state_already_satisfied")
+        self.assertNotIn("home.execute", tool_names)
+        self.assertEqual(tools.execute_calls, [])
+        self.assertEqual(events[-1]["data"]["status"], "noop")
 
     def test_action_review_can_use_injected_llm_reasoner_boundary(self) -> None:
         class FakeLlmReasoner:
@@ -256,10 +332,13 @@ class ThoughtCoreContractTest(TestCase):
             for event in events
             if event["type"] == "assistant.message"
         ]
+        understood = next(event for event in events if event["type"] == "input.understood")
 
         self.assertIn("environment.state_query_answer", event_types)
+        self.assertEqual(understood["data"]["kind"], "state_query")
+        self.assertTrue(understood["data"]["is_question"])
         self.assertNotIn("responder.started", event_types)
-        self.assertEqual(tool_names, ["environment.observe"])
+        self.assertEqual(tool_names, ["memory.retrieve", "environment.observe"])
         self.assertEqual(tools.execute_calls, [])
         self.assertIn("カメラ推定", speeches[-1])
         self.assertEqual(events[-1]["data"]["status"], "state_answer")
@@ -287,8 +366,13 @@ class ThoughtCoreContractTest(TestCase):
         query_events = loop.run_dicts(query_turn)
         feedback_events = loop.run_dicts(feedback_turn)
         feedback_event_types = [event["type"] for event in feedback_events]
+        understood = next(
+            event for event in feedback_events if event["type"] == "input.understood"
+        )
 
         self.assertIn("state_query.feedback_pending", [event["type"] for event in query_events])
+        self.assertEqual(understood["data"]["kind"], "state_feedback")
+        self.assertEqual(understood["data"]["asserted_state"], "on")
         self.assertIn("state_query.feedback_saved", feedback_event_types)
         self.assertEqual(feedback_events[-1]["data"]["status"], "state_feedback")
         self.assertEqual(tools.state_query_feedback_calls[0]["user_label"], "on")
@@ -320,7 +404,10 @@ class ThoughtCoreContractTest(TestCase):
         events = loop.run_dicts(command_turn)
         event_types = [event["type"] for event in events]
         action_event = next(event for event in events if event["type"] == "action.proposed")
+        understood = next(event for event in events if event["type"] == "input.understood")
 
+        self.assertEqual(understood["data"]["kind"], "state_feedback")
+        self.assertTrue(understood["data"]["continued_as_command"])
         self.assertIn("state_query.feedback_saved", event_types)
         self.assertEqual(tools.state_query_feedback_calls[0]["user_label"], "on")
         self.assertEqual(action_event["data"]["action"]["action_id"], "light_off")
@@ -343,6 +430,106 @@ class ThoughtCoreContractTest(TestCase):
             tools.state_query_feedback_calls[0]["feedback_reason"],
             "user_reported_room_light_state",
         )
+
+    def test_direct_room_light_feedback_does_not_resume_stale_action_review(self) -> None:
+        tools = MockThoughtTools(light_on=False)
+        turn = {
+            **TURN,
+            "text": "はい、電気は消えています",
+            "turn_id": "turn_direct_feedback_with_stale_review_memory",
+            "context_refs": {
+                **TURN["context_refs"],
+                "mock_memory_items": [
+                    {
+                        "scope": "short_memory",
+                        "memory_type": "action_retry",
+                        "content": {
+                            "action": {
+                                "action_id": "light_on",
+                                "target": "light",
+                                "target_name": "リビングの電気",
+                                "expected_state": "on",
+                                "pre_action_phrase": "リビングの電気をつける",
+                            },
+                            "retry_budget": {
+                                "status": "review_budget_opened",
+                                "settle_ms": 1500,
+                                "observation_attempts": 2,
+                                "auto_retries": 1,
+                                "progress": {
+                                    "observations_done": 1,
+                                    "execute_attempts": 1,
+                                },
+                            },
+                            "last_review": {
+                                "status": "mismatch",
+                                "evidence": {
+                                    "state": "off",
+                                    "confidence_label": "high",
+                                },
+                            },
+                            "turn_id": "old_light_on_turn",
+                            "issued_at": "2026-05-08T00:00:00+00:00",
+                        },
+                    }
+                ],
+            },
+        }
+
+        events = ThoughtLoop(tools=tools).run_dicts(turn)
+        event_types = [event["type"] for event in events]
+        understood = next(event for event in events if event["type"] == "input.understood")
+
+        self.assertEqual(understood["data"]["kind"], "state_feedback")
+        self.assertIn("state_query.feedback_saved", event_types)
+        self.assertNotIn("action.retrying", event_types)
+        self.assertNotIn("action.proposed", event_types)
+        self.assertEqual(tools.execute_calls, [])
+        self.assertEqual(tools.state_query_feedback_calls[0]["user_label"], "off")
+        self.assertEqual(events[-1]["data"]["status"], "state_feedback")
+
+    def test_room_light_question_does_not_become_pending_feedback(self) -> None:
+        tools = MockThoughtTools(light_on=False)
+        loop = ThoughtLoop(tools=tools)
+        action_turn = {
+            **TURN,
+            "text": "リビングの電気をつけて",
+            "turn_id": "turn_pending_feedback_before_question",
+            "context_refs": {
+                **TURN["context_refs"],
+                "mock_after_action_room_light_state": "off",
+                "mock_after_action_room_light_confidence_label": "high",
+                "mock_after_action_wait_matched": "true",
+            },
+        }
+        question_turn = {
+            **TURN,
+            "text": "今電気はついてるでしょうか",
+            "turn_id": "turn_pending_feedback_state_question",
+        }
+
+        action_events = loop.run_dicts(action_turn)
+        question_events = loop.run_dicts(question_turn)
+        question_event_types = [event["type"] for event in question_events]
+        understood = next(
+            event for event in question_events if event["type"] == "input.understood"
+        )
+
+        self.assertTrue(action_events[-1]["data"]["post_action_feedback_pending"])
+        self.assertEqual(understood["data"]["kind"], "state_query")
+        self.assertTrue(understood["data"]["is_question"])
+        self.assertIn("environment.state_query_answer", question_event_types)
+        self.assertNotIn("state_query.feedback_saved", question_event_types)
+        self.assertEqual(question_events[-1]["data"]["status"], "state_answer")
+        self.assertEqual(tools.state_query_feedback_calls, [])
+        self.assertEqual(len(tools.execute_calls), 1)
+        issue_keys = {
+            event["data"].get("speech_context", {}).get("issue_key")
+            for event in question_events
+            if event["type"] in {"assistant.speech_delta", "assistant.message"}
+        }
+        self.assertTrue(any(":state:" in str(key) for key in issue_keys))
+        self.assertFalse(any(":home:" in str(key) for key in issue_keys))
 
     def test_light_action_saves_verified_post_action_feedback(self) -> None:
         tools = MockThoughtTools(light_on=False)
@@ -437,7 +624,7 @@ class ThoughtCoreContractTest(TestCase):
         ][-1]
 
         self.assertIn("action.skipped", [event["type"] for event in events])
-        self.assertEqual(tool_names, ["environment.observe", "home.preview"])
+        self.assertEqual(tool_names, ["memory.retrieve", "environment.observe", "home.preview"])
         self.assertEqual(tools.execute_calls, [])
         self.assertIn("すでに消えています", message)
         self.assertEqual(events[-1]["data"]["status"], "noop")
@@ -777,33 +964,17 @@ class ThoughtCoreContractTest(TestCase):
 
         tools = UnobservableDoorTools()
         loop = ThoughtLoop(tools=tools)
-        first_events = loop.run_dicts(
+        events = loop.run_dicts(
             {
                 **TURN,
                 "text": "中扉を閉めて",
                 "turn_id": "turn_unobservable_door_1",
             }
         )
-        second_events = loop.run_dicts(
-            {
-                **TURN,
-                "text": "確認して",
-                "turn_id": "turn_unobservable_door_2",
-            }
-        )
-        third_events = loop.run_dicts(
-            {
-                **TURN,
-                "text": "もう一度確認して",
-                "turn_id": "turn_unobservable_door_3",
-            }
-        )
 
-        self.assertEqual(first_events[-1]["data"]["status"], "verification_pending")
-        self.assertEqual(second_events[-1]["data"]["status"], "verification_pending")
-        self.assertEqual(third_events[-1]["data"]["status"], "needs_feedback")
-        self.assertIn("action.review_pending", [event["type"] for event in first_events])
-        self.assertIn("feedback.requested", [event["type"] for event in third_events])
+        self.assertEqual(events[-1]["data"]["status"], "needs_feedback")
+        self.assertIn("action.review_pending", [event["type"] for event in events])
+        self.assertIn("feedback.requested", [event["type"] for event in events])
         short_memory_statuses = [
             item["retry_budget"]["status"] for item in tools.short_memory_write_calls
         ]
@@ -853,24 +1024,16 @@ class ThoughtCoreContractTest(TestCase):
 
         tools = RetryableLightTools()
         loop = ThoughtLoop(tools=tools)
-        first_events = loop.run_dicts(
+        events = loop.run_dicts(
             {
                 **TURN,
                 "text": "電気をつけて",
                 "turn_id": "turn_retry_review_1",
             }
         )
-        second_events = loop.run_dicts(
-            {
-                **TURN,
-                "text": "確認して",
-                "turn_id": "turn_retry_review_2",
-            }
-        )
 
-        self.assertEqual(first_events[-1]["data"]["status"], "verification_pending")
-        self.assertIn("action.retrying", [event["type"] for event in second_events])
-        self.assertEqual(second_events[-1]["data"]["status"], "success")
+        self.assertIn("action.retrying", [event["type"] for event in events])
+        self.assertEqual(events[-1]["data"]["status"], "success")
         self.assertEqual(len(tools.execute_calls), 2)
         retry_budget_items = [
             item
@@ -879,6 +1042,251 @@ class ThoughtCoreContractTest(TestCase):
         ]
         self.assertEqual(len(retry_budget_items), 1)
         self.assertEqual(retry_budget_items[0]["retry_budget"]["auto_retries"], 1)
+
+    def test_stream_progress_uses_continuations_for_repeated_review_messages(self) -> None:
+        class UnobservableLightTools(MockThoughtTools):
+            def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+                return {
+                    "status": "ok",
+                    "observation_ref": f"obs_{reason}_{len(self.execute_calls)}",
+                    "observation_source": "environment-state-server.mock",
+                    "facts": {"devices": [], "state_queries": {}},
+                    "environment": {"appliances": {}, "state_queries": {}},
+                }
+
+            def home_execute(self, turn, action):  # type: ignore[no-untyped-def]
+                self.execute_calls.append(action)
+                return {
+                    "status": "accepted",
+                    "executed": True,
+                    "retryable": False,
+                    "command_id": f"cmd_{len(self.execute_calls)}",
+                    "attempt": len(self.execute_calls),
+                }
+
+        events = ThoughtLoop(tools=UnobservableLightTools()).run_dicts(
+            {
+                **TURN,
+                "text": "リビングの電気をつけて",
+                "turn_id": "turn_stream_progress_continuation",
+            }
+        )
+        speech_stream = "".join(
+            event["data"]["delta"]
+            for event in events
+            if event["type"] == "assistant.speech_delta"
+        )
+        stage_stream = [
+            event["data"]["delta"]
+            for event in events
+            if event["type"] == "assistant.speech_delta" and event["data"].get("stage")
+        ]
+
+        self.assertEqual(speech_stream.count("操作は送信しました"), 1)
+        self.assertEqual(
+            speech_stream.count("まだ環境で結果を確認しきれていない"),
+            1,
+        )
+        self.assertTrue(stage_stream[0].startswith("まず、"))
+        self.assertTrue(any(delta.startswith("次に、") for delta in stage_stream))
+        self.assertIn("あと1回くらい見直します。", speech_stream)
+        self.assertEqual(events[-1]["data"]["status"], "needs_feedback")
+
+    def test_stream_progress_reuses_issue_context_across_repeated_attempts(self) -> None:
+        class UnobservableLightTools(MockThoughtTools):
+            def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+                return {
+                    "status": "ok",
+                    "observation_ref": f"obs_{reason}_{len(self.execute_calls)}",
+                    "observation_source": "environment-state-server.mock",
+                    "facts": {"devices": [], "state_queries": {}},
+                    "environment": {"appliances": {}, "state_queries": {}},
+                }
+
+            def home_execute(self, turn, action):  # type: ignore[no-untyped-def]
+                self.execute_calls.append(action)
+                return {
+                    "status": "accepted",
+                    "executed": True,
+                    "retryable": False,
+                    "command_id": f"cmd_{len(self.execute_calls)}",
+                    "attempt": len(self.execute_calls),
+                }
+
+        loop = ThoughtLoop(tools=UnobservableLightTools())
+        first_events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "リビングの電気をつけて",
+                "turn_id": "turn_stream_issue_context_1",
+            }
+        )
+        second_events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "リビングの電気をつけて",
+                "turn_id": "turn_stream_issue_context_2",
+            }
+        )
+
+        first_speech = "".join(
+            event["data"]["delta"]
+            for event in first_events
+            if event["type"] == "assistant.speech_delta"
+        )
+        second_speech = "".join(
+            event["data"]["delta"]
+            for event in second_events
+            if event["type"] == "assistant.speech_delta"
+        )
+        issue_keys = [
+            event["data"].get("speech_context", {}).get("issue_key")
+            for event in second_events
+            if event["type"] == "assistant.speech_delta"
+        ]
+
+        self.assertIn("操作は送信しました", first_speech)
+        self.assertNotIn("操作は送信しました", second_speech)
+        self.assertNotIn("状態を確認してもらえますか？何回か", second_speech)
+        self.assertTrue(
+            "続けて確認します。" in second_speech
+            or "まだ確証が取れていません。" in second_speech
+        )
+        self.assertTrue(any(issue_keys))
+        self.assertEqual(second_events[-1]["data"]["status"], "needs_feedback")
+
+    def test_new_home_command_supersedes_pending_review_before_observing(self) -> None:
+        tools = MockThoughtTools(light_on=True)
+        loop = ThoughtLoop(tools=tools)
+        previous_action = {
+            "action_id": "light_on",
+            "target": "light",
+            "target_name": "リビングの電気",
+            "expected_state": "on",
+            "pre_action_phrase": "リビングの電気をつける",
+        }
+        loop.pending_action_reviews[TURN["session_id"]] = {
+            "action": previous_action,
+            "execute_result": {"status": "accepted", "executed": True},
+            "last_review": {"status": "pending"},
+            "observations_done": 1,
+            "execute_attempts": 1,
+            "policy": {"settle_ms": 1500, "observation_attempts": 2, "auto_retries": 1},
+        }
+        old_issue_key = loop._action_speech_issue_key(  # noqa: SLF001
+            "living_room_main",
+            previous_action,
+        )
+        loop.recent_speech_by_issue[old_issue_key] = [
+            "電気がついたか確認できませんでした。",
+        ]
+
+        events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "リビングの電気を消してください",
+                "turn_id": "turn_supersede_pending_review",
+            }
+        )
+        event_types = [event["type"] for event in events]
+        action_event = next(event for event in events if event["type"] == "action.proposed")
+        supersede_items = [
+            item
+            for item in tools.short_memory_write_calls
+            if item["retry_budget"]["status"] == "review_superseded_by_new_command"
+        ]
+
+        self.assertIn("action.review_superseded", event_types)
+        self.assertEqual(action_event["data"]["action"]["action_id"], "light_off")
+        self.assertEqual(tools.execute_calls[-1]["action_id"], "light_off")
+        self.assertNotIn(TURN["session_id"], loop.pending_action_reviews)
+        self.assertNotIn(old_issue_key, loop.recent_speech_by_issue)
+        self.assertEqual(len(supersede_items), 1)
+        self.assertEqual(events[-1]["data"]["status"], "success")
+
+    def test_post_action_user_feedback_mismatch_retries_same_issue(self) -> None:
+        class PostActionFeedbackTools(MockThoughtTools):
+            def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+                execute_count = len(self.execute_calls)
+                device_state = "on" if execute_count else "off"
+                room_light_state = "on" if execute_count >= 2 else "off"
+                confidence = "high"
+                return {
+                    "status": "ok",
+                    "observation_ref": f"obs_{execute_count}_{reason}",
+                    "observation_source": "environment-state-server.mock",
+                    "facts": {
+                        "devices": [
+                            {
+                                "id": "living_room_light",
+                                "kind": "light",
+                                "name": "リビングの電気",
+                                "state": device_state,
+                            }
+                        ],
+                        "state_queries": {
+                            "room_light": {
+                                "available": True,
+                                "state": room_light_state,
+                                "confidence_label": confidence,
+                                "authority": "vision.mock",
+                            }
+                        },
+                    },
+                    "environment": {
+                        "appliances": {"light": {"state": device_state}},
+                        "state_queries": {
+                            "room_light": {
+                                "available": True,
+                                "state": room_light_state,
+                                "confidence_label": confidence,
+                                "authority": "vision.mock",
+                            }
+                        },
+                        "wait_result": {
+                            "wait_for": "room_light",
+                            "matched": True,
+                            "timeout_ms": 1500,
+                        },
+                    },
+                }
+
+            def home_execute(self, turn, action):  # type: ignore[no-untyped-def]
+                self.execute_calls.append(action)
+                return {
+                    "status": "accepted",
+                    "executed": True,
+                    "retryable": False,
+                    "command_id": f"cmd_{len(self.execute_calls)}",
+                    "attempt": len(self.execute_calls),
+                    "issued_at": f"issued_{len(self.execute_calls)}",
+                }
+
+        tools = PostActionFeedbackTools()
+        loop = ThoughtLoop(tools=tools)
+        first_events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "電気をつけて",
+                "turn_id": "turn_post_action_feedback_1",
+            }
+        )
+        second_events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "今電気は消えています",
+                "turn_id": "turn_post_action_feedback_2",
+            }
+        )
+
+        self.assertEqual(first_events[-1]["data"]["status"], "success")
+        self.assertTrue(first_events[-1]["data"]["post_action_feedback_pending"])
+        self.assertIn("state_query.feedback_pending", [event["type"] for event in first_events])
+        self.assertIn("state_query.feedback_saved", [event["type"] for event in second_events])
+        self.assertIn("action.feedback_resolved", [event["type"] for event in second_events])
+        self.assertIn("action.retrying", [event["type"] for event in second_events])
+        self.assertEqual(second_events[-1]["data"]["status"], "success")
+        self.assertEqual(len(tools.execute_calls), 2)
 
     def test_general_turn_uses_responder_boundary(self) -> None:
         events = ThoughtLoop(responder=StaticResponder()).run_dicts(GENERAL_TURN)
@@ -890,6 +1298,12 @@ class ThoughtCoreContractTest(TestCase):
                 "input.acknowledged",
                 "assistant.speech_delta",
                 "assistant.message",
+                "input.understood",
+                "thought.stage",
+                "assistant.speech_delta",
+                "tool.started",
+                "tool.result",
+                "memory.retrieved",
                 "responder.started",
                 "responder.completed",
                 "assistant.speech_delta",
@@ -897,10 +1311,15 @@ class ThoughtCoreContractTest(TestCase):
                 "turn.completed",
             ],
         )
-        self.assertEqual(events[3]["data"]["boundary"], "thought-core.turn_responder.v0")
-        self.assertEqual(events[4]["data"]["adapter_kind"], "test_responder")
-        self.assertTrue(events[4]["data"]["used_llm"])
-        self.assertEqual(events[6]["data"]["speech"], "聞こえています。応答境界も動いています。")
+        started = next(event for event in events if event["type"] == "responder.started")
+        completed = next(event for event in events if event["type"] == "responder.completed")
+        final_message = [
+            event for event in events if event["type"] == "assistant.message"
+        ][-1]
+        self.assertEqual(started["data"]["boundary"], "thought-core.turn_responder.v0")
+        self.assertEqual(completed["data"]["adapter_kind"], "test_responder")
+        self.assertTrue(completed["data"]["used_llm"])
+        self.assertEqual(final_message["data"]["speech"], "聞こえています。応答境界も動いています。")
         self.assertEqual(events[-1]["data"]["status"], "llm_response")
 
     def test_general_turn_can_fall_back_without_llm(self) -> None:
@@ -962,6 +1381,24 @@ class ThoughtCoreContractTest(TestCase):
             "execute_retry_exhausted",
             [item["retry_budget"]["status"] for item in tools.short_memory_write_calls],
         )
+
+    def test_retry_exhaustion_records_failure_pattern_candidate(self) -> None:
+        tools = MockThoughtTools(execute_failures_before_success=3)
+        events = ThoughtLoop(tools=tools, max_execute_attempts=2).run_dicts(TURN)
+        event_types = [event["type"] for event in events]
+        candidates = [
+            item
+            for item in tools.memory_write_calls
+            if item.get("memory_type") == "failure_pattern"
+        ]
+
+        self.assertIn("memory.candidate_recorded", event_types)
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(candidate["scope"], "failure_patterns")
+        self.assertEqual(candidate["content"]["action_id"], "light_on")
+        self.assertEqual(candidate["content"]["target"], "light")
+        self.assertEqual(candidate["content"]["retry_status"], "execute_retry_exhausted")
 
     def test_mock_context_ref_can_demo_retry_success(self) -> None:
         tools = MockThoughtTools()
@@ -1066,6 +1503,17 @@ class ThoughtCoreContractTest(TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_run_dicts_streams_events_to_sink(self) -> None:
+        streamed_events = []
+
+        events = ThoughtLoop().run_dicts(TURN, event_sink=streamed_events.append)
+
+        self.assertGreater(len(streamed_events), 0)
+        self.assertEqual(
+            [event["event_id"] for event in streamed_events],
+            [event["event_id"] for event in events],
+        )
 
     def test_post_turn_stream_returns_sse_events(self) -> None:
         server = create_server("127.0.0.1", 0)

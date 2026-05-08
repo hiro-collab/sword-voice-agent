@@ -58,6 +58,33 @@ service 名や entity 名は Thought Core 側では生成しません。
 `home.execute` は retry を隠しません。1回だけコマンド実行を試み、その結果を返します。
 再観測、成功評価、再試行、ユーザー確認、終了判断は `thought-core` の loop 側が担当します。
 
+### メモリと段階的な思考
+
+turn 開始時に `memory.retrieve` を呼び、取得した short_memory / selected M4 memory を
+Environment State と同じ観測入力として扱います。取得メモリはその turn の working memory
+にだけ展開し、action / target / review の判断材料に使います。
+
+- `short_memory` は retry budget、観測試行、直近 turn の失敗・反省などの短期材料
+- `failure_patterns` は失敗時に `memory.write` へ candidate として出す長期候補
+- `user_preferences` / `device_aliases` は必要に応じて読み、発話や対象解釈の補助に使う
+
+既定のローカル保存先は `local/memory/` です。実行時に次の環境変数で変更できます。
+
+- `THOUGHT_CORE_MEMORY_ROOT`
+- `THOUGHT_CORE_MEMORY_POLICY_ROOT`
+- `THOUGHT_CORE_MEMORY_RETRIEVE_LIMIT`
+
+LLM を有効にした場合も、1回の巨大 prompt で全部を決めません。
+`THOUGHT_CORE_ACTION_LLM_ENABLED=1` のとき、Action Reasoner は次の小さな境界に分けて
+OpenAI-compatible adapter へ問い合わせます。
+
+1. prompt + Environment State + memory から Target State を作る
+2. Target State と現在状態の差分から、allowlist 済み action の中で実行内容を選ぶ
+3. 実行後の Environment State と Target State を比べて成否を判定する
+
+LLM は言葉、理由、判定補助を柔軟にできますが、`home.preview` にない command や
+Home Assistant service/entity を勝手に生成することはできません。
+
 ### Dify YAML から移植した環境認識
 
 元の Home Control Assistant YAML では、`state_queries.room_light` を Home Assistant の
@@ -136,6 +163,8 @@ Content-Type: application/json
 
 `GET /turn/stream` は、将来ブラウザの `EventSource` で読む形を試すための軽い demo/compatibility 入口です。
 現時点の主契約は、turn payload を送れる `POST /turn` です。
+SSE は turn 全体の完了を待たず、loop が event を生成した順に `assistant.speech_delta`、
+`thought.stage`、`tool.started` などを逐次 flush します。
 
 ## sword-voice-agent client
 
@@ -292,10 +321,17 @@ tool 系 event には `tool_call_id` を入れ、`tool.started` と `tool.result
 
 - `assistant.message`
 - `assistant.speech_delta`
+- `thought.stage`
+- `memory.retrieved`
+- `target_state.imagined`
+- `command.planned`
 - `action.proposed`
+- `action.reviewed`
 - `tool.started`
 - `tool.result`
 - `observation.received`
+- `short_memory.updated`
+- `memory.candidate_recorded`
 - `feedback.requested`
 - `turn.completed`
 - `turn.error`
@@ -325,14 +361,21 @@ environment.observe
 `電気つけて` を受けると、mock loop は概ね次の流れで event を出します。
 
 ```text
+input.acknowledged
+assistant.speech_delta / assistant.message
+memory.retrieve
 environment.observe
+target_state.imagined
 home.preview
+command.planned
 action.proposed
 assistant.speech_delta
 assistant.message
 home.execute
 environment.observe
 observation.received
+action.reviewed
+short_memory.updated
 assistant.speech_delta
 assistant.message
 turn.completed

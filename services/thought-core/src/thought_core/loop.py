@@ -7,6 +7,12 @@ from datetime import UTC, datetime
 from typing import Any, Callable, Mapping
 
 from .events import EventFactory, ThoughtEvent
+from .input_understanding import (
+    InputFrame,
+    InputUnderstanding,
+    build_input_understanding_from_env,
+    describe_input_understanding,
+)
 from .responders import (
     TURN_RESPONDER_BOUNDARY,
     EnvironmentTurnResponder,
@@ -28,6 +34,17 @@ from .tools import (
 )
 
 
+class _EventBuffer(list[ThoughtEvent]):
+    def __init__(self, event_sink: Callable[[ThoughtEvent], None] | None = None) -> None:
+        super().__init__()
+        self._event_sink = event_sink
+
+    def append(self, event: ThoughtEvent) -> None:
+        super().append(event)
+        if self._event_sink is not None:
+            self._event_sink(event)
+
+
 class ThoughtLoop:
     def __init__(
         self,
@@ -37,43 +54,94 @@ class ThoughtLoop:
         source: str = "thought-core",
         responder: TurnResponder | None = None,
         action_reasoner: ActionReasoner | None = None,
+        input_understanding: InputUnderstanding | None = None,
     ) -> None:
         self.tools = tools or build_tools_from_env()
         self.max_execute_attempts = max(1, max_execute_attempts)
         self.source = source
         self.responder = responder or EnvironmentTurnResponder.from_env()
         self.action_reasoner = action_reasoner or build_action_reasoner_from_env()
+        self.input_understanding = (
+            input_understanding or build_input_understanding_from_env()
+        )
         self.pending_confirmations: dict[str, dict[str, Any]] = {}
         self.pending_action_reviews: dict[str, dict[str, Any]] = {}
         self.pending_state_queries: dict[str, dict[str, Any]] = {}
+        self.recent_speech_by_session: dict[str, list[str]] = {}
+        self.recent_speech_by_issue: dict[str, list[str]] = {}
+        self._active_session_id = ""
+        self._active_issue_key = ""
 
-    def run(self, turn: TurnInput | Mapping[str, Any]) -> list[ThoughtEvent]:
+    def run(
+        self,
+        turn: TurnInput | Mapping[str, Any],
+        *,
+        event_sink: Callable[[ThoughtEvent], None] | None = None,
+    ) -> list[ThoughtEvent]:
         turn_input = turn if isinstance(turn, TurnInput) else TurnInput.from_mapping(turn)
         factory = EventFactory(turn_input.turn_id, turn_input.session_id, source=self.source)
-        events: list[ThoughtEvent] = []
+        events: list[ThoughtEvent] = _EventBuffer(event_sink)
+        previous_active_session_id = self._active_session_id
+        previous_active_issue_key = self._active_issue_key
+        self._active_session_id = turn_input.session_id
         try:
-            self._emit_input_ack(events, factory, turn_input)
-            if self._handle_state_query_feedback_if_needed(events, factory, turn_input):
-                return events
+            input_frame = self._understand_input(turn_input)
+            self._active_issue_key = self._speech_issue_key(turn_input, input_frame)
+            self._emit_input_ack(events, factory, turn_input, input_frame)
+            self._emit_input_understood(events, factory, input_frame)
+            memory_context = self._retrieve_memory_context(events, factory, turn_input)
+            self._hydrate_pending_action_review_from_memory(
+                turn_input,
+                memory_context,
+                input_frame,
+            )
+            self._active_issue_key = self._speech_issue_key(turn_input, input_frame)
             if self._handle_pending_confirmation_if_needed(events, factory, turn_input):
                 return events
-            if self._handle_pending_action_review_if_needed(events, factory, turn_input):
+            if input_frame.kind == "state_query":
+                self._handle_room_light_state_query(events, factory, turn_input)
+                return events
+            if self._handle_pending_action_review_if_needed(
+                events,
+                factory,
+                turn_input,
+                input_frame,
+            ):
+                return events
+            if self._handle_state_query_feedback_if_needed(
+                events,
+                factory,
+                turn_input,
+                input_frame,
+            ):
                 return events
 
-            if detect_room_light_state_query(turn_input.text):
+            if input_frame.kind == "state_query" or detect_room_light_state_query(
+                turn_input.text
+            ):
                 self._handle_room_light_state_query(events, factory, turn_input)
                 return events
 
-            if detect_home_action_intent(turn_input.text) is None:
+            if input_frame.kind != "home_command" and detect_home_action_intent(
+                turn_input.text
+            ) is None:
                 self._handle_general_turn(events, factory, turn_input)
                 return events
 
+            self._emit_stage_update(
+                events,
+                factory,
+                stage="environment.observe.before_action",
+                speech="いまの環境を短く見ています。",
+                detail={"reason": "before_action"},
+            )
             observation = self._call_tool(
                 events,
                 factory,
                 "environment.observe",
                 lambda: self.tools.environment_observe(turn_input, reason="before_action"),
             )
+            observation = self._with_memory_context(observation, memory_context)
             events.append(
                 factory.emit(
                     "observation.received",
@@ -84,6 +152,13 @@ class ThoughtLoop:
                     },
                 )
             )
+            self._emit_stage_update(
+                events,
+                factory,
+                stage="target_state.generate",
+                speech="望む状態を組み立てます。",
+                detail={"memory_items": memory_context.get("item_count", 0)},
+            )
             target_state = self._imagine_target_state(
                 events,
                 factory,
@@ -91,6 +166,13 @@ class ThoughtLoop:
                 observation,
             )
 
+            self._emit_stage_update(
+                events,
+                factory,
+                stage="home.preview",
+                speech="使える操作を確認しています。",
+                detail={"target_state_id": target_state.get("target_state_id")},
+            )
             preview = self._call_tool(
                 events,
                 factory,
@@ -100,6 +182,13 @@ class ThoughtLoop:
             action = preview.get("action", {})
             command_plan: dict[str, Any] = {}
             if isinstance(action, dict) and action:
+                self._emit_stage_update(
+                    events,
+                    factory,
+                    stage="command.plan",
+                    speech="現在との差分から、実行内容を決めます。",
+                    detail={"action_id": action.get("action_id")},
+                )
                 command_plan = self._plan_command(
                     events,
                     factory,
@@ -113,6 +202,41 @@ class ThoughtLoop:
                     target_state,
                     command_plan,
                 )
+                action["memory_context"] = memory_context
+            if command_plan.get("status") == "already_satisfied" and action:
+                speech = self._already_satisfied_message(action)
+                events.append(
+                    factory.emit(
+                        "action.skipped",
+                        {
+                            "reason": "target_state_already_satisfied",
+                            "action": action,
+                            "message": speech,
+                            "command_plan": command_plan,
+                        },
+                    )
+                )
+                self._emit_message(
+                    events,
+                    factory,
+                    speech=speech,
+                    display=speech,
+                    emotion="neutral",
+                    motion="small_nod",
+                    priority="normal",
+                )
+                events.append(
+                    factory.emit(
+                        "turn.completed",
+                        {
+                            "status": "noop",
+                            "action": action,
+                            "reason": "target_state_already_satisfied",
+                            "preview_status": preview.get("status"),
+                        },
+                    )
+                )
+                return events
             if preview.get("status") == "noop" and action:
                 speech = str(
                     preview.get("message")
@@ -233,11 +357,22 @@ class ThoughtLoop:
                     "home.execute",
                     lambda: self.tools.home_execute(turn_input, action),
                 )
+                self._emit_stage_update(
+                    events,
+                    factory,
+                    stage="environment.observe.after_action",
+                    speech="反映を待って、環境を見直します。",
+                    detail={"attempt": attempt, "action_id": action.get("action_id")},
+                )
                 after_observation = self._call_tool(
                     events,
                     factory,
                     "environment.observe",
                     lambda: self.tools.environment_observe(turn_input, reason="after_action"),
+                )
+                after_observation = self._with_memory_context(
+                    after_observation,
+                    memory_context,
                 )
                 events.append(
                     factory.emit(
@@ -252,6 +387,13 @@ class ThoughtLoop:
                     )
                 )
 
+                self._emit_stage_update(
+                    events,
+                    factory,
+                    stage="action.review",
+                    speech="望んだ状態になったか判定します。",
+                    detail={"attempt": attempt, "action_id": action.get("action_id")},
+                )
                 review = self._review_action_result(
                     turn_input,
                     action,
@@ -410,23 +552,40 @@ class ThoughtLoop:
                 )
             )
             return events
+        finally:
+            self._active_session_id = previous_active_session_id
+            self._active_issue_key = previous_active_issue_key
 
-    def run_dicts(self, turn: TurnInput | Mapping[str, Any]) -> list[dict[str, Any]]:
-        return [event.to_dict() for event in self.run(turn)]
+    def run_dicts(
+        self,
+        turn: TurnInput | Mapping[str, Any],
+        *,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        def _sink(event: ThoughtEvent) -> None:
+            if event_sink is not None:
+                event_sink(event.to_dict())
+
+        return [event.to_dict() for event in self.run(turn, event_sink=_sink)]
 
     def _handle_state_query_feedback_if_needed(
         self,
         events: list[ThoughtEvent],
         factory: EventFactory,
         turn_input: TurnInput,
+        input_frame: InputFrame | None = None,
     ) -> bool:
         action_intent = detect_home_action_intent(turn_input.text)
-        has_action = action_intent is not None and self._looks_like_home_action_command(
-            turn_input.text
+        has_action = (
+            bool(input_frame and input_frame.is_command)
+            or self._input_requests_home_action(turn_input, input_frame)
         )
         pending = self.pending_state_queries.get(turn_input.session_id)
         if pending and pending.get("state_query_id") == "room_light":
-            label = self._room_light_feedback_label(turn_input.text, pending=pending)
+            label = self._feedback_label_from_input_frame(
+                input_frame,
+                pending=pending,
+            ) or self._room_light_feedback_label(turn_input.text, pending=pending)
             if label:
                 self.pending_state_queries.pop(turn_input.session_id, None)
                 if self._state_query_pending_is_expired(pending):
@@ -465,13 +624,25 @@ class ThoughtLoop:
                     )
                     return True
 
-                self._persist_state_query_feedback(
+                persisted = self._persist_state_query_feedback(
                     events,
                     factory,
                     turn_input,
                     pending=pending,
                     user_label=label,
                 )
+                action = self._action_from_feedback_pending(pending)
+                if action and self._resolve_action_feedback(
+                    events,
+                    factory,
+                    turn_input,
+                    pending=pending,
+                    action=action,
+                    user_label=label,
+                    persisted=persisted,
+                    source_context=str(pending.get("source_context") or "state_query"),
+                ):
+                    return True
                 speech = self._state_feedback_reply(label, continue_action=has_action)
                 self._emit_message(
                     events,
@@ -500,15 +671,24 @@ class ThoughtLoop:
                 events.append(
                     factory.emit(
                         "state_query.feedback_cleared",
-                        {
-                            "state_query_id": "room_light",
-                            "reason": "new_action_without_feedback",
-                            "action_id": action_intent.action_id,
-                        },
+                            {
+                                "state_query_id": "room_light",
+                                "reason": "new_action_without_feedback",
+                                "action_id": (
+                                    action_intent.action_id
+                                    if action_intent is not None
+                                    else input_frame.action_id
+                                    if input_frame
+                                    else ""
+                                ),
+                            },
+                        )
                     )
-                )
 
-        direct_label = self._direct_room_light_feedback_label(turn_input.text)
+        direct_label = self._feedback_label_from_input_frame(
+            input_frame,
+            pending=None,
+        ) or self._direct_room_light_feedback_label(turn_input.text)
         if not direct_label:
             return False
         self._persist_state_query_feedback(
@@ -754,12 +934,31 @@ class ThoughtLoop:
         age = (datetime.now(UTC) - created.astimezone(UTC)).total_seconds()
         return age > 120
 
+    def _feedback_label_from_input_frame(
+        self,
+        input_frame: InputFrame | None,
+        *,
+        pending: dict[str, Any] | None,
+    ) -> str:
+        if input_frame is None or input_frame.kind != "state_feedback":
+            return ""
+        if input_frame.target != "room_light":
+            return ""
+        label = str(input_frame.asserted_state or "").lower()
+        if label not in {"on", "off", "daylight", "unknown"}:
+            return ""
+        if pending is None and str(input_frame.reason or "") != "direct_room_light_state_report":
+            return ""
+        return label
+
     def _room_light_feedback_label(
         self,
         text: str,
         *,
         pending: dict[str, Any] | None = None,
     ) -> str:
+        if self._is_room_light_state_question(text):
+            return ""
         normalized = self._normalize_text(text)
         explicit = self._explicit_room_light_state_label(normalized)
         if explicit:
@@ -800,6 +999,8 @@ class ThoughtLoop:
         return ""
 
     def _direct_room_light_feedback_label(self, text: str) -> str:
+        if self._is_room_light_state_question(text):
+            return ""
         normalized = self._normalize_text(text)
         label = self._explicit_room_light_state_label(normalized)
         if not label:
@@ -844,6 +1045,52 @@ class ThoughtLoop:
         ):
             return ""
         return label
+
+    def _is_room_light_state_question(self, text: str) -> bool:
+        normalized = self._normalize_text(text)
+        if not normalized or not self._mentions_room_light(normalized):
+            return False
+        if self._looks_like_home_action_command(text):
+            return False
+        question_markers = (
+            "?",
+            "？",
+            "でしょう",
+            "ですか",
+            "ますか",
+            "教えて",
+            "確認して",
+            "確認したい",
+            "見て",
+            "どう",
+        )
+        if any(marker in normalized for marker in question_markers):
+            return True
+        state_question_markers = (
+            "ついてるか",
+            "ついているか",
+            "点いてるか",
+            "点いているか",
+            "付いてるか",
+            "付いているか",
+            "ついてないか",
+            "点いてないか",
+            "付いてないか",
+            "消えてるか",
+            "消えているか",
+            "消えてないか",
+            "点灯か",
+            "消灯か",
+            "オンか",
+            "オフか",
+            "明るいか",
+            "暗いか",
+        )
+        if any(marker in normalized for marker in state_question_markers):
+            return True
+        return normalized.endswith(("か", "かな", "かね", "かい")) and bool(
+            self._explicit_room_light_state_label(normalized) or "状態" in normalized
+        )
 
     def _explicit_room_light_state_label(self, normalized: str) -> str:
         if any(marker in normalized for marker in ("日光", "外光", "太陽光", "昼光")):
@@ -943,6 +1190,313 @@ class ThoughtLoop:
         }.get(user_label, user_label)
         suffix = "そのうえで操作も続けるね。" if continue_action else "学習用の材料として残したよ。"
         return f"なるほど、実際は{label_text}んだね。{suffix}"
+
+    def _handle_action_feedback_if_needed(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        *,
+        pending: dict[str, Any],
+        action: dict[str, Any],
+        source_context: str,
+    ) -> bool:
+        if str(action.get("target") or "") not in {"light", "living_room_light"}:
+            return False
+        feedback_pending = self._action_feedback_pending(
+            turn_input,
+            pending=pending,
+            action=action,
+            source_context=source_context,
+        )
+        user_label = self._room_light_feedback_label(
+            turn_input.text,
+            pending=feedback_pending,
+        ) or self._direct_room_light_feedback_label(turn_input.text)
+        if not user_label:
+            return False
+        persisted = self._persist_state_query_feedback(
+            events,
+            factory,
+            turn_input,
+            pending=feedback_pending,
+            user_label=user_label,
+            feedback_reason=str(
+                feedback_pending.get("feedback_reason")
+                or "user_feedback_after_action_review"
+            ),
+            source_context=source_context,
+        )
+        return self._resolve_action_feedback(
+            events,
+            factory,
+            turn_input,
+            pending=feedback_pending,
+            action=action,
+            user_label=user_label,
+            persisted=persisted,
+            source_context=source_context,
+        )
+
+    def _action_feedback_pending(
+        self,
+        turn_input: TurnInput,
+        *,
+        pending: dict[str, Any],
+        action: dict[str, Any],
+        source_context: str,
+    ) -> dict[str, Any]:
+        expected_state = str(action.get("expected_state") or pending.get("expected_state") or "")
+        last_review = (
+            pending.get("last_review")
+            if isinstance(pending.get("last_review"), dict)
+            else {}
+        )
+        evidence = (
+            last_review.get("evidence")
+            if isinstance(last_review.get("evidence"), dict)
+            else {}
+        )
+        predicted_state = str(evidence.get("state") or expected_state or "unknown")
+        return {
+            "type": "state_query_pending",
+            "state_query_id": "room_light",
+            "target": "room_light",
+            "feedback_reason": "user_feedback_after_action_review",
+            "source_context": source_context,
+            "workflow_version": "thought-core-action-feedback-v1",
+            "turn_id": turn_input.turn_id,
+            "session_id": turn_input.session_id,
+            "action_id": str(action.get("action_id") or pending.get("action_id") or ""),
+            "expected_state": expected_state,
+            "predicted_state": predicted_state,
+            "confidence_label": str(evidence.get("confidence_label") or ""),
+            "created_at": pending.get("created_at") or datetime.now(UTC).isoformat(),
+            "action": dict(action),
+            "retry_budget": self._action_review_policy(action),
+        }
+
+    def _resolve_action_feedback(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        *,
+        pending: dict[str, Any],
+        action: dict[str, Any],
+        user_label: str,
+        persisted: dict[str, Any] | None,
+        source_context: str,
+    ) -> bool:
+        expected_state = str(action.get("expected_state") or pending.get("expected_state") or "")
+        if expected_state not in {"on", "off"} or user_label not in {"on", "off"}:
+            return False
+        self.pending_state_queries.pop(turn_input.session_id, None)
+        if user_label == expected_state:
+            self.pending_action_reviews.pop(turn_input.session_id, None)
+            review = {
+                "status": "succeeded",
+                "reason": "user_feedback_matched_target_state",
+                "action_id": action.get("action_id"),
+                "expected_state": expected_state,
+                "actual_state": user_label,
+                "source_context": source_context,
+            }
+            self._write_short_memory(
+                events,
+                factory,
+                turn_input,
+                action=action,
+                status="review_feedback_confirmed",
+                retry_scope="review",
+                policy=self._action_review_policy(action),
+                progress={"feedback_label": user_label},
+                review=review,
+            )
+            messages = self._home_action_messages(action)
+            speech = f"確認ありがとう。{messages['success_speech']} その状態として覚えます。"
+            events.append(
+                factory.emit(
+                    "action.feedback_resolved",
+                    {
+                        "status": "succeeded",
+                        "action": action,
+                        "user_label": user_label,
+                        "expected_state": expected_state,
+                        "feedback_status": (
+                            (persisted or {}).get("result", {}).get("status")
+                            if isinstance((persisted or {}).get("result"), dict)
+                            else ""
+                        ),
+                    },
+                )
+            )
+            self._emit_message(
+                events,
+                factory,
+                speech=speech,
+                display=speech,
+                emotion="satisfied",
+                motion="small_nod",
+                priority="normal",
+            )
+            events.append(
+                factory.emit(
+                    "turn.completed",
+                    {
+                        "status": "success",
+                        "action": action,
+                        "review_status": "user_feedback_succeeded",
+                        "user_label": user_label,
+                    },
+                )
+            )
+            return True
+
+        review = {
+            "status": "mismatch",
+            "reason": "user_feedback_mismatch",
+            "action_id": action.get("action_id"),
+            "expected_state": expected_state,
+            "actual_state": user_label,
+            "source_context": source_context,
+        }
+        policy = self._action_review_policy(action)
+        review_pending = self.pending_action_reviews.get(turn_input.session_id, {})
+        execute_result = (
+            review_pending.get("execute_result")
+            if isinstance(review_pending.get("execute_result"), dict)
+            else {}
+        )
+        retry_pending = {
+            "action": dict(action),
+            "execute_result": {
+                "status": "accepted",
+                "executed": True,
+                "retryable": False,
+                **execute_result,
+            },
+            "last_review": dict(review),
+            "observations_done": policy["observation_attempts"],
+            "execute_attempts": self._int_value(
+                review_pending.get("execute_attempts")
+                if isinstance(review_pending, dict)
+                else None,
+                1,
+            ),
+            "policy": dict(policy),
+            "created_at": pending.get("created_at") or datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        events.append(
+            factory.emit(
+                "action.feedback_resolved",
+                {
+                    "status": "mismatch",
+                    "action": action,
+                    "user_label": user_label,
+                    "expected_state": expected_state,
+                    "retryable": self._can_retry_review_action(
+                        action,
+                        retry_pending,
+                        policy,
+                    ),
+                },
+            )
+        )
+        if self._can_retry_review_action(action, retry_pending, policy):
+            self.pending_action_reviews[turn_input.session_id] = retry_pending
+            return self._retry_pending_action_review(
+                events,
+                factory,
+                turn_input,
+                action=action,
+                pending=retry_pending,
+                policy=policy,
+                last_review=review,
+            )
+
+        self.pending_action_reviews.pop(turn_input.session_id, None)
+        self._write_short_memory(
+            events,
+            factory,
+            turn_input,
+            action=action,
+            status="review_feedback_mismatch_exhausted",
+            retry_scope="review",
+            policy=policy,
+            progress={"feedback_label": user_label},
+            review=review,
+        )
+        speech = "実際の状態が望みと違うままでした。これ以上の自動再試行は止めて、状態確認をお願いしたいです。"
+        events.append(
+            factory.emit(
+                "feedback.requested",
+                {
+                    "reason": "user_feedback_mismatch_retry_exhausted",
+                    "speech": speech,
+                    "display": "操作結果の確認が必要です",
+                    "action": action,
+                    "last_review": review,
+                },
+            )
+        )
+        self._emit_message(
+            events,
+            factory,
+            speech=speech,
+            display=speech,
+            emotion="concerned",
+            motion="look_back",
+            priority="normal",
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {
+                    "status": "needs_feedback",
+                    "action": action,
+                    "review_status": "user_feedback_mismatch",
+                    "user_label": user_label,
+                },
+            )
+        )
+        return True
+
+    def _action_from_feedback_pending(self, pending: dict[str, Any]) -> dict[str, Any]:
+        action = pending.get("action") if isinstance(pending, dict) else None
+        if isinstance(action, dict) and action.get("action_id"):
+            return dict(action)
+        action_id = str(pending.get("action_id") or "").strip()
+        expected_state = str(pending.get("expected_state") or "").strip()
+        if not action_id or not expected_state:
+            return {}
+        target = str(pending.get("target") or "").strip()
+        target_name = str(pending.get("target_name") or "").strip()
+        action_name = f"home.{action_id}"
+        pre_action_phrase = str(pending.get("pre_action_phrase") or "").strip()
+        if action_id in {"light_on", "light_off"}:
+            target = "light"
+            target_name = "リビングの電気"
+            action_name = "home.light.turn_on" if expected_state == "on" else "home.light.turn_off"
+            pre_action_phrase = (
+                "リビングの電気をつける" if expected_state == "on" else "リビングの電気を消す"
+            )
+        aliases = [target, action_id]
+        if target == "light":
+            aliases.append("living_room_light")
+        return {
+            "action": action_name,
+            "action_id": action_id,
+            "target": target,
+            "target_aliases": [alias for alias in aliases if alias],
+            "target_name": target_name or target or action_id,
+            "confidence": 0.72,
+            "expected_state": expected_state,
+            "pre_action_phrase": pre_action_phrase or target_name or action_id,
+            "available": True,
+            "noop": False,
+        }
 
     def _handle_pending_confirmation_if_needed(
         self,
@@ -1205,6 +1759,7 @@ class ThoughtLoop:
         events: list[ThoughtEvent],
         factory: EventFactory,
         turn_input: TurnInput,
+        input_frame: InputFrame | None = None,
     ) -> bool:
         pending = self.pending_action_reviews.get(turn_input.session_id)
         if not pending:
@@ -1240,6 +1795,32 @@ class ThoughtLoop:
         if not action:
             self.pending_action_reviews.pop(turn_input.session_id, None)
             return False
+        if (input_frame and input_frame.kind == "state_query") or self._is_room_light_state_question(
+            turn_input.text
+        ):
+            return False
+        if self._input_requests_home_action(
+            turn_input,
+            input_frame,
+        ) and pending.get("origin_turn_id") != turn_input.turn_id:
+            self._supersede_pending_action_review_for_new_command(
+                events,
+                factory,
+                turn_input,
+                pending=pending,
+                action=action,
+                input_frame=input_frame,
+            )
+            return False
+        if self._handle_action_feedback_if_needed(
+            events,
+            factory,
+            turn_input,
+            pending=pending,
+            action=action,
+            source_context="action_review",
+        ):
+            return True
         policy = self._action_review_policy(action)
         observations_done = int(pending.get("observations_done") or 0) + 1
         execute_attempts = int(pending.get("execute_attempts") or 1)
@@ -1252,7 +1833,7 @@ class ThoughtLoop:
             events,
             factory,
             "environment.observe",
-            lambda: self.tools.environment_observe(turn_input, reason="action_review"),
+            lambda: self._observe_for_pending_action_review(turn_input, pending),
         )
         events.append(
             factory.emit(
@@ -1345,6 +1926,12 @@ class ThoughtLoop:
                 },
                 review=review,
             )
+            if self._should_auto_continue_action_review(action, policy):
+                return self._handle_pending_action_review_if_needed(
+                    events,
+                    factory,
+                    turn_input,
+                )
             events.append(
                 factory.emit(
                     "turn.completed",
@@ -1588,6 +2175,7 @@ class ThoughtLoop:
             "execute_attempts": execute_attempts,
             "confirmed": confirmed,
             "policy": dict(policy),
+            "origin_turn_id": turn_input.turn_id,
             "created_at": datetime.now(UTC).isoformat(),
             "updated_at": datetime.now(UTC).isoformat(),
         }
@@ -1615,6 +2203,12 @@ class ThoughtLoop:
             motion="think",
             priority="normal",
         )
+        if self._should_auto_continue_action_review(action, policy):
+            return self._handle_pending_action_review_if_needed(
+                events,
+                factory,
+                turn_input,
+            )
         events.append(
             factory.emit(
                 "turn.completed",
@@ -2002,6 +2596,32 @@ class ThoughtLoop:
         policy["auto_retries"] = max(0, policy["auto_retries"])
         return policy
 
+    def _should_auto_continue_action_review(
+        self,
+        action: dict[str, Any],
+        policy: dict[str, int],
+    ) -> bool:
+        action_id = str(action.get("action_id") or "")
+        if not action_id:
+            return False
+        return policy["observation_attempts"] <= 4
+
+    def _observe_for_pending_action_review(
+        self,
+        turn_input: TurnInput,
+        pending: dict[str, Any],
+    ) -> dict[str, Any]:
+        execute_result = (
+            pending.get("execute_result")
+            if isinstance(pending.get("execute_result"), dict)
+            else {}
+        )
+        issued_at = str(execute_result.get("issued_at") or pending.get("issued_at") or "")
+        issued_by_turn = getattr(self.tools, "last_execute_issued_at_by_turn", None)
+        if issued_at and isinstance(issued_by_turn, dict):
+            issued_by_turn[turn_input.turn_id] = issued_at
+        return self.tools.environment_observe(turn_input, reason="after_action")
+
     def _pending_review_speech(
         self,
         action: dict[str, Any],
@@ -2042,6 +2662,75 @@ class ThoughtLoop:
         if bool(execute_result.get("executed")) or bool(execute_result.get("verified_by_bridge")):
             return True
         return status in {"accepted", "submitted", "duplicate"}
+
+    def _input_requests_home_action(
+        self,
+        turn_input: TurnInput,
+        input_frame: InputFrame | None = None,
+    ) -> bool:
+        if input_frame and input_frame.is_command:
+            return True
+        return detect_home_action_intent(turn_input.text) is not None and (
+            self._looks_like_home_action_command(turn_input.text)
+        )
+
+    def _supersede_pending_action_review_for_new_command(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        *,
+        pending: dict[str, Any],
+        action: dict[str, Any],
+        input_frame: InputFrame | None = None,
+    ) -> None:
+        self.pending_action_reviews.pop(turn_input.session_id, None)
+        session_key = self._speech_fragment_key(turn_input.session_id or "default")
+        old_issue_key = self._action_speech_issue_key(session_key, action)
+        self.recent_speech_by_issue.pop(old_issue_key, None)
+        policy = (
+            pending.get("policy")
+            if isinstance(pending.get("policy"), dict)
+            else self._action_review_policy(action)
+        )
+        review = {
+            "status": "superseded",
+            "reason": "new_home_command_received",
+            "previous_action_id": action.get("action_id"),
+            "new_text": turn_input.text,
+        }
+        self._write_short_memory(
+            events,
+            factory,
+            turn_input,
+            action=action,
+            status="review_superseded_by_new_command",
+            retry_scope="review",
+            policy=policy,
+            progress={
+                "observations_done": self._int_value(
+                    pending.get("observations_done"),
+                    0,
+                ),
+                "execute_attempts": self._int_value(
+                    pending.get("execute_attempts"),
+                    1,
+                ),
+                "new_command": turn_input.text,
+            },
+            review=review,
+        )
+        events.append(
+            factory.emit(
+                "action.review_superseded",
+                {
+                    "reason": "new_home_command_received",
+                    "previous_action": action,
+                    "new_text": turn_input.text,
+                },
+            )
+        )
+        self._active_issue_key = self._speech_issue_key(turn_input, input_frame)
 
     def _action_targets(self, action: dict[str, Any]) -> set[str]:
         target = action.get("target")
@@ -2093,6 +2782,7 @@ class ThoughtLoop:
             "action_id": str(action.get("action_id") or ""),
             "target": str(action.get("target") or ""),
             "expected_state": str(action.get("expected_state") or ""),
+            "action": dict(action),
             "target_state": (
                 action.get("target_state")
                 if isinstance(action.get("target_state"), dict)
@@ -2126,7 +2816,408 @@ class ThoughtLoop:
                 },
             )
         )
+        if status.endswith("_exhausted") or status.endswith("_failed"):
+            self._write_failure_pattern_candidate(
+                events,
+                factory,
+                turn_input,
+                action=action,
+                status=status,
+                retry_scope=retry_scope,
+                progress=progress,
+                review=review,
+            )
         return result
+
+    def _write_failure_pattern_candidate(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        *,
+        action: dict[str, Any],
+        status: str,
+        retry_scope: str,
+        progress: dict[str, Any],
+        review: dict[str, Any],
+    ) -> None:
+        item = {
+            "schema_version": "memory.item.v0",
+            "memory_type": "failure_pattern",
+            "scope": "failure_patterns",
+            "status": "candidate",
+            "content": {
+                "action_id": str(action.get("action_id") or ""),
+                "target": str(action.get("target") or ""),
+                "expected_state": str(action.get("expected_state") or ""),
+                "retry_scope": retry_scope,
+                "retry_status": status,
+                "review_status": str(review.get("status") or ""),
+                "review_reason": str(review.get("reason") or ""),
+                "progress": dict(progress),
+                "summary": (
+                    "Home action did not reach its target state within the "
+                    "available retry/review budget."
+                ),
+            },
+            "source": {
+                "service": "thought-core",
+                "trace_id": str(
+                    turn_input.context_refs.get("trace_id") or f"trace_{turn_input.turn_id}"
+                ),
+                "turn_id": turn_input.turn_id,
+            },
+            "confidence": 0.72,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        result = self._call_tool(
+            events,
+            factory,
+            "memory.write",
+            lambda: self.tools.memory_write(turn_input, item),
+        )
+        events.append(
+            factory.emit(
+                "memory.candidate_recorded",
+                {
+                    "scope": item["scope"],
+                    "memory_type": item["memory_type"],
+                    "action_id": item["content"]["action_id"],
+                    "write_status": result.get("status"),
+                    "candidate_id": result.get("candidate_id"),
+                    "written": bool(result.get("written", result.get("ok", False))),
+                },
+            )
+        )
+
+    def _retrieve_memory_context(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+    ) -> dict[str, Any]:
+        self._emit_stage_update(
+            events,
+            factory,
+            stage="memory.retrieve",
+            speech="関連しそうな記憶を短く確認します。",
+            detail={"session_id": turn_input.session_id},
+        )
+        result = self._call_tool(
+            events,
+            factory,
+            "memory.retrieve",
+            lambda: self.tools.memory_retrieve(turn_input),
+        )
+        raw_items = result.get("items", [])
+        items = raw_items if isinstance(raw_items, list) else []
+        compact_items = [self._compact_memory_item(item) for item in items[:8]]
+        context = {
+            "status": str(result.get("status") or "ok"),
+            "item_count": len(compact_items),
+            "items": compact_items,
+            "summary": result.get("summary") or self._memory_summary(compact_items),
+            "source": result.get("source") or result.get("adapter_kind") or "memory.retrieve",
+        }
+        events.append(
+            factory.emit(
+                "memory.retrieved",
+                {
+                    "status": context["status"],
+                    "item_count": context["item_count"],
+                    "summary": context["summary"],
+                    "source": context["source"],
+                },
+            )
+        )
+        return context
+
+    def _hydrate_pending_action_review_from_memory(
+        self,
+        turn_input: TurnInput,
+        memory_context: dict[str, Any],
+        input_frame: InputFrame | None = None,
+    ) -> None:
+        if self.pending_action_reviews.get(turn_input.session_id):
+            return
+        if input_frame is not None and input_frame.kind in {
+            "state_feedback",
+            "state_query",
+        }:
+            return
+        if self._input_requests_home_action(turn_input, input_frame):
+            return
+        items = memory_context.get("items", [])
+        if not isinstance(items, list):
+            return
+        open_statuses = {
+            "review_budget_opened",
+            "review_observation_pending",
+            "review_retry_scheduled",
+        }
+        closed_statuses = {
+            "review_feedback_confirmed",
+            "review_feedback_mismatch_exhausted",
+            "review_retry_exhausted",
+            "review_superseded_by_new_command",
+        }
+        closed_action_keys: set[str] = set()
+        open_candidates: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]] = []
+        for item in items:
+            content = item.get("content") if isinstance(item, dict) else {}
+            if not isinstance(content, dict):
+                continue
+            retry_budget = content.get("retry_budget")
+            if not isinstance(retry_budget, dict):
+                continue
+            action = content.get("action")
+            if not isinstance(action, dict) or not action.get("action_id"):
+                action = self._action_from_feedback_pending(content)
+            if not action:
+                continue
+            action_key = self._action_review_key(action)
+            status = str(retry_budget.get("status") or "")
+            if status in closed_statuses:
+                closed_action_keys.add(action_key)
+                continue
+            if status not in open_statuses:
+                continue
+            open_candidates.append((content, retry_budget, dict(action), action_key))
+        for content, retry_budget, action, action_key in open_candidates:
+            if action_key in closed_action_keys:
+                continue
+            progress = (
+                retry_budget.get("progress")
+                if isinstance(retry_budget.get("progress"), dict)
+                else {}
+            )
+            last_review = (
+                content.get("last_review")
+                if isinstance(content.get("last_review"), dict)
+                else {}
+            )
+            self.pending_action_reviews[turn_input.session_id] = {
+                "action": dict(action),
+                "execute_result": {
+                    "status": "accepted",
+                    "executed": True,
+                    "retryable": False,
+                    "issued_at": content.get("issued_at") or "",
+                },
+                "last_review": dict(last_review),
+                "observations_done": self._int_value(
+                    progress.get("observations_done"),
+                    0,
+                ),
+                "execute_attempts": self._int_value(
+                    progress.get("execute_attempts"),
+                    1,
+                ),
+                "confirmed": bool(progress.get("confirmed")),
+                "policy": {
+                    "settle_ms": self._int_value(retry_budget.get("settle_ms"), 0),
+                    "observation_attempts": self._int_value(
+                        retry_budget.get("observation_attempts"),
+                        1,
+                    ),
+                    "auto_retries": self._int_value(retry_budget.get("auto_retries"), 0),
+                },
+                "created_at": content.get("created_at") or datetime.now(UTC).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
+                "origin_turn_id": content.get("turn_id") or "",
+                "hydrated_from_memory": True,
+            }
+            return
+
+    def _with_memory_context(
+        self,
+        observation: dict[str, Any],
+        memory_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not memory_context:
+            return observation
+        enriched = dict(observation)
+        enriched["memory_context"] = {
+            "status": memory_context.get("status"),
+            "item_count": memory_context.get("item_count", 0),
+            "items": list(memory_context.get("items", [])),
+            "summary": memory_context.get("summary") or "",
+        }
+        return enriched
+
+    def _compact_memory_item(self, item: Any) -> dict[str, Any]:
+        if not isinstance(item, dict):
+            return {"content": str(item)[:240]}
+        content = item.get("content")
+        if isinstance(content, dict):
+            compact_content = {
+                key: content[key]
+                for key in sorted(content.keys())
+                if key
+                in {
+                    "action_id",
+                    "target",
+                    "expected_state",
+                    "action",
+                    "retry_budget",
+                    "last_review",
+                    "issued_at",
+                    "actual_state",
+                    "preference",
+                    "alias",
+                    "canonical",
+                    "summary",
+                    "note",
+                }
+            }
+            if not compact_content:
+                compact_content = dict(list(content.items())[:5])
+        else:
+            compact_content = str(content or item.get("summary") or "")[:320]
+        return {
+            "scope": item.get("scope"),
+            "memory_type": item.get("memory_type") or item.get("type"),
+            "status": item.get("status"),
+            "content": compact_content,
+            "confidence": item.get("confidence"),
+            "created_at": item.get("created_at"),
+            "source": item.get("source"),
+        }
+
+    def _memory_summary(self, items: list[dict[str, Any]]) -> str:
+        if not items:
+            return "関連メモリは見つかりませんでした。"
+        scopes = sorted({str(item.get("scope") or "unknown") for item in items})
+        types = sorted({str(item.get("memory_type") or "unknown") for item in items})
+        return (
+            f"{len(items)}件の関連メモリを確認しました。"
+            f"scope={', '.join(scopes)} / type={', '.join(types)}"
+        )
+
+    def _understand_input(self, turn_input: TurnInput) -> InputFrame:
+        return self.input_understanding.understand(
+            turn_input,
+            pending_state_query=self.pending_state_queries.get(turn_input.session_id),
+            pending_action_review=self.pending_action_reviews.get(turn_input.session_id),
+        )
+
+    def _emit_input_understood(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        input_frame: InputFrame,
+    ) -> None:
+        payload = input_frame.to_dict()
+        payload["adapter"] = describe_input_understanding(self.input_understanding)
+        events.append(factory.emit("input.understood", payload))
+
+    def _speech_issue_key(
+        self,
+        turn_input: TurnInput,
+        input_frame: InputFrame | None = None,
+    ) -> str:
+        session_key = self._speech_fragment_key(turn_input.session_id or "default")
+        if input_frame is not None:
+            if input_frame.is_command:
+                parts = [
+                    input_frame.action_id,
+                    input_frame.action_target,
+                    input_frame.action_expected_state,
+                ]
+                key = ":".join(
+                    self._speech_fragment_key(part) for part in parts if part
+                )
+                if key:
+                    return f"{session_key}:home:{key}"
+            if input_frame.kind == "state_query":
+                target = input_frame.target or "state"
+                return f"{session_key}:state:{self._speech_fragment_key(target)}"
+
+        pending_action_review = self.pending_action_reviews.get(turn_input.session_id)
+        if input_frame is not None and input_frame.kind == "state_feedback":
+            if not (isinstance(pending_action_review, dict) and pending_action_review):
+                target = input_frame.target or "state"
+                return f"{session_key}:state:{self._speech_fragment_key(target)}"
+
+        if isinstance(pending_action_review, dict) and pending_action_review:
+            action = pending_action_review.get("action")
+            if isinstance(action, dict):
+                return self._action_speech_issue_key(session_key, action)
+
+        pending_state_query = self.pending_state_queries.get(turn_input.session_id)
+        if isinstance(pending_state_query, dict) and pending_state_query:
+            query_id = str(
+                pending_state_query.get("state_query_id")
+                or pending_state_query.get("target")
+                or "state"
+            )
+            return f"{session_key}:state:{self._speech_fragment_key(query_id)}"
+
+        if input_frame is not None and input_frame.kind == "state_feedback":
+            target = input_frame.target or "state"
+            return f"{session_key}:state:{self._speech_fragment_key(target)}"
+
+        action_intent = detect_home_action_intent(turn_input.text)
+        if action_intent is not None:
+            parts = [
+                str(getattr(action_intent, "action_id", "") or ""),
+                str(getattr(action_intent, "target", "") or ""),
+                str(getattr(action_intent, "expected_state", "") or ""),
+            ]
+            key = ":".join(self._speech_fragment_key(part) for part in parts if part)
+            if key:
+                return f"{session_key}:home:{key}"
+
+        return f"{session_key}:turn:{self._speech_fragment_key(turn_input.turn_id)}"
+
+    def _action_speech_issue_key(self, session_key: str, action: dict[str, Any]) -> str:
+        key = self._action_review_key(action)
+        return f"{session_key}:home:{key or 'action'}"
+
+    def _action_review_key(self, action: dict[str, Any]) -> str:
+        parts = [
+            str(action.get("action_id") or ""),
+            str(action.get("target") or ""),
+            str(action.get("expected_state") or ""),
+        ]
+        return ":".join(self._speech_fragment_key(part) for part in parts if part)
+
+    def _emit_stage_update(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        *,
+        stage: str,
+        speech: str,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        previous_fragment = self._last_spoken_fragment(events) or self._last_issue_fragment()
+        speech = self._coherent_stream_speech(events, speech, stage=stage)
+        payload = {
+            "stage": stage,
+            "speech": speech,
+            "streamed": True,
+        }
+        if detail:
+            payload["detail"] = detail
+        events.append(factory.emit("thought.stage", payload))
+        if speech:
+            events.append(
+                factory.emit(
+                    "assistant.speech_delta",
+                    {
+                        "delta": speech,
+                        "channel": "speech",
+                        "stage": stage,
+                        "partial": True,
+                        "speech_context": {
+                            "previous_fragment": previous_fragment,
+                            "issue_key": self._active_issue_key,
+                        },
+                    },
+                )
+            )
+            self._remember_stream_speech(speech)
 
     def _call_tool(
         self,
@@ -2165,8 +3256,9 @@ class ThoughtLoop:
         events: list[ThoughtEvent],
         factory: EventFactory,
         turn_input: TurnInput,
+        input_frame: InputFrame | None = None,
     ) -> None:
-        speech = self._input_ack_speech(turn_input)
+        speech = self._input_ack_speech(turn_input, input_frame)
         events.append(
             factory.emit(
                 "input.acknowledged",
@@ -2174,6 +3266,7 @@ class ThoughtLoop:
                     "text_length": len(turn_input.text),
                     "speech": speech,
                     "streamed": True,
+                    "input_kind": input_frame.kind if input_frame else "",
                 },
             )
         )
@@ -2187,7 +3280,11 @@ class ThoughtLoop:
             priority="immediate",
         )
 
-    def _input_ack_speech(self, turn_input: TurnInput) -> str:
+    def _input_ack_speech(
+        self,
+        turn_input: TurnInput,
+        input_frame: InputFrame | None = None,
+    ) -> str:
         text = turn_input.text.replace(" ", "").replace("　", "")
         if self.pending_confirmations.get(turn_input.session_id):
             if self._is_confirmation_reply(text):
@@ -2195,6 +3292,12 @@ class ThoughtLoop:
             if self._is_confirmation_cancel(text):
                 return "うん、止めるね。"
             return "うん、確認中の操作があるよ。"
+        if input_frame and input_frame.kind == "state_query":
+            return "うん、状態を見てみるね。"
+        if input_frame and input_frame.kind == "state_feedback":
+            if input_frame.continued_as_command:
+                return "うん、状態も受け取って操作も確認するね。"
+            return "うん、その状態を覚えるね。"
         if self.pending_action_reviews.get(turn_input.session_id):
             return "うん、もう一度見てみるね。"
         pending_state_query = self.pending_state_queries.get(turn_input.session_id)
@@ -2215,7 +3318,9 @@ class ThoughtLoop:
             return "うん、その状態を覚えるね。"
         if detect_room_light_state_query(turn_input.text):
             return "うん、状態を見てみるね。"
-        if detect_home_action_intent(turn_input.text) is not None:
+        if (input_frame and input_frame.kind == "home_command") or detect_home_action_intent(
+            turn_input.text
+        ) is not None:
             return "うん、操作できるか確認するね。"
         return "うん、聞いたよ。"
 
@@ -2363,12 +3468,25 @@ class ThoughtLoop:
         motion: str,
         priority: str,
     ) -> None:
+        original_speech = speech
+        previous_fragment = self._last_spoken_fragment(events) or self._last_issue_fragment()
+        speech = self._coherent_stream_speech(events, speech)
+        if not speech:
+            return
+        if display == original_speech:
+            display = speech
+        else:
+            display = self._dedupe_repeated_speech(display)
         events.append(
             factory.emit(
                 "assistant.speech_delta",
                 {
                     "delta": speech,
                     "channel": "speech",
+                    "speech_context": {
+                        "previous_fragment": previous_fragment,
+                        "issue_key": self._active_issue_key,
+                    },
                 },
             )
         )
@@ -2381,9 +3499,187 @@ class ThoughtLoop:
                     "emotion": emotion,
                     "motion": motion,
                     "priority": priority,
+                    "speech_context": {
+                        "previous_fragment": previous_fragment,
+                        "issue_key": self._active_issue_key,
+                    },
                 },
             )
         )
+        self._remember_stream_speech(speech)
+
+    def _coherent_stream_speech(
+        self,
+        events: list[ThoughtEvent],
+        speech: str,
+        *,
+        stage: str = "",
+    ) -> str:
+        if stage:
+            speech = self._stage_continuation_speech(events, speech, stage=stage)
+        speech = self._dedupe_repeated_speech(speech)
+        fragments = self._speech_fragments(speech)
+        if not fragments:
+            return speech
+        previous = self._spoken_fragment_keys(events) | self._issue_fragment_keys()
+        kept = [
+            fragment
+            for fragment in fragments
+            if self._speech_fragment_key(fragment) not in previous
+        ]
+        if len(kept) == len(fragments):
+            return speech
+        if kept:
+            return self._continuation_speech(kept)
+        fallback = self._repeat_fallback_speech(speech, stage=stage)
+        fallback_fragments = self._speech_fragments(fallback)
+        fallback_kept = [
+            fragment
+            for fragment in fallback_fragments
+            if self._speech_fragment_key(fragment) not in previous
+        ]
+        if not fallback_kept:
+            return ""
+        if len(fallback_kept) == len(fallback_fragments):
+            return fallback
+        return self._continuation_speech(fallback_kept)
+
+    def _stage_continuation_speech(
+        self,
+        events: list[ThoughtEvent],
+        speech: str,
+        *,
+        stage: str,
+    ) -> str:
+        if not self._last_spoken_fragment(events):
+            return speech
+        stage_speech = {
+            "memory.retrieve": "まず、関連しそうな記憶を短く確認します。",
+            "environment.observe.before_action": "次に、いまの環境を見ます。",
+            "target_state.generate": "それを踏まえて、望む状態を整理します。",
+            "home.preview": "続けて、使える操作を確認します。",
+            "command.plan": "現在との差分から、実行内容を決めます。",
+            "environment.observe.after_action": "反映を待って、環境を見直します。",
+            "action.review": "その結果が望んだ状態か判定します。",
+        }
+        return stage_speech.get(stage, speech)
+
+    def _dedupe_repeated_speech(self, speech: str) -> str:
+        fragments = self._speech_fragments(speech)
+        if len(fragments) <= 1:
+            return speech
+        seen: set[str] = set()
+        kept: list[str] = []
+        for fragment in fragments:
+            key = self._speech_fragment_key(fragment)
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            kept.append(fragment)
+        return "".join(kept)
+
+    def _spoken_fragment_keys(self, events: list[ThoughtEvent]) -> set[str]:
+        keys: set[str] = set()
+        for event in events:
+            if event.type != "assistant.speech_delta":
+                continue
+            delta = str(event.data.get("delta") or "")
+            for fragment in self._speech_fragments(delta):
+                key = self._speech_fragment_key(fragment)
+                if key:
+                    keys.add(key)
+        return keys
+
+    def _issue_fragment_keys(self) -> set[str]:
+        if not self._active_issue_key:
+            return set()
+        remembered = self.recent_speech_by_issue.get(self._active_issue_key, [])
+        return {
+            key
+            for fragment in remembered
+            if (key := self._speech_fragment_key(fragment))
+        }
+
+    def _last_spoken_fragment(self, events: list[ThoughtEvent]) -> str:
+        for event in reversed(events):
+            if event.type != "assistant.speech_delta":
+                continue
+            fragments = self._speech_fragments(str(event.data.get("delta") or ""))
+            if fragments:
+                return fragments[-1]
+        return ""
+
+    def _last_issue_fragment(self) -> str:
+        if not self._active_issue_key:
+            return ""
+        remembered = self.recent_speech_by_issue.get(self._active_issue_key, [])
+        for fragment in reversed(remembered):
+            if str(fragment or "").strip():
+                return str(fragment)
+        return ""
+
+    def _remember_stream_speech(self, speech: str) -> None:
+        if not self._active_session_id:
+            return
+        fragments = self._speech_fragments(speech)
+        if not fragments:
+            return
+        remembered = self.recent_speech_by_session.setdefault(self._active_session_id, [])
+        remembered.extend(fragments)
+        del remembered[:-12]
+        if self._active_issue_key:
+            issue_remembered = self.recent_speech_by_issue.setdefault(
+                self._active_issue_key,
+                [],
+            )
+            issue_remembered.extend(fragments)
+            del issue_remembered[:-40]
+
+    def _speech_fragments(self, speech: str) -> list[str]:
+        fragments: list[str] = []
+        buffer: list[str] = []
+        for char in str(speech or "").strip():
+            buffer.append(char)
+            if char in {"。", "！", "？", "!", "?"}:
+                fragment = "".join(buffer).strip()
+                if fragment:
+                    fragments.append(fragment)
+                buffer = []
+        tail = "".join(buffer).strip()
+        if tail:
+            fragments.append(tail)
+        return fragments
+
+    def _speech_fragment_key(self, fragment: str) -> str:
+        drop_chars = set(" \t\r\n　。！？!?、，,.・/／「」『』（）()[]【】")
+        return "".join(
+            char.lower()
+            for char in str(fragment or "")
+            if char not in drop_chars
+        )
+
+    def _continuation_speech(self, fragments: list[str]) -> str:
+        text = "".join(fragments).strip()
+        if not text:
+            return "続けて確認します。"
+        if text.startswith(("あと", "次で", "まだ", "ここまで", "何回か")):
+            return text
+        return f"その続きで、{text}"
+
+    def _repeat_fallback_speech(self, speech: str, *, stage: str) -> str:
+        if "確認できませんでした" in speech or "確認できない" in speech:
+            return "まだ確証が取れていません。次の判断に移ります。"
+        stage_fallbacks = {
+            "memory.retrieve": "記憶の確認は済んでいます。続けます。",
+            "environment.observe.before_action": "続けて環境を見ています。",
+            "target_state.generate": "その情報から望む状態を整理します。",
+            "home.preview": "使える操作の確認を続けます。",
+            "command.plan": "差分から実行内容を絞ります。",
+            "environment.observe.after_action": "反映後の状態をもう一度見ます。",
+            "action.review": "確認結果を判定します。",
+        }
+        return stage_fallbacks.get(stage, "続けて確認します。")
 
     def _remember_confirmation(self, turn_input: TurnInput, action: dict[str, Any]) -> None:
         self.pending_confirmations[turn_input.session_id] = {
@@ -2546,6 +3842,7 @@ class ThoughtLoop:
             prompt = f"実際は{expected_text}？"
         pending = self._build_post_action_pending(
             turn_input,
+            action,
             action_id,
             expected_state,
             room_light,
@@ -2556,6 +3853,7 @@ class ThoughtLoop:
     def _build_post_action_pending(
         self,
         turn_input: TurnInput,
+        action: dict[str, Any],
         action_id: str,
         expected_state: str,
         room_light: dict[str, Any],
@@ -2573,6 +3871,8 @@ class ThoughtLoop:
         )
         wait_result = environment.get("wait_result")
         pending["wait_result"] = wait_result if isinstance(wait_result, dict) else {}
+        pending["action"] = dict(action)
+        pending["retry_budget"] = self._action_review_policy(action)
         return pending
 
     def _build_state_query_pending(
@@ -2719,6 +4019,15 @@ class ThoughtLoop:
             "success_display": f"{target_name}をONにしました",
             "feedback_speech": "電気がついたか確認できませんでした。状態を確認してもらえますか？",
         }
+
+    def _already_satisfied_message(self, action: dict[str, Any]) -> str:
+        target_name = str(action.get("target_name") or "対象").strip()
+        expected_state = str(action.get("expected_state") or "").strip()
+        if expected_state == "on":
+            return f"{target_name}はすでについています。"
+        if expected_state == "off":
+            return f"{target_name}はすでに消えています。"
+        return f"{target_name}はすでに望んだ状態です。"
 
     def _action_succeeded(
         self,

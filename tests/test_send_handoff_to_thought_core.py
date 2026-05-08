@@ -89,6 +89,7 @@ class SendHandoffToThoughtCoreTest(TestCase):
             session_id="living_room_main",
             seq=1,
             data={"speech": "了解です"},
+            elapsed_s=0.1,
         )
 
         def fake_streaming(turn_payload, *, on_event=None):
@@ -134,6 +135,7 @@ class SendHandoffToThoughtCoreTest(TestCase):
                         session_id=turn_payload["session_id"],
                         seq=1,
                         data={"speech": "了解です"},
+                        elapsed_s=0.1,
                     )
                 )
                 on_event(
@@ -143,6 +145,7 @@ class SendHandoffToThoughtCoreTest(TestCase):
                         session_id=turn_payload["session_id"],
                         seq=2,
                         data={"status": "success"},
+                        elapsed_s=0.2,
                     )
                 )
             return AgentResponse(
@@ -185,12 +188,17 @@ class SendHandoffToThoughtCoreTest(TestCase):
             self.assertEqual(
                 [event["type"] for event in events],
                 [
+                    "thought_core.stream_event",
                     "thought_core.first_message",
+                    "thought_core.stream_event",
                     "thought_core.completed",
                     "thought_core.response",
                 ],
             )
             self.assertEqual(events[-1]["source"], "send_handoff_to_thought_core")
+            self.assertEqual(events[0]["payload"]["phase"], "message")
+            self.assertEqual(events[0]["payload"]["elapsed_s"], 0.1)
+            self.assertEqual(events[2]["payload"]["delta_elapsed_s"], 0.1)
 
     def test_rejects_placeholder_root(self) -> None:
         args = build_parser().parse_args(

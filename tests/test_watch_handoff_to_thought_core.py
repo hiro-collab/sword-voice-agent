@@ -40,6 +40,7 @@ class FakeThoughtCoreClient:
                 session_id=turn_payload["session_id"],
                 seq=1,
                 data={"delta": "了解"},
+                elapsed_s=0.1,
             ),
             ThoughtCoreStreamEvent(
                 event_type="assistant.message",
@@ -47,6 +48,7 @@ class FakeThoughtCoreClient:
                 session_id=turn_payload["session_id"],
                 seq=2,
                 data={"speech": "了解です"},
+                elapsed_s=0.2,
             ),
             ThoughtCoreStreamEvent(
                 event_type="turn.completed",
@@ -54,6 +56,7 @@ class FakeThoughtCoreClient:
                 session_id=turn_payload["session_id"],
                 seq=3,
                 data={"status": "success"},
+                elapsed_s=0.3,
             ),
         ]
         for event in events:
@@ -86,6 +89,7 @@ class PendingReviewThoughtCoreClient:
                         "observation_attempts": 3,
                         "settle_ms": 2000,
                     },
+                    elapsed_s=0.1,
                 ),
                 ThoughtCoreStreamEvent(
                     event_type="assistant.message",
@@ -93,6 +97,7 @@ class PendingReviewThoughtCoreClient:
                     session_id=turn_payload["session_id"],
                     seq=2,
                     data={"speech": "あとで見直します"},
+                    elapsed_s=0.2,
                 ),
                 ThoughtCoreStreamEvent(
                     event_type="turn.completed",
@@ -100,6 +105,7 @@ class PendingReviewThoughtCoreClient:
                     session_id=turn_payload["session_id"],
                     seq=3,
                     data={"status": "verification_pending"},
+                    elapsed_s=0.3,
                 ),
             ]
             response_text = "あとで見直します"
@@ -112,6 +118,7 @@ class PendingReviewThoughtCoreClient:
                     session_id=turn_payload["session_id"],
                     seq=1,
                     data={"speech": "見直して確認できました"},
+                    elapsed_s=0.1,
                 ),
                 ThoughtCoreStreamEvent(
                     event_type="turn.completed",
@@ -119,6 +126,7 @@ class PendingReviewThoughtCoreClient:
                     session_id=turn_payload["session_id"],
                     seq=2,
                     data={"status": "success"},
+                    elapsed_s=0.2,
                 ),
             ]
             response_text = "見直して確認できました"
@@ -182,13 +190,19 @@ class WatchHandoffToThoughtCoreTest(TestCase):
             self.assertEqual(
                 [event["type"] for event in status_events],
                 [
+                    "thought_core.stream_event",
+                    "thought_core.stream_event",
                     "thought_core.first_message",
+                    "thought_core.stream_event",
                     "thought_core.completed",
                     "thought_core.response",
                 ],
             )
             self.assertEqual(status_events[-1]["source"], "watch_handoff_to_thought_core")
             self.assertEqual(status_events[0]["payload"]["speech"], "[redacted]")
+            self.assertEqual(status_events[0]["payload"]["phase"], "speech_delta")
+            self.assertEqual(status_events[0]["payload"]["elapsed_s"], 0.1)
+            self.assertEqual(status_events[1]["payload"]["delta_elapsed_s"], 0.1)
             self.assertNotIn("了解です", json.dumps(status_events, ensure_ascii=False))
 
     def test_run_once_skips_no_speech_placeholder_by_default(self) -> None:
