@@ -12,6 +12,7 @@ consumers.
 | `turn/` | Turn request and turn response event stream. |
 | `events/` | Common thought-core event envelope. |
 | `tools/` | Tool started/result data payloads carried by thought-core events. |
+| `reflex/` | Fast gesture/camera input state and local reflex status events. |
 | `environment/` | Environment snapshots and feedback surfaces consumed by Dify/thought-core. |
 | `home-control/` | Safe home action preview/execute boundary. |
 | `expression/` | Current TTS and AITuberKit presentation payloads. |
@@ -23,6 +24,12 @@ The initial contract files mirror these implementation files:
 - `services/thought-core/src/thought_core/schema.py`
 - `services/thought-core/src/thought_core/events.py`
 - `tests/test_thought_core_contract.py`
+
+Reflex contracts are extracted from:
+
+- `src/sword_voice_agent/protocol/messages.py`
+- `src/sword_voice_agent/application/gesture_pipeline.py`
+- `src/sword_voice_agent/adapters/status_store.py`
 
 Environment and home-control contracts are extracted from sibling module docs
 and tests:

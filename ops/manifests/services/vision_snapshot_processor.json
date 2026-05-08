@@ -4,6 +4,8 @@
   "logical_service": "environment-input",
   "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
   "repo_path": "vision-snapshot-processor",
+  "contracts": ["environment"],
+  "adapters": ["mediamtx", "vision-snapshot"],
   "pid_names": ["vision_snapshot_processor"],
   "start": {
     "type": "stack-script"

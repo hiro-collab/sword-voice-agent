@@ -10,6 +10,7 @@ MANIFEST_ROOT = REPO_ROOT / "ops" / "manifests"
 class OpsManifestTest(TestCase):
     def test_service_manifests_are_valid(self) -> None:
         layers = _allowed_layers()
+        contract_areas = _contract_areas()
         services = _load_service_manifests()
 
         self.assertGreater(len(services), 0)
@@ -22,6 +23,11 @@ class OpsManifestTest(TestCase):
                 self.assertIsInstance(manifest.get("start"), dict)
                 self.assertIsInstance(manifest.get("health"), dict)
                 self.assertIsInstance(manifest.get("stop"), dict)
+                for contract in manifest.get("contracts", []):
+                    self.assertIn(contract, contract_areas)
+                for adapter in manifest.get("adapters", []):
+                    self.assertIsInstance(adapter, str)
+                    self.assertGreater(len(adapter.strip()), 0)
                 for dependency in manifest.get("depends_on", []):
                     self.assertIn(dependency, services)
 
@@ -95,6 +101,14 @@ def _allowed_layers() -> set[str]:
     schema_path = REPO_ROOT / "contracts" / "events" / "layer.schema.json"
     schema = _load_json(schema_path)
     return set(schema["enum"])
+
+
+def _contract_areas() -> set[str]:
+    return {
+        path.name
+        for path in (REPO_ROOT / "contracts").iterdir()
+        if path.is_dir()
+    }
 
 
 def _load_service_manifests() -> dict[str, dict]:

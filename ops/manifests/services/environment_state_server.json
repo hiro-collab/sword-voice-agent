@@ -4,6 +4,8 @@
   "logical_service": "environment-server",
   "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
   "repo_path": "environment-state-server",
+  "contracts": ["environment", "reflex"],
+  "adapters": ["mediapipe", "vision-snapshot", "home-assistant", "app-state"],
   "pid_names": ["environment_state_server"],
   "start": {
     "type": "stack-script"

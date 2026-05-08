@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/reflex/gesture-state.schema.json",
+  "title": "Gesture State",
+  "description": "Raw reflex gesture state before voice input gate policy.",
+  "type": "object",
+  "required": ["type", "source", "timestamp", "gestures"],
+  "properties": {
+    "type": {
+      "const": "gesture_state"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "type": "number",
+      "minimum": 0
+    },
+    "gestures": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["active", "confidence"],
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
+

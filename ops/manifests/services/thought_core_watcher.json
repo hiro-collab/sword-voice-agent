@@ -4,6 +4,8 @@
   "logical_service": "sword-voice-agent",
   "current_owner": "scripts/start-thought-core-watch.ps1",
   "repo_path": "sword-voice-agent",
+  "contracts": ["turn", "events", "expression"],
+  "adapters": ["ai-talk-core", "aituber-kit", "tts-service"],
   "pid_names": ["thought_core_watcher"],
   "start": {
     "type": "script",

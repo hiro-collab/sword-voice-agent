@@ -8,6 +8,14 @@ Current implementation:
 
 - `../environment-state-server/`
 
+Logical boundary:
+
+- Service: `environment-server`
+- Layer: `environment`
+- Consumes source adapters such as MediaPipe/Camera Hub status, vision snapshot
+  state, Home Assistant read-side state, and module-local status files.
+- Exposes observation snapshots; it does not perform action orchestration.
+
 ## Current HTTP Surface
 
 ```text
@@ -34,4 +42,3 @@ loopback-only.
 
 These schemas define the shared envelope and known fields while leaving detailed
 module projections open-ended.
-

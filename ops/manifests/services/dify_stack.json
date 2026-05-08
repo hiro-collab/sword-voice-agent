@@ -4,6 +4,8 @@
   "logical_service": "dify",
   "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
   "repo_path": "dify",
+  "contracts": ["events"],
+  "adapters": ["dify"],
   "pid_names": [],
   "start": {
     "type": "docker_compose"

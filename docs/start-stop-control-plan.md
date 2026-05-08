@@ -100,6 +100,9 @@ Required manifest concepts:
 - `service_id`: stable process identity.
 - `layer`: one of `contracts/events/layer.schema.json`.
 - `repo_path`: sibling repo or current repo path from workspace root.
+- `contracts`: optional list of public contract areas this process exposes or
+  consumes.
+- `adapters`: optional list of driver/external protocol edges this process uses.
 - `start`: command, args, env overlays, working directory.
 - `health`: TCP, HTTP, file, or custom probe.
 - `stop`: graceful endpoint, docker compose, owned PID, or no-op.

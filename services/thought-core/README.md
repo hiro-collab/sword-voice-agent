@@ -1,7 +1,7 @@
-# thought-core 実験実装
+# thought-core turn service v0
 
-このディレクトリは、将来の `thought-core` サービス境界を試すための実験実装です。
-現行の Dify workflow を置き換えるものではありません。
+このディレクトリは、現行 workspace での `thought-core` 正規 service root です。
+現在は v0 実装として、Dify workflow と並走しながら turn 境界を固めています。
 
 目的は、`sword-voice-agent` から見える API 契約を小さく固定し、内部の実装を Dify、
 OpenAI Agents SDK、LangGraph、または将来の別基盤へ差し替えやすくすることです。
@@ -90,7 +90,7 @@ services/thought-core/
     thought_core/
 ```
 
-この初期実装は Python 標準ライブラリだけで動きます。
+この v0 実装は Python 標準ライブラリだけで動きます。
 
 リポジトリ本体のルートから実行します。
 
@@ -134,7 +134,7 @@ Content-Type: application/json
 
 `POST /turn/stream` も同じく SSE を返します。
 
-`GET /turn/stream` は、将来ブラウザの `EventSource` で読む形を試すための軽い入口です。
+`GET /turn/stream` は、将来ブラウザの `EventSource` で読む形を試すための軽い demo/compatibility 入口です。
 現時点の主契約は、turn payload を送れる `POST /turn` です。
 
 ## sword-voice-agent client
@@ -210,7 +210,7 @@ mock実装で retry しても確認できず、`feedback.requested` へ進む流
 uv run sword-thought-core-handoff --text "電気つけて" --session-id living_room_main --turn-id turn_feedback_demo --context-ref mock_initial_light_state=off --context-ref mock_execute_failures_before_success=3 --print-events
 ```
 
-`mock_` で始まる `context_refs` は、依存なしの実験用 mock だけが読むデモ制御です。
+`mock_` で始まる `context_refs` は、依存なしの demo mock だけが読む制御です。
 実ツールでは、Environment / Home Assistant の事実を source of truth として扱います。
 
 ai_talk_core の handoff 更新を監視して thought-core に流す場合:

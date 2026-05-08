@@ -2,7 +2,7 @@
 
 この workspace は、音声入力、思考、家電操作、環境認識、表現、診断を組み合わせる
 ローカル agent system です。現時点では複数の sibling module と
-`sword-voice-agent` 内の実験実装が混在しています。この文書では、今後の整理で使う
+`sword-voice-agent` 内の v0 service 実装が混在しています。この文書では、今後の整理で使う
 論理構成を定義します。
 
 `sword-voice-agent` repository は、当面の workspace-level docs と contracts の
@@ -49,6 +49,7 @@ contracts/
   turn
   events
   tools
+  reflex
   environment
   home-control
   expression
@@ -124,6 +125,7 @@ diagnostics.
 Detailed integration docs live under this repository's `docs/` directory:
 
 - `module-responsibilities.md`
+- `service-boundary-map.md`
 - `integration-contract.md`
 - `state_authority.md`
 - `system-requirements.md`

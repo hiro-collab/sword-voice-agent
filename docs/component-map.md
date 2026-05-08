@@ -8,7 +8,7 @@ planning document only: paths listed here are not moved by this change.
 | Current path | Logical role | Future candidate | Notes |
 |---|---|---|---|
 | `<workspace>/sword-voice-agent/` | Integration app, gesture input policy, watchers, console, launcher scripts | `apps/sword-voice-agent` plus `ops/scripts` | Keep current path while launch scripts depend on it. |
-| `<workspace>/sword-voice-agent/services/thought-core/` | Experimental turn API and event stream | `services/thought-core` | Current canonical service root; implementation package lives under `src/thought_core`. |
+| `<workspace>/sword-voice-agent/services/thought-core/` | Canonical turn API v0 and event stream | `services/thought-core` | Current canonical service root; implementation package lives under `src/thought_core`. |
 | `<workspace>/services/thought-core/` | Retired local placeholder, if present | none until a split repo is created | Do not add a second implementation here. |
 | `<workspace>/ai-talk-core/` | Microphone/browser recording, STT, transcript, handoff | `adapters/stt` or `apps/voice-input` | Existing module owns STT and browser recording. |
 | `<workspace>/mediapipe-sword-sign/` | Camera Hub, gesture inference, fast gesture state | `services/reflex-core` and `adapters/mediapipe` | Camera capture authority remains here for now. |
@@ -40,6 +40,7 @@ Future:
 
 - `services/reflex-core`
 - `adapters/mediapipe`
+- `contracts/reflex`
 
 ### Turn Layer
 
@@ -121,7 +122,7 @@ Future:
 ## Canonical Path Notes
 
 For now, `<workspace>/sword-voice-agent/services/thought-core/` is the canonical
-service root for the thought-core experiment, with package code under
+service root for thought-core v0, with package code under
 `src/thought_core/`. The root
 `<workspace>/services/thought-core/` path should not receive a second
 implementation. A future split should move or mirror the current implementation

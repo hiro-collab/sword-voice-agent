@@ -4,6 +4,8 @@
   "logical_service": "dify-adapter",
   "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
   "repo_path": "sword-voice-agent",
+  "contracts": ["events", "environment", "home-control", "expression"],
+  "adapters": ["dify", "aituber-kit", "tts-service"],
   "pid_names": ["dify_watcher"],
   "start": {
     "type": "stack-script"

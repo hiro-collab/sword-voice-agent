@@ -6,6 +6,8 @@
   "repo_path": "sword-voice-agent",
   "service_root": "sword-voice-agent/services/thought-core",
   "python_path": "sword-voice-agent/services/thought-core/src",
+  "contracts": ["turn", "events", "tools", "environment", "home-control"],
+  "adapters": ["openai-compatible", "dify"],
   "pid_names": ["thought_core_api"],
   "start": {
     "type": "script",

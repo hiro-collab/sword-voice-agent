@@ -147,6 +147,92 @@ AITUBER_MESSAGE = {
     "messages": ["了解、電気をつけるね。"],
 }
 
+GESTURE_STATE = {
+    "type": "gesture_state",
+    "source": "mediapipe_camera_hub",
+    "timestamp": 1778200000.0,
+    "gestures": {
+        "sword_sign": {
+            "active": True,
+            "confidence": 0.95,
+        },
+        "victory": {
+            "active": False,
+            "confidence": 0.1,
+        },
+    },
+}
+
+GESTURE_RECEIVER_STATUS = {
+    "type": "gesture_receiver_status",
+    "timestamp": 1778200000.0,
+    "sequence": 1,
+    "from": "127.0.0.1:50000",
+    "response": {
+        "voice_state": {
+            "type": "voice_state",
+            "timestamp": 1778200000.0,
+            "phase": "armed",
+            "mic_enabled": True,
+            "recording": True,
+        },
+        "gate_decision": {
+            "timestamp": 1778200000.0,
+            "gesture_name": "sword_sign",
+            "raw_active": True,
+            "confidence": 0.95,
+            "mic_enabled": True,
+            "changed": False,
+            "reason": "stable",
+        },
+        "voice_control_command": {
+            "type": "voice_control_command",
+            "timestamp": 1778200000.0,
+            "action": "start_recording",
+            "mic_enabled": True,
+            "reason": "stable",
+            "turn_id": "turn_schema_001",
+        },
+    },
+}
+
+GESTURE_DIAGNOSTIC_STATUS = {
+    "type": "gesture_receiver_status",
+    "timestamp": 1778200000.0,
+    "sequence": 3,
+    "from": "127.0.0.1:50000",
+    "response": {
+        "diagnostic": {
+            "type": "gesture_status",
+            "status": "running",
+            "frame_id": 10,
+            "fps": 30.0,
+            "hand_detected": True,
+            "primary_gesture": "sword_sign",
+            "sword_sign": {
+                "active": True,
+                "confidence": 0.91,
+            },
+            "best_gesture": {
+                "name": "sword_sign",
+                "confidence": 0.91,
+            },
+            "camera": {
+                "opened": True,
+            },
+        },
+    },
+}
+
+REFLEX_STATUS_EVENT = {
+    "event_id": "evt-reflex-schema-001",
+    "type": "gesture.received",
+    "timestamp": 1778200000.0,
+    "source": "gesture_udp_receiver",
+    "turn_id": "turn_schema_001",
+    "payload": GESTURE_RECEIVER_STATUS,
+}
+
 
 class ContractSchemaTest(TestCase):
     def test_contract_json_files_are_valid_json(self) -> None:
@@ -293,6 +379,37 @@ class ContractSchemaTest(TestCase):
         self.assertTrue(validate_schema({"messages": []}, aituber_schema))
         self.assertTrue(validate_schema({"messages": ["   "]}, aituber_schema))
 
+    def test_reflex_schemas_accept_current_gesture_payloads(self) -> None:
+        state_schema = REPO_ROOT / "contracts" / "reflex" / "gesture-state.schema.json"
+        receiver_schema = (
+            REPO_ROOT / "contracts" / "reflex" / "gesture-receiver-status.schema.json"
+        )
+        diagnostic_schema = (
+            REPO_ROOT / "contracts" / "reflex" / "gesture-diagnostic-status.schema.json"
+        )
+        event_schema = (
+            REPO_ROOT / "contracts" / "reflex" / "reflex-status-event.schema.json"
+        )
+
+        self.assertEqual(validate_schema(GESTURE_STATE, state_schema), [])
+        self.assertEqual(validate_schema(GESTURE_RECEIVER_STATUS, receiver_schema), [])
+        self.assertEqual(validate_schema(GESTURE_DIAGNOSTIC_STATUS, diagnostic_schema), [])
+        self.assertEqual(validate_schema(REFLEX_STATUS_EVENT, event_schema), [])
+
+    def test_reflex_gesture_state_rejects_invalid_confidence(self) -> None:
+        state_schema = REPO_ROOT / "contracts" / "reflex" / "gesture-state.schema.json"
+        invalid = {
+            **GESTURE_STATE,
+            "gestures": {
+                "sword_sign": {
+                    "active": True,
+                    "confidence": 1.5,
+                }
+            },
+        }
+
+        self.assertTrue(validate_schema(invalid, state_schema))
+
 
 def validate_schema(value: Any, schema_path: Path) -> list[str]:
     schema = _load_json(schema_path)
@@ -324,6 +441,10 @@ def _validate(value: Any, schema: dict[str, Any], base_dir: Path, path: str) -> 
             if key not in value:
                 errors.append(f"{path}: missing required property {key!r}")
 
+        min_properties = schema.get("minProperties")
+        if isinstance(min_properties, int) and len(value) < min_properties:
+            errors.append(f"{path}: expected minProperties {min_properties}")
+
         properties = schema.get("properties", {})
         if isinstance(properties, dict):
             for key, property_schema in properties.items():
@@ -331,10 +452,22 @@ def _validate(value: Any, schema: dict[str, Any], base_dir: Path, path: str) -> 
                     errors.extend(
                         _validate(value[key], property_schema, base_dir, f"{path}.{key}")
                     )
-            if schema.get("additionalProperties") is False:
+            additional_properties = schema.get("additionalProperties")
+            if additional_properties is False:
                 for key in value:
                     if key not in properties:
                         errors.append(f"{path}: unexpected property {key!r}")
+            elif isinstance(additional_properties, dict):
+                for key, item in value.items():
+                    if key not in properties:
+                        errors.extend(
+                            _validate(
+                                item,
+                                additional_properties,
+                                base_dir,
+                                f"{path}.{key}",
+                            )
+                        )
 
     if isinstance(value, list):
         min_items = schema.get("minItems")
@@ -365,10 +498,14 @@ def _validate(value: Any, schema: dict[str, Any], base_dir: Path, path: str) -> 
             except ValueError:
                 errors.append(f"{path}: expected date-time")
 
-    if isinstance(value, int) and not isinstance(value, bool):
+    if isinstance(value, int | float) and not isinstance(value, bool):
         minimum = schema.get("minimum")
         if isinstance(minimum, int | float) and value < minimum:
             errors.append(f"{path}: expected minimum {minimum}")
+
+        maximum = schema.get("maximum")
+        if isinstance(maximum, int | float) and value > maximum:
+            errors.append(f"{path}: expected maximum {maximum}")
 
     return errors
 

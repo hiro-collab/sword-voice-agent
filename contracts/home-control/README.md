@@ -8,6 +8,14 @@ Current implementation:
 
 - `../home-assistant-server/`
 
+Logical boundary:
+
+- Service: `home-control-server`
+- Layer: `action`
+- Current driver: Home Assistant, behind the service boundary.
+- Exposes preview/execute for approved actions; it does not decide the
+  assistant response or post-action retry loop.
+
 ## Current HTTP Surface
 
 ```text
@@ -37,4 +45,3 @@ feedback belong in thought-core or another higher orchestration layer.
 - `action-request.schema.json`
 - `preview-result.schema.json`
 - `execute-result.schema.json`
-

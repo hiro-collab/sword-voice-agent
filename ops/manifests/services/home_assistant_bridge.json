@@ -4,6 +4,8 @@
   "logical_service": "home-control-server",
   "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
   "repo_path": "home-assistant-server",
+  "contracts": ["home-control"],
+  "adapters": ["home-assistant"],
   "pid_names": ["home_assistant_bridge"],
   "start": {
     "type": "stack-script"

@@ -15,6 +15,7 @@ Camera Hub gesture topic
 - [system-requirements.md](docs/system-requirements.md): 目的、成功条件、前提。
 - [architecture.md](docs/architecture.md): workspace全体の論理構成。
 - [component-map.md](docs/component-map.md): 現在のモジュールと将来境界の対応表。
+- [service-boundary-map.md](docs/service-boundary-map.md): services/contracts/adapters/ops の現在地図。
 - [migration-plan.md](docs/migration-plan.md): 大移動を避ける段階的な整理順。
 - [logging-conventions.md](docs/logging-conventions.md): logs/events/status に入れる layer 意識。
 - [start-stop-control-plan.md](docs/start-stop-control-plan.md): 全体起動・停止を `ops` レイヤーへまとめる計画。

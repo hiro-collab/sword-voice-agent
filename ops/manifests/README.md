@@ -9,9 +9,13 @@ profile into the matching start/status/stop arguments.
 
 | Path | Purpose |
 |---|---|
-| `services/` | Stable service records, current script owner, layer, health, stop strategy, dependencies. |
+| `services/` | Stable service records, current script owner, layer, contracts, adapter edges, health, stop strategy, dependencies. |
 | `profiles/` | Named service sets accepted by `ops/scripts/system.ps1 -Profile`. |
 
 The `service_id` values intentionally match current PID registry names where
 possible, so `system.ps1 status` can compare manifests against
 `.cache/home-control-stack/pids.json`.
+
+`contracts` and `adapters` are descriptive metadata. They do not make the
+current inherited supervisor manifest-native yet; they keep status output and
+future physical moves aligned with the architecture map.

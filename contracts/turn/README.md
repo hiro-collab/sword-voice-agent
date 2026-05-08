@@ -9,8 +9,8 @@ Current schemas:
 
 ## Current Request Shape
 
-The current experimental `TurnInput` requires `text`, `turn_id`, and
-`session_id`. It accepts optional `locale` and `context_refs` fields.
+The current v0 `TurnInput` requires `text`, `turn_id`, and `session_id`. It
+accepts optional `locale` and `context_refs` fields.
 
 ```json
 {
@@ -42,6 +42,5 @@ GET /turn/stream?text=...
 ```
 
 The GET stream route is a lightweight EventSource/demo entrypoint in the current
-experiment. It is not the primary turn contract. Consumers that can send a full
-turn payload should use `POST /turn` or a POST streaming endpoint.
-
+implementation. It is not the primary turn contract. Consumers that can send a
+full turn payload should use `POST /turn` or a POST streaming endpoint.

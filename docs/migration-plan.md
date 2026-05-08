@@ -32,6 +32,8 @@ Scope:
 
 - Turn existing thought-core request/event shapes into JSON Schema.
 - Treat `thought-core.event.v0` as the current event schema version.
+- Add reflex schemas for raw gesture state, voice-gate status, and Camera Hub
+  diagnostics.
 - Document environment and home-control APIs from existing module docs.
 - Add contract tests that validate representative fixtures.
 
@@ -39,6 +41,7 @@ Priority files:
 
 ```text
 contracts/events/event.schema.json
+contracts/reflex/gesture-state.schema.json
 contracts/turn/turn-request.schema.json
 contracts/turn/turn-response-events.schema.json
 contracts/environment/environment-current.schema.json
@@ -107,6 +110,10 @@ mediapipe-sword-sign     -> reflex-core input v0
 tts-service              -> expression-core speech v0
 aituber-kit              -> expression app v0
 ```
+
+The alias is logical first. Keep the physical sibling repository name until the
+service boundary, adapter boundary, ops manifest, and tests are updated in the
+same migration.
 
 Exit criteria:
 

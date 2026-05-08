@@ -11,6 +11,13 @@ not a full `expression-core` service API yet.
 | TTS streaming chunk | `speech-chunk.schema.json` | `watch_handoff_to_thought_core.py` | `tts-service` `POST /api/tts/chunk` |
 | AITuberKit direct speech | `aituber-message.schema.json` | `watch_handoff_to_thought_core.py` | AITuberKit `POST /api/messages?clientId=<id>&type=direct_send` |
 
+Logical boundary:
+
+- Service: future `expression-core`
+- Apps: `aituber-ui`, `avatar-ui`, projection/display surfaces
+- Current adapter targets: `tts-service`, `aituber-kit`, TouchDesigner display
+  runtime
+
 ## Boundary Rules
 
 - `thought-core` emits semantic turn events such as `assistant.speech_delta` and
