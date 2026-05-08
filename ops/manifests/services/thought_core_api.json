@@ -1,0 +1,22 @@
+{
+  "service_id": "thought_core_api",
+  "layer": "turn",
+  "logical_service": "thought-core",
+  "current_owner": "scripts/start-thought-core.ps1",
+  "repo_path": "sword-voice-agent",
+  "service_root": "sword-voice-agent/services/thought-core",
+  "python_path": "sword-voice-agent/services/thought-core/src",
+  "pid_names": ["thought_core_api"],
+  "start": {
+    "type": "script",
+    "script": "scripts/start-thought-core.ps1"
+  },
+  "health": {
+    "type": "http",
+    "url": "http://127.0.0.1:18787/health"
+  },
+  "stop": {
+    "strategy": "owned_pid"
+  },
+  "depends_on": ["home_assistant_bridge", "environment_state_server"]
+}

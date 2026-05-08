@@ -13,6 +13,7 @@ registry documentation. It is not the active script location yet.
 | Validation module setup | `scripts/setup-validation-modules.ps1` |
 
 See `docs/start-stop-control-plan.md` for the proposed control-plane shape.
+Initial read-only manifests live under `ops/manifests/`.
 
 ## Migration Rule
 

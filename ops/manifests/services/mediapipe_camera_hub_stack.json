@@ -1,0 +1,24 @@
+{
+  "service_id": "mediapipe_camera_hub_stack",
+  "layer": "reflex",
+  "logical_service": "reflex-core",
+  "current_owner": "scripts/home-control-stack/start-home-control-stack.ps1",
+  "repo_path": "mediapipe-sword-sign",
+  "pid_names": [
+    "mediapipe_camera_hub_stack",
+    "mediapipe_camera_hub",
+    "mediapipe_ws",
+    "mediapipe_camera_hub_gui"
+  ],
+  "start": {
+    "type": "stack-script"
+  },
+  "health": {
+    "type": "websocket",
+    "url": "ws://127.0.0.1:8765"
+  },
+  "stop": {
+    "strategy": "owned_pid_tree"
+  },
+  "depends_on": []
+}

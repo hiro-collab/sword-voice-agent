@@ -1,0 +1,20 @@
+{
+  "service_id": "thought_core_watcher",
+  "layer": "app",
+  "logical_service": "sword-voice-agent",
+  "current_owner": "scripts/start-thought-core-watch.ps1",
+  "repo_path": "sword-voice-agent",
+  "pid_names": ["thought_core_watcher"],
+  "start": {
+    "type": "script",
+    "script": "scripts/start-thought-core-watch.ps1"
+  },
+  "health": {
+    "type": "module_status",
+    "module": "thought_core_watcher"
+  },
+  "stop": {
+    "strategy": "owned_pid"
+  },
+  "depends_on": ["thought_core_api"]
+}

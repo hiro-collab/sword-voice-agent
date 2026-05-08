@@ -1,0 +1,69 @@
+import json
+from pathlib import Path
+from unittest import TestCase
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+MANIFEST_ROOT = REPO_ROOT / "ops" / "manifests"
+
+
+class OpsManifestTest(TestCase):
+    def test_service_manifests_are_valid(self) -> None:
+        layers = _allowed_layers()
+        services = _load_service_manifests()
+
+        self.assertGreater(len(services), 0)
+        for service_id, manifest in services.items():
+            with self.subTest(service_id=service_id):
+                self.assertEqual(manifest["service_id"], service_id)
+                self.assertIn(manifest["layer"], layers)
+                self.assertIsInstance(manifest.get("logical_service"), str)
+                self.assertIsInstance(manifest.get("current_owner"), str)
+                self.assertIsInstance(manifest.get("start"), dict)
+                self.assertIsInstance(manifest.get("health"), dict)
+                self.assertIsInstance(manifest.get("stop"), dict)
+                for dependency in manifest.get("depends_on", []):
+                    self.assertIn(dependency, services)
+
+    def test_profile_manifests_reference_known_services(self) -> None:
+        layers = _allowed_layers()
+        services = _load_service_manifests()
+        profiles = _load_profile_manifests()
+
+        self.assertGreater(len(profiles), 0)
+        for profile_id, manifest in profiles.items():
+            with self.subTest(profile_id=profile_id):
+                self.assertEqual(manifest["profile_id"], profile_id)
+                self.assertIn(manifest["layer"], layers)
+                self.assertIsInstance(manifest.get("description"), str)
+                self.assertGreater(len(manifest.get("services", [])), 0)
+                for service_id in manifest["services"]:
+                    self.assertIn(service_id, services)
+
+
+def _allowed_layers() -> set[str]:
+    schema_path = REPO_ROOT / "contracts" / "events" / "layer.schema.json"
+    schema = _load_json(schema_path)
+    return set(schema["enum"])
+
+
+def _load_service_manifests() -> dict[str, dict]:
+    return {
+        path.stem: _load_json(path)
+        for path in sorted((MANIFEST_ROOT / "services").glob("*.json"))
+    }
+
+
+def _load_profile_manifests() -> dict[str, dict]:
+    return {
+        path.stem: _load_json(path)
+        for path in sorted((MANIFEST_ROOT / "profiles").glob("*.json"))
+    }
+
+
+def _load_json(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict):
+        raise AssertionError(f"{path} must contain a JSON object")
+    return value
