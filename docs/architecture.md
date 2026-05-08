@@ -67,6 +67,11 @@ This is a logical map, not a required immediate directory layout.
 
 ## Responsibility Layers
 
+The useful mental model is close to an operating system. `contracts/` are the
+system-call-like boundary, `services/` are kernel-style capabilities,
+`adapters/` are drivers, `ops/` is init/process management, and `runtime/` is
+the generated state/log area. `docs/decisions/` records ADR-style decisions.
+
 `apps` are close to humans and displays. They own local UI, microphone surfaces,
 projection views, launcher screens, and avatar presentation.
 

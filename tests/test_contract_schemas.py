@@ -112,6 +112,19 @@ HOME_CONTROL_EXECUTE_RESULT = {
     },
 }
 
+LAYERED_EVENT = {
+    "schema_version": "thought-core.event.v0",
+    "event_id": "evt_layer_001",
+    "turn_id": "turn_schema_001",
+    "session_id": "living_room_main",
+    "seq": 1,
+    "timestamp": "2026-05-08T00:00:00Z",
+    "source": "thought-core",
+    "layer": "turn",
+    "type": "assistant.message",
+    "data": {"speech": "了解です。"},
+}
+
 TTS_SPEECH_CHUNK = {
     "event": "assistant.speech_delta",
     "delta": "了解、",
@@ -166,6 +179,12 @@ class ContractSchemaTest(TestCase):
         for event in events:
             with self.subTest(event_type=event["type"]):
                 self.assertEqual(validate_schema(event, schema_path), [])
+
+    def test_event_schema_accepts_layer_metadata(self) -> None:
+        schema_path = REPO_ROOT / "contracts" / "events" / "event.schema.json"
+
+        self.assertEqual(validate_schema(LAYERED_EVENT, schema_path), [])
+        self.assertTrue(validate_schema({**LAYERED_EVENT, "layer": "unknown"}, schema_path))
 
     def test_tool_schemas_accept_current_thought_core_tool_events(self) -> None:
         call_schema = REPO_ROOT / "contracts" / "tools" / "tool-call.schema.json"

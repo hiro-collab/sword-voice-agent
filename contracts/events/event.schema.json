@@ -44,6 +44,9 @@
       "type": "string",
       "minLength": 1
     },
+    "layer": {
+      "$ref": "layer.schema.json"
+    },
     "type": {
       "type": "string",
       "minLength": 1
@@ -55,4 +58,3 @@
   },
   "additionalProperties": true
 }
-
