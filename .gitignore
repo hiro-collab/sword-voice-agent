@@ -12,3 +12,5 @@ htmlcov/
 tests/_tmp/
 dist/
 build/
+runtime/*
+!runtime/README.md

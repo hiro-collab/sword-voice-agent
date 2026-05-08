@@ -25,6 +25,7 @@ Camera Hub gesture topic
 - [retired-paths.md](docs/retired-paths.md): 互換、保留、検証専用の導線。
 
 `archives/` は履歴退避先です。通常の実装判断では読まなくても大丈夫です。必要なときだけ履歴確認として参照します。
+`ops/` と `runtime/` は将来配置の足場です。現行の起動スクリプトはまだ `scripts/home-control-stack/` が正です。
 
 ## Requirements
 
