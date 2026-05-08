@@ -1490,6 +1490,8 @@ if (-not $SkipHomeAssistantBridge) {
             "run",
             "--env-file",
             ".env",
+            "python",
+            "-m",
             "uvicorn",
             "home_control_bridge.main:app",
             "--host",
