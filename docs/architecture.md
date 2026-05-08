@@ -45,6 +45,7 @@ adapters/
 contracts/
   turn
   events
+  tools
   environment
   home-control
   expression

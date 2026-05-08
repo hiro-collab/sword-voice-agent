@@ -11,6 +11,7 @@ consumers.
 |---|---|
 | `turn/` | Turn request and turn response event stream. |
 | `events/` | Common thought-core event envelope. |
+| `tools/` | Tool started/result data payloads carried by thought-core events. |
 | `environment/` | Environment snapshots and feedback surfaces consumed by Dify/thought-core. |
 | `home-control/` | Safe home action preview/execute boundary. |
 | `expression/` | Current TTS and AITuberKit presentation payloads. |

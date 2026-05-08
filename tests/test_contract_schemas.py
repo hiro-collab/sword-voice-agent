@@ -12,6 +12,7 @@ THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core"
 sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 
 from thought_core.loop import ThoughtLoop  # noqa: E402
+from thought_core.tools import MockThoughtTools  # noqa: E402
 
 
 TURN = {
@@ -159,12 +160,31 @@ class ContractSchemaTest(TestCase):
 
     def test_event_schema_accepts_current_thought_core_events(self) -> None:
         schema_path = REPO_ROOT / "contracts" / "events" / "event.schema.json"
-        events = ThoughtLoop().run_dicts(TURN)
+        events = current_test_events()
 
         self.assertGreater(len(events), 0)
         for event in events:
             with self.subTest(event_type=event["type"]):
                 self.assertEqual(validate_schema(event, schema_path), [])
+
+    def test_tool_schemas_accept_current_thought_core_tool_events(self) -> None:
+        call_schema = REPO_ROOT / "contracts" / "tools" / "tool-call.schema.json"
+        result_schema = REPO_ROOT / "contracts" / "tools" / "tool-result.schema.json"
+        pending: dict[str, str] = {}
+
+        events = current_test_events()
+        self.assertTrue(any(event["type"] == "tool.started" for event in events))
+
+        for event in events:
+            data = event["data"]
+            if event["type"] == "tool.started":
+                self.assertEqual(validate_schema(data, call_schema), [])
+                pending[data["tool_call_id"]] = data["tool"]
+            if event["type"] == "tool.result":
+                self.assertEqual(validate_schema(data, result_schema), [])
+                self.assertEqual(pending.pop(data["tool_call_id"]), data["tool"])
+
+        self.assertEqual(pending, {})
 
     def test_turn_response_events_schema_accepts_current_response_shape(self) -> None:
         schema_path = (
@@ -173,7 +193,7 @@ class ContractSchemaTest(TestCase):
             / "turn"
             / "turn-response-events.schema.json"
         )
-        response = {"events": ThoughtLoop().run_dicts(TURN)}
+        response = {"events": current_test_events()}
 
         self.assertEqual(validate_schema(response, schema_path), [])
 
@@ -258,6 +278,10 @@ class ContractSchemaTest(TestCase):
 def validate_schema(value: Any, schema_path: Path) -> list[str]:
     schema = _load_json(schema_path)
     return _validate(value, schema, schema_path.parent, "$")
+
+
+def current_test_events() -> list[dict[str, Any]]:
+    return ThoughtLoop(tools=MockThoughtTools()).run_dicts(TURN)
 
 
 def _validate(value: Any, schema: dict[str, Any], base_dir: Path, path: str) -> list[str]:
