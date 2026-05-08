@@ -134,6 +134,8 @@ def create_server(
                         "data": {"code": "bad_request", "message": str(exc)},
                     }
                 )
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return
 
         def _write_sse_event(self, event: dict[str, Any]) -> None:
             self.wfile.write(f"id: {event['event_id']}\n".encode("utf-8"))

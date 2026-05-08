@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -689,7 +690,8 @@ class HomeControlHttpTools:
     def _recent_short_memory(self, turn: TurnInput, *, limit: int) -> list[dict[str, Any]]:
         path = Path(self.config.memory_root) / "short_memory.jsonl"
         items = []
-        for item in reversed(_read_jsonl(path)):
+        scan_lines = max(limit * 64, 256)
+        for item in reversed(_read_recent_jsonl(path, max_lines=scan_lines)):
             if item.get("session_id") not in {turn.session_id, None, ""}:
                 continue
             items.append(
@@ -1286,6 +1288,52 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         lines = path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
         return []
+    return _parse_jsonl_lines(lines)
+
+
+def _read_recent_jsonl(
+    path: Path,
+    *,
+    max_lines: int,
+    max_bytes: int = 1_048_576,
+) -> list[dict[str, Any]]:
+    if max_lines <= 0 or max_bytes <= 0:
+        return []
+    try:
+        file_size = path.stat().st_size
+    except FileNotFoundError:
+        return []
+    if file_size <= max_bytes:
+        return _read_jsonl(path)[-max_lines:]
+
+    chunks: list[bytes] = []
+    remaining = min(file_size, max_bytes)
+    position = file_size
+    newline_count = 0
+    try:
+        with path.open("rb") as stream:
+            while remaining > 0 and newline_count <= max_lines:
+                chunk_size = min(8192, remaining)
+                position -= chunk_size
+                stream.seek(position)
+                chunk = stream.read(chunk_size)
+                chunks.append(chunk)
+                newline_count += chunk.count(b"\n")
+                remaining -= chunk_size
+    except OSError:
+        return []
+
+    data = b"".join(reversed(chunks))
+    if position > 0:
+        first_newline = data.find(b"\n")
+        if first_newline < 0:
+            return []
+        data = data[first_newline + 1 :]
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    return _parse_jsonl_lines(lines[-max_lines:])
+
+
+def _parse_jsonl_lines(lines: Iterable[str]) -> list[dict[str, Any]]:
     values: list[dict[str, Any]] = []
     for line in lines:
         try:

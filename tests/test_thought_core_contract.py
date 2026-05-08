@@ -3,6 +3,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib import request
 
 from unittest import TestCase
@@ -15,6 +16,7 @@ sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 from thought_core.loop import ThoughtLoop  # noqa: E402
 from thought_core.reasoning import LocalActionReasoner  # noqa: E402
 from thought_core.responders import ResponderResult  # noqa: E402
+from thought_core.schema import TurnInput  # noqa: E402
 from thought_core.server import create_server  # noqa: E402
 from thought_core.tools import HomeControlHttpTools, HomeControlToolConfig, MockThoughtTools  # noqa: E402
 
@@ -183,6 +185,53 @@ class ThoughtCoreContractTest(TestCase):
             memory_context["items"][0]["content"]["summary"],
             "照明の反映には少し待つ必要がある。",
         )
+
+    def test_short_memory_retrieve_reads_recent_tail_only(self) -> None:
+        with TemporaryDirectory() as tmp:
+            memory_root = Path(tmp)
+            short_memory_path = memory_root / "short_memory.jsonl"
+            short_memory_path.parent.mkdir(parents=True, exist_ok=True)
+            with short_memory_path.open("w", encoding="utf-8") as stream:
+                for index in range(2500):
+                    stream.write(
+                        json.dumps(
+                            {
+                                "session_id": "other-session",
+                                "turn_id": f"old-{index}",
+                                "summary": "old-" + ("x" * 600),
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                for index in range(4):
+                    stream.write(
+                        json.dumps(
+                            {
+                                "session_id": "living_room_main",
+                                "turn_id": f"recent-{index}",
+                                "summary": f"recent-{index}",
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+
+            self.assertGreater(short_memory_path.stat().st_size, 1_048_576)
+            tools = HomeControlHttpTools(
+                HomeControlToolConfig(
+                    bridge_base_url="http://127.0.0.1:1",
+                    api_token="token",
+                    memory_root=str(memory_root),
+                    memory_policy_root=str(memory_root / "policies"),
+                    memory_retrieve_limit=3,
+                )
+            )
+
+            result = tools.memory_retrieve(TurnInput.from_mapping(TURN))
+
+        summaries = [item["content"]["summary"] for item in result["items"]]
+        self.assertEqual(summaries, ["recent-3", "recent-2", "recent-1"])
 
     def test_target_state_projection_only_constrains_required_values(self) -> None:
         class NoisyEnvironmentTools(MockThoughtTools):
