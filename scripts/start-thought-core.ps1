@@ -15,6 +15,9 @@ $resolvedEnvPath = Resolve-SwordPath -Path $EnvPath
 if (Test-Path -LiteralPath $resolvedEnvPath -PathType Leaf) {
     Import-SwordEnv -EnvPath $resolvedEnvPath
 }
+if ([string]::IsNullOrWhiteSpace($env:THOUGHT_CORE_PERSONA) -and [string]::IsNullOrWhiteSpace($env:SWORD_THOUGHT_CORE_PERSONA)) {
+    $env:THOUGHT_CORE_PERSONA = "cheerful_ossan"
+}
 $thoughtCorePath = Join-Path $repoRoot "services\thought-core"
 if (-not (Test-Path -LiteralPath $thoughtCorePath -PathType Container)) {
     throw "thought-core service directory not found: $thoughtCorePath"

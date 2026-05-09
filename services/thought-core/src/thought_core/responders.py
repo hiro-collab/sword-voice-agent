@@ -14,6 +14,7 @@ from typing import Any, Protocol
 from urllib import error, request
 from urllib.parse import urlparse
 
+from .persona import persona_system_prompt_from_env
 from .schema import TurnInput
 
 
@@ -123,18 +124,22 @@ class OpenAICompatibleChatResponder:
         )
 
     def respond(self, turn: TurnInput) -> ResponderResult:
+        persona_prompt = persona_system_prompt_from_env()
+        system_prompt = (
+            "You are the SWORD VOICE AGENT response adapter inside "
+            "thought-core. Respect the boundary: return only a short "
+            "Japanese assistant response for speech/display. Do not "
+            "execute tools or claim device actions; home operations "
+            "belong to the home-control tool boundary."
+        )
+        if persona_prompt:
+            system_prompt = f"{system_prompt} {persona_prompt}"
         payload = {
             "model": self.model,
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You are the SWORD VOICE AGENT response adapter inside "
-                        "thought-core. Respect the boundary: return only a short "
-                        "Japanese assistant response for speech/display. Do not "
-                        "execute tools or claim device actions; home operations "
-                        "belong to the home-control tool boundary."
-                    ),
+                    "content": system_prompt,
                 },
                 {"role": "user", "content": turn.text},
             ],

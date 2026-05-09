@@ -474,6 +474,66 @@ class ThoughtCoreContractTest(TestCase):
             "user_reported_room_light_state",
         )
 
+    def test_direct_room_light_feedback_keeps_probability_evidence(self) -> None:
+        class ProbabilityRoomLightTools(MockThoughtTools):
+            def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+                observation = super().environment_observe(turn, reason=reason)
+                room_light = observation["environment"]["state_queries"]["room_light"]
+                room_light["evidence"].update(
+                    {
+                        "electric_on_probability": 0.72,
+                        "daylight_present_probability": 0.11,
+                        "dark_probability": 0.08,
+                        "confidence": 0.64,
+                    }
+                )
+                observation["facts"]["state_queries"]["room_light"] = room_light
+                return observation
+
+        tools = ProbabilityRoomLightTools(light_on=True)
+        turn = {
+            **TURN,
+            "text": "今電気はついています",
+            "turn_id": "turn_direct_room_light_probability_feedback",
+        }
+
+        ThoughtLoop(tools=tools).run_dicts(turn)
+
+        evidence = tools.state_query_feedback_calls[0]["pending"]["evidence"]
+        self.assertEqual(evidence["electric_on_probability"], 0.72)
+        self.assertEqual(evidence["daylight_present_probability"], 0.11)
+        self.assertEqual(evidence["dark_probability"], 0.08)
+        self.assertEqual(evidence["confidence"], 0.64)
+
+    def test_direct_room_light_feedback_reports_save_failure(self) -> None:
+        class FailingFeedbackTools(MockThoughtTools):
+            def state_query_feedback(self, turn, payload):  # type: ignore[no-untyped-def]
+                self.state_query_feedback_calls.append(dict(payload))
+                return {
+                    "status": "failed",
+                    "ok": False,
+                    "error": "environment_feedback_unconfigured",
+                }
+
+        tools = FailingFeedbackTools(light_on=True)
+        turn = {
+            **TURN,
+            "text": "今電気はついています",
+            "turn_id": "turn_direct_room_light_feedback_failure",
+        }
+
+        events = ThoughtLoop(tools=tools).run_dicts(turn)
+        saved = next(event for event in events if event["type"] == "state_query.feedback_saved")
+        speeches = [
+            event["data"]["speech"]
+            for event in events
+            if event["type"] == "assistant.message"
+        ]
+
+        self.assertFalse(saved["data"]["ok"])
+        self.assertEqual(saved["data"]["error"], "environment_feedback_unconfigured")
+        self.assertTrue(any("学習ログへの保存に失敗" in speech for speech in speeches))
+
     def test_direct_room_light_feedback_does_not_resume_stale_action_review(self) -> None:
         tools = MockThoughtTools(light_on=False)
         turn = {
@@ -1207,6 +1267,116 @@ class ThoughtCoreContractTest(TestCase):
             feedback_event["data"]["last_review"]["reason"],
             "target_state_unverified",
         )
+
+    def test_calibrated_room_light_review_succeeds_when_effective_state_matches(self) -> None:
+        class CalibratedRoomLightTools(MockThoughtTools):
+            def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+                executed = bool(self.execute_calls)
+                raw_state = "unknown" if executed else "on"
+                effective_state = "off" if executed else "on"
+                confidence = "high" if executed else "medium"
+                room_light = {
+                    "available": True,
+                    "stale": False,
+                    "state": raw_state,
+                    "confidence_label": "low" if executed else "medium",
+                    "effective_state": effective_state,
+                    "effective_confidence_label": confidence,
+                    "effective_authority": "environment_state_server.calibration.home_assistant",
+                    "effective_answer_hint": "学習済みの操作履歴と Home Assistant の直近状態で補正しています。",
+                    "authority": "vision_snapshot_processor.mock",
+                    "projected_by": "environment_state_server.mock",
+                    "answer_hint": "映像推定では断定できない。",
+                    "calibration": {
+                        "applied": True,
+                        "state": effective_state,
+                        "confidence_label": confidence,
+                        "reason": "fresh_home_assistant_light_state",
+                    },
+                }
+                return {
+                    "status": "ok",
+                    "observation_ref": f"obs_{len(self.execute_calls)}_{reason}",
+                    "observation_source": "environment-state-server.mock",
+                    "facts": {
+                        "devices": [],
+                        "state_queries": {"room_light": room_light},
+                    },
+                    "environment": {
+                        "appliances": {},
+                        "state_queries": {"room_light": room_light},
+                    },
+                }
+
+            def home_execute(self, turn, action):  # type: ignore[no-untyped-def]
+                self.execute_calls.append(action)
+                return {
+                    "status": "accepted",
+                    "executed": True,
+                    "retryable": False,
+                    "command_id": f"cmd_{len(self.execute_calls)}",
+                    "attempt": len(self.execute_calls),
+                    "expected_state": action.get("expected_state"),
+                }
+
+        tools = CalibratedRoomLightTools(light_on=True)
+        events = ThoughtLoop(tools=tools).run_dicts(
+            {
+                **TURN,
+                "text": "電気を消して",
+                "turn_id": "turn_light_off_calibrated_review",
+            }
+        )
+        event_types = [event["type"] for event in events]
+
+        self.assertNotIn("feedback.requested", event_types)
+        self.assertNotIn("action.retrying", event_types)
+        self.assertEqual(len(tools.execute_calls), 1)
+        self.assertEqual(tools.execute_calls[0]["action_id"], "light_off")
+        self.assertEqual(events[-1]["data"]["status"], "success")
+
+    def test_home_assistant_calibrated_room_light_reply_names_authority(self) -> None:
+        class HomeAssistantCalibratedTools(MockThoughtTools):
+            def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+                room_light = {
+                    "available": True,
+                    "stale": False,
+                    "state": "unknown",
+                    "confidence_label": "low",
+                    "effective_state": "on",
+                    "effective_confidence_label": "high",
+                    "effective_authority": "environment_state_server.calibration.home_assistant",
+                    "effective_answer_hint": "Home Assistant の直近状態で補正しています。",
+                    "authority": "vision_snapshot_processor.mock",
+                    "projected_by": "environment_state_server.mock",
+                    "answer_hint": "映像推定では断定できない。",
+                }
+                return {
+                    "status": "ok",
+                    "observation_ref": "obs_ha_calibrated_state_query",
+                    "observation_source": "environment-state-server.mock",
+                    "facts": {"devices": [], "state_queries": {"room_light": room_light}},
+                    "environment": {
+                        "appliances": {},
+                        "state_queries": {"room_light": room_light},
+                    },
+                }
+
+        events = ThoughtLoop(tools=HomeAssistantCalibratedTools()).run_dicts(
+            {
+                **TURN,
+                "text": "電気はついてる？",
+                "turn_id": "turn_home_assistant_calibrated_room_light_reply",
+            }
+        )
+        speeches = [
+            event["data"]["speech"]
+            for event in events
+            if event["type"] == "assistant.message"
+        ]
+
+        self.assertTrue(any("Home Assistant上では" in speech for speech in speeches))
+        self.assertFalse(any("補正込みでは" in speech for speech in speeches))
 
     def test_uncertain_target_state_review_does_not_retry_light_on(self) -> None:
         class UncertainRoomLightTools(MockThoughtTools):

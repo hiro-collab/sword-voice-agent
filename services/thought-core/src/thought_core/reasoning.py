@@ -666,18 +666,37 @@ def _observed_state_for_binding(
     if target in {"light", "living_room_light"} or "living_room_light" in aliases:
         room_light = _room_light_from_observation(observation)
         if room_light:
+            effective_state = _effective_room_light_value(room_light, "state")
+            effective_confidence = _effective_room_light_value(room_light, "confidence_label")
             return {
                 "available": room_light.get("available") is not False,
-                "state": room_light.get("state"),
-                "source": room_light.get("authority") or room_light.get("source"),
+                "state": effective_state,
+                "source": (
+                    room_light.get("effective_authority")
+                    or room_light.get("authority")
+                    or room_light.get("source")
+                ),
                 "target": target,
                 "device_id": "room_light",
                 "stale": _as_bool(room_light.get("stale")) is True,
-                "confidence_label": room_light.get("confidence_label"),
+                "confidence_label": effective_confidence,
                 "updated_at": room_light.get("updated_at")
                 or room_light.get("observed_at"),
             }
     return {"available": False, "state": None, "target": target}
+
+
+def _effective_room_light_value(room_light: dict[str, Any], name: str) -> Any:
+    if name == "state":
+        effective = str(room_light.get("effective_state") or "").strip().lower()
+        confidence = str(room_light.get("effective_confidence_label") or "").strip().lower()
+        if effective in {"on", "off"} and confidence in {"medium", "high"}:
+            return effective
+    if name == "confidence_label":
+        effective = str(room_light.get("effective_confidence_label") or "").strip().lower()
+        if effective in {"medium", "high"}:
+            return effective
+    return room_light.get(name)
 
 
 def _room_light_from_observation(observation: dict[str, Any]) -> dict[str, Any]:

@@ -13,6 +13,7 @@ from .input_understanding import (
     build_input_understanding_from_env,
     describe_input_understanding,
 )
+from .persona import AssistantPersona, build_persona_from_env, strip_persona_tags
 from .responders import (
     TURN_RESPONDER_BOUNDARY,
     EnvironmentTurnResponder,
@@ -55,6 +56,7 @@ class ThoughtLoop:
         responder: TurnResponder | None = None,
         action_reasoner: ActionReasoner | None = None,
         input_understanding: InputUnderstanding | None = None,
+        persona: AssistantPersona | None = None,
     ) -> None:
         self.tools = tools or build_tools_from_env()
         self.max_execute_attempts = max(1, max_execute_attempts)
@@ -64,6 +66,7 @@ class ThoughtLoop:
         self.input_understanding = (
             input_understanding or build_input_understanding_from_env()
         )
+        self.persona = persona or build_persona_from_env()
         self.pending_confirmations: dict[str, dict[str, Any]] = {}
         self.pending_action_reviews: dict[str, dict[str, Any]] = {}
         self.pending_state_queries: dict[str, dict[str, Any]] = {}
@@ -681,7 +684,11 @@ class ThoughtLoop:
                     source_context=str(pending.get("source_context") or "state_query"),
                 ):
                     return True
-                speech = self._state_feedback_reply(label, continue_action=has_action)
+                speech = self._state_feedback_reply(
+                    label,
+                    continue_action=has_action,
+                    saved=self._feedback_persisted_ok(persisted),
+                )
                 self._emit_message(
                     events,
                     factory,
@@ -729,7 +736,7 @@ class ThoughtLoop:
         ) or self._direct_room_light_feedback_label(turn_input.text)
         if not direct_label:
             return False
-        self._persist_state_query_feedback(
+        persisted = self._persist_state_query_feedback(
             events,
             factory,
             turn_input,
@@ -738,7 +745,11 @@ class ThoughtLoop:
             feedback_reason="user_reported_room_light_state",
             source_context="state_query",
         )
-        speech = self._state_feedback_reply(direct_label, continue_action=has_action)
+        speech = self._state_feedback_reply(
+            direct_label,
+            continue_action=has_action,
+            saved=self._feedback_persisted_ok(persisted),
+        )
         self._emit_message(
             events,
             factory,
@@ -858,10 +869,23 @@ class ThoughtLoop:
                     "source_context": payload.get("source_context"),
                     "feedback_reason": payload.get("feedback_reason"),
                     "idempotency_key": payload.get("idempotency_key"),
+                    "error": result.get("error"),
+                    "detail": result.get("detail"),
                 },
             )
         )
         return {"payload": payload, "result": result}
+
+    def _feedback_persisted_ok(self, persisted: dict[str, Any] | None) -> bool:
+        if not isinstance(persisted, dict):
+            return False
+        result = persisted.get("result")
+        if not isinstance(result, dict):
+            return False
+        status = str(result.get("status") or "").lower()
+        if result.get("ok") is False:
+            return False
+        return status in {"accepted", "accepted_with_warning", "duplicate"}
 
     def _build_state_query_feedback_payload(
         self,
@@ -1219,13 +1243,21 @@ class ThoughtLoop:
     def _normalize_text(self, text: str) -> str:
         return text.replace(" ", "").replace("　", "").lower()
 
-    def _state_feedback_reply(self, user_label: str, *, continue_action: bool) -> str:
+    def _state_feedback_reply(
+        self,
+        user_label: str,
+        *,
+        continue_action: bool,
+        saved: bool = True,
+    ) -> str:
         label_text = {
             "on": "ついてる",
             "off": "消えてる",
             "daylight": "日光の影響がある",
             "unknown": "判断しづらい",
         }.get(user_label, user_label)
+        if not saved:
+            return f"なるほど、実際は{label_text}んだね。ただ、学習ログへの保存に失敗したので、まだ反映できていません。"
         suffix = "そのうえで操作も続けるね。" if continue_action else "学習用の材料として残したよ。"
         return f"なるほど、実際は{label_text}んだね。{suffix}"
 
@@ -1352,7 +1384,13 @@ class ThoughtLoop:
                 review=review,
             )
             messages = self._home_action_messages(action)
-            speech = f"確認ありがとう。{messages['success_speech']} その状態として覚えます。"
+            if self._feedback_persisted_ok(persisted):
+                speech = f"確認ありがとう。{messages['success_speech']} その状態として覚えます。"
+            else:
+                speech = (
+                    f"確認ありがとう。{messages['success_speech']} "
+                    "ただ、学習ログへの保存はできていません。"
+                )
             events.append(
                 factory.emit(
                     "action.feedback_resolved",
@@ -3776,10 +3814,17 @@ class ThoughtLoop:
         speech = self._coherent_stream_speech(events, speech)
         if not speech:
             return
+        display_matches_speech = display == original_speech
         if display == original_speech:
             display = speech
         else:
             display = self._dedupe_repeated_speech(display)
+        persona_message = self.persona.apply(speech, emotion=emotion, motion=motion)
+        speech = persona_message.speech
+        emotion = persona_message.emotion
+        motion = persona_message.motion
+        if display_matches_speech:
+            display = speech
         events.append(
             factory.emit(
                 "assistant.speech_delta",
@@ -3956,6 +4001,7 @@ class ThoughtLoop:
 
     def _speech_fragment_key(self, fragment: str) -> str:
         drop_chars = set(" \t\r\n　。！？!?、，,.・/／「」『』（）()[]【】")
+        fragment = strip_persona_tags(fragment)
         return "".join(
             char.lower()
             for char in str(fragment or "")
@@ -4225,6 +4271,12 @@ class ThoughtLoop:
                 "topic": evidence.get("topic"),
                 "lighting_type": evidence.get("lighting_type"),
                 "daylight_state": evidence.get("daylight_state"),
+                "electric_on_probability": evidence.get("electric_on_probability"),
+                "daylight_present_probability": evidence.get("daylight_present_probability"),
+                "dark_probability": evidence.get("dark_probability"),
+                "confidence": evidence.get("confidence"),
+                "model": evidence.get("model"),
+                "sequence": evidence.get("sequence"),
                 "probabilities": evidence.get("probabilities"),
             },
             "created_at": datetime.now(UTC).isoformat(),
@@ -4236,13 +4288,37 @@ class ThoughtLoop:
         if isinstance(environment, dict):
             queries = environment.get("state_queries")
             if isinstance(queries, dict) and isinstance(queries.get("room_light"), dict):
-                return queries["room_light"]
+                return self._effective_room_light(queries["room_light"])
         facts = observation.get("facts")
         if isinstance(facts, dict):
             queries = facts.get("state_queries")
             if isinstance(queries, dict) and isinstance(queries.get("room_light"), dict):
-                return queries["room_light"]
+                return self._effective_room_light(queries["room_light"])
         return {}
+
+    def _effective_room_light(self, room_light: dict[str, Any]) -> dict[str, Any]:
+        projected = dict(room_light)
+        effective_state = str(projected.get("effective_state") or "").strip().lower()
+        effective_confidence = str(
+            projected.get("effective_confidence_label") or ""
+        ).strip().lower()
+        if effective_state not in {"on", "off"}:
+            return projected
+        if effective_confidence not in {"medium", "high"}:
+            return projected
+        projected.setdefault("raw_state", projected.get("state"))
+        projected.setdefault("raw_confidence_label", projected.get("confidence_label"))
+        projected["state"] = effective_state
+        projected["confidence_label"] = effective_confidence
+        projected["authority"] = (
+            projected.get("effective_authority")
+            or projected.get("authority")
+            or "environment_state_server.calibration"
+        )
+        if projected.get("effective_answer_hint"):
+            projected["answer_hint"] = projected.get("effective_answer_hint")
+        projected["effective_projection_applied"] = True
+        return projected
 
     def _room_light_state_reply(self, room_light: dict[str, Any]) -> dict[str, str]:
         if not room_light:
@@ -4257,10 +4333,18 @@ class ThoughtLoop:
             speech = "カメラ推定では明るさの判定がまだ弱いです。実際の状態を教えてもらえると助かります。"
             return {"speech": speech, "display": speech}
         if state == "on":
-            speech = "カメラ推定では、リビングの電気はついているように見えます。"
+            if self._room_light_authority_is_home_assistant(room_light):
+                speech = "Home Assistant上では、リビングの電気はついている扱いです。カメラ判定は補助情報として見ています。"
+                return {"speech": speech, "display": speech}
+            prefix = "学習補正込みでは" if room_light.get("effective_projection_applied") else "カメラ推定では"
+            speech = f"{prefix}、リビングの電気はついているように見えます。"
             return {"speech": speech, "display": speech}
         if state == "off":
-            speech = "カメラ推定では、リビングの電気は消えているように見えます。"
+            if self._room_light_authority_is_home_assistant(room_light):
+                speech = "Home Assistant上では、リビングの電気は消えている扱いです。カメラ判定は補助情報として見ています。"
+                return {"speech": speech, "display": speech}
+            prefix = "学習補正込みでは" if room_light.get("effective_projection_applied") else "カメラ推定では"
+            speech = f"{prefix}、リビングの電気は消えているように見えます。"
             return {"speech": speech, "display": speech}
         hint = str(room_light.get("answer_hint") or "").strip()
         speech = (
@@ -4269,6 +4353,12 @@ class ThoughtLoop:
             else "カメラ推定ではまだ判断できません。"
         )
         return {"speech": speech, "display": speech}
+
+    def _room_light_authority_is_home_assistant(self, room_light: dict[str, Any]) -> bool:
+        authority = str(
+            room_light.get("authority") or room_light.get("effective_authority") or ""
+        ).lower()
+        return "home_assistant" in authority
 
     def _as_bool(self, value: Any) -> bool | None:
         if isinstance(value, bool):

@@ -1561,6 +1561,8 @@ foreach ($name in @(
     "THOUGHT_CORE_LLM_MODEL",
     "THOUGHT_CORE_LLM_TIMEOUT_S",
     "THOUGHT_CORE_LLM_MAX_CHARS",
+    "THOUGHT_CORE_PERSONA",
+    "SWORD_THOUGHT_CORE_PERSONA",
     "THOUGHT_CORE_HOME_HTTP_TIMEOUT_S",
     "THOUGHT_CORE_ROOM_LIGHT_WAIT_TIMEOUT_MS",
     "OPENAI_BASE_URL",
@@ -1574,6 +1576,9 @@ foreach ($name in @(
     if (-not [string]::IsNullOrWhiteSpace($value)) {
         $thoughtCoreEnvironment[$name] = $value
     }
+}
+if (-not $thoughtCoreEnvironment.ContainsKey("THOUGHT_CORE_PERSONA")) {
+    $thoughtCoreEnvironment["THOUGHT_CORE_PERSONA"] = "cheerful_ossan"
 }
 if ($EnableThoughtCore -and (-not $SkipHomeAssistantBridge)) {
     $homeControlToken = [Environment]::GetEnvironmentVariable("HOME_CONTROL_API_TOKEN")
