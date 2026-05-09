@@ -15,6 +15,121 @@ C:\Users\kawai\works\sword-agent-system\
   organs\                # 実体repo。声、反射、認識、手足、表現、表示
 ```
 
+## 先に読む: cloneだけでは動きません
+
+このGit repoは **control plane** です。設計、contracts、ops、policies、tests、Thought Core v0 は入っていますが、これだけをcloneしても会話、カメラ、家電操作、AITuber表示、TouchDesigner投影は動きません。
+
+実際に動かすには、次の3つをそろえます。
+
+1. Windows PC上に `sword-agent-system` という system cell root を作る。
+2. このrepoを `sword-agent-system\sword-control-plane` に置く。
+3. `organs/` 配下に、AITuber Kit、MediaPipe、Home Assistant bridge などの外部organ repoとローカル資材を配置する。
+
+### 必要なハードウェア
+
+| 種類 | 用途 | 備考 |
+|---|---|---|
+| Windows PC | 全体実行 | PowerShell 7、Python、Node.js、カメラ処理が動く性能が必要です。 |
+| Webカメラ | MediaPipe、刀印、部屋の明るさ推定 | 現在の既定例は `HD Pro Webcam C920` です。別カメラの場合は起動時の `-MediapipeCameraName` を変えます。 |
+| マイク | 音声入力 | Chromeのマイク権限を許可します。 |
+| スピーカーまたは音声出力 | TTS再生 | VOICEVOXやAITuber Kitの音声出力で使います。 |
+| Home Assistantで制御できる機器 | 家電操作 | 照明、エアコンなど。操作IDは `catalogs/actions/home-actions.json` で管理します。 |
+| プロジェクター | 投影演出 | 必須ではありません。TouchDesigner投影を使う場合に必要です。 |
+
+### 必要なソフトウェアと外部サービス
+
+| 必要なもの | 用途 | 必須度 |
+|---|---|---|
+| Git | このrepoとorgan repoの取得 | 必須 |
+| PowerShell 7 (`pwsh`) | 起動・停止スクリプト | 必須 |
+| Python + `uv` | Thought Core、Environment、MediaPipe系Python実行 | 必須 |
+| Node.js + npm | AITuber Kit、Launcher、TouchDesigner制御GUI | 必須 |
+| Chrome | Projection Visual、マイク入力、表示確認 | 必須 |
+| FFmpeg / FFprobe | カメラ映像のpublish、RTSP確認 | MediaPipe使用時は必須 |
+| MediaMTX (`mediamtx`) | カメラ映像のRTSP/WebRTC配信 | MediaPipe使用時は必須 |
+| VOICEVOX | 音声合成 | 音声出力に必要 |
+| Home Assistant | 家電操作 | 家電操作に必要 |
+| TouchDesigner | プロジェクター投影 | 投影演出に必要 |
+| LLM API key | Thought Coreの自然文応答 | 通常運用では必要 |
+| Dify | 旧workflow互換・比較確認 | 現在の主経路では任意 |
+
+### PATHに登録するもの
+
+少なくとも次のコマンドがPowerShellから見える必要があります。
+
+```powershell
+git --version
+pwsh -v
+uv --version
+python --version
+node -v
+npm -v
+ffmpeg -version
+ffprobe -version
+mediamtx --version
+```
+
+見つからない場合は、各ツールの実行ファイルがあるフォルダをWindowsの `Path` 環境変数に追加してください。特に `ffmpeg.exe` / `ffprobe.exe` は `ffmpeg\bin`、`mediamtx.exe` は展開先フォルダを追加します。
+
+`mediamtx` と `ffmpeg` は、PATHへ入れずに起動引数や環境変数で明示することもできます。
+
+```text
+MEDIAMTX_PATH=C:\tools\mediamtx\mediamtx.exe
+FFMPEG_PATH=C:\tools\ffmpeg\bin\ffmpeg.exe
+FFPROBE_PATH=C:\tools\ffmpeg\bin\ffprobe.exe
+```
+
+### 必要なディレクトリ配置
+
+推奨する配置は次です。
+
+```text
+C:\Users\kawai\works\sword-agent-system\
+  sword-control-plane\                         # このrepo
+  organs\
+    voice\ai-talk-core\                       # STT / handoff
+    reflex\mediapipe-sword-sign\              # MediaPipe / Camera Hub
+    environment\environment-state-server\      # Environment API
+    environment\vision-snapshot-processor\     # 画像スナップショット推定
+    action\home-assistant-server\              # Home Assistant bridge
+    expression\aituber-kit\                    # AITuber表示 / Projection Visual
+    expression\tts-service\                    # TTS補助
+    expression\avatar-service\                 # avatar runtime
+    display\touchdesigner-ai-controller\       # TouchDesigner制御
+    diagnostics\system-house-renderer\         # 構成可視化
+  external\                                    # Cubism SDKなど再配布注意資材
+  local\                                       # このPC固有のconfig / memory / secrets
+  runtime\                                     # 将来のruntime出力
+  .cache\                                      # 現行互換runtime
+```
+
+`organs/` 配下のrepoは、次のスクリプトでcloneまたは更新できます。
+
+```powershell
+cd C:\Users\kawai\works\sword-agent-system\sword-control-plane
+.\scripts\setup-validation-modules.ps1 -DryRun
+.\scripts\setup-validation-modules.ps1 -UpdateEnv
+```
+
+`-DryRun` で何がcloneされるか確認し、問題なければ `-UpdateEnv` で実行します。既に存在するorgan repoに未コミット変更がある場合、スクリプトはpullを避けます。
+
+### ローカルで用意するファイル
+
+cloneやsetup scriptだけでは、秘密情報や再配布できないモデルは入りません。次を各自で用意します。
+
+| パス | 用途 |
+|---|---|
+| `sword-control-plane\.env` | Thought Core、LLM、連携URL |
+| `organs\action\home-assistant-server\.env` | Home Assistant token、local API token |
+| `organs\action\home-assistant-server\config\home-control.yaml` | 家電操作の実デバイス設定 |
+| `organs\expression\aituber-kit\.env` | Projection Visual、VOICEVOX、Thought Core接続 |
+| `organs\expression\aituber-kit\public\vrm\*.vrm` | 利用規約に従って取得したVRMモデル |
+| `organs\expression\aituber-kit\public\scripts\live2dcubismcore.min.js` | Live2D/Cubismを使う場合のSDK資材 |
+| `external\CubismSdkForWeb-5-r.5\` | 必要な場合だけ配置する第三者SDK |
+| `local\secrets\` | `.env` に置きにくいローカル秘密情報 |
+
+これらは原則としてGitに入れません。
+
 ## このrepoの役割
 
 | 領域 | 役割 |
