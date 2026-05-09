@@ -1,6 +1,8 @@
 # Local Memory
 
-Future M4 memory files live here. Expected subgroups:
+`local/memory/` は、将来の M4 memory 置き場です。
+
+想定する内容です。
 
 ```text
 candidates.jsonl
@@ -9,5 +11,7 @@ episodes.jsonl
 summaries/
 ```
 
-`thought-core` and `deep-core` may propose candidates. `memory-core` is the
-commit authority. Do not store raw logs, raw signals, config, or secrets here.
+Thought Core や Deep Core は記憶候補を作れます。  
+確定記憶としてcommitする authority は Memory Core 側に置きます。
+
+raw log、raw signal、config、secrets はここに置きません。

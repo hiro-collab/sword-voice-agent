@@ -1,51 +1,61 @@
 # System Requirements
 
-## Purpose
+## 目的
 
-このシステムは、刀印ジェスチャーを入力ゲートにして、音声入力、Dify 応答、家電操作、読み上げ、アバター表示、TouchDesigner 演出をローカル環境でつなぐ。
+Sword Agent System は、ジェスチャー、音声入力、環境認識、家電操作、読み上げ、アバター表示、TouchDesigner投影をローカル環境でつなぐ AI身体OS です。
 
-## Success Conditions
+現在の主経路は `thought-core-v0` です。Dify は過去ワークフローとの互換・比較検証用として残します。
 
-- Camera Hub が刀印状態を topic として配信する。
-- Vision Snapshot Processor が室内照明などの snapshot vision state を topic として配信する。
-- sword-voice-agent が gesture topic を受けて、録音開始/停止の意図を生成する。
+## 成功条件
+
+- MediaPipe Camera Hub がカメラ状態と刀印状態を topic として配信する。
+- Vision Snapshot Processor が部屋の明るさなどの snapshot vision state を配信する。
 - ai-talk-core が録音、STT、handoff 保存を担当する。
-- Dify watcher が handoff を Dify Chat App に送り、応答を受け取る。
-- Home Assistant bridge が Dify tool side effect を安全に扱う。
-- TTS service が Dify 応答を読み上げる。
-- AITuberKit Projection Visual が発話、HUD、背景表示を担う。
-- Environment State Server が Dify 用 state と表示用 indicator を分けて返す。
-- TouchDesigner は UDP trigger と表示用 URL を使って演出する。
+- Thought Core が turn単位の思考、状態確認、家電操作、再観測、応答を担当する。
+- Environment State Server が state query と indicator を返す。
+- Home Assistant bridge が allowlist された action を単発実行する。
+- AITuber Kit Projection Visual が会話、HUD、アバター表示、背景表示を担う。
+- VOICEVOX またはTTSサービスが応答を読み上げる。
+- TouchDesigner制御GUIがUDP連携状態を確認できる。
+- TouchDesigner本体は、必要に応じてプロジェクター投影用の `.toe` を開ける。
 
-## Non Goals
+## 非目標
 
-- Camera Hub 以外が物理カメラを開くこと。
+- Camera Hub 以外が物理カメラを直接開くこと。
 - Vision Snapshot Processor が物理カメラを直接開くこと。
-- Environment State Server が gesture 推論や映像配信を行うこと。
-- Projection や HUD が制御 state の authority になること。
-- archives 配下の履歴文書を要求仕様として使うこと。
-- API key、token、個人パスを README や fixture に固定すること。
+- Environment State Server が家電操作を実行すること。
+- Home Control Server が意味レベルのretryや最終成功判定を行うこと。
+- Projection Visual やHUDが制御stateのauthorityになること。
+- Thought Core が Home Assistant のservice名やentity名を直接生成すること。
+- API key、token、個人パスをREADMEやfixtureに固定すること。
+- `archives/` 配下の履歴文書を現行仕様として使うこと。
 
-## Operating Assumptions
+## 前提
 
-- 主な開発環境は Windows と PowerShell。
-- AITuberKit は `aituber-kit/` の別アプリとして起動する。
-- Dify、VOICEVOX、TouchDesigner は外部アプリとして扱い、Home Control Stack の PID 管理対象にしない。
-- Home Control Stack の停止処理は、管理台帳に載っている PID だけを扱う。
-- loopback 外に公開する場合は、明示的な許可、token、Origin 制限を必要とする。
+- 主な開発環境は Windows と PowerShell 7。
+- system cell root は `C:\Users\kawai\works\sword-agent-system`。
+- control plane repo は `C:\Users\kawai\works\sword-agent-system\sword-control-plane`。
+- 大きな機能repoは `organs/` 配下に置く。
+- `.cache/home-control-stack` は現行互換runtimeとして残す。
+- `runtime/` と `local/` は将来の正規配置として段階的に使う。
 
-## Required Local Inputs
+## 必要なローカル入力
 
-- Dify API URL と app API key。
-- `mediapipe-sword-sign` の gesture model。
+- LLM API key。
+- Home Assistant long-lived access token。
+- `HOME_CONTROL_API_TOKEN`。
+- MediaPipe sword sign model。
 - Chrome のマイク権限。
-- 必要に応じて Home Assistant action 設定。
-- 必要に応じて AITuberKit の client ID と Message Receiver 設定。
+- Webカメラとマイク。
+- 必要に応じて TouchDesigner、VOICEVOX、Dify。
 
-## User Flow
+## 基本ユーザーフロー
 
-1. Home Control Stack を起動する。
-2. AITuberKit Projection Visual を開く。
-3. 刀印を出す。
-4. マイク入力が有効になった状態で話す。
-5. Dify 応答、TTS、AITuberKit 発話、HUD、家電操作結果を確認する。
+1. `thought-core-v0` profile で Home Control Stack を起動する。
+2. AITuber Kit Projection Visual を開く。
+3. Chrome のマイク権限を許可する。
+4. 刀印または画面操作で入力を開始する。
+5. 音声で質問や家電操作を依頼する。
+6. Thought Core が Environment State を観測し、必要なら Home Assistant bridge へ実行を依頼する。
+7. 実行後に再観測し、結果を発話とHUDに反映する。
+8. 必要に応じて TouchDesigner の `.toe` を開き、プロジェクターへ投影する。

@@ -1,22 +1,25 @@
 # Runtime
 
-`runtime/` is the future root for generated logs, state, PID files, caches, and
-diagnostics. Do not commit generated runtime data here.
+`runtime/` は、将来の正規runtime出力置き場です。
 
-Runtime covers M1 module state, M3 event journals, process registries, caches,
-and diagnostics. It does not hold committed M4 memory or M6 secrets.
+ここには、実行中に生成されるログ、状態、PID、cache、diagnostics を置きます。  
+生成データは原則Git管理しません。
 
-The current default compatibility path is still:
+```text
+runtime/
+  logs/
+  state/
+  pids/
+  diagnostics/
+```
+
+memory階層では、主に M1 module state、M3 event journal、process registry、diagnostics を扱います。  
+確定した M4 memory や M6 secrets はここには置きません。
+
+現行の互換runtime path は次です。
 
 ```text
 .cache/home-control-stack
 ```
 
-Advanced runs can override the stack state directory with:
-
-```text
-HOME_CONTROL_STACK_STATE_DIR
--StackStateDir
-```
-
-See `docs/runtime-layout.md` for the current mapping and migration rules.
+詳細な移行対応は `docs/runtime-layout.md` を参照してください。

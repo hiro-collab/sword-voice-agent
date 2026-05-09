@@ -3,7 +3,7 @@
 このディレクトリは、現行 workspace での `thought-core` 正規 service root です。
 現在は v0 実装として、Dify workflow と並走しながら turn 境界を固めています。
 
-目的は、`sword-voice-agent` から見える API 契約を小さく固定し、内部の実装を Dify、
+目的は、system cell の外側ランタイムから見える API 契約を小さく固定し、内部の実装を Dify、
 OpenAI Agents SDK、LangGraph、または将来の別基盤へ差し替えやすくすることです。
 
 ## 境界仕様
@@ -20,9 +20,13 @@ OpenAI Agents SDK、LangGraph、または将来の別基盤へ差し替えやす
 `THOUGHT_CORE_LLM_BASE_URL`, `THOUGHT_CORE_LLM_API_KEY`, `THOUGHT_CORE_LLM_MODEL`
 を指定できます。未設定時は local fallback が短い応答を返します。
 
+応答口調は `THOUGHT_CORE_PERSONA` で切り替えます。通常の home-control stack 起動では
+`cheerful_ossan` が入り、感情タグ `[happy]` などと必要な `[motion:...]` を付けた
+砕けたホームアシスト口調に整形します。未設定または `plain` の場合は、本文を変えずに返します。
+
 ## 役割分担
 
-`sword-voice-agent` は外側のランタイムとして、次を担当します。
+system cell の外側ランタイムは、次を担当します。
 
 - gesture gate
 - STT
@@ -166,9 +170,9 @@ Content-Type: application/json
 SSE は turn 全体の完了を待たず、loop が event を生成した順に `assistant.speech_delta`、
 `thought.stage`、`tool.started` などを逐次 flush します。
 
-## sword-voice-agent client
+## control plane client
 
-`sword-voice-agent` 側からは `ThoughtCoreClient` で `POST /turn?stream=true` を読みます。
+control plane 側からは `ThoughtCoreClient` で `POST /turn?stream=true` を読みます。
 
 ```powershell
 $env:THOUGHT_CORE_BASE_URL="http://127.0.0.1:18787"
@@ -210,7 +214,7 @@ uv run sword-thought-core-handoff --handoff-json tests/fixtures/handoff.json --p
 実際の ai_talk_core キャッシュを読む場合は、`AI_TALK_CORE_ROOT` を設定してから実行します。
 
 ```powershell
-$env:AI_TALK_CORE_ROOT="..\ai-talk-core"
+$env:AI_TALK_CORE_ROOT="..\organs\voice\ai-talk-core"
 $env:THOUGHT_CORE_BASE_URL="http://127.0.0.1:18787"
 uv run sword-thought-core-handoff --field command --print-events
 ```
@@ -245,7 +249,7 @@ uv run sword-thought-core-handoff --text "電気つけて" --session-id living_r
 ai_talk_core の handoff 更新を監視して thought-core に流す場合:
 
 ```powershell
-$env:AI_TALK_CORE_ROOT="..\ai-talk-core"
+$env:AI_TALK_CORE_ROOT="..\organs\voice\ai-talk-core"
 $env:THOUGHT_CORE_BASE_URL="http://127.0.0.1:18787"
 uv run sword-thought-core-watch --skip-existing --print-events
 ```
@@ -257,7 +261,7 @@ thought-core の応答を外側ランタイムへ流す場合は、必要な出�
 `assistant.speech_delta` は TTS chunk API へ、`assistant.message` は AITuberKit direct_send へ送ります。
 
 ```powershell
-uv run sword-thought-core-watch --ai-talk-core-root ..\ai-talk-core --skip-existing --print-events --tts-chunk-url http://127.0.0.1:8765/api/tts/chunk --aituber-message-url "http://127.0.0.1:3000/api/messages?clientId=sword&type=direct_send"
+uv run sword-thought-core-watch --ai-talk-core-root ..\organs\voice\ai-talk-core --skip-existing --print-events --tts-chunk-url http://127.0.0.1:8765/api/tts/chunk --aituber-message-url "http://127.0.0.1:3000/api/messages?clientId=sword&type=direct_send"
 ```
 
 AITuberKit への短い先行相づちを止める場合は `--local-ack-mode off` を指定します。
@@ -265,7 +269,7 @@ AITuberKit への短い先行相づちを止める場合は `--local-ack-mode of
 現在の handoff を1回だけ処理する場合:
 
 ```powershell
-uv run sword-thought-core-watch --ai-talk-core-root ..\ai-talk-core --once --print-events
+uv run sword-thought-core-watch --ai-talk-core-root ..\organs\voice\ai-talk-core --once --print-events
 ```
 
 watcher は既定で `.cache/sword_voice_agent/latest_thought_core_response.json` と

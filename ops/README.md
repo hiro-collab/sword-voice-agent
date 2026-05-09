@@ -1,51 +1,56 @@
 # Ops
 
-`ops/` is the home for process manifests, launch policy, and process registry
-documentation. The active start/stop implementation is still inherited from the
-Home Control Stack supervisor, and that supervisor now lives under
-`ops/scripts/home-control-stack/`. `ops/scripts/system.ps1` is the profile-aware
-control surface.
+`ops/` は、Sword Agent System の起動、停止、状態確認、manifest を扱う場所です。
 
-## Current Active Locations
+system cell 直下の `.bat` は押しやすい入口です。実際の起動定義とprofile解決は、この `ops/` が担当します。
 
-| Concern | Current path |
+## 現在の入口
+
+| 用途 | パス |
 |---|---|
-| Profile-aware start/status/stop facade | `ops/scripts/system.ps1` |
-| Home Control Stack supervisor implementation | `ops/scripts/home-control-stack/` |
-| Root shortcut installer | `ops/scripts/home-control-stack/install-root-shortcuts.ps1` |
-| Compatibility wrappers | `scripts/home-control-stack/` |
+| profile対応の start/status/stop | `ops/scripts/system.ps1` |
+| Home Control Stack supervisor | `ops/scripts/home-control-stack/` |
+| profile定義 | `ops/manifests/profiles/` |
+| service定義 | `ops/manifests/services/` |
+| rootショートカット生成 | `ops/scripts/home-control-stack/install-root-shortcuts.ps1` |
+| 互換wrapper | `scripts/home-control-stack/` |
 | Launcher server | `tools/home-control-launcher/` |
-| Validation module setup | `scripts/setup-validation-modules.ps1` |
 
-See `docs/start-stop-control-plan.md` for the control-plane shape. Manifests
-live under `ops/manifests/`.
+新しい起動管理の作業は `ops/scripts/` と `ops/manifests/` に追加します。互換wrapperは、外部参照が残る間だけ維持します。
 
-Use the facade from this repository root:
+## よく使うコマンド
+
+system cell 直下から使う場合です。
 
 ```powershell
+cd C:\Users\kawai\works\sword-agent-system
+.\start-home-control-stack.bat -Profile thought-core-v0
+.\status-home-control-stack.bat -Profile thought-core-v0
+.\stop-home-control-stack.bat -Profile thought-core-v0 -Force
+```
+
+control plane repo から詳細を見る場合です。
+
+```powershell
+cd C:\Users\kawai\works\sword-agent-system\sword-control-plane
 .\ops\scripts\system.ps1 start  -Profile thought-core-v0 -DryRun
-.\ops\scripts\system.ps1 status -Profile thought-core-v0
+.\ops\scripts\system.ps1 status -Profile thought-core-v0 -ManifestOnly
 .\ops\scripts\system.ps1 stop   -Profile thought-core-v0 -DryRun
 ```
 
-`status` prints a layer-aware manifest/PID summary, then delegates to the
-current health status script unless `-ManifestOnly` is passed. `start` and
-`stop` translate the selected profile into the current stack script arguments.
-The facade prefers PowerShell 7 (`pwsh`) when delegating because the inherited
-supervisor scripts use PowerShell 7 syntax.
-
 ## Profiles
 
-| Profile | Intended use |
+| Profile | 用途 |
 |---|---|
-| `full-local` | Current Dify-based full local stack. |
-| `thought-core-v0` | Thought Core API and watcher path, with Dify stack/watcher skipped. |
-| `thought-core-experimental` | Deprecated compatibility alias for `thought-core-v0`. |
-| `camera-debug` | Camera Hub and Vision Snapshot Processor only. |
-| `aituber-only` | AITuber Kit surface only. |
+| `thought-core-v0` | 現在の主経路。Thought Core API と watcher を使う。 |
+| `thought-core-experimental` | 旧名の互換エイリアス。新しい手順では `thought-core-v0` を使う。 |
+| `camera-debug` | Camera Hub と Vision Snapshot Processor だけを確認する。 |
+| `aituber-only` | AITuber Kit 表示だけを確認する。 |
+| `full-local` | Dify互換を含む旧寄りの構成。通常運用では優先しない。 |
 
-When another stack is already running, use alternate ports for dry-run
-verification instead of stopping user-owned processes:
+## 別ポートでdry-runする例
+
+既存スタックを止めずに起動引数だけ確認したいときに使います。
 
 ```powershell
 .\ops\scripts\system.ps1 start `
@@ -63,8 +68,10 @@ verification instead of stopping user-owned processes:
   -StackStateDir .cache\home-control-stack-system-test
 ```
 
-## Migration Rule
+## 変更ルール
 
-Do not delete `scripts/home-control-stack/` until external references have had
-at least one migration phase to update. Those files are compatibility wrappers;
-new lifecycle work belongs under `ops/scripts/`.
+- 新しいサービスを起動対象にする場合は `ops/manifests/services/` に追加する。
+- profileへの参加は `ops/manifests/profiles/` で管理する。
+- layer、logical、memory_scope などの説明をmanifestに残す。
+- rootの `.bat` は薄いショートカットに保つ。
+- 起動に失敗したときの確認手順は、system cell の `README.md` に近い場所へ置く。

@@ -1,8 +1,8 @@
 # Local Secrets
 
-Prefer `.env`, the OS secret store, or the owning external service's secret
-management. Use this directory only for local-only secret material that cannot
-fit those mechanisms.
+`local/secrets/` は、ローカル専用の秘密情報を置くための予備領域です。
 
-Secret values must not be committed, logged, summarized, or copied into memory
-candidates.
+通常は、まず `.env`、OSのsecret store、または外部サービス側のsecret管理を使います。  
+それで足りない場合だけ、このディレクトリを使います。
+
+秘密値は、commit、log出力、要約、memory candidate へのコピーをしてはいけません。
