@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/home-control/preview-result.schema.json",
+  "title": "Home Control Preview Result",
+  "description": "Response body returned by POST /actions/{action_id}/preview.",
+  "type": "object",
+  "required": [
+    "ok",
+    "executed"
+  ],
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "action_id": {
+      "type": "string"
+    },
+    "executed": {
+      "type": "boolean"
+    },
+    "preview": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "confirmation_required": {
+      "type": "boolean"
+    },
+    "confirmation_token": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}
+

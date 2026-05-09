@@ -209,7 +209,27 @@ function Test-SwordProtectedProcess {
         "wininit",
         "services",
         "lsass",
-        "Memory Compression"
+        "Memory Compression",
+        "chrome",
+        "chrome.exe",
+        "msedge",
+        "msedge.exe",
+        "firefox",
+        "firefox.exe",
+        "brave",
+        "brave.exe",
+        "brave-browser",
+        "brave-browser.exe",
+        "opera",
+        "opera.exe",
+        "vivaldi",
+        "vivaldi.exe",
+        "updater",
+        "updater.exe",
+        "googleupdate",
+        "googleupdate.exe",
+        "microsoftedgeupdate",
+        "microsoftedgeupdate.exe"
     )
     return $ProcessName -in $protectedNames
 }

@@ -11,6 +11,7 @@ from sword_voice_agent.adapters.console_status import (
     build_console_status,
     fetch_dify_api,
     fetch_input_gate,
+    fetch_thought_core_api,
     normalize_module_statuses,
     read_console_events,
 )
@@ -239,6 +240,64 @@ class ConsoleStatusTest(TestCase):
             self.assertEqual(status["events"][0]["turn_id"], "turn-1")
             self.assertEqual(status["voice"]["turn_id"], "turn-1")
 
+    def test_includes_thought_core_status_from_status_store(self) -> None:
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            status_dir = root / ".cache" / "sword_voice_agent"
+            status_dir.mkdir(parents=True)
+            (status_dir / "latest_thought_core_response.json").write_text(
+                json.dumps(
+                    {
+                        "request": {
+                            "text": "電気つけて",
+                            "context": {"turn_id": "turn-1"},
+                        },
+                        "turn_payload": {
+                            "text": "電気つけて",
+                            "turn_id": "turn-1",
+                            "session_id": "living_room_main",
+                        },
+                        "response": {
+                            "text": "リビングの電気をつけたよ。",
+                            "conversation_id": "turn-1",
+                            "raw": {
+                                "data": {"status": "success"},
+                                "_streaming": {
+                                    "event_count": 16,
+                                    "first_event_elapsed_s": 0.1,
+                                    "completed_elapsed_s": 0.4,
+                                }
+                            },
+                        },
+                        "skipped": False,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            status = build_console_status(
+                ConsoleStatusConfig(
+                    ai_talk_core_root=root,
+                    status_dir=status_dir,
+                    tts_status_dir=None,
+                )
+            )
+
+            self.assertTrue(status["health"]["thought_core"])
+            self.assertTrue(status["thought_core"]["available"])
+            self.assertEqual(status["thought_core"]["request_text"], "電気つけて")
+            self.assertEqual(status["thought_core"]["turn_id"], "turn-1")
+            self.assertEqual(status["thought_core"]["session_id"], "living_room_main")
+            self.assertEqual(status["thought_core"]["status"], "success")
+            self.assertEqual(
+                status["thought_core"]["answer"],
+                "リビングの電気をつけたよ。",
+            )
+            self.assertEqual(status["thought_core"]["event_count"], 16)
+            self.assertEqual(status["thought_core"]["first_event_latency"], 0.1)
+            self.assertTrue(status["files"]["status_thought_core_json"]["exists"])
+
     def test_includes_module_statuses(self) -> None:
         with workspace_tempdir() as tmp:
             root = Path(tmp)
@@ -272,6 +331,7 @@ class ConsoleStatusTest(TestCase):
             self.assertEqual(modules["gesture_udp_receiver"]["state"], "stale")
             self.assertEqual(modules["gesture_udp_receiver"]["detail"], "127.0.0.1:8765")
             self.assertEqual(modules["dify_api"]["state"], "missing")
+            self.assertEqual(modules["thought_core_api"]["state"], "missing")
             self.assertEqual(modules["tts_service"]["state"], "missing")
             self.assertEqual(modules["avatar_service"]["state"], "missing")
             self.assertEqual(modules["console"]["state"], "running")
@@ -478,6 +538,27 @@ class ConsoleStatusTest(TestCase):
         self.assertEqual(by_name["dify_api"]["state"], "running")
         self.assertEqual(by_name["dify_api"]["detail"], "http://localhost:8080/v1")
 
+    def test_thought_core_api_module_uses_reachability(self) -> None:
+        modules = normalize_module_statuses(
+            {},
+            input_gate={"available": False},
+            thought_core_api={
+                "available": True,
+                "url": "http://127.0.0.1:18787",
+                "status": 200,
+                "error": None,
+            },
+            timestamp=10.0,
+            stale_after_s=6.0,
+        )
+
+        by_name = {item["name"]: item for item in modules}
+        self.assertEqual(by_name["thought_core_api"]["state"], "running")
+        self.assertEqual(
+            by_name["thought_core_api"]["detail"],
+            "http://127.0.0.1:18787",
+        )
+
     def test_avatar_module_uses_reachability(self) -> None:
         modules = normalize_module_statuses(
             {},
@@ -534,6 +615,44 @@ class ConsoleStatusTest(TestCase):
         by_name = {item["name"]: item for item in modules}
         self.assertEqual(by_name["dify_api"]["state"], "error")
         self.assertIn("connection refused", by_name["dify_api"]["detail"])
+
+    def test_thought_core_api_module_reports_unreachable_endpoint(self) -> None:
+        modules = normalize_module_statuses(
+            {},
+            input_gate={"available": False},
+            thought_core_api={
+                "available": False,
+                "url": "http://127.0.0.1:18787",
+                "status": None,
+                "error": "connection refused",
+            },
+            timestamp=10.0,
+            stale_after_s=6.0,
+        )
+
+        by_name = {item["name"]: item for item in modules}
+        self.assertEqual(by_name["thought_core_api"]["state"], "error")
+        self.assertIn("connection refused", by_name["thought_core_api"]["detail"])
+
+    @patch("sword_voice_agent.adapters.console_status.request.urlopen")
+    def test_thought_core_api_status_uses_configured_base_url(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b""
+        response.__enter__.return_value.status = 200
+        urlopen.return_value = response
+
+        result = fetch_thought_core_api(
+            ConsoleStatusConfig(
+                ai_talk_core_root=Path("."),
+                thought_core_base_url="http://127.0.0.1:18787",
+            )
+        )
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["url"], "http://127.0.0.1:18787")
 
     def test_input_gate_status_rejects_file_url(self) -> None:
         result = fetch_input_gate(
@@ -631,22 +750,56 @@ class ConsoleStatusTest(TestCase):
                 encoding="utf-8",
             )
             (status_dir / "events.jsonl").write_text(
-                json.dumps(
-                    {
-                        "type": "dify.response",
-                        "timestamp": 1.0,
-                        "source": "test",
-                        "turn_id": "turn-1",
-                        "payload": {
-                            "request_text": "コマンド",
-                            "response_text": "回答",
-                            "conversation_id": "conv-1",
-                            "message_id": "msg-1",
-                        },
-                    },
-                    ensure_ascii=False,
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "type": "dify.response",
+                                "timestamp": 1.0,
+                                "source": "test",
+                                "turn_id": "turn-1",
+                                "payload": {
+                                    "request_text": "コマンド",
+                                    "response_text": "回答",
+                                    "conversation_id": "conv-1",
+                                    "message_id": "msg-1",
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            {
+                                "type": "thought_core.response",
+                                "timestamp": 2.0,
+                                "source": "test",
+                                "turn_id": "turn-1",
+                                "payload": {
+                                    "request_text": "コマンド",
+                                    "turn_text": "コマンド",
+                                    "response_text": "回答",
+                                    "event_count": 16,
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ]
                 )
                 + "\n",
+                encoding="utf-8",
+            )
+            (status_dir / "latest_thought_core_response.json").write_text(
+                json.dumps(
+                    {
+                        "request": {"text": "コマンド", "context": {"turn_id": "turn-1"}},
+                        "turn_payload": {
+                            "text": "コマンド",
+                            "turn_id": "turn-1",
+                            "session_id": "living_room_main",
+                        },
+                        "response": {"text": "回答", "conversation_id": "turn-1"},
+                    },
+                    ensure_ascii=False,
+                ),
                 encoding="utf-8",
             )
 
@@ -665,6 +818,8 @@ class ConsoleStatusTest(TestCase):
             self.assertEqual(status["voice"]["command"], "[redacted]")
             self.assertEqual(status["dify"]["answer"], "[redacted]")
             self.assertEqual(status["dify"]["conversation_id"], "[redacted]")
+            self.assertEqual(status["thought_core"]["answer"], "[redacted]")
+            self.assertEqual(status["thought_core"]["turn_id"], "[redacted]")
             self.assertEqual(status["tts"]["request_id"], "[redacted]")
             self.assertEqual(status["tts"]["message_id"], "[redacted]")
             self.assertEqual(status["tts"]["conversation_id"], "[redacted]")
@@ -672,6 +827,12 @@ class ConsoleStatusTest(TestCase):
             self.assertEqual(status["tts"]["watching"], "[redacted]")
             self.assertEqual(status["events"][0]["turn_id"], "[redacted]")
             self.assertEqual(status["events"][0]["payload"]["response_text"], "[redacted]")
+            thought_core_event = [
+                event
+                for event in status["events"]
+                if event["type"] == "thought_core.response"
+            ][0]
+            self.assertEqual(thought_core_event["payload"]["response_text"], "[redacted]")
 
 
 @contextmanager

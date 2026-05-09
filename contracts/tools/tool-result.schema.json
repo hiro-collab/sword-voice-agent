@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-agent.local/contracts/tools/tool-result.schema.json",
+  "title": "Thought Core Tool Result Data",
+  "description": "Data payload for a thought-core tool.result event.",
+  "type": "object",
+  "required": ["tool", "tool_call_id", "status", "result"],
+  "properties": {
+    "tool": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+    },
+    "tool_call_id": {
+      "type": "string",
+      "pattern": "^tc_[0-9]{4,}$"
+    },
+    "status": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "result": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

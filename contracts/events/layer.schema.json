@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/events/layer.schema.json",
+  "title": "System Layer",
+  "description": "Logical layer tag used by events, logs, status records, and diagnostics.",
+  "type": "string",
+  "enum": [
+    "app",
+    "reflex",
+    "turn",
+    "deep",
+    "environment",
+    "action",
+    "expression",
+    "memory",
+    "adapter",
+    "contract",
+    "runtime",
+    "ops",
+    "docs"
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/turn/turn-request.schema.json",
+  "title": "Thought Core Turn Request",
+  "description": "Request body accepted by the current thought-core /turn endpoint.",
+  "type": "object",
+  "required": [
+    "text",
+    "turn_id",
+    "session_id"
+  ],
+  "properties": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "turn_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "locale": {
+      "type": "string",
+      "default": "ja-JP"
+    },
+    "context_refs": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

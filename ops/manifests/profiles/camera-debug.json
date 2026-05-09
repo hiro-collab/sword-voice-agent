@@ -1,0 +1,9 @@
+{
+  "profile_id": "camera-debug",
+  "layer": "ops",
+  "description": "Camera and vision-state pieces without AITuber or Dify.",
+  "services": [
+    "mediapipe_camera_hub_stack",
+    "vision_snapshot_processor"
+  ]
+}

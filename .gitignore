@@ -12,3 +12,16 @@ htmlcov/
 tests/_tmp/
 dist/
 build/
+runtime/*
+!runtime/README.md
+local/*
+!local/README.md
+!local/memory/
+local/memory/*
+!local/memory/README.md
+!local/config/
+local/config/*
+!local/config/README.md
+!local/secrets/
+local/secrets/*
+!local/secrets/README.md

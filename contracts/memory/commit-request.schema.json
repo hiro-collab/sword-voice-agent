@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/memory/commit-request.schema.json",
+  "title": "Memory Commit Request",
+  "type": "object",
+  "required": ["schema_version", "request_id", "requester", "candidate_id", "decision"],
+  "properties": {
+    "schema_version": {
+      "const": "memory.commit.request.v0"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^memcommitreq_.+"
+    },
+    "requester": {
+      "type": "string",
+      "minLength": 1
+    },
+    "candidate_id": {
+      "type": "string",
+      "pattern": "^mcand_.+"
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["commit", "reject"]
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

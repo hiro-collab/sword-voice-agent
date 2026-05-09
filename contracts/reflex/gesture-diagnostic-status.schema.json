@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/reflex/gesture-diagnostic-status.schema.json",
+  "title": "Gesture Diagnostic Status",
+  "description": "Camera Hub / MediaPipe diagnostic status projected through the reflex status path.",
+  "type": "object",
+  "required": ["type", "timestamp", "sequence", "response"],
+  "properties": {
+    "type": {
+      "const": "gesture_receiver_status"
+    },
+    "timestamp": {
+      "type": "number",
+      "minimum": 0
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "from": {
+      "type": "string",
+      "minLength": 1
+    },
+    "response": {
+      "type": "object",
+      "required": ["diagnostic"],
+      "properties": {
+        "diagnostic": {
+          "type": "object",
+          "required": ["type", "status"],
+          "properties": {
+            "type": {
+              "const": "gesture_status"
+            },
+            "status": {
+              "type": "string",
+              "minLength": 1
+            },
+            "frame_id": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "fps": {
+              "type": "number",
+              "minimum": 0
+            },
+            "hand_detected": {
+              "type": "boolean"
+            },
+            "primary_gesture": {
+              "type": "string"
+            },
+            "sword_sign": {
+              "type": "object",
+              "properties": {
+                "active": {
+                  "type": "boolean"
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "additionalProperties": true
+            },
+            "best_gesture": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "additionalProperties": true
+            },
+            "camera": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
+

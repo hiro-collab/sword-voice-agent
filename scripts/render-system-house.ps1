@@ -27,7 +27,7 @@ $rendererRootValue = [Environment]::GetEnvironmentVariable(
     "Process"
 )
 if ([string]::IsNullOrWhiteSpace($rendererRootValue)) {
-    $rendererRootValue = "..\system-house-renderer"
+    $rendererRootValue = "..\organs\diagnostics\system-house-renderer"
 }
 $rendererRoot = Resolve-SwordPath -Path $rendererRootValue
 if (-not (Test-Path -LiteralPath $rendererRoot)) {

@@ -1,0 +1,56 @@
+# Module Responsibilities
+
+This document summarizes the whole workspace. Module-specific details stay
+inside each module's own docs.
+
+## Responsibility Table
+
+| Module | Owns | Does Not Own |
+|---|---|---|
+| `sword-voice-agent` | Integration runtime, gesture gate policy, Dify/thought-core watcher entrypoints, local status projection, launcher-facing scripts | Physical camera capture, STT implementation, Home Assistant device semantics, avatar rendering internals |
+| `sword-control-plane/services/thought-core` | Canonical turn service v0, turn event stream, tool orchestration loop, responder boundary; package code under `src/thought_core` | STT, camera capture, Home Assistant implementation, display rendering |
+| `ai-talk-core` | Browser/microphone recording, STT, transcript, handoff files | Dify request policy, home actions, gesture inference |
+| `mediapipe-sword-sign` | Camera Hub, gesture model inference, Camera Hub topics, MediaMTX helper stack | STT, Dify, TTS, Home Assistant action state |
+| `vision-snapshot-processor` | Snapshot-style vision inference from MediaMTX streams | Camera ownership, gesture inference, environment aggregation |
+| `environment-state-server` | Environment snapshot cache, indicator projection, feedback capture, module health aggregation | Camera capture, gesture inference, authoritative home action execution |
+| `home-assistant-server` | Safe action allowlist, Home Assistant script execution, action tracking | STT, gesture inference, avatar rendering, turn reasoning |
+| `tts-service` | TTS synthesis, playback, status, volume control | Assistant answer generation, avatar rendering, home action decisions |
+| `aituber-kit` | Projection Visual, avatar speech queue, browser-facing AITuber UI | Dify watcher policy, Home Assistant safety, environment authority |
+| `avatar-service` | Standalone avatar runtime and avatar event integration | Dify, TTS playback, gesture inference |
+| `touchdesigner-ai-controller` | TouchDesigner control GUI, UDP visual trigger, display bridge | Dify, TTS synthesis, camera inference |
+| `system-house-renderer` | Topology and runtime trace visualization | Long-running service state, runtime control |
+
+## Boundary Questions
+
+When adding or moving functionality, classify it by asking:
+
+1. Is this fast reflex behavior that should not wait for an LLM?
+2. Is this one-turn reasoning or tool orchestration?
+3. Is this long-running research or review work?
+4. Is this observation of the world or module state?
+5. Is this execution of an approved action?
+6. Is this expression through speech, display, motion, or logs?
+7. Is this memory storage, retrieval, or summarization?
+8. Is this an external adapter?
+9. Is this generated runtime data?
+
+If a feature answers more than one question, split the boundary before moving
+files.
+
+## Authority Rules
+
+- Cross-module fields must be documented in `integration-contract.md`.
+- State, flag, and ID authority must be documented in `state_authority.md`.
+- A module README should explain the module itself, not the whole integration design.
+- Experimental and compatibility paths belong in `retired-paths.md`, not in the main start flow.
+- Environment snapshots are projections unless their source module is the
+  authority for the underlying value.
+- Home Assistant action results are owned by `home-assistant-server` and Home
+  Assistant. Higher layers may evaluate them but should not redefine their
+  meaning.
+- AITuber, TouchDesigner, console, and HUD surfaces are displays. They are not
+  state authority.
+- Runtime files are operational evidence. They are not contracts unless a
+  contract document explicitly defines their fields.
+- Physical sibling repositories remain implementation modules until contracts,
+  manifests, tests, and launch scripts agree on a move.

@@ -1,0 +1,41 @@
+{
+  "service_id": "vision_snapshot_processor",
+  "layer": "environment",
+  "logical_service": "environment-input",
+  "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
+  "repo_path": "organs/environment/vision-snapshot-processor",
+  "contracts": [
+    "environment",
+    "access-control"
+  ],
+  "adapters": [
+    "mediamtx",
+    "vision-snapshot"
+  ],
+  "memory": {
+    "reads": [
+      "M0",
+      "M5"
+    ],
+    "writes": [
+      "M1",
+      "M3"
+    ]
+  },
+  "pid_names": [
+    "vision_snapshot_processor"
+  ],
+  "start": {
+    "type": "stack-script"
+  },
+  "health": {
+    "type": "websocket",
+    "url": "ws://127.0.0.1:8776"
+  },
+  "stop": {
+    "strategy": "owned_pid"
+  },
+  "depends_on": [
+    "mediapipe_camera_hub_stack"
+  ]
+}

@@ -270,6 +270,17 @@ h2 {
   gap: 12px;
 }
 
+.section-subhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 720;
+}
+
 .panel-title {
   font-size: 13px;
   font-weight: 760;
@@ -441,6 +452,21 @@ pre,
   margin-top: 16px;
   min-height: 220px;
   border-color: rgba(88, 214, 179, 0.24);
+}
+
+.response-box.compact {
+  min-height: 130px;
+  max-height: 180px;
+}
+
+.response-section + .response-section {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.response-section + .response-section .section-subhead {
+  margin-top: 0;
 }
 
 .usage-row {

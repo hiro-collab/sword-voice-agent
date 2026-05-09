@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/turn/turn-response-events.schema.json",
+  "title": "Thought Core Turn Response Events",
+  "description": "JSON response body returned by POST /turn.",
+  "type": "object",
+  "required": [
+    "events"
+  ],
+  "properties": {
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "../events/event.schema.json"
+      }
+    }
+  },
+  "additionalProperties": true
+}
+

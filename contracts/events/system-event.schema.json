@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/events/system-event.schema.json",
+  "title": "System Event",
+  "description": "Cross-service M3 event journal envelope for operational facts.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "ts",
+    "trace_id",
+    "service",
+    "layer",
+    "event",
+    "level",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "system.event.v0"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^evt_.+"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "turn_id": {
+      "type": "string"
+    },
+    "service": {
+      "type": "string",
+      "minLength": 1
+    },
+    "layer": {
+      "$ref": "layer.schema.json"
+    },
+    "event": {
+      "type": "string",
+      "minLength": 1
+    },
+    "level": {
+      "type": "string",
+      "enum": ["debug", "info", "warn", "error", "audit"]
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

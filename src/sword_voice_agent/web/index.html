@@ -101,6 +101,19 @@
             </dl>
           </article>
 
+          <article class="status-panel" data-state="unknown" id="thoughtCorePanel">
+            <div class="panel-head">
+              <span class="panel-title">Thought Core</span>
+              <span id="thoughtCoreState" class="state-pill">unknown</span>
+            </div>
+            <dl class="metrics">
+              <div><dt>status</dt><dd id="thoughtCoreStatus">-</dd></div>
+              <div><dt>events</dt><dd id="thoughtCoreEventCount">-</dd></div>
+              <div><dt>latency</dt><dd id="thoughtCoreLatency">-</dd></div>
+              <div><dt>turn</dt><dd id="thoughtCoreTurn">-</dd></div>
+            </dl>
+          </article>
+
           <article class="status-panel" data-state="unknown" id="ttsPanel">
             <div class="panel-head">
               <span class="panel-title">TTS</span>
@@ -197,13 +210,29 @@
 
           <article class="work-panel response-detail">
             <div class="section-head">
-              <h2>Dify Response</h2>
+              <h2>Responses</h2>
               <span id="conversationId" class="path-label">-</span>
             </div>
-            <div class="response-box" id="difyAnswer">-</div>
-            <div class="usage-row">
-              <span id="messageId">message: -</span>
-              <span id="difyUpdated">updated: -</span>
+            <div class="response-section">
+              <div class="section-subhead">
+                <span>Dify Response</span>
+                <span id="messageId">message: -</span>
+              </div>
+              <div class="response-box" id="difyAnswer">-</div>
+              <div class="usage-row">
+                <span id="difyUpdated">updated: -</span>
+              </div>
+            </div>
+            <div class="response-section">
+              <div class="section-subhead">
+                <span>Thought Core Response</span>
+                <span id="thoughtCoreConversationId" class="path-label">-</span>
+              </div>
+              <div class="response-box compact" id="thoughtCoreAnswer">-</div>
+              <div class="usage-row">
+                <span id="thoughtCoreMessageId">events: -</span>
+                <span id="thoughtCoreUpdated">updated: -</span>
+              </div>
             </div>
           </article>
         </section>

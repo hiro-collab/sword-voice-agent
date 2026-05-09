@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/environment/wait-result.schema.json",
+  "title": "Environment Wait Result",
+  "description": "Additional wait result attached to /environment/current when wait_for is requested.",
+  "type": "object",
+  "required": [
+    "target",
+    "matched",
+    "timeout_ms",
+    "reason"
+  ],
+  "properties": {
+    "target": {
+      "type": "string",
+      "minLength": 1
+    },
+    "matched": {
+      "type": "boolean"
+    },
+    "after": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "elapsed_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": true
+}
+

@@ -24,7 +24,9 @@ EXPECTED_MODULES = (
     ("gesture_udp_receiver", "Gesture UDP receiver"),
     ("mediapipe_udp_publisher", "MediaPipe UDP publisher"),
     ("dify_api", "Dify API"),
+    ("thought_core_api", "thought-core API"),
     ("dify_watcher", "Dify watcher"),
+    ("thought_core_watcher", "thought-core watcher"),
     ("tts_service", "TTS service"),
     ("avatar_service", "Avatar service"),
     ("console", "Integration console"),
@@ -47,6 +49,8 @@ class ConsoleStatusConfig:
     input_gate_timeout_s: float = 1.5
     dify_base_url: str | None = None
     dify_timeout_s: float = 1.5
+    thought_core_base_url: str | None = None
+    thought_core_timeout_s: float = 1.5
     avatar_url: str | None = None
     avatar_model_url: str | None = None
     avatar_timeout_s: float = 1.5
@@ -63,6 +67,11 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
     dify_json = read_json_file(cache_dir / f"{config.source}_dify_latest.json")
     store_dify_json = (
         read_json_file(status_store.latest_dify_response_path)
+        if status_store is not None
+        else empty_file_state()
+    )
+    store_thought_core_json = (
+        read_json_file(status_store.latest_thought_core_response_path)
         if status_store is not None
         else empty_file_state()
     )
@@ -85,6 +94,7 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
     )
     input_gate = fetch_input_gate(config)
     dify_api = fetch_dify_api(config)
+    thought_core_api = fetch_thought_core_api(config)
     avatar = fetch_avatar_service(config)
     store_gesture = (
         read_json_file(status_store.latest_gesture_path)
@@ -104,6 +114,11 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
         else empty_file_state()
     )
     events = read_console_events(config, limit=40)
+    conversation_log = (
+        status_store.read_conversation_log(limit=80)
+        if status_store is not None
+        else []
+    )
     module_statuses = (
         status_store.read_module_statuses() if status_store is not None else {}
     )
@@ -126,7 +141,12 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
         "health": {
             "handoff": handoff_json["exists"] and not handoff_json.get("error"),
             "dify": dify_json["exists"] and not dify_json.get("error"),
+            "thought_core": (
+                store_thought_core_json["exists"]
+                and not store_thought_core_json.get("error")
+            ),
             "dify_api": dify_api["available"],
+            "thought_core_api": thought_core_api["available"],
             "gesture": gesture["exists"] and not gesture.get("error"),
             "input_gate": None if not config.input_gate_url else input_gate["available"],
             "tts": tts_json["exists"] and not tts_json.get("error"),
@@ -140,6 +160,7 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
             store_voice_turn_json,
         ),
         "dify": normalize_dify_status(dify_json, dify_text, conversation_id),
+        "thought_core": normalize_thought_core_status(store_thought_core_json),
         "tts": normalize_tts_status(
             tts_json,
             tts_volume_json,
@@ -149,16 +170,19 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
         ),
         "avatar": avatar,
         "dify_api": dify_api,
+        "thought_core_api": thought_core_api,
         "input_gate": input_gate,
         "modules": normalize_module_statuses(
             module_statuses,
             input_gate=input_gate,
             dify_api=dify_api,
+            thought_core_api=thought_core_api,
             avatar=avatar,
             timestamp=timestamp,
             stale_after_s=config.module_stale_after_s,
         ),
         "events": events,
+        "conversation_log": conversation_log,
         "files": {
             "handoff_json": strip_payload(handoff_json),
             "handoff_text": strip_payload(handoff_text),
@@ -169,6 +193,7 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
             "tts_volume_json": strip_payload(tts_volume_json),
             "gesture_json": strip_payload(gesture),
             "status_dify_json": strip_payload(store_dify_json),
+            "status_thought_core_json": strip_payload(store_thought_core_json),
             "status_gesture_json": strip_payload(store_gesture),
             "status_gesture_diagnostic_json": strip_payload(store_gesture_diagnostic),
             "status_voice_turn_json": strip_payload(store_voice_turn_json),
@@ -196,6 +221,10 @@ def redact_console_status(status: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("request_text", "turn_id", "answer", "conversation_id", "message_id"):
         dify[key] = _redact_scalar(dify.get(key))
 
+    thought_core = _mapping_mutable(redacted.get("thought_core"))
+    for key in ("request_text", "turn_id", "answer"):
+        thought_core[key] = _redact_scalar(thought_core.get(key))
+
     tts = _mapping_mutable(redacted.get("tts"))
     for key in (
         "request_id",
@@ -216,6 +245,9 @@ def redact_console_status(status: Mapping[str, Any]) -> dict[str, Any]:
     dify_api = _mapping_mutable(redacted.get("dify_api"))
     dify_api["url"] = _redact_scalar(dify_api.get("url"))
 
+    thought_core_api = _mapping_mutable(redacted.get("thought_core_api"))
+    thought_core_api["url"] = _redact_scalar(thought_core_api.get("url"))
+
     avatar = _mapping_mutable(redacted.get("avatar"))
     avatar["url"] = _redact_scalar(avatar.get("url"))
     avatar["model_url"] = _redact_scalar(avatar.get("model_url"))
@@ -232,7 +264,80 @@ def redact_console_status(status: Mapping[str, Any]) -> dict[str, Any]:
         for event in redacted.get("events", [])
         if isinstance(event, Mapping)
     ]
+    redacted["conversation_log"] = [
+        redact_conversation_entry(entry)
+        for entry in redacted.get("conversation_log", [])
+        if isinstance(entry, Mapping)
+    ]
     return redacted
+
+
+def redact_conversation_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    item = dict(entry)
+    item["text"] = _redact_scalar(item.get("text"))
+    item["turn_id"] = _redact_scalar(item.get("turn_id"))
+    item["session_id"] = _redact_scalar(item.get("session_id"))
+    item["issue_id"] = _redact_scalar(item.get("issue_id"))
+    metadata = mapping(item.get("metadata"))
+    if metadata:
+        item["metadata"] = redact_conversation_metadata(metadata)
+    return item
+
+
+def redact_conversation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key in ("seq", "elapsed_s", "status"):
+        if key in metadata:
+            safe[key] = metadata.get(key)
+    timing = mapping(metadata.get("timing"))
+    if timing:
+        safe["timing"] = redact_timing_summary(timing)
+    return safe or {"redacted": True}
+
+
+def redact_timing_summary(timing: Mapping[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key in (
+        "event_count",
+        "speech_delta_count",
+        "first_event_elapsed_s",
+        "first_speech_elapsed_s",
+        "first_message_elapsed_s",
+        "completed_elapsed_s",
+        "max_gap_s",
+    ):
+        if key in timing:
+            safe[key] = timing.get(key)
+    slowest_gap = mapping(timing.get("slowest_gap"))
+    if slowest_gap:
+        safe["slowest_gap"] = {
+            "after_event_seq": slowest_gap.get("after_event_seq"),
+            "event_type": slowest_gap.get("event_type"),
+            "delta_elapsed_s": slowest_gap.get("delta_elapsed_s"),
+        }
+    timeline = timing.get("timeline")
+    if isinstance(timeline, list):
+        safe["timeline"] = [
+            redact_timing_timeline_item(item)
+            for item in timeline[-80:]
+            if isinstance(item, Mapping)
+        ]
+    return safe
+
+
+def redact_timing_timeline_item(item: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "event_type": item.get("event_type"),
+        "seq": item.get("seq"),
+        "phase": item.get("phase"),
+        "elapsed_s": item.get("elapsed_s"),
+        "delta_elapsed_s": item.get("delta_elapsed_s"),
+        "stage": item.get("stage"),
+        "status": item.get("status"),
+        "tool": item.get("tool"),
+        "speech_present": item.get("speech_present"),
+        "speech_chars": item.get("speech_chars"),
+    }
 
 
 def redact_event(event: Mapping[str, Any]) -> dict[str, Any]:
@@ -250,6 +355,36 @@ def redact_event(event: Mapping[str, Any]) -> dict[str, Any]:
                 "message_id": _redact_scalar(data.get("message_id")),
                 "skipped": data.get("skipped", False),
                 "skip_reason": data.get("skip_reason"),
+            }
+        )
+    elif item.get("type") == "thought_core.response":
+        redacted_payload.update(
+            {
+                "request_text": _redact_scalar(data.get("request_text")),
+                "turn_text": _redact_scalar(data.get("turn_text")),
+                "response_text": _redact_scalar(data.get("response_text")),
+                "event_count": data.get("event_count"),
+                "skipped": data.get("skipped", False),
+                "skip_reason": data.get("skip_reason"),
+            }
+        )
+    elif str(item.get("type") or "").startswith("thought_core."):
+        redacted_payload.update(
+            {
+                "event_type": data.get("event_type"),
+                "seq": data.get("seq"),
+                "elapsed_s": data.get("elapsed_s"),
+                "delta_elapsed_s": data.get("delta_elapsed_s"),
+                "phase": data.get("phase"),
+                "stage": data.get("stage"),
+                "partial": data.get("partial"),
+                "speech_present": data.get("speech_present"),
+                "speech": _redact_scalar(data.get("speech")),
+                "speech_chars": data.get("speech_chars"),
+                "status": data.get("status"),
+                "tool": data.get("tool"),
+                "tool_call_id": _redact_scalar(data.get("tool_call_id")),
+                "tool_call_id_present": data.get("tool_call_id_present"),
             }
         )
     elif item.get("type") == "gesture.received":
@@ -295,6 +430,7 @@ def normalize_module_statuses(
     *,
     input_gate: Mapping[str, Any],
     dify_api: Mapping[str, Any] | None = None,
+    thought_core_api: Mapping[str, Any] | None = None,
     avatar: Mapping[str, Any] | None = None,
     timestamp: float,
     stale_after_s: float,
@@ -325,6 +461,18 @@ def normalize_module_statuses(
                 age = 0.0
                 error_text = str(dify_api.get("error") or "not reachable")
                 detail = f"{dify_api.get('url')} / {error_text}"
+        elif name == "thought_core_api" and thought_core_api is not None:
+            if thought_core_api.get("available"):
+                state = "running"
+                updated_at = timestamp
+                age = 0.0
+                detail = str(thought_core_api.get("url") or detail or "reachable")
+            elif thought_core_api.get("url"):
+                state = "error"
+                updated_at = timestamp
+                age = 0.0
+                error_text = str(thought_core_api.get("error") or "not reachable")
+                detail = f"{thought_core_api.get('url')} / {error_text}"
         elif name == "avatar_service" and avatar is not None:
             if avatar.get("available"):
                 state = "running"
@@ -556,6 +704,42 @@ def normalize_dify_status(
     }
 
 
+def normalize_thought_core_status(
+    thought_core_json: Mapping[str, Any],
+) -> dict[str, Any]:
+    payload = mapping(thought_core_json.get("payload"))
+    request_payload = mapping(payload.get("request"))
+    request_context = mapping(request_payload.get("context"))
+    turn_payload = mapping(payload.get("turn_payload"))
+    response = mapping(payload.get("response"))
+    raw = mapping(response.get("raw"))
+    raw_data = mapping(raw.get("data"))
+    streaming = mapping(raw.get("_streaming"))
+    return {
+        "available": bool(thought_core_json.get("exists"))
+        and not thought_core_json.get("error"),
+        "updated_at": thought_core_json.get("mtime"),
+        "skipped": bool(payload.get("skipped", False)),
+        "skip_reason": payload.get("skip_reason"),
+        "status": raw_data.get("status"),
+        "request_text": str(
+            request_payload.get("text") or turn_payload.get("text") or ""
+        ),
+        "turn_id": str(
+            payload.get("turn_id")
+            or turn_payload.get("turn_id")
+            or response.get("conversation_id")
+            or request_context.get("turn_id")
+            or ""
+        ),
+        "session_id": str(turn_payload.get("session_id", "")),
+        "answer": str(response.get("text", "")),
+        "event_count": streaming.get("event_count"),
+        "latency": streaming.get("completed_elapsed_s"),
+        "first_event_latency": streaming.get("first_event_elapsed_s"),
+    }
+
+
 def normalize_tts_status(
     tts_json: Mapping[str, Any],
     tts_volume_json: Mapping[str, Any] | None = None,
@@ -730,6 +914,14 @@ def fetch_dify_api(config: ConsoleStatusConfig) -> dict[str, Any]:
         config.dify_base_url,
         timeout_s=config.dify_timeout_s,
         label="DIFY_BASE_URL",
+    )
+
+
+def fetch_thought_core_api(config: ConsoleStatusConfig) -> dict[str, Any]:
+    return fetch_http_reachability(
+        config.thought_core_base_url,
+        timeout_s=config.thought_core_timeout_s,
+        label="THOUGHT_CORE_BASE_URL",
     )
 
 

@@ -195,7 +195,7 @@ function Show-SwordCooperativeShutdownPlan {
     $running = @(
         $RuntimeEntries |
             Where-Object {
-                ([string]$_.Status.state) -eq "running" -and
+                (Test-SwordRuntimeEntryRunning -Entry $_) -and
                 (Test-SwordProcessAlive -ProcessId ([int]$_.PID))
             }
     )
@@ -205,14 +205,45 @@ function Show-SwordCooperativeShutdownPlan {
 
     Write-Host "Cooperative shutdown methods:"
     foreach ($entry in $running) {
+        $shutdownUrl = Get-SwordRuntimeEntryShutdownUrl -Entry $entry
         if ($entry.StopType -eq "http" -and
-            -not [string]::IsNullOrWhiteSpace([string]$entry.Status.shutdown_url)) {
-            Write-Host "  $($entry.Name): POST $($entry.Status.shutdown_url)"
+            -not [string]::IsNullOrWhiteSpace($shutdownUrl)) {
+            Write-Host "  $($entry.Name): POST $shutdownUrl"
         }
         elseif ($entry.StopType -eq "avatar-dev-server") {
             Write-Host "  $($entry.Name): node scripts/dev-server.mjs stop --runtime-status-file $($entry.Path)"
         }
     }
+}
+
+function Get-SwordRuntimeEntryStatus {
+    param([object]$Entry)
+    if ($null -eq $Entry) {
+        return $null
+    }
+    $property = $Entry.PSObject.Properties["Status"]
+    if ($null -eq $property) {
+        return $null
+    }
+    return $property.Value
+}
+
+function Test-SwordRuntimeEntryRunning {
+    param([object]$Entry)
+    $status = Get-SwordRuntimeEntryStatus -Entry $Entry
+    if ($null -eq $status) {
+        return $false
+    }
+    return ([string]$status.state) -eq "running"
+}
+
+function Get-SwordRuntimeEntryShutdownUrl {
+    param([object]$Entry)
+    $status = Get-SwordRuntimeEntryStatus -Entry $Entry
+    if ($null -eq $status) {
+        return ""
+    }
+    return [string]$status.shutdown_url
 }
 
 function Invoke-SwordCooperativeShutdown {
@@ -222,7 +253,7 @@ function Invoke-SwordCooperativeShutdown {
 
     $requestedPids = @()
     foreach ($entry in $RuntimeEntries) {
-        if (([string]$entry.Status.state) -ne "running") {
+        if (-not (Test-SwordRuntimeEntryRunning -Entry $entry)) {
             continue
         }
         if (-not (Test-SwordProcessAlive -ProcessId ([int]$entry.PID))) {
@@ -230,7 +261,7 @@ function Invoke-SwordCooperativeShutdown {
         }
 
         if ($entry.StopType -eq "http") {
-            $shutdownUrl = [string]$entry.Status.shutdown_url
+            $shutdownUrl = Get-SwordRuntimeEntryShutdownUrl -Entry $entry
             if ([string]::IsNullOrWhiteSpace($shutdownUrl)) {
                 continue
             }

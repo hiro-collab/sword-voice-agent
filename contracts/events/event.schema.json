@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/events/event.schema.json",
+  "title": "Thought Core Event",
+  "description": "Common event envelope emitted by the thought-core experiment.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "turn_id",
+    "session_id",
+    "seq",
+    "timestamp",
+    "source",
+    "type",
+    "data"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "thought-core.event.v0"
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 5,
+      "pattern": "^evt_.+"
+    },
+    "turn_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "layer": {
+      "$ref": "layer.schema.json"
+    },
+    "type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

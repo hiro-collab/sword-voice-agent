@@ -1,501 +1,269 @@
-# sword-voice-agent
+# sword-control-plane
 
-刀印ジェスチャーを検出している間だけ音声入力を受け付け、STT、Dify、Home Assistant、TTS、アバター表示をつなぐローカル統合アプリです。
+`sword-control-plane` は、Sword Agent System の制御盤です。
 
-このREADMEは、まず動かすための流れを先に示し、その後に`.env`や個別スクリプトの詳細を載せます。
+ここには、AI身体OSを安全に動かすための設計、契約、権限、起動定義、テスト、小さな共有部品を置きます。  
+音声、MediaPipe、AITuber Kit、Home Assistant、TouchDesigner などの大きな実体は、このrepoへ吸収せず、system cell の `organs/` に置きます。
 
-## 概要
+![Projection Visual 標準状態](docs/images/標準状態.jpg)
 
-このシステムは、複数の小さなモジュールを組み合わせて、次の流れを作ります。
-
-```text
-刀印ジェスチャー
-  -> マイク入力ON
-  -> STT / handoff
-  -> Dify
-  -> Home Assistant / TTS / Avatar / Projection Visual
-```
-
-主な用途は次の通りです。
-
-- 刀印を出している間だけ音声入力する
-- Difyへ発話内容を送り、応答やtool side effectを受け取る
-- Home Assistant経由でライト、扇風機、ドアなどの家電操作へつなぐ
-- Projection VisualでAITuber、ジェスチャー、STT、家電イベント、TouchDesigner連携状態をまとめて見る
-
-## 使用方法
-
-基本操作はこの順番です。
-
-1. `Projection Visual` を開く
-2. カメラの前で刀印を出す
-3. マイク入力が有効になった状態で話す
-4. Difyが応答し、必要に応じてHome Assistantの家電アクションやTTSへつながる
-5. HUDの `Pipeline Trace`、`Home Assistant`、`STT Engine`、`Gesture Sensor` で状態を確認する
-
-Projection Visualの例:
-
-![Projection Visual system example](docs/images/projection-visual-system-example.png)
-
-Home Assistant側のアクションに接続しておくと、Difyのtool side effectとしてライト、扇風機、ドアなどの家電操作結果もHUDへ流せます。
-
-![Home control appliance example](docs/images/home-control-appliance-example.png)
-
-## 使用モデルについて
-
-上記スクリーンショットのアバターには、inotushop / inunoketu様のオリジナル3Dモデル [「アルバイ子のヌタチさん」](https://booth.pm/ja/items/3262452) を使用しています。柔らかい雰囲気と少し気だるげな表情が、このローカルAITuberの空気感にとても合っており、素晴らしいモデルを公開してくださっていることに深く感謝しています。
-
-BOOTHの商品ページでは、同梱データにVRMが含まれること、利用規約がVN3ライセンスのテンプレートに基づくこと、日本語版規約が優先されることが案内されています。[日本語の規約本文](https://drive.google.com/file/d/1aycsRajtHhtpzTowXzmqbgjfG9RWvSnT/view?usp=sharing)も確認し、個人/法人の利用、映像作品・配信・放送、出版物・電子出版物への利用が許可されていること、クレジット表記が不要であることを確認しました。一方で、未改変データの再配布は禁止され、製品開発等のためのソフトウェアへの組み込みは権利者への個別問い合わせが必要です。
-
-このリポジトリではVRM本体を再配布せず、READMEのスクリーンショットとローカル表示例として掲載しています。利用者が同じモデルを使う場合は、必ずBOOTHの配布ページから正規に入手し、最新の利用規約を確認してください。
-
-## まず用意するもの
-
-### メインPC
-
-開発と表示の中心になるPCです。Windows + Chromeを想定しています。
-
-- Git
-- PowerShell
-- Python 3.10以上
-- `uv`
-- Node.js / npm
-- Chrome
-- マイク
-- Webカメラ
-- Docker DesktopとDifyローカル環境
-
-AITuber KitのProjection VisualとChrome Web Speech STTはブラウザ上で動きます。Chromeのマイク許可が必要です。
-
-### Raspberry Pi / Home Assistant / 家電
-
-家電連携を行う場合に用意します。必須ではありません。
-
-- Home Assistant本体、またはHome Assistantへつながるサーバー
-- スマートライト、扇風機、ドア制御などの対象デバイス
-- 常時稼働させたい場合のRaspberry Piや小型PC
-
-このリポジトリ自体はPC側の統合処理を担当します。Raspberry Piは、Home Assistantや実機制御の常時稼働ホストとして使う想定です。
-
-### Dify
-
-- Dify Chat App
-- Dify API base URL
-- Dify App API key
-- 必要ならHome Assistant操作用のtool設定
-
-このリポジトリにはDifyアプリ例として `dify-apps/Home Control Assistant.yml` を置いています。
-
-### ジェスチャーモデル
-
-`mediapipe-sword-sign` 側で作成した `gesture_model.pkl` が必要です。この統合リポジトリではモデルを同梱しません。
-
-刀印は、人差し指と中指をそろえて伸ばし、薬指と小指を折って親指で押さえる手形を目安にしています。
-
-![Sword sign gesture guide](docs/images/sword-sign-gesture.png)
-
-## Gitからのインストール手順
-
-ここでは、外側の作業ディレクトリを `<workspace>` と呼びます。
-
-```powershell
-mkdir <workspace>
-cd <workspace>
-git clone https://github.com/hiro-collab/sword-voice-agent.git sword-voice-agent
-cd sword-voice-agent
-```
-
-このREADMEの `<repo_root>` は、cloneした内側の `sword-voice-agent` ディレクトリです。
-
-```powershell
-cd <workspace>\sword-voice-agent
-```
-
-検証用モジュールは、次のスクリプトで `<workspace>` 直下へcloneまたはpullできます。
-
-```powershell
-.\scripts\setup-validation-modules.ps1 -DryRun
-.\scripts\setup-validation-modules.ps1 -UpdateEnv
-```
-
-これで次のcloneが揃います。
+この画面は、control plane が束ねている system cell の状態を人間に見せる代表的な表示です。中央のアバターが会話し、HUDが器官、反射、状態推定、家電操作、表示連携を示します。
 
 ```text
-<workspace>\
-  sword-voice-agent\
-  ai-talk-core\
-  mediapipe-sword-sign\
-  tts-service\
-  avatar-service\
-  system-house-renderer\
+C:\Users\kawai\works\sword-agent-system\
+  sword-control-plane\   # このrepo。制御盤
+  organs\                # 実体repo。声、反射、認識、手足、表現、表示
 ```
 
-Projection VisualやHome Assistant連携まで含める場合は、追加で次のモジュールも用意します。
+## このrepoの役割
 
-```powershell
-cd <workspace>
-git clone https://github.com/hiro-collab/home-assistant-server.git home-assistant-server
-git clone https://github.com/hiro-collab/touchdesigner-ai-controller.git touchdesigner-ai-controller
-git clone https://github.com/hiro-collab/aituber-kit-sword-private.git aituber-kit
+| 領域 | 役割 |
+|---|---|
+| `docs/` | 設計、判断、移行方針、運用ルール |
+| `contracts/` | organ間のAPI、イベント、tool境界 |
+| `policies/` | capability、memory scope、action approval |
+| `catalogs/` | 家電操作などのカタログ |
+| `ops/` | 起動、停止、状態確認、manifest |
+| `services/thought-core/` | 通常思考を担当する v0 service |
+| `src/sword_voice_agent/` | control plane用の小さな共有部品 |
+| `tests/` | contract、policy、memory/access、integration検査 |
+| `local/` | 開発用のlocalデータ置き場。実データは原則Git管理しない |
+| `runtime/` | 将来のruntime出力置き場。実データは原則Git管理しない |
+
+## コンセプト
+
+このシステムは、単一アプリではなく、複数の器官を持つローカルAI身体OSとして扱います。
+
+```text
+reflex-core
+  MediaPipeやVADなど、LLMを待たない速い反射
+
+thought-core
+  1 turn単位の通常思考、tool選択、再観測、応答
+
+environment-server
+  部屋、カメラ、家電、表示系の状態観測
+
+home-control-server
+  Home Assistantなどを通した単発操作
+
+expression
+  AITuber Kit、TTS、TouchDesigner、HUD、背景表示
+
+ops
+  起動、停止、PID、health、manifest
 ```
 
-`aituber-kit-sword-private` はこのシステム専用のprivate forkです。アクセス権がない場合は、上流の `https://github.com/tegnike/aituber-kit.git` を確認してください。
+`contracts/` は system call のような境界仕様、`policies/` は権限ルール、`ops/` は init system のような役割です。
 
-Python側の基本セットアップ:
+## よく使うコマンド
+
+### system cell から起動する
+
+通常運用では、外側の system cell 直下で `.bat` を使います。
+
+![Sword System Launcher](docs/images/launcher.png)
+
+GUIの Launcher も同じ起動系を使います。CLIとGUIで別々の起動ルールを持たないよう、起動定義は `ops/manifests/` に集約します。
 
 ```powershell
-cd <repo_root>
+cd C:\Users\kawai\works\sword-agent-system
+.\start-home-control-stack.bat -Profile thought-core-v0
+.\status-home-control-stack.bat -Profile thought-core-v0
+.\stop-home-control-stack.bat -Profile thought-core-v0 -Force
+```
+
+## 画面イメージ
+
+### Projection Visual
+
+AITuber Kit の投影・配信用画面です。アバター、HUD、入力欄、system cell の状態をまとめて表示します。
+
+![Projection Visual 標準状態](docs/images/標準状態.jpg)
+
+### 通常会話
+
+Thought Core の応答、発話、turn trace が表示されます。
+
+![通常会話](docs/images/通常会話.jpg)
+
+### 家電操作時
+
+家電操作時は、操作要求、実行、再観測、結果確認の流れを HUD に出します。
+
+![家電操作時](docs/images/家電操作時.jpg)
+
+### 刀印ジェスチャー
+
+MediaPipe Camera Hub は、刀印とカメラ状態を reflex layer の入力として配信します。
+
+![刀印ジェスチャー](docs/images/sword-sign-gesture.png)
+
+### control plane からdry-runする
+
+実際に起動せず、どのサービスがどの引数で起動されるか確認できます。
+
+```powershell
+cd C:\Users\kawai\works\sword-agent-system\sword-control-plane
+.\ops\scripts\system.ps1 start -Profile thought-core-v0 -DryRun
+.\ops\scripts\system.ps1 status -Profile thought-core-v0 -ManifestOnly
+```
+
+### テストする
+
+```powershell
+cd C:\Users\kawai\works\sword-agent-system\sword-control-plane
+uv run python -m unittest discover -s tests
+```
+
+一部だけ確認したい場合です。
+
+```powershell
+uv run python -m unittest tests.test_contract_schemas tests.test_ops_manifests
+```
+
+## 初回セットアップ
+
+```powershell
+cd C:\Users\kawai\works\sword-agent-system\sword-control-plane
 uv sync
-```
-
-AITuber Kit側の基本セットアップ:
-
-```powershell
-cd <workspace>\aituber-kit
-npm install
-```
-
-## 実行方法
-
-### 1. `.env`を作る
-
-```powershell
-cd <repo_root>
-Copy-Item .env.example .env
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
 notepad .env
 ```
 
-最低限、次を確認します。
+主に確認する値です。
 
-- `DIFY_BASE_URL`
-- `DIFY_API_KEY`
-- `MEDIAPIPE_SWORD_SIGN_MODEL_PATH`
-- 各モジュールの `*_ROOT`
-
-秘密情報を含むため、`.env` はコミットしません。
-
-読み込み確認:
-
-```powershell
-.\scripts\load-env.ps1
-$env:AI_TALK_CORE_ROOT
-$env:DIFY_BASE_URL
-```
-
-### 2. 統合スタックを起動する
-
-まず起動予定だけ確認します。
-
-```powershell
-cd <repo_root>
-.\scripts\start-full-stack.ps1 -DryRun
-```
-
-問題なければ起動します。
-
-```powershell
-.\scripts\start-full-stack.ps1 -Preview -SuppressProtobufWarnings
-```
-
-1つのターミナルにまとめたい場合:
-
-```powershell
-.\scripts\start-full-stack-supervisor.ps1 -Preview -SuppressProtobufWarnings
-```
-
-### 3. Projection Visualを開く
-
-AITuber Kitを起動します。
-
-```powershell
-cd <workspace>\aituber-kit
-npm run dev
-```
-
-ブラウザで開きます。
-
-```text
-http://127.0.0.1:3000/projection-visual
-```
-
-Chromeのマイク権限を許可してください。
-
-### 4. 動作確認する
-
-起動後は、まずmodule cardを確認します。
-
-- `ai_talk_core Web UI`
-- `Gesture UDP receiver`
-- `MediaPipe UDP publisher`
-- `Dify API`
-- `Dify watcher`
-- `TTS service`
-- `Avatar service`
-- `Integration console`
-- `aituber_kit`
-- `home_assistant_bridge`
-
-次に、刀印を出した状態で短く発話します。
-
-```text
-Gesture: idle -> active
-Input Gate: disabled -> enabled
-Voice: ready -> transcript/command 更新
-Dify: ready -> answer 更新
-Home Assistant: action 更新
-```
-
-起動後によく見る画面:
-
-```text
-ai_talk_core Web UI:        http://127.0.0.1:8000
-sword-voice-agent console: http://127.0.0.1:8790
-Projection Visual:          http://127.0.0.1:3000/projection-visual
-```
-
-### 5. 停止する
-
-起動したPowerShellウィンドウで `Ctrl+C` を押します。
-
-残ったプロセスを止めたい場合:
-
-```powershell
-cd <repo_root>
-.\scripts\stop-full-stack.ps1
-.\scripts\stop-full-stack.ps1 -Force
-```
-
-## 関連モジュール
-
-| モジュール | 役割 | Git URL |
-|---|---|---|
-| `sword-voice-agent` | ローカル統合、起動スクリプト、Dify/Home Assistant連携 | `https://github.com/hiro-collab/sword-voice-agent.git` |
-| `ai-talk-core` | STT/Whisper、入力ゲート、agent handoff | `https://github.com/hiro-collab/ai-talk-core.git` |
-| `aituber-kit` | Projection Visual、AITuber UI、Chrome Web Speech STT、Dify proxy | `https://github.com/hiro-collab/aituber-kit-sword-private.git` |
-| `mediapipe-sword-sign` | 刀印ジェスチャー検出、WebSocket/UDP配信 | `https://github.com/hiro-collab/mediapipe-sword-sign.git` |
-| `home-assistant-server` | Home Assistant bridge、家電操作API | `https://github.com/hiro-collab/home-assistant-server.git` |
-| `tts-service` | Dify応答のTTS化、VOICEVOX/Windows SAPI等の読み上げ連携 | `https://github.com/hiro-collab/tts-service.git` |
-| `avatar-service` | Three.js/VRM avatar runtime | `https://github.com/hiro-collab/avatar-service.git` |
-| `system-house-renderer` | システム構成・authority・イベントフローの可視化 | `https://github.com/hiro-collab/system-house-renderer.git` |
-| `touchdesigner-ai-controller` | TouchDesigner連携GUI、UDP control surface | `https://github.com/hiro-collab/touchdesigner-ai-controller.git` |
-
-## 詳細設定
-
-### モジュール配置
-
-| 項目 | 例 | 説明 |
-|---|---|---|
-| `AI_TALK_CORE_ROOT` | `..\ai-talk-core` | `ai-talk-core` cloneの場所 |
-| `MEDIAPIPE_SWORD_SIGN_ROOT` | `..\mediapipe-sword-sign` | `mediapipe-sword-sign` cloneの場所 |
-| `TTS_SERVICE_ROOT` | `..\tts-service` | `tts-service` cloneの場所 |
-| `AVATAR_SERVICE_ROOT` | `..\avatar-service` | `avatar-service` cloneの場所 |
-| `SYSTEM_HOUSE_RENDERER_ROOT` | `..\system-house-renderer` | `system-house-renderer` cloneの場所 |
-
-### ai_talk_core
-
-| 項目 | 例 | 説明 |
-|---|---|---|
-| `AI_TALK_CORE_INPUT_GATE_URL` | `http://127.0.0.1:8000/api/input-gate` | 入力ゲートAPI |
-| `AI_TALK_CORE_WEB_TOKEN` | 空、または任意の長い文字列 | local API用トークン |
-| `AI_TALK_CORE_RUNTIME_STATUS_FILE` | `.cache\sword_voice_agent\runtime\ai_talk_core.json` | runtime status JSON |
-
-`AI_TALK_CORE_WEB_TOKEN` が空の場合、`start-full-stack.ps1` が一時トークンを生成して各プロセスへ共有します。
-
-### mediapipe-sword-sign
-
-| 項目 | 例 | 説明 |
-|---|---|---|
-| `MEDIAPIPE_SWORD_SIGN_MODEL_PATH` | `gesture_model.pkl` | 使用するジェスチャーモデル |
-| `MEDIAPIPE_SWORD_SIGN_MODEL_SHA256` | 空、またはSHA-256 | モデル検証用hash |
-| `MEDIAPIPE_SWORD_SIGN_ALLOW_UNTRUSTED_MODEL` | `0` | hash未検証モデルの読み込み許可 |
-| `MEDIAPIPE_SWORD_SIGN_HEARTBEAT_EVERY` | `1s` | 診断heartbeat間隔 |
-| `MEDIAPIPE_SWORD_SIGN_LATENCY_PROFILE` | 空、または `low` | publisher側の低遅延preset |
-| `MEDIAPIPE_SWORD_SIGN_STATE_EVERY` | 空、または `off` | `gesture_state`送信間隔 |
-| `MEDIAPIPE_SWORD_SIGN_EDGE_ONLY` | `0` | edge中心で送る場合は `1` |
-| `MEDIAPIPE_SWORD_SIGN_RUNTIME_STATUS_FILE` | `.cache\sword_voice_agent\runtime\mediapipe_udp_publisher.json` | runtime status JSON |
-| `MEDIAPIPE_SWORD_SIGN_CONTROL_HTTP_HOST` | `127.0.0.1` | control HTTP host |
-| `MEDIAPIPE_SWORD_SIGN_CONTROL_HTTP_PORT` | `18765` | control HTTP port |
-| `MEDIAPIPE_SWORD_SIGN_CONTROL_TOKEN` | 空、または任意の長い文字列 | loopback外bind時のtoken |
-
-`gesture_model.pkl` はpickle/joblib形式です。信頼できないファイルを使わず、自分で収集・学習したモデルを使うのが基本です。
-
-代表的な学習の流れ:
-
-```powershell
-cd <workspace>\mediapipe-sword-sign
-uv run collect_data.py
-uv run train_model.py
-uv run predict.py
-```
-
-### Dify
-
-| 項目 | 例 | 説明 |
-|---|---|---|
-| `DIFY_BASE_URL` | `http://localhost:8080/v1` | Dify API URL |
-| `DIFY_API_KEY` | `<dify_app_api_key>` | DifyアプリのAPIキー |
-| `DIFY_USER` | `local-user` | Dify conversationのuser識別子 |
-| `DIFY_RESPONSE_MODE` | `streaming` | `streaming` または `blocking` |
-
-`DIFY_BASE_URL` が `localhost` / `127.0.0.1` の場合、起動前にDocker engineとDify APIの到達性を確認します。
-
-### TTS
-
-| 項目 | 例 | 説明 |
-|---|---|---|
-| `TTS_OUTPUT_STATUS_DIR` | `.cache\tts_service` | TTS state出力先 |
-| `TTS_SOURCE` | `http` | `http` または `status-file` |
-| `TTS_HTTP_HOST` | `127.0.0.1` | HTTP source host |
-| `TTS_HTTP_PORT` | `8765` | HTTP source port |
-| `TTS_HTTP_CHUNK_MAX_CHARS` | `80` | streaming deltaのchunk最大文字数 |
-| `TTS_HTTP_CHUNK_URL` | `http://127.0.0.1:8765/api/tts/chunk` | Dify watcherからTTSへ送るURL |
-| `TTS_VOLUME_URL` | `http://127.0.0.1:8765/api/volume` | 音量API |
-| `TTS_VOLUME_PREVIEW_URL` | `http://127.0.0.1:8765/api/volume/preview` | 確認音API |
-| `TTS_HTTP_TIMEOUT_S` | `0.75` | TTS HTTP POST timeout |
-| `TTS_ENGINE` | `windows-sapi` | `windows-sapi` または `noop` |
-| `TTS_PLAYER` | `speaker` | `speaker` / `file` / `noop` |
-| `TTS_POLL_INTERVAL` | `1.0` | 監視間隔 |
-| `TTS_VOICE_NAME` | 空、またはSAPI音声名 | Windows SAPI音声名 |
-| `TTS_RATE` | `0` | 読み上げ速度 |
-| `TTS_VOLUME` | `100` | 合成時音量 |
-| `TTS_APP_VOLUME` | `1.0` | tts-service側の実行時音量 |
-| `TTS_SERVICE_APP_VOLUME_FILE` | `.cache\tts_service\app_volume.json` | 音量共有JSON |
-| `TTS_OUTPUT_AUDIO_DIR` | `.cache\tts_service\audio_output` | `TTS_PLAYER=file` の出力先 |
-| `TTS_SERVICE_RUNTIME_STATUS_FILE` | `.cache\sword_voice_agent\runtime\tts_service.json` | runtime status JSON |
-| `TTS_SERVICE_SHUTDOWN_TOKEN` | 空、または任意の長い文字列 | loopback外bind時のtoken |
-
-音を出したくない確認では `-TtsEngine noop`、TTS自体を起動しない場合は `-DisableTts` を使います。
-
-### avatar-service
-
-| 項目 | 例 | 説明 |
-|---|---|---|
-| `AVATAR_SERVICE_URL` | `http://127.0.0.1:5173` | Three.js + VRM avatar runtime |
-| `AVATAR_MODEL_URL` | 空、または `/models/Nutachisan.vrm` | VRM model URL |
-| `AVATAR_SERVICE_RUNTIME_STATUS_FILE` | `.cache\sword_voice_agent\runtime\avatar_service.json` | runtime status JSON |
-
-`AVATAR_MODEL_URL` が空の場合、avatar-service側の `public\models` からVRMを自動選択します。
-
-### SystemHouseRenderer
-
-| 項目 | 例 | 説明 |
-|---|---|---|
-| `SYSTEM_HOUSE_RENDERER_RUNTIME_STATUS_FILE` | `.cache\sword_voice_agent\runtime\system_house_renderer.json` | render実行時のstatus JSON |
-
-### セキュリティと表示
-
-| 項目 | 例 | 説明 |
-|---|---|---|
-| `SWORD_VOICE_AGENT_AUTH_TOKEN` | 空、または任意の長い文字列 | loopback外bind時のHTTP/UDP/console token |
-| `SWORD_VOICE_AGENT_REDACT_STATUS` | `0` | `1` でstatus本文、ID、ローカルパスをredact |
-
-`.env` には個人の絶対パス、Dify API key、認証tokenを入れるため、コミットしません。URLに `user:password@host` のような認証情報を埋め込む設定も拒否します。
-
-### ジェスチャー判定
-
-| 項目 | 例 | 説明 |
-|---|---|---|
-| `SWORD_VOICE_AGENT_MIN_CONFIDENCE` | `0.8` | 刀印として扱う最小confidence |
-| `SWORD_VOICE_AGENT_ACTIVATION_DELAY` | `0.3` | 録音開始まで刀印が継続する必要がある秒数 |
-| `SWORD_VOICE_AGENT_RELEASE_DELAY` | `0.5` | 刀印が消えてから録音停止までの猶予秒数 |
-
-検出が不安定な環境で一時的に試す例:
-
-```powershell
-.\scripts\start-full-stack.ps1 -Preview -GestureActivationDelay 0.1 -GestureMinConfidence 0.7
-```
-
-対応版 `mediapipe-sword-sign` で低遅延edge中心に寄せる例:
-
-```powershell
-.\scripts\start-full-stack.ps1 -MediapipeLatencyProfile low -MediapipeEdgeOnly -GestureActivationDelay 0.1 -GestureReleaseDelay 0.1
-```
-
-## よく使う起動オプション
-
-| Option | 用途 |
+| 変数 | 用途 |
 |---|---|
-| `-DryRun` | 起動せず、実行予定のコマンドだけ表示 |
-| `-Preview` | `mediapipe-sword-sign` のOpenCV previewを表示 |
-| `-SuppressProtobufWarnings` | MediaPipe / protobuf warningを抑制 |
-| `-SkipAiTalkCore` | すでに `ai_talk_core` を起動済みの場合に省略 |
-| `-SkipMediapipe` | カメラ送信を起動しない |
-| `-SkipDifyWatch` | Dify watcherを起動しない |
-| `-SkipConsole` | 統合コンソールを起動しない |
-| `-Background` | 各モジュールを隠しプロセスとして起動し、ログを `.cache\sword_voice_agent\logs` に保存 |
-| `start-full-stack-supervisor.ps1` | 1つのターミナルに全モジュールのログをprefix付きで集約 |
-| `-DisableTts` | tts-serviceを起動しない |
-| `-DisableAvatar` | avatar-serviceを起動しない |
-| `-SkipDockerCheck` | Docker Desktop / Dify APIの起動前チェックを省略 |
-| `-NoStartDockerDesktop` | Docker Desktopを自動起動しない |
-| `-NoAiTalkCoreIntegrationDefaults` | `ai_talk_core` Web UIの統合向け初期設定を入れない |
-| `-NoRecordGateAuto` | `入力ゲートで録音を制御する` だけ入れない |
-| `-NoSaveHandoff` | `handoffを保存する` だけ入れない |
-| `-NoSkipShortAscii` | 短い英字1語のSTT結果もDifyへ送る |
-| `-DifyResponseMode blocking\|streaming` | Dify watcherの応答モードを上書き |
-| `-GestureMinConfidence <number>` | receiverの最小confidenceを上書き |
-| `-GestureActivationDelay <seconds>` | 録音開始までの継続秒数を上書き |
-| `-GestureReleaseDelay <seconds>` | 録音停止までの猶予秒数を上書き |
-| `-TtsEngine windows-sapi\|noop` | TTSエンジンを上書き |
-| `-TtsPlayer speaker\|file\|noop` | TTSの再生先を上書き |
-| `-AvatarPort <port>` | avatar-serviceのVite portを上書き |
-| `-AvatarModelUrl <url>` | avatar-serviceに渡すmodel URLを上書き |
+| `THOUGHT_CORE_BASE_URL` | Thought Core API。通常は `http://127.0.0.1:18787` |
+| `THOUGHT_CORE_LLM_BASE_URL` | OpenAI互換APIのURL |
+| `THOUGHT_CORE_LLM_API_KEY` | LLM API key |
+| `THOUGHT_CORE_LLM_MODEL` | 使用モデル |
+| `THOUGHT_CORE_PERSONA` | 応答口調。既定は `cheerful_ossan` |
+| `AITUBER_MESSAGE_URL` | AITuber Kitへ発話イベントを送るURL |
 
-## 個別に起動する
-
-切り分けたい場合は、個別スクリプトを使います。各スクリプトは既定で `.env` を読み込みます。
-
-| Script | 起動するもの |
-|---|---|
-| `.\scripts\start-ai-talk-core.ps1` | `ai_talk_core` Web UI |
-| `.\scripts\start-gesture-udp.ps1` | sword-voice-agent UDP receiver |
-| `.\scripts\start-mediapipe-udp.ps1` | mediapipe-sword-sign UDP publisher |
-| `.\scripts\start-dify-watch.ps1` | ai_talk_core handoff -> Dify watcher |
-| `.\scripts\start-tts-service.ps1` | Dify応答 -> tts-service watcher |
-| `.\scripts\start-avatar-service.ps1` | Three.js + VRM avatar runtime |
-| `.\scripts\start-console.ps1` | 統合コンソール |
-| `.\scripts\start-full-stack-supervisor.ps1` | 1ターミナル集約supervisor起動 |
-| `.\scripts\render-system-house.ps1` | `/api/events` -> SystemHouseRenderer trace |
-| `.\scripts\start-demo-udp.ps1` | デモ用gesture UDP sender |
-| `.\scripts\stop-full-stack.ps1` | 統合プロセスを検出して停止 |
-
-例:
-
-```powershell
-cd <repo_root>
-.\scripts\start-dify-watch.ps1 -DryRun
-.\scripts\start-console.ps1
-```
-
-`/api/events` をSystemHouseRendererでtrace表示する場合:
-
-```powershell
-.\scripts\render-system-house.ps1
-.\scripts\render-system-house.ps1 -TurnId <turn-id>
-```
-
-## チェック
-
-コードとPowerShellスクリプトの基本チェック:
-
-```powershell
-cd <repo_root>
-.\scripts\check.ps1
-```
-
-期待する結果:
+Home Assistant や Environment State Server の秘密情報は、基本的に organ 側の `.env` に置きます。
 
 ```text
-Ran ... tests
-OK
+C:\Users\kawai\works\sword-agent-system\organs\action\home-assistant-server\.env
 ```
 
-## 古いstatus表示を消す
+## 起動profile
 
-```powershell
-cd <repo_root>
-$env:PYTHONPATH = "src"
-python -m sword_voice_agent.apps.clear_status --status-dir .cache\sword_voice_agent --yes
+| Profile | 用途 |
+|---|---|
+| `thought-core-v0` | 現在の主経路。Thought Core API と watcher を使う |
+| `thought-core-experimental` | 旧名の互換エイリアス。新しい手順では `thought-core-v0` を使う |
+| `camera-debug` | Camera Hub と Vision Snapshot Processor だけを見る |
+| `aituber-only` | AITuber Kit 表示だけを見る |
+| `full-local` | Dify互換を含む旧寄りの構成。通常は使わない |
+
+## 重要な文書
+
+| 文書 | 内容 |
+|---|---|
+| `docs/architecture.md` | 全体アーキテクチャ |
+| `docs/deployment-cell.md` | system cell / control plane / organ の考え方 |
+| `docs/component-map.md` | 現在の物理配置と論理役割 |
+| `docs/module-responsibilities.md` | 各器官の責務 |
+| `docs/state_authority.md` | 状態推定、authority、source of truth |
+| `docs/action-driver-catalog.md` | 家電操作カタログと更新フロー |
+| `docs/runtime-layout.md` | `.cache`, `runtime`, `local` の使い分け |
+| `docs/logging-conventions.md` | layerを意識したログの書き方 |
+| `docs/retired-paths.md` | 退役済み・互換用パス |
+
+`archives/` は履歴退避先です。現役の設計判断には使いません。
+
+## 家電操作の管理
+
+家電操作の意味は control plane が管理します。
+
+```text
+catalogs/actions/home-actions.json
+  action_id、aliases、risk、confirmation、expected_state
+
+organs/action/home-assistant-server/
+  実際のHome Assistant実行
+
+organs/environment/environment-state-server/
+  現在状態と使える操作の投影
+
+services/thought-core/
+  1 turnの中で観測、preview、execute、再観測、評価
 ```
 
-統合コンソールを起動している場合は、画面右上の `履歴クリア` でも同じstatusキャッシュとイベント履歴を削除できます。
+既存 `action_id` の意味を変えるのは互換性破壊です。原則として、新しい `action_id` を追加し、古いものを段階的に退役させます。
+
+## メモリと状態
+
+このrepoでは、メモリをAIの会話履歴だけとして扱いません。状態、作業記憶、イベントログ、長期記憶、設定、秘密情報を分けます。
+
+| 層 | 内容 | 主な場所 |
+|---|---|---|
+| M1 | module state | `runtime/state/`, `.cache/` |
+| M2 | core working memory | Thought Core内部 |
+| M3 | event journal | `runtime/logs/events/`, `.cache/` |
+| M4 | semantic / episodic memory | `local/memory/` |
+| M5 | config / policy | `local/config/`, `policies/` |
+| M6 | secrets | `.env`, `local/secrets/` |
+
+重要なルールです。
+
+- 各サービスは自分のstateだけを書く。
+- Thought Core は記憶候補を作れるが、確定記憶を直接commitしない。
+- secrets は memory や event log に混ぜない。
+- 重要な操作には trace_id / turn_id を残す。
+
+## Thought Core
+
+`services/thought-core/` は、通常会話と家電操作の中心です。
+
+主な流れです。
+
+```text
+turn input
+  -> memory.retrieve
+  -> environment.observe
+  -> home.preview
+  -> home.execute
+  -> environment.observe
+  -> evaluate
+  -> response
+```
+
+`home.execute` の中に意味レベルのretryは隠しません。再観測、成功判定、再試行、ユーザー確認は Thought Core が turn の中で扱います。
+
+## Difyについて
+
+Dify は現在の主経路ではありません。過去ワークフローとの比較、外部互換、検証用として残っています。
+
+関連ファイルは `dify-apps/` と一部の互換manifestにあります。通常の起動確認では、まず `thought-core-v0` を使ってください。
+
+## TouchDesigner投影
+
+TouchDesigner本体のプロジェクトは system cell 側にあります。
+
+```text
+C:\Users\kawai\works\sword-agent-system\organs\display\touchdesigner-ai-controller\touchdesigner\20260501AITuber.toe
+```
+
+control plane の起動スクリプトは、TouchDesigner制御GUIとUDP送信側を起動します。TouchDesigner本体やプロジェクター出力設定は、実機側で手動確認します。
+
+## 変更するときの考え方
+
+- 大きなorgan repoを `sword-control-plane` に吸収しない。
+- 新しい境界は、まず `contracts/` と `docs/` に書く。
+- 起動対象を増やすときは `ops/manifests/` を更新する。
+- 権限や家電操作の意味を変えるときは `policies/` と `catalogs/` を更新する。
+- runtimeやlocalの実データをGitに入れない。
+- UIやHUDを変えたら、ブラウザで実画面を確認する。
+
+## 参考にしたREADME方針
+
+このREADMEは、最初に概要を示し、必要なもの、導入、起動、動作確認、トラブルシューティングの順に読めるように整理しています。詳細な背景や設計判断は `docs/` を参照してください。
+
+## 謝辞と外部モジュールについて
+
+Sword Agent System は、AITuber Kit、MediaPipe、Home Assistant、VOICEVOX、TouchDesigner など、複数の外部モジュールやアプリケーションの力を借りて動いています。control plane はそれらを一つのsystem cellとして接続・管理するためのrepoです。
+
+利用時は、各プロジェクトのライセンス、利用規約、配布条件を確認してください。アバターやSDKなど再配布に注意が必要な資材は、system cell 側の `external/` や各organ repoの案内に従って扱います。

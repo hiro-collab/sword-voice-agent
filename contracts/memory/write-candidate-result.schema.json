@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/memory/write-candidate-result.schema.json",
+  "title": "Memory Write Candidate Result",
+  "type": "object",
+  "required": ["schema_version", "request_id", "ok", "candidate_id", "status"],
+  "properties": {
+    "schema_version": {
+      "const": "memory.write_candidate.result.v0"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^memcandreq_.+"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "candidate_id": {
+      "type": "string",
+      "pattern": "^mcand_.+"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["accepted", "duplicate", "rejected"]
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}

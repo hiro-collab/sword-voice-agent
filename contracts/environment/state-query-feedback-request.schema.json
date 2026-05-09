@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/environment/state-query-feedback-request.schema.json",
+  "title": "State Query Feedback Request",
+  "description": "Request body accepted by POST /feedback/state-query.",
+  "type": "object",
+  "required": [
+    "target",
+    "state_query_id",
+    "idempotency_key",
+    "user_label"
+  ],
+  "properties": {
+    "type": {
+      "type": "string"
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state_query_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "current_snapshot_id": {
+      "type": "string"
+    },
+    "predicted_state": {
+      "type": "string"
+    },
+    "predicted_confidence_label": {
+      "type": "string"
+    },
+    "user_label": {
+      "type": "string",
+      "minLength": 1
+    },
+    "user_text": {
+      "type": "string"
+    },
+    "authority": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "workflow_version": {
+      "type": "string"
+    },
+    "feedback_reason": {
+      "type": "string"
+    },
+    "pending": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "wait_result": {
+      "$ref": "wait-result.schema.json"
+    }
+  },
+  "additionalProperties": true
+}
+

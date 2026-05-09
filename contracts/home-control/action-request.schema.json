@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/home-control/action-request.schema.json",
+  "title": "Home Control Action Request",
+  "description": "Optional request body accepted by preview and execute endpoints.",
+  "type": "object",
+  "properties": {
+    "source": {
+      "type": "string"
+    },
+    "request_id": {
+      "type": "string"
+    },
+    "user_text": {
+      "type": "string"
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "confirmed": {
+      "type": "boolean"
+    },
+    "confirmation_token": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}
+

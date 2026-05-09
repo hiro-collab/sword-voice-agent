@@ -40,12 +40,20 @@ class StatusStore:
         return self.root / "latest_dify_response.json"
 
     @property
+    def latest_thought_core_response_path(self) -> Path:
+        return self.root / "latest_thought_core_response.json"
+
+    @property
     def modules_dir(self) -> Path:
         return self.root / "modules"
 
     @property
     def events_path(self) -> Path:
         return self.root / "events.jsonl"
+
+    @property
+    def conversation_log_path(self) -> Path:
+        return self.root / "conversation-log.jsonl"
 
     def write_latest_gesture(self, payload: Mapping[str, Any]) -> None:
         response = _mapping(payload.get("response"))
@@ -130,6 +138,37 @@ class StatusStore:
             },
         )
 
+    def write_latest_thought_core_response(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        turn_id: str | None = None,
+        source: str = "watch_handoff_to_thought_core",
+    ) -> None:
+        stored_payload = dict(payload)
+        event_turn_id = turn_id or _turn_id_from_thought_core_payload(payload)
+        if event_turn_id:
+            stored_payload["turn_id"] = event_turn_id
+        self.write_json(self.latest_thought_core_response_path, stored_payload)
+        request_payload = _mapping(payload.get("request"))
+        turn_payload = _mapping(payload.get("turn_payload"))
+        response_payload = _mapping(payload.get("response"))
+        raw_payload = _mapping(response_payload.get("raw"))
+        streaming_payload = _mapping(raw_payload.get("_streaming"))
+        self.append_event(
+            "thought_core.response",
+            source=source,
+            turn_id=event_turn_id,
+            payload={
+                "request_text": redacted_text(request_payload.get("text", "")),
+                "turn_text": redacted_text(turn_payload.get("text", "")),
+                "response_text": redacted_text(response_payload.get("text", "")),
+                "event_count": streaming_payload.get("event_count"),
+                "skipped": payload.get("skipped", False),
+                "skip_reason": payload.get("skip_reason"),
+            },
+        )
+
     def write_module_status(
         self,
         name: str,
@@ -150,6 +189,52 @@ class StatusStore:
                 "detail": detail,
                 "timestamp": timestamp if timestamp is not None else now_timestamp(),
             },
+        )
+
+    def append_conversation_entry(
+        self,
+        role: str,
+        text: object,
+        *,
+        source: str,
+        turn_id: str | None = None,
+        session_id: str | None = None,
+        issue_id: str | None = None,
+        event_type: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        timestamp: float | None = None,
+    ) -> None:
+        clean_text = str(text or "").strip()
+        if not clean_text:
+            return
+        self.root.mkdir(parents=True, exist_ok=True)
+        entry: dict[str, Any] = {
+            "entry_id": uuid4().hex,
+            "timestamp": timestamp if timestamp is not None else now_timestamp(),
+            "role": str(role or "log"),
+            "text": clean_text,
+            "source": source,
+            "turn_id": turn_id,
+            "session_id": session_id,
+            "issue_id": issue_id,
+            "event_type": event_type,
+            "metadata": dict(metadata or {}),
+        }
+        with self.conversation_log_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(entry, ensure_ascii=False))
+            stream.write("\n")
+        self.trim_conversation_log()
+
+    def trim_conversation_log(self) -> None:
+        try:
+            lines = self.conversation_log_path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return
+        if len(lines) <= self.max_events:
+            return
+        self.conversation_log_path.write_text(
+            "\n".join(lines[-self.max_events :]) + "\n",
+            encoding="utf-8",
         )
 
     def read_module_statuses(self) -> dict[str, dict[str, Any]]:
@@ -216,7 +301,9 @@ class StatusStore:
             self.latest_gesture_diagnostic_path,
             self.latest_voice_turn_path,
             self.latest_dify_response_path,
+            self.latest_thought_core_response_path,
             self.events_path,
+            self.conversation_log_path,
         ):
             try:
                 path.unlink()
@@ -243,6 +330,21 @@ class StatusStore:
             if isinstance(payload, dict):
                 events.append(payload)
         return events
+
+    def read_conversation_log(self, limit: int = 50) -> list[dict[str, Any]]:
+        try:
+            lines = self.conversation_log_path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return []
+        entries: list[dict[str, Any]] = []
+        for line in lines[-max(1, limit) :]:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                entries.append(payload)
+        return entries
 
     def read_events_after(
         self,
@@ -293,6 +395,17 @@ def redacted_text(value: object) -> str:
 def _turn_id_from_request(request_payload: Mapping[str, Any]) -> str | None:
     context = _mapping(request_payload.get("context"))
     return _optional_text(context.get("turn_id"))
+
+
+def _turn_id_from_thought_core_payload(payload: Mapping[str, Any]) -> str | None:
+    turn_payload = _mapping(payload.get("turn_payload"))
+    response_payload = _mapping(payload.get("response"))
+    request_payload = _mapping(payload.get("request"))
+    return (
+        _optional_text(turn_payload.get("turn_id"))
+        or _optional_text(response_payload.get("conversation_id"))
+        or _turn_id_from_request(request_payload)
+    )
 
 
 def _gesture_event_key(payload: Mapping[str, Any] | None) -> tuple[object, ...] | None:

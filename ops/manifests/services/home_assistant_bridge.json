@@ -1,0 +1,38 @@
+{
+  "service_id": "home_assistant_bridge",
+  "layer": "action",
+  "logical_service": "home-control-server",
+  "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
+  "repo_path": "organs/action/home-assistant-server",
+  "contracts": [
+    "home-control",
+    "access-control"
+  ],
+  "adapters": [
+    "home-assistant"
+  ],
+  "memory": {
+    "reads": [
+      "M5",
+      "M6"
+    ],
+    "writes": [
+      "M1",
+      "M3"
+    ]
+  },
+  "pid_names": [
+    "home_assistant_bridge"
+  ],
+  "start": {
+    "type": "stack-script"
+  },
+  "health": {
+    "type": "http",
+    "url": "http://127.0.0.1:8787/health"
+  },
+  "stop": {
+    "strategy": "owned_pid"
+  },
+  "depends_on": []
+}

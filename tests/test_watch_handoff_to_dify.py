@@ -2,17 +2,21 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 import shutil
+import time
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from sword_voice_agent.apps.watch_handoff_to_dify import (
+    AituberSpeechForwarder,
     TtsStreamForwarder,
     build_parser,
+    clean_speech_message,
     handoff_signature,
     is_suspect_short_ascii_stt,
     resolve_handoff_json_path,
     run_once,
+    split_speech_chunks,
 )
 from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreHandoffError
 from sword_voice_agent.adapters.dify import DifyStreamEvent
@@ -262,6 +266,45 @@ class WatchHandoffToDifyTest(TestCase):
             self.assertNotIn("secret", json.dumps(events, ensure_ascii=False))
 
     @patch("sword_voice_agent.apps.watch_handoff_to_dify.request.urlopen")
+    def test_tts_forwarder_async_post_does_not_block_stream_handler(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+
+        def slow_urlopen(*args, **kwargs):
+            time.sleep(0.25)
+            return response
+
+        urlopen.side_effect = slow_urlopen
+        forwarder = TtsStreamForwarder(
+            "http://127.0.0.1:8765/api/tts/chunk",
+            timeout_s=0.5,
+            async_post=True,
+        )
+
+        started = time.perf_counter()
+        forwarder(
+            DifyStreamEvent(
+                event="message",
+                answer_delta="Dify",
+                message_id="msg-1",
+            )
+        )
+        elapsed = time.perf_counter() - started
+
+        self.assertLess(elapsed, 0.15)
+        forwarder.finish(
+            {
+                "response_mode": "streaming",
+                "skipped": False,
+                "response": {"message_id": "msg-1", "conversation_id": "conv-1"},
+            }
+        )
+        self.assertGreaterEqual(urlopen.call_count, 2)
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_dify.request.urlopen")
     def test_run_once_streaming_forwards_tts_chunks(self, urlopen: MagicMock) -> None:
         response = MagicMock()
         response.__enter__.return_value.read.return_value = b"{}"
@@ -298,6 +341,140 @@ class WatchHandoffToDifyTest(TestCase):
         self.assertEqual([payload.get("delta") for payload in payloads[:2]], ["Dify", "応答です"])
         self.assertEqual(payloads[-1]["event"], "message_end")
         self.assertTrue(payloads[-1]["final"])
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_dify.request.urlopen")
+    def test_run_once_streaming_posts_local_ack_before_dify_chunks(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+        urlopen.return_value = response
+
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            write_handoff(root, command="電気を消してください")
+            client = FakeDifyClient()
+            args = build_parser().parse_args(
+                [
+                    "--ai-talk-core-root",
+                    str(root),
+                    "--once",
+                    "--response-mode",
+                    "streaming",
+                    "--aituber-message-url",
+                    "http://127.0.0.1:3000/api/messages?clientId=client-1&type=direct_send",
+                    "--aituber-http-timeout-s",
+                    "0.1",
+                ]
+            )
+
+            run_once(args, client=client)
+
+        payloads = [
+            json.loads(call.args[0].data.decode("utf-8"))
+            for call in urlopen.call_args_list
+        ]
+        self.assertEqual(
+            [payload["messages"][0] for payload in payloads],
+            ["[neutral]はいよ。", "Dify応答です"],
+        )
+
+    def test_split_speech_chunks_keeps_partial_until_sentence_end(self) -> None:
+        chunks, remainder = split_speech_chunks(
+            "[relaxed]ふん",
+            final=False,
+            max_chars=80,
+        )
+
+        self.assertEqual(chunks, [])
+        self.assertEqual(remainder, "[relaxed]ふん")
+
+        chunks, remainder = split_speech_chunks(
+            "[relaxed]ふんふん。[happy]よし、完了だぜ。",
+            final=False,
+            max_chars=80,
+        )
+
+        self.assertEqual(chunks, ["[relaxed]ふんふん。", "[happy]よし、完了だぜ。"])
+        self.assertEqual(remainder, "")
+
+    def test_clean_speech_message_removes_internal_speech_markers(self) -> None:
+        self.assertEqual(
+            clean_speech_message("[[SPEECH:ACK]][relaxed]ふんふん。"),
+            "[relaxed]ふんふん。",
+        )
+        self.assertEqual(clean_speech_message("[neutral]"), "")
+
+    def test_clean_speech_message_normalizes_bare_motion_tags(self) -> None:
+        self.assertEqual(
+            clean_speech_message(
+                "[neutral]おっ、またお辞儀か！[bow]はい、どうぞ！"
+            ),
+            "[neutral]おっ、またお辞儀か！[motion:bow]はい、どうぞ！",
+        )
+        self.assertEqual(
+            clean_speech_message("[motion:Bow]どうぞ。"),
+            "[motion:bow]どうぞ。",
+        )
+        self.assertEqual(clean_speech_message("[bow]"), "")
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_dify.request.urlopen")
+    def test_aituber_forwarder_posts_sentence_sized_direct_send_messages(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+        urlopen.return_value = response
+        forwarder = AituberSpeechForwarder(
+            "http://127.0.0.1:3000/api/messages?clientId=client-1&type=direct_send",
+            timeout_s=0.1,
+        )
+
+        forwarder(
+            DifyStreamEvent(
+                event="message",
+                answer_delta="[relaxed]ふん",
+                message_id="msg-1",
+            )
+        )
+        self.assertEqual(urlopen.call_count, 0)
+
+        forwarder(
+            DifyStreamEvent(
+                event="message",
+                answer_delta="ふん。[happy]よし、完了だぜ。",
+                message_id="msg-1",
+            )
+        )
+
+        payloads = [
+            json.loads(call.args[0].data.decode("utf-8"))
+            for call in urlopen.call_args_list
+        ]
+        self.assertEqual(
+            [payload["messages"][0] for payload in payloads],
+            ["[relaxed]ふんふん。", "[happy]よし、完了だぜ。"],
+        )
+
+    def test_aituber_forward_error_redacts_message_url(self) -> None:
+        with workspace_tempdir() as tmp:
+            store = StatusStore(Path(tmp) / ".cache" / "sword_voice_agent")
+            forwarder = AituberSpeechForwarder(
+                "https://aituber.example.test/api/messages?token=secret",
+                timeout_s=0.1,
+                store=store,
+                turn_id="turn-1",
+            )
+
+            forwarder.record_error("connection failed")
+
+            events = store.read_events()
+            self.assertEqual(events[0]["type"], "aituber.forward_error")
+            self.assertEqual(events[0]["payload"]["message_url"], "[redacted]")
+            self.assertTrue(events[0]["payload"]["message_url_present"])
+            self.assertNotIn("secret", json.dumps(events, ensure_ascii=False))
 
     def test_run_once_skips_no_speech_placeholder_by_default(self) -> None:
         with workspace_tempdir() as tmp:

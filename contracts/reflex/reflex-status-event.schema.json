@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/reflex/reflex-status-event.schema.json",
+  "title": "Reflex Status Event",
+  "description": "Local runtime event emitted after reflex status is projected into the sword-voice-agent status store.",
+  "type": "object",
+  "required": ["event_id", "type", "timestamp", "source", "payload"],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "type": "string",
+      "enum": ["gesture.received", "gesture.diagnostic"]
+    },
+    "timestamp": {
+      "type": "number",
+      "minimum": 0
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "turn_id": {
+      "type": "string"
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
+

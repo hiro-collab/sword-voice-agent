@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/environment/state-query-feedback-response.schema.json",
+  "title": "State Query Feedback Response",
+  "description": "Successful response body returned by POST /feedback/state-query.",
+  "type": "object",
+  "required": [
+    "ok",
+    "feedback_id",
+    "duplicate",
+    "status",
+    "warnings"
+  ],
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "feedback_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "received_snapshot_id": {
+      "type": "string"
+    },
+    "duplicate": {
+      "type": "boolean"
+    },
+    "status": {
+      "type": "string",
+      "minLength": 1
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}
+

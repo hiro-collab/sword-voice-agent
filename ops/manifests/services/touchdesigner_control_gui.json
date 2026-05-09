@@ -1,0 +1,38 @@
+{
+  "service_id": "touchdesigner_control_gui",
+  "layer": "expression",
+  "logical_service": "display-runtime",
+  "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
+  "repo_path": "organs/display/touchdesigner-ai-controller",
+  "contracts": [
+    "expression",
+    "access-control"
+  ],
+  "adapters": [
+    "touchdesigner"
+  ],
+  "memory": {
+    "reads": [
+      "M1",
+      "M5"
+    ],
+    "writes": [
+      "M1",
+      "M3"
+    ]
+  },
+  "pid_names": [
+    "touchdesigner_control_gui"
+  ],
+  "start": {
+    "type": "stack-script"
+  },
+  "health": {
+    "type": "http",
+    "url": "http://127.0.0.1:8788"
+  },
+  "stop": {
+    "strategy": "owned_pid"
+  },
+  "depends_on": []
+}

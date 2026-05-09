@@ -1,0 +1,17 @@
+{
+  "schema_version": "access.action_approval.v0",
+  "rules": [
+    {
+      "capability": "home.execute.low_risk",
+      "approval": "policy_allowed",
+      "examples": ["light_on", "light_off", "fan_on", "fan_off"],
+      "notes": "Thought Core may request these only through home-control-server and should still re-observe after execution."
+    },
+    {
+      "capability": "home.execute.requires_approval",
+      "approval": "explicit_user_confirmation",
+      "examples": ["aircon_on", "door_unlock", "vacuum_start"],
+      "notes": "Home Control may return confirmation-required; Thought Core handles the user confirmation turn."
+    }
+  ]
+}

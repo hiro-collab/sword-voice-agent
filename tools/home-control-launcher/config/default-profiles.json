@@ -1,0 +1,91 @@
+[
+  {
+    "id": "thought-core-experimental",
+    "name": "System Cell (Thought Core)",
+    "group": "Primary",
+    "description": "Start the current system cell with Thought Core, AITuber, MediaPipe, environment, home-control, and display services.",
+    "options": {
+      "StopExisting": true,
+      "SkipDify": true,
+      "SkipDifyWatch": true,
+      "EnableThoughtCore": true,
+      "EnableThoughtCoreWatch": true,
+      "MediapipeMode": "mediamtx",
+      "MediapipeNoBrowser": true
+    }
+  },
+  {
+    "id": "camera-debug",
+    "name": "Reflex camera debug",
+    "group": "Diagnostics",
+    "description": "Start MediaPipe and vision-state pieces without AITuber, Dify, or action services.",
+    "options": {
+      "StopExisting": true,
+      "SkipDify": true,
+      "SkipVoicevoxCheck": true,
+      "SkipHomeAssistantBridge": true,
+      "SkipAituber": true,
+      "SkipDifyWatch": true,
+      "SkipTouchDesignerGui": true,
+      "MediapipeMode": "mediamtx",
+      "MediapipeOpenBrowser": true,
+      "MediapipeNoBrowser": false
+    }
+  },
+  {
+    "id": "aituber-only",
+    "name": "Expression UI only",
+    "group": "Diagnostics",
+    "description": "Start only AITuber Kit for UI and voice-output checks.",
+    "options": {
+      "StopExisting": true,
+      "SkipDify": true,
+      "SkipVoicevoxCheck": true,
+      "SkipHomeAssistantBridge": true,
+      "SkipEnvironmentState": true,
+      "SkipMediapipe": true,
+      "SkipVisionSnapshotProcessor": true,
+      "SkipDifyWatch": true,
+      "SkipTouchDesignerGui": true
+    }
+  },
+  {
+    "id": "no-touchdesigner",
+    "name": "System Cell without TD GUI",
+    "group": "Diagnostics",
+    "description": "Start the current Thought Core stack without the TouchDesigner control web GUI.",
+    "options": {
+      "StopExisting": true,
+      "SkipDify": true,
+      "SkipDifyWatch": true,
+      "EnableThoughtCore": true,
+      "EnableThoughtCoreWatch": true,
+      "SkipTouchDesignerGui": true,
+      "MediapipeMode": "mediamtx",
+      "MediapipeNoBrowser": true
+    }
+  },
+  {
+    "id": "full-stack",
+    "name": "Legacy Dify-managed stack",
+    "group": "Legacy / compatibility",
+    "description": "Compatibility profile for the older Dify watcher flow. Prefer System Cell (Thought Core) for normal use.",
+    "options": {
+      "StopExisting": true,
+      "MediapipeMode": "mediamtx",
+      "MediapipeNoBrowser": true
+    }
+  },
+  {
+    "id": "dify-external",
+    "name": "Legacy external Dify",
+    "group": "Legacy / compatibility",
+    "description": "Compatibility profile for using an already-running Dify instance with the older watcher flow.",
+    "options": {
+      "StopExisting": true,
+      "SkipDify": true,
+      "MediapipeMode": "mediamtx",
+      "MediapipeNoBrowser": true
+    }
+  }
+]

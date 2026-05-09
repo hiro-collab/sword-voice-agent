@@ -1,0 +1,8 @@
+{
+  "profile_id": "aituber-only",
+  "layer": "ops",
+  "description": "AITuber Kit only for UI and voice-output checks.",
+  "services": [
+    "aituber_kit"
+  ]
+}

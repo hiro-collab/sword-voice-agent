@@ -1,0 +1,401 @@
+{
+  "$schema": "./home-actions.schema.json",
+  "schema_version": 1,
+  "catalog_id": "sword.home-actions",
+  "catalog_version": "home-actions.v1",
+  "authority": "sword-control-plane",
+  "update_flow": [
+    "Propose catalog changes before service-specific edits.",
+    "Home-control reviews execution, confirmation, and risk fields.",
+    "Environment reviews observation, expected state, and freshness semantics.",
+    "Thought-core reviews aliases, intent examples, and response hints.",
+    "Control-plane reviews schema, versioning, compatibility, and release.",
+    "Run catalog consistency tests before runtime tests.",
+    "Run start -DryRun and status checks before treating new actions as live."
+  ],
+  "actions": {
+    "light_on": {
+      "label": "ライトをつける",
+      "target": "light",
+      "target_label": "電気",
+      "verb": "つける",
+      "aliases": [
+        "ライトをつけて",
+        "ライトつけて",
+        "電気をつけて",
+        "電気つけて",
+        "照明をつけて",
+        "照明つけて"
+      ],
+      "pre_action_phrase": "電気をつける",
+      "expected_state": "on",
+      "expected_effect": {
+        "domain": "switch",
+        "service": "turn_on",
+        "entity_id": "switch.raito",
+        "expected_state": "on"
+      },
+      "risk_level": "low",
+      "confirmation_required": false,
+      "confirmation_reason": null,
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.light_on",
+        "response_text": "ライトをつけました。"
+      },
+      "observation": {
+        "appliance_id": "light",
+        "state_path": "environment.appliances.light.state"
+      },
+      "intent_examples": ["電気をつけて"]
+    },
+    "light_off": {
+      "label": "ライトを消す",
+      "target": "light",
+      "target_label": "電気",
+      "verb": "消す",
+      "aliases": [
+        "ライトを消して",
+        "ライト消して",
+        "電気を消して",
+        "電気消して",
+        "照明を消して",
+        "照明消して"
+      ],
+      "pre_action_phrase": "電気を消す",
+      "expected_state": "off",
+      "expected_effect": {
+        "domain": "switch",
+        "service": "turn_off",
+        "entity_id": "switch.raito",
+        "expected_state": "off"
+      },
+      "risk_level": "low",
+      "confirmation_required": false,
+      "confirmation_reason": null,
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.light_off",
+        "response_text": "ライトを消しました。"
+      },
+      "observation": {
+        "appliance_id": "light",
+        "state_path": "environment.appliances.light.state"
+      },
+      "intent_examples": ["電気を消して"]
+    },
+    "fan_on": {
+      "label": "扇風機をつける",
+      "target": "fan",
+      "target_label": "扇風機",
+      "verb": "つける",
+      "aliases": [
+        "扇風機をつけて",
+        "扇風機つけて",
+        "ファンをつけて",
+        "ファンつけて"
+      ],
+      "pre_action_phrase": "扇風機をつける",
+      "expected_state": "on",
+      "expected_effect": { "expected_state": "on" },
+      "risk_level": "low",
+      "confirmation_required": false,
+      "confirmation_reason": null,
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.fan_on",
+        "response_text": "扇風機をつけました。"
+      },
+      "observation": {
+        "appliance_id": "fan",
+        "state_path": "environment.appliances.fan.state"
+      },
+      "intent_examples": ["扇風機をつけて"]
+    },
+    "fan_off": {
+      "label": "扇風機を消す",
+      "target": "fan",
+      "target_label": "扇風機",
+      "verb": "消す",
+      "aliases": [
+        "扇風機を消して",
+        "扇風機消して",
+        "ファンを消して",
+        "ファン消して",
+        "扇風機を止めて"
+      ],
+      "pre_action_phrase": "扇風機を消す",
+      "expected_state": "off",
+      "expected_effect": { "expected_state": "off" },
+      "risk_level": "low",
+      "confirmation_required": false,
+      "confirmation_reason": null,
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.fan_off",
+        "response_text": "扇風機を消しました。"
+      },
+      "observation": {
+        "appliance_id": "fan",
+        "state_path": "environment.appliances.fan.state"
+      },
+      "intent_examples": ["扇風機を止めて"]
+    },
+    "aircon_on": {
+      "label": "エアコンをつける",
+      "target": "aircon",
+      "target_label": "エアコン",
+      "verb": "つける",
+      "aliases": [
+        "エアコンをつけて",
+        "エアコンつけて",
+        "エアコンを入れて",
+        "エアコン入れて",
+        "冷房をつけて",
+        "暖房をつけて",
+        "空調をつけて"
+      ],
+      "pre_action_phrase": "エアコンをつける",
+      "expected_state": "on",
+      "expected_effect": { "expected_state": "on" },
+      "risk_level": "medium",
+      "confirmation_required": true,
+      "confirmation_reason": "climate_control",
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.aircon_on",
+        "response_text": "エアコンをつけました。"
+      },
+      "observation": {
+        "appliance_id": "aircon",
+        "state_path": "environment.appliances.aircon.state"
+      },
+      "intent_examples": ["エアコンをつけて"]
+    },
+    "aircon_off": {
+      "label": "エアコンを消す",
+      "target": "aircon",
+      "target_label": "エアコン",
+      "verb": "消す",
+      "aliases": [
+        "エアコンを消して",
+        "エアコン消して",
+        "エアコンを切って",
+        "エアコン切って",
+        "エアコンを止めて",
+        "エアコン止めて",
+        "エアコンを停止して",
+        "エアコン停止して",
+        "冷房を消して",
+        "冷房を止めて",
+        "暖房を消して",
+        "暖房を止めて",
+        "空調を消して",
+        "空調を止めて"
+      ],
+      "pre_action_phrase": "エアコンを消す",
+      "expected_state": "off",
+      "expected_effect": { "expected_state": "off" },
+      "risk_level": "medium",
+      "confirmation_required": true,
+      "confirmation_reason": "climate_control",
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.aircon_off",
+        "response_text": "エアコンを消しました。"
+      },
+      "observation": {
+        "appliance_id": "aircon",
+        "state_path": "environment.appliances.aircon.state"
+      },
+      "intent_examples": ["エアコンを停止してください"]
+    },
+    "door_open": {
+      "label": "中扉を開ける",
+      "target": "door",
+      "target_label": "中扉",
+      "verb": "開ける",
+      "aliases": [
+        "中扉を開けて",
+        "中扉開けて",
+        "中扉を開いて",
+        "ドアを開けて",
+        "ドア開けて",
+        "ドアを開いて",
+        "扉を開けて",
+        "扉開けて"
+      ],
+      "pre_action_phrase": "中扉を開ける",
+      "expected_state": "open",
+      "expected_effect": { "expected_state": "open" },
+      "risk_level": "medium",
+      "confirmation_required": true,
+      "confirmation_reason": "door_motion",
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.door_open",
+        "response_text": "中扉を開けました。"
+      },
+      "observation": {
+        "appliance_id": "door",
+        "state_path": "environment.appliances.door.state"
+      },
+      "intent_examples": ["中扉を開けて"]
+    },
+    "door_close": {
+      "label": "中扉を閉める",
+      "target": "door",
+      "target_label": "中扉",
+      "verb": "閉める",
+      "aliases": [
+        "中扉を閉めて",
+        "中扉閉めて",
+        "中扉を閉じて",
+        "中扉閉じて",
+        "ドアを閉めて",
+        "ドア閉めて",
+        "ドアを閉じて",
+        "ドア閉じて",
+        "扉を閉めて",
+        "扉を閉じて"
+      ],
+      "pre_action_phrase": "中扉を閉める",
+      "expected_state": "closed",
+      "expected_effect": { "expected_state": "closed" },
+      "risk_level": "medium",
+      "confirmation_required": true,
+      "confirmation_reason": "door_motion",
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.door_close",
+        "response_text": "中扉を閉めました。"
+      },
+      "observation": {
+        "appliance_id": "door",
+        "state_path": "environment.appliances.door.state"
+      },
+      "intent_examples": ["中扉を閉めて"]
+    },
+    "door_stop": {
+      "label": "中扉を止める",
+      "target": "door",
+      "target_label": "中扉",
+      "verb": "止める",
+      "aliases": [
+        "中扉を止めて",
+        "中扉止めて",
+        "ドアを止めて",
+        "ドア止めて",
+        "扉を止めて",
+        "扉止めて",
+        "停止して"
+      ],
+      "pre_action_phrase": "中扉を止める",
+      "expected_state": "stopped",
+      "expected_effect": { "expected_state": "stopped" },
+      "risk_level": "medium",
+      "confirmation_required": true,
+      "confirmation_reason": "door_motion",
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.door_stop",
+        "response_text": "中扉を止めました。"
+      },
+      "observation": {
+        "appliance_id": "door",
+        "state_path": "environment.appliances.door.state"
+      },
+      "intent_examples": ["ドアを止めて"]
+    },
+    "vacuum_start": {
+      "label": "掃除機を開始する",
+      "target": "vacuum",
+      "target_label": "掃除機",
+      "verb": "動かす",
+      "aliases": [
+        "掃除機をかけて",
+        "掃除機かけて",
+        "掃除機を動かして",
+        "掃除を始めて",
+        "ロボット掃除機を動かして",
+        "掃除機スタート"
+      ],
+      "pre_action_phrase": "掃除機を動かす",
+      "expected_state": "cleaning",
+      "expected_effect": { "expected_state": "cleaning" },
+      "risk_level": "medium",
+      "confirmation_required": true,
+      "confirmation_reason": "vacuum_motion",
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.vacuum_start",
+        "response_text": "掃除機を開始しました。"
+      },
+      "observation": {
+        "appliance_id": "vacuum",
+        "state_path": "environment.appliances.vacuum.state"
+      },
+      "intent_examples": ["掃除機をかけて"]
+    },
+    "vacuum_return": {
+      "label": "掃除機を戻す",
+      "target": "vacuum",
+      "target_label": "掃除機",
+      "verb": "戻す",
+      "aliases": [
+        "掃除機を戻して",
+        "掃除機戻して",
+        "掃除機を充電器に戻して",
+        "ロボット掃除機を戻して",
+        "掃除機を帰らせて",
+        "掃除機帰って"
+      ],
+      "pre_action_phrase": "掃除機を戻す",
+      "expected_state": "returning",
+      "expected_effect": { "expected_state": "returning" },
+      "risk_level": "medium",
+      "confirmation_required": true,
+      "confirmation_reason": "vacuum_motion",
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.vacuum_return",
+        "response_text": "掃除機を充電台に戻しました。"
+      },
+      "observation": {
+        "appliance_id": "vacuum",
+        "state_path": "environment.appliances.vacuum.state"
+      },
+      "intent_examples": ["掃除機を戻して"]
+    },
+    "vacuum_pause": {
+      "label": "掃除機を一時停止する",
+      "target": "vacuum",
+      "target_label": "掃除機",
+      "verb": "一時停止する",
+      "aliases": [
+        "掃除機を止めて",
+        "掃除機止めて",
+        "掃除機を一時停止して",
+        "掃除機一時停止",
+        "ロボット掃除機を止めて",
+        "掃除を止めて"
+      ],
+      "pre_action_phrase": "掃除機を一時停止する",
+      "expected_state": "paused",
+      "expected_effect": { "expected_state": "paused" },
+      "risk_level": "medium",
+      "confirmation_required": true,
+      "confirmation_reason": "vacuum_motion",
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.vacuum_pause",
+        "response_text": "掃除機を一時停止しました。"
+      },
+      "observation": {
+        "appliance_id": "vacuum",
+        "state_path": "environment.appliances.vacuum.state"
+      },
+      "intent_examples": ["掃除機を一時停止して"]
+    }
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/environment/environment-current.schema.json",
+  "title": "Environment Current Snapshot",
+  "description": "Response body returned by GET /environment/current.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "snapshot_id",
+    "sequence",
+    "stale",
+    "age_ms",
+    "capabilities",
+    "actions"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "snapshot_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "stale": {
+      "type": "boolean"
+    },
+    "age_ms": {
+      "type": "number",
+      "minimum": 0
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "state_queries": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "relations": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "wait_result": {
+      "$ref": "wait-result.schema.json"
+    }
+  },
+  "additionalProperties": true
+}
+

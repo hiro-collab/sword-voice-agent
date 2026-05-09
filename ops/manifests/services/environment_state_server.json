@@ -1,0 +1,46 @@
+{
+  "service_id": "environment_state_server",
+  "layer": "environment",
+  "logical_service": "environment-server",
+  "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
+  "repo_path": "organs/environment/environment-state-server",
+  "contracts": [
+    "environment",
+    "reflex",
+    "access-control"
+  ],
+  "adapters": [
+    "mediapipe",
+    "vision-snapshot",
+    "home-assistant",
+    "app-state"
+  ],
+  "memory": {
+    "reads": [
+      "M0",
+      "M1",
+      "M5",
+      "M6"
+    ],
+    "writes": [
+      "M1",
+      "M3"
+    ]
+  },
+  "pid_names": [
+    "environment_state_server"
+  ],
+  "start": {
+    "type": "stack-script"
+  },
+  "health": {
+    "type": "http",
+    "url": "http://127.0.0.1:8790/environment/current"
+  },
+  "stop": {
+    "strategy": "owned_pid"
+  },
+  "depends_on": [
+    "home_assistant_bridge"
+  ]
+}

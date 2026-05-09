@@ -1,0 +1,231 @@
+{
+  "schema_version": "thought-core.flow.v0",
+  "id": "home-control-light-v0",
+  "name": "Home Control Thought Core v0",
+  "description": "Visual draft of the current ThoughtLoop home-control path, including Dify-derived environment state queries and action registry behavior. This file is JSON-compatible YAML so the exporter can run with Python standard library only.",
+  "source": {
+    "implementation": "services/thought-core/src/thought_core/loop.py",
+    "class": "ThoughtLoop",
+    "contract": "services/thought-core/README.md"
+  },
+  "dify": {
+    "app_name": "Thought Core Home Control Visual Draft",
+    "app_description": "Non-executable visual projection of Thought Core nodes. [TC] nodes are no-op placeholders for discussion and YAML round-tripping."
+  },
+  "nodes": [
+    {
+      "id": "turn_input",
+      "kind": "turn.input",
+      "label": "ユーザー入力",
+      "dify_type": "start",
+      "description": "Thought Core turn input. Carries text, turn_id, session_id, locale, and context_refs.",
+      "column": 0,
+      "lane": 1,
+      "editable": ["input_contract_notes"]
+    },
+    {
+      "id": "intent_guard",
+      "kind": "intent.guard",
+      "label": "家電操作境界チェック",
+      "description": "Routes light/fan/aircon/door/vacuum action ids, room_light state queries, environment action-registry aliases, and general unsupported turns. State queries do not execute home actions.",
+      "column": 1,
+      "lane": 1,
+      "editable": ["supported_intents", "unsupported_reply"]
+    },
+    {
+      "id": "unsupported_message",
+      "kind": "assistant.message",
+      "label": "未対応応答",
+      "description": "User-facing response for unsupported intents.",
+      "column": 2,
+      "lane": 3,
+      "editable": ["speech", "display", "emotion", "motion", "priority"]
+    },
+    {
+      "id": "completed_unsupported",
+      "kind": "turn.completed",
+      "label": "完了 unsupported_intent",
+      "description": "Completes the turn with status=unsupported_intent.",
+      "column": 3,
+      "lane": 3,
+      "editable": ["status_mapping"]
+    },
+    {
+      "id": "observe_state_query",
+      "kind": "environment.observe",
+      "label": "room_light 状態照会",
+      "description": "Observe Environment for camera-derived room_light. Do not mix this with Home Assistant switch state.",
+      "column": 2,
+      "lane": 4,
+      "events": ["tool.started", "tool.result", "observation.received"],
+      "editable": ["state_query_id", "authority_policy", "stale_policy"]
+    },
+    {
+      "id": "state_query_answer",
+      "kind": "assistant.message",
+      "label": "映像推定応答",
+      "description": "Answer light state questions from state_queries.room_light only.",
+      "column": 3,
+      "lane": 4,
+      "events": ["environment.state_query_answer", "assistant.speech_delta", "assistant.message"],
+      "editable": ["speech_mapping", "confidence_policy", "fallback_reply"]
+    },
+    {
+      "id": "completed_state_answer",
+      "kind": "turn.completed",
+      "label": "完了 state_answer",
+      "description": "Completes the turn with status=state_answer and room_light metadata.",
+      "column": 4,
+      "lane": 4,
+      "editable": ["status_mapping"]
+    },
+    {
+      "id": "observe_before",
+      "kind": "environment.observe",
+      "label": "事前観測",
+      "description": "Observe Environment / Home Assistant facts before proposing an action.",
+      "column": 2,
+      "lane": 1,
+      "events": ["tool.started", "tool.result", "observation.received"],
+      "editable": ["reason", "fact_requirements"]
+    },
+    {
+      "id": "preview_action",
+      "kind": "home.preview",
+      "label": "操作プレビュー",
+      "description": "Build a one-shot home action proposal. No side effect.",
+      "column": 3,
+      "lane": 1,
+      "events": ["tool.started", "tool.result", "action.proposed"],
+      "editable": ["action_registry", "confirmation_policy", "confidence_threshold"]
+    },
+    {
+      "id": "pre_action_message",
+      "kind": "assistant.message",
+      "label": "実行前ひとこと",
+      "description": "Immediate user-facing message before executing the home action. It must not claim completion.",
+      "column": 4,
+      "lane": 1,
+      "events": ["assistant.speech_delta", "assistant.message"],
+      "editable": ["speech", "display", "emotion", "motion", "priority"]
+    },
+    {
+      "id": "retry_controller",
+      "kind": "loop.retry_controller",
+      "label": "再試行制御",
+      "description": "Owns max attempts=3 and retry-vs-feedback decision. home.execute remains one-shot.",
+      "column": 5,
+      "lane": 1,
+      "editable": ["max_execute_attempts", "retryable_statuses", "non_retryable_errors"]
+    },
+    {
+      "id": "execute_action",
+      "kind": "home.execute",
+      "label": "家電操作実行",
+      "description": "Execute exactly one home action attempt. It reports status and retryable, but does not retry internally.",
+      "column": 6,
+      "lane": 1,
+      "events": ["tool.started", "tool.result"],
+      "editable": ["tool_contract_notes", "redaction_policy"]
+    },
+    {
+      "id": "observe_after",
+      "kind": "environment.observe",
+      "label": "実行後観測",
+      "description": "Observe facts after home.execute. For light actions, request wait_for=room_light&after=<issued_at>&timeout_ms=1500.",
+      "column": 7,
+      "lane": 1,
+      "events": ["tool.started", "tool.result", "observation.received"],
+      "editable": ["reason", "settle_delay_policy", "fact_requirements"]
+    },
+    {
+      "id": "evaluate_success",
+      "kind": "evaluate.success",
+      "label": "成功判定",
+      "description": "Compare action.expected_state against observed facts. Branches to success, retry, or feedback.",
+      "column": 8,
+      "lane": 1,
+      "editable": ["success_conditions", "stale_fact_policy", "uncertain_fact_policy"]
+    },
+    {
+      "id": "post_action_room_light_feedback",
+      "kind": "state_query.feedback_gate",
+      "label": "操作後映像確認",
+      "description": "If room_light wait matched and vision is unknown, low confidence, or mismatched with expected_state, emit state_query.feedback_pending and append a short user confirmation prompt.",
+      "column": 9,
+      "lane": 0,
+      "events": ["state_query.feedback_pending"],
+      "editable": ["expected_state_policy", "pending_state_query_json", "wait_timeout_note"]
+    },
+    {
+      "id": "success_message",
+      "kind": "assistant.message",
+      "label": "成功応答",
+      "description": "User-facing response after observed success.",
+      "column": 10,
+      "lane": 0,
+      "events": ["assistant.speech_delta", "assistant.message"],
+      "editable": ["speech", "display", "emotion", "motion", "priority"]
+    },
+    {
+      "id": "completed_success",
+      "kind": "turn.completed",
+      "label": "完了 success",
+      "description": "Completes the turn with status=success and attempts/action metadata. May include pending_state_query_json.",
+      "column": 11,
+      "lane": 0,
+      "editable": ["status_mapping"]
+    },
+    {
+      "id": "retry_message",
+      "kind": "assistant.message",
+      "label": "再試行前応答",
+      "description": "User-facing message before another Thought Core controlled attempt.",
+      "column": 9,
+      "lane": 2,
+      "events": ["assistant.speech_delta", "assistant.message"],
+      "editable": ["speech", "display", "emotion", "motion", "priority"]
+    },
+    {
+      "id": "feedback_requested",
+      "kind": "feedback.requested",
+      "label": "ユーザー確認要求",
+      "description": "Requests user feedback when verification fails or retry budget is exhausted.",
+      "column": 9,
+      "lane": 3,
+      "events": ["feedback.requested"],
+      "editable": ["speech", "display", "reason", "feedback_contract"]
+    },
+    {
+      "id": "completed_feedback",
+      "kind": "turn.completed",
+      "label": "完了 needs_feedback",
+      "description": "Completes the turn with status=needs_feedback.",
+      "column": 10,
+      "lane": 3,
+      "editable": ["status_mapping"]
+    }
+  ],
+  "edges": [
+    {"source": "turn_input", "target": "intent_guard", "label": "turn"},
+    {"source": "intent_guard", "target": "unsupported_message", "label": "unsupported"},
+    {"source": "unsupported_message", "target": "completed_unsupported", "label": "complete"},
+    {"source": "intent_guard", "target": "observe_state_query", "label": "room_light_state_query"},
+    {"source": "observe_state_query", "target": "state_query_answer", "label": "room_light"},
+    {"source": "state_query_answer", "target": "completed_state_answer", "label": "complete"},
+    {"source": "intent_guard", "target": "observe_before", "label": "supported_light_action"},
+    {"source": "observe_before", "target": "preview_action", "label": "facts"},
+    {"source": "preview_action", "target": "pre_action_message", "label": "action_proposed"},
+    {"source": "pre_action_message", "target": "retry_controller", "label": "begin_attempts"},
+    {"source": "retry_controller", "target": "execute_action", "label": "attempt"},
+    {"source": "execute_action", "target": "observe_after", "label": "execute_result"},
+    {"source": "observe_after", "target": "evaluate_success", "label": "after_facts"},
+    {"source": "evaluate_success", "target": "post_action_room_light_feedback", "label": "success"},
+    {"source": "post_action_room_light_feedback", "target": "success_message", "label": "success_reply"},
+    {"source": "success_message", "target": "completed_success", "label": "complete"},
+    {"source": "evaluate_success", "target": "retry_message", "label": "retryable_and_budget_left"},
+    {"source": "retry_message", "target": "retry_controller", "label": "next_attempt"},
+    {"source": "evaluate_success", "target": "feedback_requested", "label": "failed_or_budget_exhausted"},
+    {"source": "feedback_requested", "target": "completed_feedback", "label": "complete"}
+  ]
+}

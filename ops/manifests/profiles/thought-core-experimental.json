@@ -1,0 +1,7 @@
+{
+  "profile_id": "thought-core-experimental",
+  "layer": "ops",
+  "description": "Deprecated compatibility alias for thought-core-v0.",
+  "alias_for": "thought-core-v0",
+  "deprecated": true
+}
