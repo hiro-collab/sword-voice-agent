@@ -889,7 +889,7 @@ const getEndpoints = (options) => {
   return [
     {
       group: 'Open in browser',
-      name: 'AITuber Kit',
+      name: 'Expression runtime',
       url: `http://127.0.0.1:${options.AituberPort}`,
       enabled: !options.SkipAituber
     },
@@ -901,31 +901,31 @@ const getEndpoints = (options) => {
     },
     {
       group: 'Open in browser',
-      name: 'AITuber Cube Vault',
+      name: 'Expression cube vault',
       url: `http://127.0.0.1:${options.AituberPort}/cube-vault-background?fov=60&scale=1`,
       enabled: !options.SkipAituber
     },
     {
       group: 'Open in browser',
-      name: 'Dify legacy UI',
+      name: 'Compatibility workflow UI',
       url: `http://127.0.0.1:${options.DifyPort}`,
       enabled: !options.SkipDify
     },
     {
       group: 'Open in browser',
-      name: 'thought-core API index',
+      name: 'Thought Core API index',
       url: thoughtCoreUrl,
       enabled: options.EnableThoughtCore
     },
     {
       group: 'Open in browser',
-      name: 'Display control GUI/API',
+      name: 'Display runtime GUI/API',
       url: `http://127.0.0.1:${options.TouchDesignerGuiPort}`,
       enabled: !options.SkipTouchDesignerGui
     },
     {
       group: 'Local APIs and feeds',
-      name: 'Home Assistant bridge health',
+      name: 'Action bridge health',
       url: `http://127.0.0.1:${options.HomeAssistantBridgePort}/health`,
       enabled: !options.SkipHomeAssistantBridge
     },
@@ -943,25 +943,25 @@ const getEndpoints = (options) => {
     },
     {
       group: 'Local APIs and feeds',
-      name: 'MediaPipe Browser Monitor',
+      name: 'Reflex browser monitor',
       url: browserMonitorUrl,
       enabled: !options.SkipMediapipe && options.MediapipeMode === 'mediamtx'
     },
     {
       group: 'Local APIs and feeds',
-      name: 'MediaMTX video',
+      name: 'Reflex camera video',
       url: 'http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true',
       enabled: !options.SkipMediapipe && options.MediapipeMode === 'mediamtx'
     },
     {
       group: 'Local APIs and feeds',
-      name: 'MediaPipe Camera Hub WebSocket',
+      name: 'Reflex Camera Hub WebSocket',
       url: `ws://127.0.0.1:${options.MediapipePort}`,
       enabled: !options.SkipMediapipe
     },
     {
       group: 'Local APIs and feeds',
-      name: 'Vision Snapshot Processor WebSocket',
+      name: 'Vision snapshot WebSocket',
       url: `ws://127.0.0.1:${options.VisionSnapshotProcessorPort}`,
       enabled:
         !options.SkipVisionSnapshotProcessor &&
@@ -976,25 +976,25 @@ const getEndpoints = (options) => {
     },
     {
       group: 'Local APIs and feeds',
-      name: 'thought-core health',
+      name: 'Thought Core health',
       url: `${thoughtCoreUrl}/health`,
       enabled: options.EnableThoughtCore
     },
     {
       group: 'Background links',
-      name: 'Dify watcher (legacy)',
+      name: 'Compatibility watcher',
       url: 'no browser URL',
       enabled: !options.SkipDifyWatch
     },
     {
       group: 'Background links',
-      name: 'thought-core watcher',
+      name: 'Thought Core watcher',
       url: 'no browser URL',
       enabled: options.EnableThoughtCoreWatch
     },
     {
       group: 'Background links',
-      name: 'TouchDesigner UDP receiver',
+      name: 'Display UDP receiver',
       url: '127.0.0.1:9001',
       enabled: true
     }
@@ -1029,8 +1029,6 @@ const getStatus = async () => {
     aituberHttp,
     tdTcp,
     tdHttp,
-    difyTcp,
-    difyHttp,
     thoughtCoreTcp,
     thoughtCoreHttp,
     voicevoxTcp,
@@ -1044,8 +1042,6 @@ const getStatus = async () => {
     checkHttp(`http://127.0.0.1:${options.AituberPort}`),
     checkTcp(options.TouchDesignerGuiPort),
     checkHttp(`http://127.0.0.1:${options.TouchDesignerGuiPort}`),
-    checkTcp(options.DifyPort),
-    checkHttp(`http://127.0.0.1:${options.DifyPort}`),
     checkTcp(options.ThoughtCorePort, thoughtCoreHost),
     checkHttp(`${thoughtCoreUrl}/health`),
     checkTcp(voicevoxPort),
@@ -1088,12 +1084,6 @@ const getStatus = async () => {
         entry: pids.touchdesigner_control_gui,
         tcp: tdTcp,
         http: tdHttp,
-        requireHttp: true
-      }),
-      dify: serviceState({
-        entry: null,
-        tcp: difyTcp,
-        http: difyHttp,
         requireHttp: true
       }),
       thought_core_api: serviceState({

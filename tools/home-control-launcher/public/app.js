@@ -50,35 +50,35 @@ const textFields = [
 ]
 
 const serviceLabels = {
-  home_assistant_bridge: 'Home-control server',
-  environment_state_server: 'Environment server',
-  mediapipe: 'Reflex MediaPipe',
+  home_assistant_bridge: 'Action bridge',
+  environment_state_server: 'Environment state',
+  mediapipe: 'Reflex sensor',
   vision_snapshot_processor: 'Vision snapshot',
-  aituber_kit: 'Expression UI',
-  touchdesigner_control_gui: 'Display control GUI',
-  dify: 'Dify legacy runtime',
+  aituber_kit: 'Expression runtime',
+  touchdesigner_control_gui: 'Display runtime GUI',
   thought_core_api: 'Thought Core API',
   thought_core_watcher: 'Thought Core watcher',
-  voicevox: 'VOICEVOX'
+  voicevox: 'VOICEVOX speech'
 }
+const hiddenServiceKeys = new Set(['dify'])
 
 const fieldLabels = {
   StopExisting: 'Restart managed services first',
   EnableThoughtCore: 'Thought Core API',
   EnableThoughtCoreWatch: 'Thought Core watcher',
   SkipAituber: 'Disable expression UI',
-  SkipHomeAssistantBridge: 'Disable home-control server',
-  SkipEnvironmentState: 'Disable environment server',
-  SkipMediapipe: 'Disable reflex MediaPipe',
+  SkipHomeAssistantBridge: 'Disable action bridge',
+  SkipEnvironmentState: 'Disable environment state',
+  SkipMediapipe: 'Disable reflex sensor',
   SkipVisionSnapshotProcessor: 'Disable vision snapshot',
-  SkipTouchDesignerGui: 'Disable display control GUI',
+  SkipTouchDesignerGui: 'Disable display runtime GUI',
   SkipVoicevoxCheck: 'Skip VOICEVOX readiness check',
   MediapipeOpenBrowser: 'Open MediaPipe monitor',
   MediapipeNoBrowser: 'Keep MediaPipe monitor hidden',
   MediapipePythonGui: 'Use Python camera GUI',
-  EnableHomeControlFaultInjection: 'Enable home-control fault injection',
-  SkipDify: 'Use external Dify / skip local start',
-  SkipDifyWatch: 'Disable Dify watcher'
+  EnableHomeControlFaultInjection: 'Enable action bridge fault injection',
+  SkipDify: 'Use external compatibility runtime / skip local start',
+  SkipDifyWatch: 'Disable compatibility watcher'
 }
 
 const enableFieldsByService = {
@@ -93,7 +93,6 @@ const skipFieldsByService = {
   vision_snapshot_processor: ['SkipVisionSnapshotProcessor', 'SkipMediapipe'],
   aituber_kit: ['SkipAituber'],
   touchdesigner_control_gui: ['SkipTouchDesignerGui'],
-  dify: ['SkipDify'],
   voicevox: ['SkipVoicevoxCheck', 'SkipAituber']
 }
 
@@ -264,7 +263,7 @@ const setOption = (key, value) => {
 
 const renderControls = () => {
   const profileSelect = $('profile-select')
-  const profilesByGroup = groupProfiles(state.profiles)
+  const profilesByGroup = groupProfiles(visibleProfilesForSelect(state.profiles))
   profileSelect.innerHTML = profilesByGroup
     .map(([group, profiles]) => {
       const options = profiles
@@ -313,6 +312,9 @@ const groupProfiles = (profiles) => {
   return Array.from(groups.entries())
 }
 
+const visibleProfilesForSelect = (profiles) =>
+  (profiles || []).filter((profile) => !profile.hidden || profile.id === state.selectedProfileId)
+
 const renderSwitchGroup = (elementId, fields) => {
   const switchGrid = $(elementId)
   switchGrid.innerHTML = fields
@@ -354,6 +356,21 @@ const stateClass = (serviceState) =>
 
 const serviceDisplayName = (name) => serviceLabels[name] || labelFor(name)
 
+const endpointDisplayName = (name) => {
+  const labels = {
+    'AITuber Kit': 'Expression runtime',
+    'AITuber Cube Vault': 'Expression cube vault',
+    'Display control GUI/API': 'Display runtime GUI/API',
+    'Home Assistant bridge health': 'Action bridge health',
+    'MediaPipe Browser Monitor': 'Reflex browser monitor',
+    'MediaMTX video': 'Reflex camera video',
+    'MediaPipe Camera Hub WebSocket': 'Reflex Camera Hub WebSocket',
+    'Vision Snapshot Processor WebSocket': 'Vision snapshot WebSocket',
+    'TouchDesigner UDP receiver': 'Display UDP receiver'
+  }
+  return labels[name] || name
+}
+
 const serviceIsIncluded = (name) => {
   const enableFields = enableFieldsByService[name] || []
   if (enableFields.length > 0) {
@@ -390,7 +407,9 @@ const formatTimestamp = (value) => {
 }
 
 const summarizeServices = (services = {}) => {
-  const entries = Object.entries(services).filter(([name]) => serviceIsIncluded(name))
+  const entries = Object.entries(services).filter(
+    ([name]) => !hiddenServiceKeys.has(name) && serviceIsIncluded(name)
+  )
   const summary = {
     total: entries.length,
     online: 0,
@@ -475,7 +494,7 @@ const renderSystemSummary = (services = null, timestamp = '') => {
 }
 
 const renderServices = (services) => {
-  const names = Object.keys(services || {})
+  const names = Object.keys(services || {}).filter((name) => !hiddenServiceKeys.has(name))
   $('service-list').innerHTML = names
     .map((name) => {
       const service = services[name]
@@ -503,6 +522,9 @@ const renderServices = (services) => {
 const renderEndpoints = (endpoints) => {
   const groups = new Map()
   for (const endpoint of endpoints || []) {
+    if (endpointKind(endpoint) === 'compatibility' && !endpoint.enabled) {
+      continue
+    }
     if (!groups.has(endpoint.group)) {
       groups.set(endpoint.group, [])
     }
@@ -524,7 +546,7 @@ const renderEndpoints = (endpoints) => {
             <a class="endpoint-link ${className}" data-kind="${kind}" ${attrs}>
               <span class="endpoint-icon" aria-hidden="true">${endpointIcon(kind)}</span>
               <span class="endpoint-copy">
-                <strong>${escapeHtml(endpoint.name)}</strong>
+                <strong>${escapeHtml(endpointDisplayName(endpoint.name))}</strong>
                 <span>${escapeHtml(endpoint.url)}</span>
               </span>
               <em class="endpoint-status">${status}</em>
@@ -545,7 +567,7 @@ const renderEndpoints = (endpoints) => {
 const endpointKind = (endpoint) => {
   const name = String(endpoint.name || '').toLowerCase()
   const url = String(endpoint.url || '').toLowerCase()
-  if (name.includes('dify')) return 'legacy'
+  if (name.includes('dify')) return 'compatibility'
   if (url.startsWith('ws:') || name.includes('websocket')) return 'websocket'
   if (name.includes('thought-core')) return 'thought'
   if (name.includes('aituber') || name.includes('projection')) return 'ui'
@@ -566,6 +588,7 @@ const endpointIcon = (kind) => {
     speech: '<svg viewBox="0 0 24 24"><path d="M11 5L6 9H3v6h3l5 4z"></path><path d="M15 9a4 4 0 0 1 0 6"></path><path d="M18 6a8 8 0 0 1 0 12"></path></svg>',
     camera: '<svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"></path><circle cx="12" cy="13" r="3"></circle></svg>',
     legacy: '<svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M7 7v13"></path><path d="M17 7v13"></path><path d="M9 4h6l2 3H7z"></path><path d="M10 11h4"></path></svg>',
+    compatibility: '<svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M7 7v13"></path><path d="M17 7v13"></path><path d="M9 4h6l2 3H7z"></path><path d="M10 11h4"></path></svg>',
     background: '<svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"></path><path d="M8 10h8"></path><path d="M8 14h5"></path></svg>',
     link: '<svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"></path><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"></path></svg>'
   }

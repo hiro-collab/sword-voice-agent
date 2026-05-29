@@ -111,10 +111,10 @@
 
           <div class="section-title">Core ports</div>
           <div class="port-grid">
-            <label class="field"><span>AITuber</span><input id="AituberPort" type="number" min="1" /></label>
+            <label class="field"><span>Expression</span><input id="AituberPort" type="number" min="1" /></label>
             <label class="field"><span>Thought Core</span><input id="ThoughtCorePort" type="number" min="1" /></label>
-            <label class="field"><span>Display GUI</span><input id="TouchDesignerGuiPort" type="number" min="1" /></label>
-            <label class="field"><span>HA bridge</span><input id="HomeAssistantBridgePort" type="number" min="1" /></label>
+            <label class="field"><span>Display runtime</span><input id="TouchDesignerGuiPort" type="number" min="1" /></label>
+            <label class="field"><span>Action bridge</span><input id="HomeAssistantBridgePort" type="number" min="1" /></label>
             <label class="field"><span>Environment</span><input id="EnvironmentStatePort" type="number" min="1" /></label>
             <label class="field"><span>MediaPipe</span><input id="MediapipePort" type="number" min="1" /></label>
             <label class="field"><span>Vision WS</span><input id="VisionSnapshotProcessorPort" type="number" min="1" /></label>
@@ -138,15 +138,15 @@
 
           <details class="option-drawer">
             <summary>
-              <span>Legacy Dify compatibility</span>
+              <span>Compatibility runtime</span>
               <small>Only for older watcher flows</small>
             </summary>
             <div class="switch-grid" id="legacy-switch-grid"></div>
             <div class="port-grid legacy-port-grid">
-              <label class="field"><span>Dify port</span><input id="DifyPort" type="number" min="1" /></label>
+              <label class="field"><span>Compatibility port</span><input id="DifyPort" type="number" min="1" /></label>
             </div>
             <label class="field">
-              <span>Dify docker root</span>
+              <span>Compatibility runtime root</span>
               <input id="DifyDockerRoot" type="text" autocomplete="off" />
             </label>
           </details>
@@ -161,7 +161,7 @@
               <input id="VoicevoxUrl" type="text" autocomplete="off" placeholder="http://127.0.0.1:50021" />
             </label>
             <label class="field">
-              <span>Home control config path</span>
+              <span>Action bridge config path</span>
               <input id="HomeControlConfigPath" type="text" autocomplete="off" />
             </label>
           </details>

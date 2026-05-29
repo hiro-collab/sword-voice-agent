@@ -1790,11 +1790,22 @@ if (-not $SkipAituber) {
             $projectionVisualAIService = "dify"
         }
     }
+    $aituberAIService = [Environment]::GetEnvironmentVariable("NEXT_PUBLIC_SELECT_AI_SERVICE", "Process")
+    if ([string]::IsNullOrWhiteSpace($aituberAIService)) {
+        if ($EnableThoughtCore) {
+            $aituberAIService = "thought-core"
+        }
+        else {
+            $aituberAIService = $projectionVisualAIService
+        }
+    }
     $gestureVoiceBridgeEnabled = if ($SkipMediapipe) { "false" } else { "true" }
     $aituberEnvironment = @{
         THOUGHT_CORE_BASE_URL = $ThoughtCoreBaseUrl
         NEXT_PUBLIC_THOUGHT_CORE_BASE_URL = $ThoughtCoreBaseUrl
         NEXT_PUBLIC_THOUGHT_CORE_SESSION_ID = "aituber-kit"
+        NEXT_PUBLIC_SYSTEM_CELL_AI_SERVICE = $aituberAIService
+        NEXT_PUBLIC_SELECT_AI_SERVICE = $aituberAIService
         NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE = $projectionVisualAIService
         NEXT_PUBLIC_DISPLAY_RUNTIME_STATUS_URL = "http://127.0.0.1:$TouchDesignerGuiPort/api/status"
         NEXT_PUBLIC_TD_CONTROL_GUI_STATUS_URL = "http://127.0.0.1:$TouchDesignerGuiPort/api/status"
