@@ -1897,6 +1897,12 @@ class ThoughtLoop:
             source_context="action_review",
         ):
             return True
+        if not self._input_requests_pending_action_review(
+            turn_input,
+            input_frame,
+            pending=pending,
+        ):
+            return False
         policy = self._action_review_policy(action)
         observations_done = int(pending.get("observations_done") or 0) + 1
         execute_attempts = int(pending.get("execute_attempts") or 1)
@@ -3008,6 +3014,60 @@ class ThoughtLoop:
             self._looks_like_home_action_command(turn_input.text)
         )
 
+    def _input_requests_pending_action_review(
+        self,
+        turn_input: TurnInput,
+        input_frame: InputFrame | None = None,
+        *,
+        pending: dict[str, Any] | None = None,
+    ) -> bool:
+        pending = pending or self.pending_action_reviews.get(turn_input.session_id)
+        if not pending:
+            return False
+        if pending.get("origin_turn_id") == turn_input.turn_id:
+            return True
+        if input_frame and input_frame.kind == "state_feedback":
+            return True
+        context_refs = turn_input.context_refs if isinstance(turn_input.context_refs, dict) else {}
+        if bool(context_refs.get("pending_action_review")):
+            return True
+        review_context_values = {
+            "pending_action_review",
+            "action_review",
+            "auto_action_review",
+            "review_pending_action",
+        }
+        for key in ("purpose", "intent", "review_trigger", "source_context"):
+            value = context_refs.get(key)
+            if isinstance(value, str) and value.strip().lower() in review_context_values:
+                return True
+        normalized = turn_input.text.replace(" ", "").replace("　", "").lower()
+        explicit_markers = (
+            "確認して",
+            "確認する",
+            "確認します",
+            "確認お願い",
+            "再確認",
+            "見直して",
+            "見直す",
+            "見直します",
+            "結果を確認",
+            "結果確認",
+            "反映を確認",
+            "反映確認",
+            "状態を確認",
+            "状態確認",
+            "レビューして",
+            "review",
+            "チェックして",
+        )
+        if any(marker in normalized for marker in explicit_markers):
+            return True
+        repeat_markers = ("もう一度", "もう一回", "再度", "もっかい")
+        return any(marker in normalized for marker in repeat_markers) and any(
+            verb in normalized for verb in ("確認", "見直", "反映", "結果", "状態")
+        )
+
     def _supersede_pending_action_review_for_new_command(
         self,
         events: list[ThoughtEvent],
@@ -3473,7 +3533,15 @@ class ThoughtLoop:
                 target = input_frame.target or "state"
                 return f"{session_key}:state:{self._speech_fragment_key(target)}"
 
-        if isinstance(pending_action_review, dict) and pending_action_review:
+        if (
+            isinstance(pending_action_review, dict)
+            and pending_action_review
+            and self._input_requests_pending_action_review(
+                turn_input,
+                input_frame,
+                pending=pending_action_review,
+            )
+        ):
             action = pending_action_review.get("action")
             if isinstance(action, dict):
                 return self._action_speech_issue_key(session_key, action)
@@ -3639,7 +3707,12 @@ class ThoughtLoop:
             if input_frame.continued_as_command:
                 return "うん、状態も受け取って操作も確認するね。"
             return "うん、その状態を覚えるね。"
-        if self.pending_action_reviews.get(turn_input.session_id):
+        pending_action_review = self.pending_action_reviews.get(turn_input.session_id)
+        if pending_action_review and self._input_requests_pending_action_review(
+            turn_input,
+            input_frame,
+            pending=pending_action_review,
+        ):
             return "うん、もう一度見てみるね。"
         pending_state_query = self.pending_state_queries.get(turn_input.session_id)
         if pending_state_query and self._room_light_feedback_label(
