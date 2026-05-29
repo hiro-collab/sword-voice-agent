@@ -120,16 +120,16 @@ function formatStoredEvent(event) {
     return `gesture ${kind}: ${status}${fps}`;
   }
   if (event.type === "dify.response") {
-    if (data.skipped) return `dify${turn}: skipped ${data.skip_reason || ""}`;
-    return `dify${turn}: ${short(data.response_text || "", 96)}`;
+    if (data.skipped) return `compat${turn}: skipped ${data.skip_reason || ""}`;
+    return `compat${turn}: ${short(data.response_text || "", 96)}`;
   }
   if (event.type === "dify.first_token") {
     const elapsed = data.elapsed_s === null || data.elapsed_s === undefined ? "" : ` ${Number(data.elapsed_s).toFixed(2)}s`;
-    return `dify${turn}: first token${elapsed}`;
+    return `compat${turn}: first token${elapsed}`;
   }
   if (event.type === "dify.done") {
     const elapsed = data.elapsed_s === null || data.elapsed_s === undefined ? "" : ` ${Number(data.elapsed_s).toFixed(2)}s`;
-    return `dify${turn}: done${elapsed}`;
+    return `compat${turn}: done${elapsed}`;
   }
   if (event.type === "thought_core.response") {
     if (data.skipped) return `thought-core${turn}: skipped ${data.skip_reason || ""}`;
