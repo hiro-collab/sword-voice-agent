@@ -1790,11 +1790,18 @@ if (-not $SkipAituber) {
             $projectionVisualAIService = "dify"
         }
     }
+    $gestureVoiceBridgeEnabled = if ($SkipMediapipe) { "false" } else { "true" }
     $aituberEnvironment = @{
         THOUGHT_CORE_BASE_URL = $ThoughtCoreBaseUrl
         NEXT_PUBLIC_THOUGHT_CORE_BASE_URL = $ThoughtCoreBaseUrl
         NEXT_PUBLIC_THOUGHT_CORE_SESSION_ID = "aituber-kit"
         NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE = $projectionVisualAIService
+        NEXT_PUBLIC_DISPLAY_RUNTIME_STATUS_URL = "http://127.0.0.1:$TouchDesignerGuiPort/api/status"
+        NEXT_PUBLIC_TD_CONTROL_GUI_STATUS_URL = "http://127.0.0.1:$TouchDesignerGuiPort/api/status"
+        NEXT_PUBLIC_ENVIRONMENT_INDICATORS_URL = "http://127.0.0.1:$EnvironmentStatePort/indicators/current"
+        NEXT_PUBLIC_REFLEX_GESTURE_WS_URL = "ws://127.0.0.1:$MediapipePort"
+        NEXT_PUBLIC_GESTURE_VOICE_WS_URL = "ws://127.0.0.1:$MediapipePort"
+        NEXT_PUBLIC_GESTURE_VOICE_BRIDGE_ENABLED = $gestureVoiceBridgeEnabled
     }
     $specs += New-ServiceSpec `
         -Name "aituber_kit" `
