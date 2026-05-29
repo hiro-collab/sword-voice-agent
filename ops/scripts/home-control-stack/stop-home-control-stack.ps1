@@ -294,7 +294,7 @@ else {
 }
 
 if (-not $DryRun -and (Test-Path -LiteralPath $PidFile -PathType Leaf)) {
-    Remove-Item -LiteralPath $PidFile -Force
+    Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
 }
 
 if ($StopDify) {
