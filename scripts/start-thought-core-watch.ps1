@@ -71,7 +71,7 @@ if ([string]::IsNullOrWhiteSpace($AituberMessageUrl)) {
     $AituberMessageUrl = [Environment]::GetEnvironmentVariable("AITUBER_MESSAGE_URL", "Process")
 }
 if ([string]::IsNullOrWhiteSpace($AituberMessageUrl) -and $AituberPort -gt 0) {
-    $AituberMessageUrl = "http://127.0.0.1:$AituberPort/api/messages?clientId=thought-core&type=direct_send"
+    $AituberMessageUrl = "http://127.0.0.1:$AituberPort/api/messages/?clientId=thought-core&type=direct_send"
 }
 if ([string]::IsNullOrWhiteSpace($AituberHttpTimeout)) {
     $AituberHttpTimeout = [Environment]::GetEnvironmentVariable("AITUBER_HTTP_TIMEOUT_S", "Process")

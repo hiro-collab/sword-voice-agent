@@ -24,10 +24,14 @@ param(
     [int]$DifyPort = 8080,
     [string]$ThoughtCoreHost = "127.0.0.1",
     [int]$ThoughtCorePort = 18787,
+    [string]$ThoughtCoreWatchAituberHttpTimeout = "",
     [string]$VoicevoxUrl = "",
     [ValidateSet("gui", "headless", "camera-hub", "mediamtx")]
     [string]$MediapipeMode = "mediamtx",
     [string]$MediapipeCameraName = "HD Pro Webcam C920",
+    [int]$MediapipeReadyTimeoutSeconds = 35,
+    [ValidateSet("dshow", "testsrc")]
+    [string]$MediapipeVideoSource = "dshow",
     [switch]$MediapipeOpenBrowser,
     [switch]$MediapipeNoBrowser,
     [switch]$MediapipePythonGui,
@@ -1649,6 +1653,8 @@ if (-not $SkipMediapipe) {
             "scripts\camera_hub_stack.py",
             "--camera-name",
             $MediapipeCameraName,
+            "--ffmpeg-video-source",
+            $MediapipeVideoSource,
             "--hub-port",
             [string]$MediapipePort,
             "--viewer-port",
@@ -1847,7 +1853,15 @@ if ($EnableThoughtCoreWatch) {
         $ThoughtCoreWatchStatusDir
     )
     if (-not $SkipAituber) {
-        $thoughtCoreWatchArgs += @("-AituberPort", [string]$AituberPort)
+        $thoughtCoreWatchArgs += @(
+            "-AituberPort",
+            [string]$AituberPort,
+            "-AituberMessageUrl",
+            "http://127.0.0.1:$AituberPort/api/messages/?clientId=thought-core&type=direct_send"
+        )
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ThoughtCoreWatchAituberHttpTimeout)) {
+        $thoughtCoreWatchArgs += @("-AituberHttpTimeout", $ThoughtCoreWatchAituberHttpTimeout)
     }
 
     $specs += New-ServiceSpec `
@@ -1894,7 +1908,7 @@ try {
         $children += Start-SupervisedProcess -Spec $spec
         Save-PidState -Children $children
         if ($spec.Name -eq "mediapipe_camera_hub_stack") {
-            Wait-CameraHubStackReady -Child $children[-1]
+            Wait-CameraHubStackReady -Child $children[-1] -TimeoutSeconds $MediapipeReadyTimeoutSeconds
         }
         Start-Sleep -Milliseconds 500
     }

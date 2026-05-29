@@ -20,10 +20,14 @@ param(
     [int]$DifyPort = 8080,
     [string]$ThoughtCoreHost = "127.0.0.1",
     [int]$ThoughtCorePort = 18787,
+    [string]$ThoughtCoreWatchAituberHttpTimeout = "",
     [string]$VoicevoxUrl = "",
     [ValidateSet("gui", "headless", "camera-hub", "mediamtx")]
     [string]$MediapipeMode = "mediamtx",
     [string]$MediapipeCameraName = "HD Pro Webcam C920",
+    [int]$MediapipeReadyTimeoutSeconds = 35,
+    [ValidateSet("dshow", "testsrc")]
+    [string]$MediapipeVideoSource = "dshow",
     [switch]$MediapipeOpenBrowser,
     [switch]$MediapipeNoBrowser,
     [switch]$MediapipePythonGui,
@@ -362,9 +366,12 @@ function New-StackStartArguments {
     Add-NamedArgument -Arguments $arguments -Name "-DifyDockerRoot" -Value $DifyDockerRoot -SkipWhenBlank $true
     Add-NamedArgument -Arguments $arguments -Name "-ThoughtCoreHost" -Value $ThoughtCoreHost
     Add-NamedArgument -Arguments $arguments -Name "-ThoughtCorePort" -Value $ThoughtCorePort
+    Add-NamedArgument -Arguments $arguments -Name "-ThoughtCoreWatchAituberHttpTimeout" -Value $ThoughtCoreWatchAituberHttpTimeout -SkipWhenBlank $true
     Add-NamedArgument -Arguments $arguments -Name "-VoicevoxUrl" -Value $VoicevoxUrl -SkipWhenBlank $true
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeMode" -Value $MediapipeMode
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeCameraName" -Value $MediapipeCameraName
+    Add-NamedArgument -Arguments $arguments -Name "-MediapipeReadyTimeoutSeconds" -Value $MediapipeReadyTimeoutSeconds
+    Add-NamedArgument -Arguments $arguments -Name "-MediapipeVideoSource" -Value $MediapipeVideoSource
 
     Add-ArgumentIf -Arguments $arguments -Condition (-not (Test-ServiceSelected -Services $Services -ServiceId "dify_stack")) -Name "-SkipDify"
     Add-ArgumentIf -Arguments $arguments -Condition (-not (Test-ServiceSelected -Services $Services -ServiceId "home_assistant_bridge")) -Name "-SkipHomeAssistantBridge"
