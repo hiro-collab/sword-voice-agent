@@ -417,7 +417,7 @@ h2 {
 .layout-grid {
   display: grid;
   gap: 16px;
-  grid-template-columns: minmax(340px, 390px) 1fr;
+  grid-template-columns: clamp(286px, 20%, 310px) minmax(0, 1fr);
 }
 
 .panel {
@@ -462,8 +462,31 @@ h2 {
 
 .launch-panel {
   align-self: start;
+  padding: 12px 11px;
   position: sticky;
   top: 18px;
+}
+
+.launch-panel .panel-title {
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.launch-panel .profile-actions {
+  gap: 6px;
+}
+
+.launch-panel .surface-tag {
+  font-size: 9.5px;
+  padding: 4px 6px;
+}
+
+.launch-panel .description {
+  display: -webkit-box;
+  line-height: 1.35;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .main-column {
@@ -557,6 +580,11 @@ h2 {
   margin-bottom: 12px;
 }
 
+.launch-panel .field {
+  gap: 4px;
+  margin-bottom: 9px;
+}
+
 .field span,
 .section-title,
 .option-drawer summary span {
@@ -571,6 +599,17 @@ h2 {
   padding-top: 14px;
 }
 
+.launch-panel .field span,
+.launch-panel .section-title,
+.launch-panel .option-drawer summary span {
+  font-size: 11px;
+}
+
+.launch-panel .section-title {
+  margin: 12px 0 8px;
+  padding-top: 10px;
+}
+
 input,
 select {
   background: rgba(3, 8, 13, 0.55);
@@ -580,6 +619,13 @@ select {
   min-height: 38px;
   padding: 8px 10px;
   width: 100%;
+}
+
+.launch-panel input,
+.launch-panel select {
+  font-size: 12px;
+  min-height: 36px;
+  padding: 6px 8px;
 }
 
 .control-surface input,
@@ -619,11 +665,22 @@ button:focus-visible {
   margin-bottom: 12px;
 }
 
+.launch-panel .segmented {
+  gap: 4px;
+  margin-bottom: 9px;
+}
+
 .segmented button {
   background: rgba(3, 8, 13, 0.46);
   font-size: 12px;
   min-height: 36px;
   padding: 0 8px;
+}
+
+.launch-panel .segmented button {
+  font-size: 11px;
+  min-height: 34px;
+  padding: 0 6px;
 }
 
 .segmented button.active {
@@ -638,10 +695,19 @@ button:focus-visible {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.launch-panel .port-grid {
+  gap: 7px;
+}
+
 .option-drawer {
   border-top: 1px solid var(--line);
   margin-top: 16px;
   padding-top: 12px;
+}
+
+.launch-panel .option-drawer {
+  margin-top: 12px;
+  padding-top: 9px;
 }
 
 .option-drawer summary {
@@ -651,6 +717,10 @@ button:focus-visible {
   justify-content: space-between;
   list-style: none;
   margin-bottom: 12px;
+}
+
+.launch-panel .option-drawer summary {
+  margin-bottom: 8px;
 }
 
 .option-drawer summary::-webkit-details-marker {
@@ -679,9 +749,17 @@ button:focus-visible {
   margin-left: auto;
 }
 
+.launch-panel .option-drawer summary small {
+  font-size: 10px;
+}
+
 .switch-grid {
   display: grid;
   gap: 8px;
+}
+
+.launch-panel .switch-grid {
+  gap: 6px;
 }
 
 .switch-row {
@@ -694,6 +772,12 @@ button:focus-visible {
   justify-content: space-between;
   min-height: 38px;
   padding: 8px 10px;
+}
+
+.launch-panel .switch-row {
+  gap: 8px;
+  min-height: 34px;
+  padding: 6px 8px;
 }
 
 .control-surface .switch-row {
@@ -711,6 +795,11 @@ button:focus-visible {
   color: #c1d8d4;
   font-size: 12px;
   font-weight: 700;
+}
+
+.launch-panel .switch-row span {
+  font-size: 11px;
+  line-height: 1.2;
 }
 
 .service-list {
