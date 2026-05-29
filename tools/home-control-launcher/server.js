@@ -43,6 +43,10 @@ const ALLOW_REMOTE =
 const OPEN_BROWSER =
   args.includes('--open-browser') ||
   process.env.HOME_CONTROL_LAUNCHER_OPEN_BROWSER === 'true'
+const PORT_MODE = readArg(
+  '--port-mode',
+  process.env.HOME_CONTROL_LAUNCHER_PORT_MODE || 'manifest_default'
+)
 
 const PUBLIC_DIR = path.join(__dirname, 'public')
 const PROFILE_FILE = path.join(__dirname, 'config', 'default-profiles.json')
@@ -63,7 +67,10 @@ const STACK_LOG_BACKUPS = Number(
 const PRIMARY_PROFILE_ID = 'thought-core-v0'
 
 function resolveStackStateDir() {
-  const configured = process.env.HOME_CONTROL_STACK_STATE_DIR || ''
+  const configured = readArg(
+    '--state-dir',
+    process.env.HOME_CONTROL_STACK_STATE_DIR || ''
+  )
   if (!configured.trim()) {
     return path.join(WORKSPACE_ROOT, '.cache', 'home-control-stack')
   }
@@ -79,6 +86,19 @@ const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml; charset=utf-8'
+}
+
+const PORT_MODE_OPTIONS = {
+  isolated_override: {
+    HomeAssistantBridgePort: 18887,
+    EnvironmentStatePort: 18890,
+    MediapipePort: 18865,
+    MediapipeBrowserMonitorPort: 18870,
+    VisionSnapshotProcessorPort: 18876,
+    AituberPort: 18880,
+    TouchDesignerGuiPort: 18889,
+    ThoughtCorePort: 18888
+  }
 }
 
 const DEFAULT_OPTIONS = {
@@ -115,7 +135,8 @@ const DEFAULT_OPTIONS = {
   EnableThoughtCore: false,
   EnableThoughtCoreWatch: false,
   StopExisting: true,
-  EnableHomeControlFaultInjection: false
+  EnableHomeControlFaultInjection: false,
+  ...(PORT_MODE_OPTIONS[PORT_MODE] || {})
 }
 
 const OPS_PROFILE_BY_LAUNCHER_PROFILE = {
@@ -1119,6 +1140,7 @@ const getState = async () => {
     projectRoot: PROJECT_ROOT,
     workspaceRoot: WORKSPACE_ROOT,
     stateDir: STATE_DIR,
+    portMode: PORT_MODE,
     profiles: readProfiles(),
     config: {
       selectedProfileId,

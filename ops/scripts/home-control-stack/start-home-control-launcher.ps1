@@ -2,6 +2,9 @@ param(
     [string]$WorkspaceRoot = "",
     [string]$HostName = "127.0.0.1",
     [int]$Port = 8799,
+    [ValidateSet("", "manifest_default", "isolated_override")]
+    [string]$PortMode = "",
+    [string]$StackStateDir = "",
     [switch]$OpenBrowser,
     [switch]$ReuseExisting
 )
@@ -89,6 +92,12 @@ $launcherArgs = @(
     "--port",
     [string]$Port
 )
+if (-not [string]::IsNullOrWhiteSpace($PortMode)) {
+    $launcherArgs += @("--port-mode", $PortMode)
+}
+if (-not [string]::IsNullOrWhiteSpace($StackStateDir)) {
+    $launcherArgs += @("--state-dir", $StackStateDir)
+}
 if ($OpenBrowser) {
     $launcherArgs += "--open-browser"
 }

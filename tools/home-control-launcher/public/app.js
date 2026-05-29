@@ -593,7 +593,9 @@ const refreshState = async () => {
   state.profiles = payload.profiles || []
   state.selectedProfileId = payload.config?.selectedProfileId || 'thought-core-v0'
   state.options = payload.config?.options || {}
-  $('workspace-root').textContent = payload.workspaceRoot
+  $('workspace-root').textContent = payload.portMode
+    ? `${payload.workspaceRoot} · ${payload.portMode}`
+    : payload.workspaceRoot
   $('status-time').textContent = payload.status?.timestamp || 'Unknown'
   $('command-preview').textContent = payload.preview?.commandLine || ''
   $('log-output').textContent = payload.logTail || 'No launcher log yet.'
