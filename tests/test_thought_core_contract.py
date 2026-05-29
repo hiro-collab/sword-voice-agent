@@ -4,10 +4,11 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from urllib import request
+from urllib import error, request
 from urllib.parse import parse_qs, urlsplit
 
 from unittest import TestCase
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1895,6 +1896,7 @@ class ThoughtCoreContractTest(TestCase):
             self.assertEqual(payload["service"], "thought-core")
             self.assertEqual(payload["kind"], "api")
             self.assertIn("POST /turn", payload["endpoints"]["turn_json"])
+            self.assertNotIn("eventsource_demo", payload["endpoints"])
             self.assertIn("sword-console", payload["console_command"])
         finally:
             server.shutdown()
@@ -1942,26 +1944,88 @@ class ThoughtCoreContractTest(TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def test_get_turn_stream_returns_sse_events(self) -> None:
+    def test_get_turn_stream_is_method_not_allowed(self) -> None:
         server = create_server("127.0.0.1", 0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
             port = server.server_address[1]
 
-            with request.urlopen(
-                "http://127.0.0.1:"
-                f"{port}/turn/stream?text=%E9%9B%BB%E6%B0%97%E3%81%A4%E3%81%91%E3%81%A6"
-                "&turn_id=turn_get_test&session_id=living_room_main",
-                timeout=5,
-            ) as response:
-                payload = response.read().decode("utf-8")
-                content_type = response.headers["Content-Type"]
+            with self.assertRaises(error.HTTPError) as caught:
+                request.urlopen(
+                    "http://127.0.0.1:"
+                    f"{port}/turn/stream?text=%E9%9B%BB%E6%B0%97%E3%81%A4%E3%81%91%E3%81%A6"
+                    "&turn_id=turn_get_test&session_id=living_room_main",
+                    timeout=5,
+                )
 
-            self.assertEqual(content_type, "text/event-stream; charset=utf-8")
-            self.assertIn("event: assistant.message", payload)
-            self.assertIn("event: turn.completed", payload)
-            self.assertIn('"turn_id":"turn_get_test"', payload)
+            self.assertEqual(caught.exception.code, 405)
+            self.assertEqual(caught.exception.headers["Allow"], "POST")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_post_turn_rejects_oversized_json_body(self) -> None:
+        with patch.dict("os.environ", {"THOUGHT_CORE_MAX_BODY_BYTES": "8"}, clear=False):
+            server = create_server("127.0.0.1", 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            body = json.dumps(TURN).encode("utf-8")
+            req = request.Request(
+                f"http://127.0.0.1:{port}/turn",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+
+            with self.assertRaises(error.HTTPError) as caught:
+                request.urlopen(req, timeout=5)
+
+            self.assertEqual(caught.exception.code, 413)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_post_turn_requires_token_when_configured(self) -> None:
+        env = {
+            "THOUGHT_CORE_REQUIRE_API_TOKEN": "1",
+            "THOUGHT_CORE_API_TOKEN": "secret-token",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            server = create_server("127.0.0.1", 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            body = json.dumps(GENERAL_TURN).encode("utf-8")
+            unauthenticated = request.Request(
+                f"http://127.0.0.1:{port}/turn",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+
+            with self.assertRaises(error.HTTPError) as caught:
+                request.urlopen(unauthenticated, timeout=5)
+            self.assertEqual(caught.exception.code, 401)
+
+            authenticated = request.Request(
+                f"http://127.0.0.1:{port}/turn",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer secret-token",
+                },
+                method="POST",
+            )
+            with request.urlopen(authenticated, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertIn("events", payload)
         finally:
             server.shutdown()
             server.server_close()

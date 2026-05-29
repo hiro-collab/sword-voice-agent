@@ -165,10 +165,24 @@ Content-Type: application/json
 
 `POST /turn/stream` も同じく SSE を返します。
 
-`GET /turn/stream` は、将来ブラウザの `EventSource` で読む形を試すための軽い demo/compatibility 入口です。
-現時点の主契約は、turn payload を送れる `POST /turn` です。
+`GET /turn/stream` では turn を実行しません。turn 実行は副作用を持つ可能性があるため、
+主契約は turn payload を送れる `POST /turn` / `POST /turn/stream` だけです。
 SSE は turn 全体の完了を待たず、loop が event を生成した順に `assistant.speech_delta`、
 `thought.stage`、`tool.started` などを逐次 flush します。
+
+### API security
+
+Thought Core API は既定で loopback 利用を前提にします。`--host 0.0.0.0` などで
+LAN から到達可能にする場合は、次を明示してください。
+
+- `THOUGHT_CORE_ALLOW_REMOTE_API=1`
+- `THOUGHT_CORE_API_TOKEN=<random-token>`
+
+remote request では `Authorization: Bearer <token>` または `X-API-Token` が必要です。
+local request にも token を必須化したい場合は `THOUGHT_CORE_REQUIRE_API_TOKEN=1` を設定します。
+
+JSON body は既定で 64 KiB まで受け付けます。必要な場合だけ
+`THOUGHT_CORE_MAX_BODY_BYTES` で上限を調整してください。
 
 ## control plane client
 

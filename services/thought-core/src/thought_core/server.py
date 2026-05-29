@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import hmac
+import ipaddress
 import json
+import os
 import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,6 +14,12 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .loop import ThoughtLoop
+
+DEFAULT_MAX_BODY_BYTES = 64 * 1024
+
+
+class RequestBodyTooLarge(ValueError):
+    pass
 
 
 def create_server(
@@ -20,6 +29,10 @@ def create_server(
     thought_loop: ThoughtLoop | None = None,
 ) -> ThreadingHTTPServer:
     loop = thought_loop or ThoughtLoop()
+    allow_remote_api = _env_bool("THOUGHT_CORE_ALLOW_REMOTE_API")
+    require_api_token = _env_bool("THOUGHT_CORE_REQUIRE_API_TOKEN")
+    api_token = os.environ.get("THOUGHT_CORE_API_TOKEN", "").strip()
+    max_body_bytes = _env_int("THOUGHT_CORE_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)
 
     class ThoughtCoreHandler(BaseHTTPRequestHandler):
         server_version = "thought-core/0"
@@ -33,15 +46,14 @@ def create_server(
                 self._send_json({"status": "ok", "service": "thought-core"})
                 return
             if parsed.path == "/turn/stream":
-                params = parse_qs(parsed.query)
-                payload = {
-                    "text": _first(params, "text"),
-                    "turn_id": _first(params, "turn_id", "turn_get_stream"),
-                    "session_id": _first(params, "session_id", "default"),
-                    "locale": _first(params, "locale", "ja-JP"),
-                    "context_refs": {},
-                }
-                self._handle_turn(payload, stream=True)
+                self._send_json(
+                    {
+                        "error": "method_not_allowed",
+                        "message": "Use POST /turn/stream for turn execution.",
+                    },
+                    status=HTTPStatus.METHOD_NOT_ALLOWED,
+                    headers={"Allow": "POST"},
+                )
                 return
             self._send_json({"error": "not_found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -50,8 +62,13 @@ def create_server(
             if parsed.path not in {"/turn", "/turn/stream"}:
                 self._send_json({"error": "not_found"}, status=HTTPStatus.NOT_FOUND)
                 return
+            if not self._turn_api_allowed():
+                return
             try:
                 payload = self._read_json_body()
+            except RequestBodyTooLarge as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                return
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
@@ -66,6 +83,74 @@ def create_server(
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             return
+
+        def _turn_api_allowed(self) -> bool:
+            local_request = self._local_request()
+            if not local_request and not allow_remote_api:
+                self._send_json(
+                    {"error": "local_access_required"},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+                return False
+            if not self._trusted_origin():
+                self._send_json(
+                    {"error": "untrusted_origin"},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+                return False
+
+            token_required = require_api_token or (not local_request and allow_remote_api)
+            if token_required and not api_token:
+                self._send_json(
+                    {"error": "api_token_required"},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+                return False
+            if token_required and not self._authorized():
+                self._send_json(
+                    {"error": "unauthorized"},
+                    status=HTTPStatus.UNAUTHORIZED,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+                return False
+            return True
+
+        def _local_request(self) -> bool:
+            host, _port = self.client_address
+            try:
+                return ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                return host in {"localhost", ""}
+
+        def _trusted_origin(self) -> bool:
+            origin_header = self.headers.get("Origin", "")
+            if not origin_header:
+                return True
+            if origin_header == "null":
+                return False
+            try:
+                origin = urlparse(origin_header)
+            except ValueError:
+                return False
+            if origin.scheme not in {"http", "https"}:
+                return False
+            host = _parse_host_header(self.headers.get("Host", ""))
+            if host is None:
+                return _is_loopback_host(origin.hostname or "")
+            if origin.netloc == host.netloc:
+                return True
+            return (
+                _is_loopback_host(origin.hostname or "")
+                and _is_loopback_host(host.hostname or "")
+                and _port_or_empty(origin) == _port_or_empty(host)
+            )
+
+        def _authorized(self) -> bool:
+            actual = _extract_token(
+                self.headers.get("Authorization"),
+                self.headers.get("X-API-Token"),
+            )
+            return bool(actual) and hmac.compare_digest(actual, api_token)
 
         def _handle_turn(self, payload: dict[str, Any], *, stream: bool) -> None:
             if stream:
@@ -84,6 +169,8 @@ def create_server(
                 length = int(length_raw)
             except ValueError as exc:
                 raise ValueError("invalid Content-Length") from exc
+            if length > max_body_bytes:
+                raise RequestBodyTooLarge("JSON body too large")
             body = self.rfile.read(length)
             if not body:
                 raise ValueError("empty JSON body")
@@ -95,10 +182,18 @@ def create_server(
                 raise ValueError("JSON body must be an object")
             return payload
 
-        def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+        def _send_json(
+            self,
+            payload: dict[str, Any],
+            status: HTTPStatus = HTTPStatus.OK,
+            *,
+            headers: dict[str, str] | None = None,
+        ) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status.value)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -179,6 +274,59 @@ def _first(params: dict[str, list[str]], key: str, default: str = "") -> str:
     return values[0]
 
 
+def _env_bool(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _parse_host_header(host_header: str):
+    if not host_header:
+        return None
+    try:
+        return urlparse(f"http://{host_header}")
+    except ValueError:
+        return None
+
+
+def _is_loopback_host(hostname: str) -> bool:
+    normalized = hostname.strip().lower()
+    if normalized in {"localhost", "::1", "[::1]"} or normalized.startswith("127."):
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _port_or_empty(parsed) -> str:
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    return str(port or "")
+
+
+def _extract_token(authorization: str | None, x_api_token: str | None) -> str | None:
+    if x_api_token:
+        return x_api_token.strip()
+    if not authorization:
+        return None
+    scheme, _, value = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not value:
+        return None
+    return value.strip()
+
+
 def service_index_payload() -> dict[str, Any]:
     return {
         "status": "ok",
@@ -191,7 +339,6 @@ def service_index_payload() -> dict[str, Any]:
             "turn_json": "POST /turn",
             "turn_sse": "POST /turn?stream=true",
             "turn_sse_alias": "POST /turn/stream",
-            "eventsource_demo": "GET /turn/stream?text=電気つけて",
         },
     }
 
