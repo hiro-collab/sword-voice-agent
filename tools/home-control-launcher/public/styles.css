@@ -137,7 +137,7 @@ button:disabled {
 .app-shell {
   margin: 0 auto;
   max-width: 1480px;
-  padding: 24px;
+  padding: 20px 24px;
 }
 
 .topbar {
@@ -145,7 +145,7 @@ button:disabled {
   display: flex;
   gap: 20px;
   justify-content: space-between;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .brand-lockup {
@@ -344,9 +344,9 @@ h2 {
 
 .mission-strip {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   grid-template-columns: minmax(260px, 1.25fr) repeat(3, minmax(150px, 1fr));
-  margin-bottom: 18px;
+  margin-bottom: 14px;
 }
 
 .metric-card {
@@ -357,10 +357,10 @@ h2 {
   border-radius: 8px;
   box-shadow: var(--shadow);
   display: grid;
-  gap: 6px;
-  min-height: 88px;
+  gap: 4px;
+  min-height: 72px;
   overflow: hidden;
-  padding: 14px;
+  padding: 11px 12px;
   position: relative;
 }
 
@@ -392,7 +392,7 @@ h2 {
 
 .metric-card strong {
   color: var(--text);
-  font-size: 20px;
+  font-size: 18px;
   line-height: 1.05;
   overflow-wrap: anywhere;
 }
@@ -416,7 +416,7 @@ h2 {
 
 .layout-grid {
   display: grid;
-  gap: 18px;
+  gap: 16px;
   grid-template-columns: minmax(340px, 390px) 1fr;
 }
 
@@ -427,7 +427,7 @@ h2 {
   border: 1px solid var(--line);
   border-radius: 8px;
   box-shadow: var(--shadow);
-  padding: 16px;
+  padding: 13px;
 }
 
 .control-surface {
@@ -468,7 +468,7 @@ h2 {
 
 .main-column {
   display: grid;
-  gap: 18px;
+  gap: 12px;
 }
 
 .panel-title {
@@ -476,7 +476,7 @@ h2 {
   display: flex;
   gap: 12px;
   justify-content: space-between;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .panel-title h2 {
@@ -706,20 +706,46 @@ button:focus-visible {
 }
 
 .service-list {
+  display: block;
+}
+
+.service-rack {
+  background: rgba(3, 8, 13, 0.32);
+  border: 1px solid rgba(91, 183, 255, 0.18);
+  border-radius: 8px;
+  display: grid;
+  overflow: hidden;
+}
+
+.service-rack-header,
+.service-row {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(82px, 0.8fr) minmax(170px, 1.5fr) minmax(48px, 0.45fr) minmax(90px, 0.9fr) minmax(90px, 0.9fr);
+}
+
+.service-rack-header {
+  background: rgba(91, 183, 255, 0.08);
+  border-bottom: 1px solid rgba(91, 183, 255, 0.16);
+  color: #b7dcff;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0;
+  padding: 6px 10px;
+  text-transform: uppercase;
 }
 
 .service-row {
-  background: rgba(3, 8, 13, 0.32);
-  border: 1px solid rgba(91, 183, 255, 0.18);
+  align-items: center;
   border-left: 3px solid var(--down);
-  border-radius: 8px;
-  display: grid;
-  gap: 8px;
-  min-height: 104px;
-  padding: 12px;
+  border-top: 1px solid rgba(91, 183, 255, 0.12);
+  min-height: 34px;
+  padding: 5px 10px 5px 8px;
+}
+
+.service-rack-header + .service-row {
+  border-top: 0;
 }
 
 .service-row[data-state-group="ok"] {
@@ -739,22 +765,42 @@ button:focus-visible {
   opacity: 0.74;
 }
 
-.service-row header {
-  align-items: start;
+.service-status {
+  align-items: center;
   display: flex;
   gap: 8px;
-  justify-content: space-between;
+  min-width: 0;
+}
+
+.service-led {
+  background: var(--danger);
+  border-radius: 999px;
+  box-shadow: 0 0 14px rgba(255, 91, 125, 0.6);
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 9px;
+  width: 9px;
+}
+
+.service-row[data-state-group="ok"] .service-led {
+  background: var(--ok);
+  box-shadow: 0 0 14px rgba(85, 249, 157, 0.58);
+}
+
+.service-row[data-state-group="warn"] .service-led {
+  background: var(--warn);
+  box-shadow: 0 0 14px rgba(255, 209, 102, 0.58);
 }
 
 .service-title {
   display: grid;
-  gap: 3px;
+  gap: 1px;
   min-width: 0;
 }
 
 .service-name {
   color: var(--text);
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 800;
   overflow-wrap: anywhere;
 }
@@ -762,7 +808,7 @@ button:focus-visible {
 .service-key {
   color: var(--subtle);
   font-family: Consolas, "Cascadia Mono", monospace;
-  font-size: 10px;
+  font-size: 9px;
   overflow-wrap: anywhere;
 }
 
@@ -770,9 +816,11 @@ button:focus-visible {
   border: 1px solid transparent;
   border-radius: 999px;
   flex: 0 0 auto;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 900;
-  padding: 4px 8px;
+  min-width: 42px;
+  padding: 2px 6px;
+  text-align: center;
 }
 
 .state-ok,
@@ -795,12 +843,14 @@ button:focus-visible {
   color: #ffb6c7;
 }
 
-.service-meta {
+.service-metric {
   color: var(--muted);
-  display: grid;
   font-family: Consolas, "Cascadia Mono", monospace;
-  font-size: 11px;
-  gap: 4px;
+  font-size: 10px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   overflow-wrap: anywhere;
 }
 
@@ -976,9 +1026,18 @@ pre {
     position: static;
   }
 
-  .service-list,
   .endpoint-links {
     grid-template-columns: 1fr;
+  }
+
+  .service-rack {
+    overflow-x: auto;
+  }
+
+  .service-rack-header,
+  .service-row {
+    grid-template-columns: 72px minmax(160px, 1.4fr) 48px minmax(88px, 0.8fr) minmax(88px, 0.8fr);
+    min-width: 620px;
   }
 }
 

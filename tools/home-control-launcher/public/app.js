@@ -61,6 +61,17 @@ const serviceLabels = {
   voicevox: 'VOICEVOX speech'
 }
 const hiddenServiceKeys = new Set(['dify'])
+const serviceRoles = {
+  home_assistant_bridge: 'action boundary',
+  environment_state_server: 'environment',
+  mediapipe: 'reflex',
+  vision_snapshot_processor: 'environment input',
+  aituber_kit: 'expression',
+  touchdesigner_control_gui: 'display',
+  thought_core_api: 'conscious API',
+  thought_core_watcher: 'conscious bridge',
+  voicevox: 'speech'
+}
 
 const fieldLabels = {
   StopExisting: 'Restart managed services first',
@@ -356,6 +367,16 @@ const stateClass = (serviceState) =>
 
 const serviceDisplayName = (name) => serviceLabels[name] || labelFor(name)
 
+const serviceRole = (name) => serviceRoles[name] || 'system cell'
+
+const serviceStateShort = (serviceState) => {
+  const value = String(serviceState || 'DOWN').toUpperCase()
+  if (value === 'OK_EXTERNAL') return 'EXT'
+  if (value === 'DEGRADED') return 'DEG'
+  if (value === 'STARTING') return 'WAIT'
+  return value
+}
+
 const endpointDisplayName = (name) => {
   const labels = {
     'AITuber Kit': 'Expression runtime',
@@ -496,27 +517,53 @@ const renderSystemSummary = (services = null, timestamp = '') => {
 const renderServices = (services) => {
   const names = Object.keys(services || {}).filter((name) => !hiddenServiceKeys.has(name))
   $('service-list').innerHTML = names
-    .map((name) => {
-      const service = services[name]
-      const included = serviceIsIncluded(name)
-      return `
-        <article class="service-row ${included ? '' : 'service-skipped'}" data-state-group="${serviceStateGroup(service.state)}">
-          <header>
-            <span class="service-title">
-              <span class="service-name">${escapeHtml(serviceDisplayName(name))}</span>
-              <span class="service-key">${escapeHtml(name)}${included ? '' : ' / profile off'}</span>
+    .reduce(
+      (markup, name) => {
+        const service = services[name]
+        const included = serviceIsIncluded(name)
+        const rowClass = included ? '' : ' service-skipped'
+        return `${markup}
+          <div
+            class="service-row${rowClass}"
+            data-state-group="${serviceStateGroup(service.state)}"
+            role="row"
+          >
+            <span class="service-status" role="cell">
+              <span class="service-led" aria-hidden="true"></span>
+              <span
+                class="state-pill ${stateClass(service.state)}"
+                title="${escapeHtml(service.state)}"
+              >
+                ${escapeHtml(serviceStateShort(service.state))}
+              </span>
             </span>
-            <span class="state-pill ${stateClass(service.state)}">${escapeHtml(service.state)}</span>
-          </header>
-          <div class="service-meta">
-            <span>pid: ${service.pid || '-'}</span>
-            <span>tcp: ${escapeHtml(service.tcp?.detail || '-')}</span>
-            <span>http: ${escapeHtml(service.http?.detail || '-')}</span>
+            <span class="service-title" role="cell">
+              <span class="service-name">${escapeHtml(serviceDisplayName(name))}</span>
+              <span class="service-key">
+                ${escapeHtml(serviceRole(name))}${included ? '' : ' / profile off'}
+              </span>
+            </span>
+            <span class="service-metric" role="cell">${service.pid || '-'}</span>
+            <span class="service-metric" role="cell" title="${escapeHtml(service.tcp?.detail || '-')}">
+              ${escapeHtml(service.tcp?.detail || '-')}
+            </span>
+            <span class="service-metric" role="cell" title="${escapeHtml(service.http?.detail || '-')}">
+              ${escapeHtml(service.http?.detail || '-')}
+            </span>
           </div>
-        </article>
+        `
+      },
       `
-    })
-    .join('')
+        <div class="service-rack" role="table" aria-label="Runtime organ status">
+          <div class="service-rack-header" role="row">
+            <span role="columnheader">State</span>
+            <span role="columnheader">Organ</span>
+            <span role="columnheader">PID</span>
+            <span role="columnheader">TCP</span>
+            <span role="columnheader">HTTP</span>
+          </div>
+      `
+    ) + '</div>'
 }
 
 const renderEndpoints = (endpoints) => {
