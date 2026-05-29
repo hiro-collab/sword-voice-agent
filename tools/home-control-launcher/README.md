@@ -1,6 +1,6 @@
 # Sword System Launcher
 
-Local web launcher for the Sword Agent System cell.
+Local web launcher for the Sword Agent OS system cell.
 
 It serves a browser UI for:
 

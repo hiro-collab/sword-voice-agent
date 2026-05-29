@@ -1,6 +1,6 @@
 [
   {
-    "id": "thought-core-experimental",
+    "id": "thought-core-v0",
     "name": "System Cell (Thought Core)",
     "group": "Primary",
     "description": "Start the current system cell with Thought Core, AITuber, MediaPipe, environment, home-control, and display services.",
@@ -51,9 +51,9 @@
   },
   {
     "id": "no-touchdesigner",
-    "name": "System Cell without TD GUI",
+    "name": "System Cell without Display GUI",
     "group": "Diagnostics",
-    "description": "Start the current Thought Core stack without the TouchDesigner control web GUI.",
+    "description": "Start the current Thought Core stack without the display runtime GUI.",
     "options": {
       "StopExisting": true,
       "SkipDify": true,

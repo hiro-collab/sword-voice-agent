@@ -1,6 +1,6 @@
 const state = {
   profiles: [],
-  selectedProfileId: 'thought-core-experimental',
+  selectedProfileId: 'thought-core-v0',
   options: {},
   busy: false,
   operation: 'idle',
@@ -549,7 +549,7 @@ const endpointKind = (endpoint) => {
   if (url.startsWith('ws:') || name.includes('websocket')) return 'websocket'
   if (name.includes('thought-core')) return 'thought'
   if (name.includes('aituber') || name.includes('projection')) return 'ui'
-  if (name.includes('td control') || name.includes('touchdesigner')) return 'display'
+  if (name.includes('display') || name.includes('td control') || name.includes('touchdesigner')) return 'display'
   if (name.includes('voicevox')) return 'speech'
   if (name.includes('mediapipe') || name.includes('mediamtx') || name.includes('camera')) return 'camera'
   if (name.includes('health') || name.includes('environment') || url.includes('/api/')) return 'api'
@@ -591,7 +591,7 @@ const refreshPreview = async () => {
 const refreshState = async () => {
   const payload = await api('/api/state')
   state.profiles = payload.profiles || []
-  state.selectedProfileId = payload.config?.selectedProfileId || 'thought-core-experimental'
+  state.selectedProfileId = payload.config?.selectedProfileId || 'thought-core-v0'
   state.options = payload.config?.options || {}
   $('workspace-root').textContent = payload.workspaceRoot
   $('status-time').textContent = payload.status?.timestamp || 'Unknown'

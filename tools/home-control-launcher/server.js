@@ -60,7 +60,7 @@ const STACK_LOG_MAX_BYTES = Number(
 const STACK_LOG_BACKUPS = Number(
   process.env.HOME_CONTROL_LAUNCHER_STACK_LOG_BACKUPS || 3
 )
-const PRIMARY_PROFILE_ID = 'thought-core-experimental'
+const PRIMARY_PROFILE_ID = 'thought-core-v0'
 
 function resolveStackStateDir() {
   const configured = process.env.HOME_CONTROL_STACK_STATE_DIR || ''
@@ -121,7 +121,8 @@ const DEFAULT_OPTIONS = {
 const OPS_PROFILE_BY_LAUNCHER_PROFILE = {
   'full-stack': 'full-local',
   'dify-external': 'full-local',
-  'no-touchdesigner': 'full-local',
+  'no-touchdesigner': 'thought-core-v0',
+  'thought-core-v0': 'thought-core-v0',
   'thought-core-experimental': 'thought-core-experimental',
   'aituber-only': 'aituber-only',
   'camera-debug': 'camera-debug'
@@ -897,7 +898,7 @@ const getEndpoints = (options) => {
     },
     {
       group: 'Open in browser',
-      name: 'TD Control GUI/API',
+      name: 'Display control GUI/API',
       url: `http://127.0.0.1:${options.TouchDesignerGuiPort}`,
       enabled: !options.SkipTouchDesignerGui
     },
@@ -1003,8 +1004,6 @@ const getStatus = async () => {
     homeHttp,
     environmentTcp,
     environmentHttp,
-    mediapipeTcp,
-    visionTcp,
     aituberTcp,
     aituberHttp,
     tdTcp,
@@ -1020,8 +1019,6 @@ const getStatus = async () => {
     checkHttp(`http://127.0.0.1:${options.HomeAssistantBridgePort}/health`, 2500),
     checkTcp(options.EnvironmentStatePort),
     checkHttp(`http://127.0.0.1:${options.EnvironmentStatePort}/health`),
-    checkWebSocketHandshake(options.MediapipePort),
-    checkWebSocketHandshake(options.VisionSnapshotProcessorPort),
     checkTcp(options.AituberPort),
     checkHttp(`http://127.0.0.1:${options.AituberPort}`),
     checkTcp(options.TouchDesignerGuiPort),
@@ -1054,11 +1051,11 @@ const getStatus = async () => {
       }),
       mediapipe: serviceState({
         entry: mediapipeEntry,
-        tcp: mediapipeTcp
+        processOnly: true
       }),
       vision_snapshot_processor: serviceState({
         entry: pids.vision_snapshot_processor,
-        tcp: visionTcp
+        processOnly: true
       }),
       aituber_kit: serviceState({
         entry: pids.aituber_kit,
