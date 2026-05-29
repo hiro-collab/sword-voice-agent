@@ -380,16 +380,49 @@ const serviceStateShort = (serviceState) => {
 const endpointDisplayName = (name) => {
   const labels = {
     'AITuber Kit': 'Expression runtime',
+    'Expression runtime': 'Operator',
     'AITuber Cube Vault': 'Expression cube vault',
+    'Expression cube vault': 'Avatar vault',
     'Display control GUI/API': 'Display runtime GUI/API',
+    'Display runtime GUI/API': 'Display',
     'Home Assistant bridge health': 'Action bridge health',
+    'Action bridge health': 'Action',
     'MediaPipe Browser Monitor': 'Reflex browser monitor',
+    'Reflex browser monitor': 'Camera Hub',
     'MediaMTX video': 'Reflex camera video',
+    'Reflex camera video': 'Video',
     'MediaPipe Camera Hub WebSocket': 'Reflex Camera Hub WebSocket',
+    'Reflex Camera Hub WebSocket': 'Camera WS',
     'Vision Snapshot Processor WebSocket': 'Vision snapshot WebSocket',
-    'TouchDesigner UDP receiver': 'Display UDP receiver'
+    'Vision snapshot WebSocket': 'Vision WS',
+    'TouchDesigner UDP receiver': 'Display UDP receiver',
+    'Display UDP receiver': 'TD UDP',
+    'Projection Visual': 'Stage',
+    'Thought Core API index': 'Core API',
+    'Thought Core health': 'Core health',
+    'Environment current state': 'Env state',
+    'Environment indicators': 'Indicators',
+    'VOICEVOX': 'Speech',
+    'Thought Core watcher': 'Core watch',
+    'Compatibility workflow UI': 'Compatibility UI',
+    'Compatibility watcher': 'Compatibility watch'
   }
   return labels[name] || name
+}
+
+const endpointTargetLabel = (endpoint, kind, canOpen) => {
+  if (!endpoint.enabled) return 'skipped'
+  if (!canOpen) {
+    if (kind === 'websocket') return 'WebSocket reference'
+    if (kind === 'background') return 'background reference'
+    return 'reference'
+  }
+  if (kind === 'api' || kind === 'thought') return 'local API'
+  if (kind === 'camera') return 'camera feed'
+  if (kind === 'display') return 'display runtime'
+  if (kind === 'speech') return 'speech runtime'
+  if (kind === 'compatibility') return 'compatibility'
+  return 'open browser'
 }
 
 const serviceIsIncluded = (name) => {
@@ -589,12 +622,15 @@ const renderEndpoints = (endpoints) => {
           const status = endpoint.enabled ? (canOpen ? 'open' : 'reference') : 'skipped'
           const className = endpoint.enabled ? (canOpen ? '' : 'reference-only') : 'disabled'
           const kind = endpointKind(endpoint)
+          const title = endpoint.url
+            ? `${endpointDisplayName(endpoint.name)}: ${endpoint.url}`
+            : endpointDisplayName(endpoint.name)
           return `
-            <a class="endpoint-link ${className}" data-kind="${kind}" ${attrs}>
+            <a class="endpoint-link ${className}" data-kind="${kind}" title="${escapeHtml(title)}" ${attrs}>
               <span class="endpoint-icon" aria-hidden="true">${endpointIcon(kind)}</span>
               <span class="endpoint-copy">
                 <strong>${escapeHtml(endpointDisplayName(endpoint.name))}</strong>
-                <span>${escapeHtml(endpoint.url)}</span>
+                <span>${escapeHtml(endpointTargetLabel(endpoint, kind, canOpen))}</span>
               </span>
               <em class="endpoint-status">${status}</em>
             </a>
@@ -614,7 +650,7 @@ const renderEndpoints = (endpoints) => {
 const endpointKind = (endpoint) => {
   const name = String(endpoint.name || '').toLowerCase()
   const url = String(endpoint.url || '').toLowerCase()
-  if (name.includes('dify')) return 'compatibility'
+  if (name.includes('dify') || name.includes('compatibility')) return 'compatibility'
   if (url.startsWith('ws:') || name.includes('websocket')) return 'websocket'
   if (name.includes('thought-core')) return 'thought'
   if (name.includes('aituber') || name.includes('projection')) return 'ui'
