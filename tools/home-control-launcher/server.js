@@ -931,13 +931,7 @@ const getEndpoints = (options) => {
     },
     {
       group: 'Local APIs and feeds',
-      name: 'Environment current state',
-      url: `http://127.0.0.1:${options.EnvironmentStatePort}/environment/current`,
-      enabled: !options.SkipEnvironmentState
-    },
-    {
-      group: 'Local APIs and feeds',
-      name: 'Environment indicators',
+      name: 'Environment display state',
       url: `http://127.0.0.1:${options.EnvironmentStatePort}/indicators/current`,
       enabled: !options.SkipEnvironmentState
     },

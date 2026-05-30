@@ -4,10 +4,15 @@ from unittest import TestCase
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC = ROOT / "tools" / "home-control-launcher" / "public"
+LAUNCHER_SERVER = ROOT / "tools" / "home-control-launcher" / "server.js"
 
 
 def read_public(name: str) -> str:
     return (PUBLIC / name).read_text(encoding="utf-8")
+
+
+def read_launcher_server() -> str:
+    return LAUNCHER_SERVER.read_text(encoding="utf-8")
 
 
 class LauncherUiContractTest(TestCase):
@@ -45,3 +50,13 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("Check conflict", app)
         self.assertIn("services-summary", app)
         self.assertIn("ports-drawer-summary", app)
+
+    def test_quick_links_use_display_safe_environment_endpoint(self) -> None:
+        server = read_launcher_server()
+        app = read_public("app.js")
+
+        self.assertIn("Environment display state", server)
+        self.assertIn("/indicators/current", server)
+        self.assertNotIn("name: 'Environment current state'", server)
+        self.assertNotIn("/environment/current`,", server)
+        self.assertIn("'Environment display state': 'Env state'", app)
