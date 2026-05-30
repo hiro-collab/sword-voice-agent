@@ -42,6 +42,16 @@ const portFields = [
   'VisionSnapshotProcessorPort'
 ]
 
+const corePortFields = [
+  'AituberPort',
+  'ThoughtCorePort',
+  'TouchDesignerGuiPort',
+  'HomeAssistantBridgePort',
+  'EnvironmentStatePort',
+  'MediapipePort',
+  'VisionSnapshotProcessorPort'
+]
+
 const textFields = [
   'MediapipeCameraName',
   'VoicevoxUrl',
@@ -272,6 +282,66 @@ const setOption = (key, value) => {
   refreshPreview()
 }
 
+const isLaunchServiceEnabled = (field) => {
+  if (field === 'StopExisting') {
+    return null
+  }
+  if (field.startsWith('Skip')) {
+    return !state.options[field]
+  }
+  return Boolean(state.options[field])
+}
+
+const summarizeLaunchServices = () => {
+  const serviceFields = coreSwitchFields.filter((field) => field !== 'StopExisting')
+  const enabled = serviceFields.filter((field) => isLaunchServiceEnabled(field)).length
+  const total = serviceFields.length
+  return {
+    card: `${enabled}/${total} enabled`,
+    drawer: `${enabled}/${total} services`
+  }
+}
+
+const summarizeDiagnostics = () => {
+  const enabled = diagnosticSwitchFields.filter((field) => state.options[field]).length
+  return {
+    card: enabled ? `${enabled} enabled` : 'Off',
+    drawer: enabled ? `${enabled} toggles on` : 'No test toggles'
+  }
+}
+
+const summarizeRuntime = () => {
+  const compatibilityActive = !state.options.SkipDify || !state.options.SkipDifyWatch
+  return {
+    card: compatibilityActive ? 'Compat on' : 'Standard',
+    drawer: compatibilityActive ? 'Legacy paths active' : 'Legacy paths off'
+  }
+}
+
+const summarizePorts = () => {
+  const values = corePortFields.map((field) => String(state.options[field] || '').trim()).filter(Boolean)
+  const duplicates = values.filter((value, index) => values.indexOf(value) !== index)
+  return {
+    card: duplicates.length ? 'Check conflict' : `${values.length}/${corePortFields.length} set`,
+    drawer: duplicates.length ? 'Duplicate port values' : 'Core bindings'
+  }
+}
+
+const renderLaunchSummary = () => {
+  const services = summarizeLaunchServices()
+  const diagnostics = summarizeDiagnostics()
+  const runtime = summarizeRuntime()
+  const ports = summarizePorts()
+  $('services-summary').textContent = services.card
+  $('services-drawer-summary').textContent = services.drawer
+  $('diagnostics-summary').textContent = diagnostics.card
+  $('diagnostics-drawer-summary').textContent = diagnostics.drawer
+  $('runtime-summary').textContent = runtime.card
+  $('runtime-drawer-summary').textContent = runtime.drawer
+  $('ports-summary').textContent = ports.card
+  $('ports-drawer-summary').textContent = ports.drawer
+}
+
 const renderControls = () => {
   const profileSelect = $('profile-select')
   const profilesByGroup = groupProfiles(visibleProfilesForSelect(state.profiles))
@@ -293,6 +363,7 @@ const renderControls = () => {
   $('active-profile-detail').textContent = state.options.MediapipeMode
     ? `MediaPipe: ${state.options.MediapipeMode}`
     : 'Configuration pending'
+  renderLaunchSummary()
 
   for (const field of portFields) {
     const input = $(field)

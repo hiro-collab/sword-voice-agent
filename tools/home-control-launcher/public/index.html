@@ -65,7 +65,7 @@
       <section class="layout-grid">
         <aside class="panel launch-panel control-surface">
           <div class="panel-title">
-            <h2>System profile</h2>
+            <h2>Launch configuration</h2>
             <div class="profile-actions">
               <span class="surface-tag control-tag">CONTROL</span>
               <span id="save-state">Ready</span>
@@ -109,21 +109,46 @@
             <input id="MediapipeCameraName" type="text" autocomplete="off" />
           </label>
 
-          <div class="section-title">Core ports</div>
-          <div class="port-grid">
-            <label class="field"><span>Expression</span><input id="AituberPort" type="number" min="1" /></label>
-            <label class="field"><span>Thought Core</span><input id="ThoughtCorePort" type="number" min="1" /></label>
-            <label class="field"><span>Display runtime</span><input id="TouchDesignerGuiPort" type="number" min="1" /></label>
-            <label class="field"><span>Action bridge</span><input id="HomeAssistantBridgePort" type="number" min="1" /></label>
-            <label class="field"><span>Environment</span><input id="EnvironmentStatePort" type="number" min="1" /></label>
-            <label class="field"><span>MediaPipe</span><input id="MediapipePort" type="number" min="1" /></label>
-            <label class="field"><span>Vision WS</span><input id="VisionSnapshotProcessorPort" type="number" min="1" /></label>
+          <div class="section-title">Launch summary</div>
+          <div class="profile-summary-grid" aria-label="Launch configuration summary">
+            <div class="profile-summary-item">
+              <span>Services</span>
+              <strong id="services-summary">Pending</strong>
+            </div>
+            <div class="profile-summary-item">
+              <span>Diagnostics</span>
+              <strong id="diagnostics-summary">Pending</strong>
+            </div>
+            <div class="profile-summary-item">
+              <span>Runtime</span>
+              <strong id="runtime-summary">Pending</strong>
+            </div>
+            <div class="profile-summary-item">
+              <span>Ports</span>
+              <strong id="ports-summary">Pending</strong>
+            </div>
           </div>
 
-          <details class="option-drawer" open>
+          <details class="option-drawer">
+            <summary>
+              <span>Core ports</span>
+              <small id="ports-drawer-summary">Port bindings</small>
+            </summary>
+            <div class="port-grid">
+              <label class="field"><span>Expression</span><input id="AituberPort" type="number" min="1" /></label>
+              <label class="field"><span>Thought Core</span><input id="ThoughtCorePort" type="number" min="1" /></label>
+              <label class="field"><span>Display runtime</span><input id="TouchDesignerGuiPort" type="number" min="1" /></label>
+              <label class="field"><span>Action bridge</span><input id="HomeAssistantBridgePort" type="number" min="1" /></label>
+              <label class="field"><span>Environment</span><input id="EnvironmentStatePort" type="number" min="1" /></label>
+              <label class="field"><span>MediaPipe</span><input id="MediapipePort" type="number" min="1" /></label>
+              <label class="field"><span>Vision WS</span><input id="VisionSnapshotProcessorPort" type="number" min="1" /></label>
+            </div>
+          </details>
+
+          <details class="option-drawer">
             <summary>
               <span>Core services</span>
-              <small>Normal system cell controls</small>
+              <small id="services-drawer-summary">Normal system cell controls</small>
             </summary>
             <div class="switch-grid" id="core-switch-grid"></div>
           </details>
@@ -131,7 +156,7 @@
           <details class="option-drawer">
             <summary>
               <span>Diagnostics</span>
-              <small>Camera and test-mode controls</small>
+              <small id="diagnostics-drawer-summary">Camera and test-mode controls</small>
             </summary>
             <div class="switch-grid" id="diagnostic-switch-grid"></div>
           </details>
@@ -139,7 +164,7 @@
           <details class="option-drawer">
             <summary>
               <span>Compatibility runtime</span>
-              <small>Only for older watcher flows</small>
+              <small id="runtime-drawer-summary">Only for older watcher flows</small>
             </summary>
             <div class="switch-grid" id="legacy-switch-grid"></div>
             <div class="port-grid legacy-port-grid">
