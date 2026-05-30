@@ -93,6 +93,33 @@ class CentralCommunicationFuzzTest(TestCase):
                 }
             )
 
+    def test_thought_core_stream_event_identity_mutations_are_rejected(self) -> None:
+        valid = {
+            "type": "assistant.message",
+            "turn_id": "turn-1",
+            "session_id": "living",
+            "seq": 1,
+            "data": {"speech": "ok"},
+        }
+        mutations = [
+            ("missing type", {key: value for key, value in valid.items() if key != "type"}),
+            ("blank type", {**valid, "type": " \t"}),
+            ("array type", {**valid, "type": ["assistant.message"]}),
+            ("control type", {**valid, "type": "assistant.message\nevent: forged"}),
+            ("missing turn id", {key: value for key, value in valid.items() if key != "turn_id"}),
+            ("object turn id", {**valid, "turn_id": {"id": "turn-1"}}),
+            ("blank session id", {**valid, "session_id": "\n"}),
+            ("bool sequence", {**valid, "seq": True}),
+            ("string sequence", {**valid, "seq": "1"}),
+            ("float sequence", {**valid, "seq": 1.0}),
+            ("numeric event id", {**valid, "event_id": 123}),
+        ]
+
+        for label, payload in mutations:
+            with self.subTest(label=label):
+                with self.assertRaises(ThoughtCoreClientError):
+                    ThoughtCoreStreamEvent.from_payload(payload)
+
     def test_state_query_feedback_idempotency_key_normalizes_mutated_ids(self) -> None:
         loop = ThoughtLoop()
         turn = TurnInput.from_mapping(

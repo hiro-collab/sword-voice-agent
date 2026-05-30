@@ -48,9 +48,9 @@ class ThoughtCoreStreamEvent:
         if data is not None and not isinstance(data, Mapping):
             raise ThoughtCoreClientError("thought-core event data must be an object")
         return cls(
-            event_type=str(payload.get("type") or ""),
-            turn_id=str(payload.get("turn_id") or ""),
-            session_id=str(payload.get("session_id") or ""),
+            event_type=_required_text(payload, "type"),
+            turn_id=_required_text(payload, "turn_id"),
+            session_id=_required_text(payload, "session_id"),
             seq=_optional_int(payload.get("seq")),
             schema_version=_optional_text(payload, "schema_version"),
             event_id=_optional_text(payload, "event_id"),
@@ -343,14 +343,27 @@ def _optional_text(payload: Mapping[str, Any], key: str) -> str | None:
     value = payload.get(key)
     if value is None:
         return None
+    if not isinstance(value, str):
+        raise ThoughtCoreClientError(f"thought-core event {key} must be a string")
     text = str(value).strip()
     return text or None
 
 
+def _required_text(payload: Mapping[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str):
+        raise ThoughtCoreClientError(f"thought-core event {key} must be a string")
+    text = value.strip()
+    if not text:
+        raise ThoughtCoreClientError(f"thought-core event {key} must not be empty")
+    if any(ord(char) < 32 or ord(char) == 127 for char in text):
+        raise ThoughtCoreClientError(f"thought-core event {key} must not contain control characters")
+    return text
+
+
 def _optional_int(value: Any) -> int | None:
-    if value is None or isinstance(value, bool):
+    if value is None:
         return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ThoughtCoreClientError("thought-core event seq must be an integer")
+    return value
