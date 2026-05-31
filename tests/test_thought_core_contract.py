@@ -1650,6 +1650,50 @@ class ThoughtCoreContractTest(TestCase):
         self.assertIn(TURN["session_id"], loop.pending_action_reviews)
         self.assertEqual(events[-1]["data"]["status"], "llm_response")
 
+    def test_dance_request_does_not_continue_pending_action_review(self) -> None:
+        tools = MockThoughtTools(light_on=True)
+        loop = ThoughtLoop(tools=tools, responder=StaticResponder())
+        previous_action = {
+            "action_id": "light_on",
+            "target": "light",
+            "target_name": "リビングの電気",
+            "expected_state": "on",
+            "pre_action_phrase": "リビングの電気をつける",
+        }
+        loop.pending_action_reviews[TURN["session_id"]] = {
+            "action": previous_action,
+            "execute_result": {"status": "accepted", "executed": True},
+            "last_review": {"status": "pending"},
+            "observations_done": 1,
+            "execute_attempts": 1,
+            "policy": {"settle_ms": 1500, "observation_attempts": 2, "auto_retries": 1},
+        }
+
+        events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "踊ってください",
+                "turn_id": "turn_dance_with_pending_review",
+            }
+        )
+        event_types = [event["type"] for event in events]
+        tool_names = [
+            event["data"]["tool"]
+            for event in events
+            if event["type"] == "tool.started"
+        ]
+        understood = next(event for event in events if event["type"] == "input.understood")
+
+        self.assertEqual(understood["data"]["kind"], "general")
+        self.assertIn("responder.started", event_types)
+        self.assertNotIn("action.proposed", event_types)
+        self.assertNotIn("action.reviewed", event_types)
+        self.assertNotIn("feedback.requested", event_types)
+        self.assertEqual(tool_names, ["memory.retrieve"])
+        self.assertEqual(tools.execute_calls, [])
+        self.assertIn(TURN["session_id"], loop.pending_action_reviews)
+        self.assertEqual(events[-1]["data"]["status"], "llm_response")
+
     def test_explicit_review_turn_continues_pending_action_review(self) -> None:
         tools = MockThoughtTools(light_on=True)
         loop = ThoughtLoop(tools=tools)
