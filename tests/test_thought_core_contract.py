@@ -1694,6 +1694,56 @@ class ThoughtCoreContractTest(TestCase):
         self.assertIn(TURN["session_id"], loop.pending_action_reviews)
         self.assertEqual(events[-1]["data"]["status"], "llm_response")
 
+    def test_ambiguous_brightness_wording_does_not_execute_home_action(self) -> None:
+        tools = MockThoughtTools(light_on=False)
+        loop = ThoughtLoop(tools=tools, responder=StaticResponder())
+
+        events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "部屋をちょっと明るくできるかな？",
+                "turn_id": "turn_ambiguous_brightness_request",
+            }
+        )
+        event_types = [event["type"] for event in events]
+        tool_names = [
+            event["data"]["tool"]
+            for event in events
+            if event["type"] == "tool.started"
+        ]
+        understood = next(event for event in events if event["type"] == "input.understood")
+
+        self.assertNotEqual(understood["data"]["kind"], "home_command")
+        self.assertNotIn("command.planned", event_types)
+        self.assertNotIn("action.proposed", event_types)
+        self.assertNotIn("home.execute", tool_names)
+        self.assertEqual(tools.execute_calls, [])
+
+    def test_expression_request_without_pending_review_does_not_execute_home_action(self) -> None:
+        tools = MockThoughtTools(light_on=True)
+        loop = ThoughtLoop(tools=tools, responder=StaticResponder())
+
+        events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "笑って見せて",
+                "turn_id": "turn_smile_request_without_pending_review",
+            }
+        )
+        event_types = [event["type"] for event in events]
+        tool_names = [
+            event["data"]["tool"]
+            for event in events
+            if event["type"] == "tool.started"
+        ]
+        understood = next(event for event in events if event["type"] == "input.understood")
+
+        self.assertNotEqual(understood["data"]["kind"], "home_command")
+        self.assertNotIn("command.planned", event_types)
+        self.assertNotIn("action.proposed", event_types)
+        self.assertNotIn("home.execute", tool_names)
+        self.assertEqual(tools.execute_calls, [])
+
     def test_explicit_review_turn_continues_pending_action_review(self) -> None:
         tools = MockThoughtTools(light_on=True)
         loop = ThoughtLoop(tools=tools)
