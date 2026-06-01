@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "description": "Small replay pack for fast Thought Core feedback-loop stabilization.",
+  "cases": [
+    {
+      "name": "direct_light_on_feedback_external_store_failure_uses_short_memory",
+      "initial_light_on": true,
+      "feedback_result": {
+        "status": "failed",
+        "ok": false,
+        "error": "environment_feedback_unconfigured"
+      },
+      "turns": [
+        {
+          "text": "今電気はついています",
+          "context_refs": {
+            "mock_initial_light_state": "on",
+            "mock_room_light_state": "unknown",
+            "mock_room_light_confidence_label": "low"
+          }
+        }
+      ],
+      "expect": {
+        "event_types": [
+          "state_query.feedback_detected",
+          "state_query.feedback_saved",
+          "state_query.feedback_fallback_saved",
+          "turn.completed"
+        ],
+        "speech_contains": [
+          "この会話の記憶には反映",
+          "学習ログ本体はあとで同期が必要"
+        ],
+        "speech_not_contains": [
+          "学習ログへの保存はできていません",
+          "まだ反映できていません"
+        ],
+        "feedback_calls": 1,
+        "short_memory_writes_min": 1
+      }
+    },
+    {
+      "name": "light_action_then_user_feedback_keeps_ordered_concise_context",
+      "initial_light_on": false,
+      "feedback_result": {
+        "status": "failed",
+        "ok": false,
+        "error": "environment_feedback_unconfigured"
+      },
+      "turns": [
+        {
+          "text": "電気をつけて",
+          "context_refs": {
+            "mock_initial_light_state": "off",
+            "mock_room_light_state": "unknown",
+            "mock_room_light_confidence_label": "low",
+            "mock_wait_matched": "true"
+          }
+        },
+        {
+          "text": "今電気はついています",
+          "context_refs": {
+            "mock_room_light_state": "on",
+            "mock_room_light_confidence_label": "high"
+          }
+        }
+      ],
+      "expect": {
+        "event_types": [
+          "action.reviewed",
+          "state_query.feedback_pending",
+          "state_query.feedback_saved",
+          "state_query.feedback_fallback_saved",
+          "action.feedback_resolved",
+          "turn.completed"
+        ],
+        "speech_contains": [
+          "この会話の記憶には反映",
+          "学習ログ本体はあとで同期が必要"
+        ],
+        "speech_not_contains": [
+          "ただ、学習ログへの保存はできていません",
+          "まだ反映できていません"
+        ],
+        "feedback_calls": 1,
+        "short_memory_writes_min": 1
+      }
+    }
+  ]
+}

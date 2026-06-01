@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -763,7 +764,15 @@ class HomeControlHttpTools:
         token: str,
         body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        data = (
+            None
+            if body is None
+            else json.dumps(
+                _json_transport_safe(body),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        )
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {token}",
@@ -818,12 +827,46 @@ def detect_home_action_intent(
     text: str,
     observation: dict[str, Any] | None = None,
 ) -> HomeLightIntent | None:
+    normalized = text.replace(" ", "").replace("　", "")
+    lowered = normalized.lower()
+    if _is_negative_home_action_request(normalized, lowered):
+        return None
+
     registry_intent = _intent_from_environment_actions(text, observation or {})
     if registry_intent is not None:
         return registry_intent
 
-    normalized = text.replace(" ", "").replace("　", "")
-    lowered = normalized.lower()
+    builtin_candidates = _builtin_home_action_candidates(normalized, lowered)
+    unique_candidates = {
+        candidate.action_id: candidate for candidate in builtin_candidates
+    }
+    if len(unique_candidates) == 1:
+        return next(iter(unique_candidates.values()))
+    if len(unique_candidates) > 1:
+        return None
+    return None
+
+
+def _is_negative_home_action_request(normalized: str, lowered: str) -> bool:
+    negative_markers = (
+        "ないで",
+        "なくていい",
+        "しないで",
+        "しなくていい",
+        "キャンセル",
+        "取り消",
+        "中止",
+    )
+    if any(marker in normalized for marker in negative_markers):
+        return True
+    return "do not" in lowered or "don't" in lowered or "cancel" in lowered
+
+
+def _builtin_home_action_candidates(
+    normalized: str,
+    lowered: str,
+) -> list[HomeLightIntent]:
+    candidates: list[HomeLightIntent] = []
     mentions_light = any(word in normalized for word in ("電気", "ライト", "照明"))
     if mentions_light:
         if (
@@ -833,10 +876,12 @@ def detect_home_action_intent(
             )
             or "off" in lowered
         ):
-            return HomeLightIntent(
-                action_id="light_off",
-                expected_state="off",
-                action_name="home.light.turn_off",
+            candidates.append(
+                HomeLightIntent(
+                    action_id="light_off",
+                    expected_state="off",
+                    action_name="home.light.turn_off",
+                )
             )
         if (
             any(
@@ -845,10 +890,12 @@ def detect_home_action_intent(
             )
             or "on" in lowered
         ):
-            return HomeLightIntent(
-                action_id="light_on",
-                expected_state="on",
-                action_name="home.light.turn_on",
+            candidates.append(
+                HomeLightIntent(
+                    action_id="light_on",
+                    expected_state="on",
+                    action_name="home.light.turn_on",
+                )
             )
 
     fixed_actions = (
@@ -977,8 +1024,8 @@ def detect_home_action_intent(
         if any(word in normalized for word in target_words) and any(
             word in normalized for word in verb_words
         ):
-            return intent
-    return None
+            candidates.append(intent)
+    return candidates
 
 
 def detect_room_light_state_query(text: str) -> bool:
@@ -1045,6 +1092,7 @@ def _intent_from_environment_actions(
     actions = environment.get("actions")
     if not isinstance(actions, list):
         return None
+    matches: dict[str, HomeLightIntent] = {}
     for action in actions:
         if not isinstance(action, dict):
             continue
@@ -1065,18 +1113,22 @@ def _intent_from_environment_actions(
         target_name = str(
             action.get("target_label") or action.get("label") or target or action_id
         ).strip()
-        return HomeLightIntent(
+        matches[action_id] = HomeLightIntent(
             action_id=action_id,
             expected_state=expected_state,
             action_name=f"home.{action_id}",
             target=target,
             target_name=target_name,
-            pre_action_phrase=str(action.get("pre_action_phrase") or action.get("label") or ""),
+            pre_action_phrase=str(
+                action.get("pre_action_phrase") or action.get("label") or ""
+            ),
             available=action.get("available") is not False,
             noop=bool(action.get("noop")),
             reason=str(action.get("reason") or ""),
             reason_text=str(action.get("reason_text") or ""),
         )
+    if len(matches) == 1:
+        return next(iter(matches.values()))
     return None
 
 
@@ -1301,6 +1353,27 @@ def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         stream.write("\n")
+
+
+def _json_transport_safe(value: Any, *, max_depth: int = 12) -> Any:
+    if max_depth <= 0:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return {
+            str(key): _json_transport_safe(item, max_depth=max_depth - 1)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_json_transport_safe(item, max_depth=max_depth - 1) for item in value]
+    return str(value)
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
