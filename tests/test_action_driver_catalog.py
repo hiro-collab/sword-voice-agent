@@ -7,7 +7,16 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SYSTEM_ROOT = REPO_ROOT.parent
+
+
+def find_system_root() -> Path:
+    for candidate in (REPO_ROOT, *REPO_ROOT.parents):
+        if (candidate / "organs").is_dir():
+            return candidate
+    return REPO_ROOT.parent
+
+
+SYSTEM_ROOT = find_system_root()
 CATALOG_PATH = REPO_ROOT / "catalogs" / "actions" / "home-actions.json"
 HA_CONFIG_PATH = (
     SYSTEM_ROOT
@@ -60,13 +69,18 @@ def load_home_control_actions() -> dict[str, dict[str, object]]:
 
 
 def load_environment_actions() -> dict[str, object]:
+    module = load_environment_actions_module()
+    return {action.action_id: action for action in module.ACTION_DEFINITIONS}
+
+
+def load_environment_actions_module():
     spec = importlib.util.spec_from_file_location("environment_actions_for_catalog", ENV_ACTIONS_PATH)
     if spec is None or spec.loader is None:
         raise AssertionError(f"could not load environment actions from {ENV_ACTIONS_PATH}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    return {action.action_id: action for action in module.ACTION_DEFINITIONS}
+    return module
 
 
 class ActionDriverCatalogTest(unittest.TestCase):
@@ -140,6 +154,46 @@ class ActionDriverCatalogTest(unittest.TestCase):
                 intent = detect_home_action_intent(text)
                 self.assertIsNotNone(intent, text)
                 self.assertEqual(intent.action_id, action_id, text)
+
+    def test_environment_action_registry_keeps_aircon_stop_separate_from_door_stop(self) -> None:
+        thought_src = REPO_ROOT / "services" / "thought-core" / "src"
+        sys.path.insert(0, str(thought_src))
+        try:
+            from thought_core.tools import detect_home_action_intent
+        finally:
+            try:
+                sys.path.remove(str(thought_src))
+            except ValueError:
+                pass
+
+        environment_actions = load_environment_actions_module()
+        observation = {
+            "environment": {
+                "actions": environment_actions.build_action_registry({}),
+            }
+        }
+
+        for text in ("エアコンを止めて", "エアコンを停止して", "エアコン停止して", "エアコンを消して"):
+            intent = detect_home_action_intent(text, observation)
+            self.assertIsNotNone(intent, text)
+            self.assertEqual(intent.action_id, "aircon_off", text)
+            self.assertEqual(intent.target, "aircon", text)
+
+        intent = detect_home_action_intent("中扉を止めて", observation)
+        self.assertIsNotNone(intent)
+        self.assertEqual(intent.action_id, "door_stop")
+        self.assertEqual(intent.target, "door")
+
+    def test_aircon_actions_mark_physical_state_confirmation_as_unsupported(self) -> None:
+        catalog_actions = load_catalog()["actions"]
+        environment_actions = load_environment_actions()
+
+        for action_id in ("aircon_on", "aircon_off"):
+            expected_effect = catalog_actions[action_id]["expected_effect"]
+            self.assertEqual(expected_effect["evidence_class"], "action_event_only")
+            self.assertEqual(expected_effect["physical_state_source"], "not_supported")
+            self.assertEqual(expected_effect["unverified_state_label"], "submitted_unverified")
+            self.assertEqual(expected_effect, environment_actions[action_id].expected_effect)
 
 
 if __name__ == "__main__":

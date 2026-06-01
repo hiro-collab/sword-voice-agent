@@ -5,6 +5,11 @@ const state = {
   busy: false,
   operation: 'idle',
   operationDetail: 'Waiting for an action.',
+  operationProgress: {
+    percent: 0,
+    label: '0%',
+    visible: false
+  },
   remoteBusy: false,
   remoteOperation: null
 }
@@ -178,6 +183,13 @@ const renderActionButtons = () => {
 const setOperation = (operation, detail = '') => {
   state.operation = operation
   state.operationDetail = detail || operationLabels[operation] || ''
+  if (!['starting', 'stopping'].includes(operation)) {
+    state.operationProgress = {
+      percent: operation === 'started' || operation === 'stopped' ? 100 : 0,
+      label: operation === 'started' ? '100%' : '',
+      visible: operation === 'started' || operation === 'stopped'
+    }
+  }
   document.body.dataset.operation = operation
   renderOperation()
   renderOperationReadiness()
@@ -191,6 +203,14 @@ const renderOperation = () => {
   banner.className = `operation-banner ${operation}`
   $('operation-title').textContent = operationLabels[operation] || operationLabels.idle
   $('operation-detail').textContent = state.operationDetail || 'Waiting for an action.'
+  const progress = state.operationProgress || {}
+  const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0))
+  const progressNode = $('operation-progress')
+  progressNode.hidden = !progress.visible
+  progressNode.setAttribute('aria-valuenow', String(Math.round(percent)))
+  $('operation-progress-bar').style.width = `${percent}%`
+  $('operation-progress-label').hidden = !progress.visible
+  $('operation-progress-label').textContent = progress.label || `${Math.round(percent)}%`
 }
 
 const renderOperationReadiness = () => {
@@ -468,7 +488,8 @@ const endpointDisplayName = (name) => {
     'Vision snapshot WebSocket': 'Vision WS',
     'TouchDesigner UDP receiver': 'Display UDP receiver',
     'Display UDP receiver': 'TD UDP',
-    'Projection Visual': 'Stage',
+    'Projection Visual': 'Operator stage',
+    'Passive Projection': 'Stage',
     'Thought Core API index': 'Core API',
     'Thought Core health': 'Core health',
     'Environment display state': 'Env state',
@@ -488,6 +509,8 @@ const endpointTargetLabel = (endpoint, kind, canOpen) => {
     if (kind === 'background') return 'background reference'
     return 'reference'
   }
+  if (kind === 'stage') return 'passive clean view'
+  if (endpoint.name === 'Projection Visual') return 'operator preview'
   if (kind === 'api' || kind === 'thought') return 'local API'
   if (kind === 'camera') return 'camera feed'
   if (kind === 'display') return 'display runtime'
@@ -554,6 +577,35 @@ const summarizeServices = (services = {}) => {
   return summary
 }
 
+const setOperationProgressFromSummary = (summary, mode) => {
+  if (!summary || summary.total <= 0) {
+    state.operationProgress = {
+      percent: 8,
+      label: mode === 'stopping' ? 'Stopping...' : 'Checking...',
+      visible: true
+    }
+    renderOperation()
+    return
+  }
+  const count = mode === 'stopping'
+    ? Math.max(0, summary.total - summary.online)
+    : summary.online
+  const remaining = mode === 'stopping'
+    ? summary.online
+    : Math.max(0, summary.total - summary.online)
+  const percent = Math.round((count / summary.total) * 100)
+  const noun = remaining === 1 ? 'service' : 'services'
+  state.operationProgress = {
+    percent,
+    label:
+      remaining === 0
+        ? `${percent}%`
+        : `${percent}% · ${remaining} ${noun} remaining`,
+    visible: true
+  }
+  renderOperation()
+}
+
 const renderSystemSummary = (services = null, timestamp = '') => {
   const profile = state.profiles.find((item) => item.id === state.selectedProfileId)
   $('active-profile-name').textContent = profile ? profile.name : state.selectedProfileId
@@ -567,6 +619,7 @@ const renderSystemSummary = (services = null, timestamp = '') => {
 
   const summary = summarizeServices(services)
   if (state.operation === 'starting') {
+    setOperationProgressFromSummary(summary, 'starting')
     const detail =
       summary.total > 0
         ? `${summary.online}/${summary.total} expected services online. Watching startup progress.`
@@ -576,6 +629,8 @@ const renderSystemSummary = (services = null, timestamp = '') => {
     } else {
       setOperation('starting', detail)
     }
+  } else if (state.operation === 'stopping') {
+    setOperationProgressFromSummary(summary, 'stopping')
   }
 
   const attention = summary.warn + summary.down
@@ -723,6 +778,7 @@ const endpointKind = (endpoint) => {
   const url = String(endpoint.url || '').toLowerCase()
   if (name.includes('dify') || name.includes('compatibility')) return 'compatibility'
   if (url.startsWith('ws:') || name.includes('websocket')) return 'websocket'
+  if (name.includes('passive projection') || url.includes('mode=passive')) return 'stage'
   if (name.includes('thought-core')) return 'thought'
   if (name.includes('aituber') || name.includes('projection')) return 'ui'
   if (name.includes('display') || name.includes('td control') || name.includes('touchdesigner')) return 'display'
@@ -738,6 +794,7 @@ const endpointIcon = (kind) => {
     api: '<svg viewBox="0 0 24 24"><path d="M7 8l-4 4 4 4"></path><path d="M17 8l4 4-4 4"></path><path d="M14 4l-4 16"></path></svg>',
     websocket: '<svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 14 0"></path><path d="M8 12a4 4 0 0 1 8 0"></path><path d="M12 12h.01"></path><path d="M12 16v4"></path></svg>',
     thought: '<svg viewBox="0 0 24 24"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M8 14a6 6 0 1 1 8 0c-.8.6-1 1.3-1 2H9c0-.7-.2-1.4-1-2z"></path></svg>',
+    stage: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"></rect><path d="M8 9h8"></path><path d="M8 13h5"></path></svg>',
     display: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8"></path><path d="M12 16v4"></path><path d="M7 8h10"></path></svg>',
     speech: '<svg viewBox="0 0 24 24"><path d="M11 5L6 9H3v6h3l5 4z"></path><path d="M15 9a4 4 0 0 1 0 6"></path><path d="M18 6a8 8 0 0 1 0 12"></path></svg>',
     camera: '<svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"></path><circle cx="12" cy="13" r="3"></circle></svg>',

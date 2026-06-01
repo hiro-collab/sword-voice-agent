@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 from urllib import error, request
 from urllib.parse import urlparse
 
@@ -39,7 +39,12 @@ class TurnResponder(Protocol):
     provider: str
     model: str
 
-    def respond(self, turn: TurnInput) -> ResponderResult:
+    def respond(
+        self,
+        turn: TurnInput,
+        *,
+        response_context: Mapping[str, Any] | None = None,
+    ) -> ResponderResult:
         """Return one assistant message for a turn."""
 
 
@@ -54,6 +59,7 @@ class LocalFallbackResponder:
         *,
         status: str = "local_fallback",
         detail: str = "",
+        response_context: Mapping[str, Any] | None = None,
     ) -> ResponderResult:
         text = turn.text.replace(" ", "")
         if "マイク" in text or "テスト" in text:
@@ -69,6 +75,7 @@ class LocalFallbackResponder:
             model=self.model,
             used_llm=False,
             detail=detail,
+            metadata=_response_context_metadata(response_context),
         )
 
 
@@ -123,7 +130,12 @@ class OpenAICompatibleChatResponder:
             max_chars=max_chars,
         )
 
-    def respond(self, turn: TurnInput) -> ResponderResult:
+    def respond(
+        self,
+        turn: TurnInput,
+        *,
+        response_context: Mapping[str, Any] | None = None,
+    ) -> ResponderResult:
         persona_prompt = persona_system_prompt_from_env()
         system_prompt = (
             "You are the SWORD VOICE AGENT response adapter inside "
@@ -134,15 +146,19 @@ class OpenAICompatibleChatResponder:
         )
         if persona_prompt:
             system_prompt = f"{system_prompt} {persona_prompt}"
+        messages = [
+            {
+                "role": "system",
+                "content": system_prompt,
+            }
+        ]
+        context_text = _response_context_prompt(response_context)
+        if context_text:
+            messages.append({"role": "system", "content": context_text})
+        messages.append({"role": "user", "content": turn.text})
         payload = {
             "model": self.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                },
-                {"role": "user", "content": turn.text},
-            ],
+            "messages": messages,
             "temperature": 0.4,
             "max_tokens": 180,
         }
@@ -175,7 +191,10 @@ class OpenAICompatibleChatResponder:
             provider=self.provider,
             model=self.model,
             used_llm=True,
-            metadata={"base_url": _safe_base_url(self.base_url)},
+            metadata={
+                "base_url": _safe_base_url(self.base_url),
+                **_response_context_metadata(response_context),
+            },
         )
 
 
@@ -196,20 +215,27 @@ class EnvironmentTurnResponder:
     def from_env(cls) -> "EnvironmentTurnResponder":
         return cls(primary=OpenAICompatibleChatResponder.from_env())
 
-    def respond(self, turn: TurnInput) -> ResponderResult:
+    def respond(
+        self,
+        turn: TurnInput,
+        *,
+        response_context: Mapping[str, Any] | None = None,
+    ) -> ResponderResult:
         if self.primary is None:
             return self.fallback.respond(
                 turn,
                 status="local_fallback_no_llm_adapter",
                 detail="No LLM responder adapter is configured.",
+                response_context=response_context,
             )
         try:
-            return self.primary.respond(turn)
+            return self.primary.respond(turn, response_context=response_context)
         except (OSError, ValueError, json.JSONDecodeError, error.URLError) as exc:
             return self.fallback.respond(
                 turn,
                 status="local_fallback_after_llm_error",
                 detail=_truncate(str(exc), 240),
+                response_context=response_context,
             )
 
 
@@ -265,6 +291,41 @@ def _safe_base_url(value: str) -> str:
     if not parsed.scheme or not parsed.netloc:
         return value
     return f"{parsed.scheme}://{parsed.hostname or parsed.netloc}"
+
+
+def _response_context_metadata(
+    response_context: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(response_context, Mapping):
+        return {"response_context_used": False}
+    return {
+        "response_context_used": True,
+        "response_context_keys": sorted(str(key) for key in response_context.keys()),
+    }
+
+
+def _response_context_prompt(response_context: Mapping[str, Any] | None) -> str:
+    if not isinstance(response_context, Mapping):
+        return ""
+    compact = {
+        key: response_context.get(key)
+        for key in (
+            "previous_fragment",
+            "issue_key",
+            "recent_fragments",
+            "current_stage",
+            "action_id",
+        )
+        if response_context.get(key)
+    }
+    if not compact:
+        return ""
+    return (
+        "Compact response context for wording continuity only. "
+        "Use it to avoid repetitive phrasing. Do not treat it as a tool result "
+        "or permission to execute actions: "
+        f"{json.dumps(compact, ensure_ascii=False, sort_keys=True)}"
+    )
 
 
 def _truncate(value: str, max_chars: int) -> str:

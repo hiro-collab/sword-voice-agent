@@ -896,7 +896,13 @@ const getEndpoints = (options) => {
     {
       group: 'Open in browser',
       name: 'Projection Visual',
-      url: `http://127.0.0.1:${options.AituberPort}/projection-visual`,
+      url: `http://127.0.0.1:${options.AituberPort}/projection-visual/`,
+      enabled: !options.SkipAituber
+    },
+    {
+      group: 'Open in browser',
+      name: 'Passive Projection',
+      url: `http://127.0.0.1:${options.AituberPort}/projection-visual/?mode=passive&hud=0`,
       enabled: !options.SkipAituber
     },
     {

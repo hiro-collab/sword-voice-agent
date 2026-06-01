@@ -33,10 +33,22 @@
         hidden
       >
         <span class="operation-light" aria-hidden="true"></span>
-        <div>
+        <div class="operation-copy">
           <strong id="operation-title">Launcher standby</strong>
           <span id="operation-detail">Waiting for an action.</span>
         </div>
+        <div
+          id="operation-progress"
+          class="operation-progress"
+          role="progressbar"
+          aria-label="Stack startup progress"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+        >
+          <span id="operation-progress-bar"></span>
+        </div>
+        <span id="operation-progress-label" class="operation-progress-label">0%</span>
       </section>
 
       <section class="mission-strip" aria-label="Launcher summary">

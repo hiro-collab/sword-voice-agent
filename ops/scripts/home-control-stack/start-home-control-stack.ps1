@@ -662,6 +662,27 @@ function Get-ProcessCommandLine {
     }
 }
 
+function Test-CommandLineReferencesPath {
+    param(
+        [string]$CommandLine,
+        [string]$Path
+    )
+    if ([string]::IsNullOrWhiteSpace($CommandLine) -or [string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+    try {
+        $resolvedPath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+    }
+    catch {
+        $resolvedPath = $Path
+    }
+    $needle = $resolvedPath.TrimEnd("\", "/")
+    if ([string]::IsNullOrWhiteSpace($needle)) {
+        return $false
+    }
+    return $CommandLine.IndexOf($needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+}
+
 function Get-PortConflicts {
     param(
         [Parameter(Mandatory = $true)][object[]]$PortSpecs
@@ -698,6 +719,60 @@ function Test-ExternalProcessDenied {
         return $false
     }
     return $ExternalProcessDenyList -contains $normalized
+}
+
+function Get-ReclaimableRootForPortConflict {
+    param([Parameter(Mandatory = $true)][object]$Conflict)
+    if (Test-ExternalProcessDenied -ProcessName ([string]$Conflict.ProcessName)) {
+        return ""
+    }
+    $root = switch ([string]$Conflict.Label) {
+        "home-assistant-server" { $HomeAssistantServerRoot; break }
+        "environment-state-server" { $EnvironmentStateServerRoot; break }
+        "mediapipe-sword-sign" { $MediapipeRoot; break }
+        "vision-snapshot-processor" { $VisionSnapshotProcessorRoot; break }
+        "AITuber Kit" { $AituberRoot; break }
+        "TouchDesigner control GUI" { $TouchDesignerGuiRoot; break }
+        "thought-core" { $ThoughtCoreRoot; break }
+        default { "" }
+    }
+    if (Test-CommandLineReferencesPath -CommandLine ([string]$Conflict.CommandLine) -Path $root) {
+        return $root
+    }
+    return ""
+}
+
+function Stop-ReclaimablePortConflicts {
+    param([Parameter(Mandatory = $true)][object[]]$Conflicts)
+    $reclaimed = @()
+    foreach ($conflict in $Conflicts) {
+        $root = Get-ReclaimableRootForPortConflict -Conflict $conflict
+        if ([string]::IsNullOrWhiteSpace($root)) {
+            continue
+        }
+        Write-Host (
+            "[ports] reclaiming stale managed port owner: {0}:{1} PID {2} {3}" -f
+            $conflict.Label,
+            $conflict.Port,
+            $conflict.PID,
+            $conflict.ProcessName
+        )
+        try {
+            Stop-Process -Id ([int]$conflict.PID) -Force -ErrorAction Stop
+            Wait-Process -Id ([int]$conflict.PID) -Timeout 5 -ErrorAction SilentlyContinue
+            $reclaimed += $conflict
+        }
+        catch {
+            Write-Warning (
+                "Failed to reclaim stale managed port owner {0}:{1} PID {2}: {3}" -f
+                $conflict.Label,
+                $conflict.Port,
+                $conflict.PID,
+                $_.Exception.Message
+            )
+        }
+    }
+    return @($reclaimed)
 }
 
 function Normalize-ProcessName {
@@ -789,6 +864,17 @@ function Resolve-PortConflicts {
     $conflicts = @(Get-PortConflicts -PortSpecs $PortSpecs)
     if ($conflicts.Count -eq 0) {
         return
+    }
+    if ((-not $DryRun) -and $StopExisting) {
+        $reclaimed = @(Stop-ReclaimablePortConflicts -Conflicts $conflicts)
+        if ($reclaimed.Count -gt 0) {
+            Start-Sleep -Seconds 1
+            $conflicts = @(Get-PortConflicts -PortSpecs $PortSpecs)
+            if ($conflicts.Count -eq 0) {
+                Write-Host "[ports] stale managed port owners reclaimed; continuing startup."
+                return
+            }
+        }
     }
 
     Write-Host "Processes are already using required ports:"
@@ -1000,8 +1086,16 @@ function Write-StackEndpointGuide {
             -Description "会話入力、AITuber Kit の通常画面。"
         Write-GuideItem `
             -Name "Projection Visual" `
-            -Target "http://127.0.0.1:$AituberPort/projection-visual" `
+            -Target "http://127.0.0.1:$AituberPort/projection-visual/" `
             -Description "投影・配信用のキャラクター表示画面。普段見るメインの表示はこちら。"
+        Write-GuideItem `
+            -Name "Projection Visual passive" `
+            -Target "http://127.0.0.1:$AituberPort/projection-visual/?mode=passive" `
+            -Description "投影先・TouchDesigner プレビュー向けの passive 表示。操作 UI を前面に出さない。"
+        Write-GuideItem `
+            -Name "Projection Visual passive no HUD" `
+            -Target "http://127.0.0.1:$AituberPort/projection-visual/?mode=passive&hud=0" `
+            -Description "HUD なしの passive 表示。Display Runtime GUI の Stage preview 用。"
         Write-GuideItem `
             -Name "AITuber Cube Vault" `
             -Target "http://127.0.0.1:$AituberPort/cube-vault-background?fov=60&scale=1" `

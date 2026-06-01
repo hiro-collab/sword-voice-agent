@@ -29,7 +29,7 @@ class DeterministicReadinessResponder:
     provider: str = "thought-core"
     model: str = "conscious-ready-probe-v0"
 
-    def respond(self, turn: TurnInput) -> ResponderResult:
+    def respond(self, turn: TurnInput, *, response_context=None) -> ResponderResult:
         speech = "conscious_ready probe ok"
         return ResponderResult(
             speech=speech,

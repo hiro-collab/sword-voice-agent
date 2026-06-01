@@ -258,9 +258,11 @@ h2 {
   display: none;
 }
 
-.operation-banner div {
+.operation-copy {
   display: grid;
+  flex: 1 1 320px;
   gap: 3px;
+  min-width: 0;
 }
 
 .operation-banner strong {
@@ -280,6 +282,40 @@ h2 {
   flex: 0 0 auto;
   height: 12px;
   width: 12px;
+}
+
+.operation-progress {
+  background: rgba(255, 255, 255, 0.09);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  flex: 1 1 220px;
+  height: 10px;
+  max-width: 340px;
+  min-width: 140px;
+  overflow: hidden;
+}
+
+.operation-progress[hidden],
+.operation-progress-label[hidden] {
+  display: none;
+}
+
+.operation-progress span {
+  background: linear-gradient(90deg, var(--accent), var(--read));
+  display: block;
+  height: 100%;
+  min-width: 3px;
+  transition: width 220ms ease;
+}
+
+.operation-progress-label {
+  color: var(--text);
+  flex: 0 1 auto;
+  font-size: 11px;
+  font-weight: 800;
+  min-width: 72px;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .operation-banner.starting .operation-light,
@@ -1073,10 +1109,15 @@ button:focus-visible {
 }
 
 .endpoint-link[data-kind="ui"] .endpoint-icon,
+.endpoint-link[data-kind="stage"] .endpoint-icon,
 .endpoint-link[data-kind="display"] .endpoint-icon {
   background: rgba(156, 167, 255, 0.12);
   border-color: rgba(156, 167, 255, 0.3);
   color: #d2d6ff;
+}
+
+.endpoint-link[data-kind="stage"] {
+  border-color: rgba(85, 249, 157, 0.28);
 }
 
 .endpoint-link[data-kind="camera"] .endpoint-icon,
@@ -1164,6 +1205,22 @@ pre {
 @media (max-width: 1120px) {
   .mission-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .operation-banner {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .operation-progress {
+    flex-basis: calc(100% - 24px);
+    margin-left: 24px;
+    max-width: none;
+  }
+
+  .operation-progress-label {
+    margin-left: 24px;
+    text-align: left;
   }
 }
 
