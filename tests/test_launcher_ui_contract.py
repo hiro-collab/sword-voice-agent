@@ -69,6 +69,20 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("remaining", app)
         self.assertIn(".operation-progress", css)
 
+    def test_service_rows_mark_startup_booting_progress(self) -> None:
+        app = read_public("app.js")
+        css = read_public("styles.css")
+
+        self.assertIn("const serviceIsBooting", app)
+        self.assertIn("state.operation === 'starting'", app)
+        self.assertIn("serviceStateGroup(service?.state) !== 'ok'", app)
+        self.assertIn('data-booting="${isBooting ? \'true\' : \'false\'}"', app)
+        self.assertIn('.service-row[data-booting="true"]', css)
+        self.assertIn("@keyframes service-row-scan", css)
+        self.assertIn("@keyframes service-row-boot-line", css)
+        self.assertIn("@media (prefers-reduced-motion: reduce)", css)
+        self.assertIn("position: absolute", css)
+
     def test_quick_links_use_display_safe_environment_endpoint(self) -> None:
         server = read_launcher_server()
         app = read_public("app.js")

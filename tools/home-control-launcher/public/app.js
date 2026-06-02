@@ -539,6 +539,11 @@ const serviceStateGroup = (serviceState) => {
   return 'down'
 }
 
+const serviceIsBooting = (service, included) =>
+  state.operation === 'starting' &&
+  included &&
+  serviceStateGroup(service?.state) !== 'ok'
+
 const formatTimestamp = (value) => {
   if (!value) {
     return 'Awaiting status'
@@ -680,11 +685,14 @@ const renderServices = (services) => {
       (markup, name) => {
         const service = services[name]
         const included = serviceIsIncluded(name)
+        const group = serviceStateGroup(service.state)
+        const isBooting = serviceIsBooting(service, included)
         const rowClass = included ? '' : ' service-skipped'
         return `${markup}
           <div
             class="service-row${rowClass}"
-            data-state-group="${serviceStateGroup(service.state)}"
+            data-state-group="${group}"
+            data-booting="${isBooting ? 'true' : 'false'}"
             role="row"
           >
             <span class="service-status" role="cell">
