@@ -315,6 +315,13 @@ def _response_context_prompt(response_context: Mapping[str, Any] | None) -> str:
             "recent_fragments",
             "current_stage",
             "action_id",
+            "target",
+            "response_goal",
+            "semantic_draft",
+            "display_draft",
+            "required_facts",
+            "forbidden_claims",
+            "visible_phrase_contract",
         )
         if response_context.get(key)
     }
@@ -322,8 +329,13 @@ def _response_context_prompt(response_context: Mapping[str, Any] | None) -> str:
         return ""
     return (
         "Compact response context for wording continuity only. "
-        "Use it to avoid repetitive phrasing. Do not treat it as a tool result "
-        "or permission to execute actions: "
+        "Use it to avoid repetitive phrasing and to render the requested "
+        "visible phrase in natural Japanese. Do not treat it as a tool result "
+        "or permission to execute actions. If semantic_draft is present, treat "
+        "it as facts to express, not as text to copy verbatim. Avoid starting "
+        "with stock acknowledgements like 了解 when this is not the immediate "
+        "reflex acknowledgement. Avoid repeating the same device name when the "
+        "previous phrase already named it: "
         f"{json.dumps(compact, ensure_ascii=False, sort_keys=True)}"
     )
 

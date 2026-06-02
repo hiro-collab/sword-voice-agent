@@ -18,7 +18,8 @@ for ($index = 1; $index -le $runs; $index++) {
     Write-Host ("thought-core fast evaluation replay {0}/{1}" -f $index, $runs)
     & $pythonPath -m unittest `
         tests.test_thought_core_feedback_loop `
-        tests.test_thought_core_action_phrase_matrix
+        tests.test_thought_core_action_phrase_matrix `
+        tests.test_thought_core_natural_response_matrix
     if ($LASTEXITCODE -ne 0) {
         throw "thought-core fast evaluation replay failed at run $index"
     }

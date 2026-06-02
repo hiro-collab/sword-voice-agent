@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "description": "No-live natural response matrix for LLM-authored visible Thought Core speech.",
+  "cases": [
+    {
+      "name": "light_on_success",
+      "text": "リビングの電気をつけて",
+      "initial_light_on": false,
+      "context_refs": {
+        "mock_room_light_state": "off",
+        "mock_room_light_confidence_label": "high",
+        "mock_after_action_room_light_state": "on",
+        "mock_after_action_room_light_confidence_label": "high",
+        "mock_after_action_wait_matched": "true"
+      },
+      "expect": {
+        "completed_status": "success",
+        "execute_calls": 1,
+        "event_types": ["action.proposed", "action.reviewed"],
+        "speech_contains": ["点灯", "確認"],
+        "speech_not_contains": ["了解、リビングの電気をつけるね", "リビングの電気をつけたよ", "local_fallback"],
+        "speech_occurrences_max": {"リビングの電気": 1}
+      }
+    },
+    {
+      "name": "aircon_off_success",
+      "text": "エアコンを消して",
+      "initial_appliance_states": {"aircon": "on"},
+      "expect": {
+        "completed_status": "success",
+        "execute_calls": 1,
+        "event_types": ["action.proposed", "action.reviewed"],
+        "speech_contains": ["エアコン", "オフ"],
+        "speech_not_contains": ["了解、エアコンを消すね", "エアコンを消したよ", "中扉", "local_fallback"],
+        "speech_occurrences_max": {"エアコン": 2}
+      }
+    },
+    {
+      "name": "fan_off_already_satisfied",
+      "text": "扇風機を消して",
+      "initial_appliance_states": {"fan": "off"},
+      "expect": {
+        "completed_status": "noop",
+        "execute_calls": 0,
+        "event_types": ["action.skipped"],
+        "speech_contains": ["扇風機", "操作はしない"],
+        "speech_not_contains": ["扇風機を消したよ", "了解、扇風機を消すね", "local_fallback"],
+        "speech_occurrences_max": {"扇風機": 1}
+      }
+    },
+    {
+      "name": "compound_target_clarification",
+      "text": "中扉とエアコンをつけて",
+      "initial_appliance_states": {"door": "closed", "aircon": "off"},
+      "expect": {
+        "completed_status": "needs_clarification",
+        "execute_calls": 0,
+        "event_types": ["action.clarification_requested"],
+        "speech_contains": ["どちら", "一つずつ"],
+        "speech_not_contains": ["エアコンをつけたよ", "了解、エアコンをつけるね", "local_fallback"],
+        "speech_occurrences_max": {"エアコン": 1, "中扉": 1}
+      }
+    },
+    {
+      "name": "negative_aircon_guard",
+      "text": "エアコンを消さないで",
+      "initial_appliance_states": {"aircon": "on"},
+      "expect": {
+        "completed_status": "noop",
+        "execute_calls": 0,
+        "event_types": ["action.noop"],
+        "speech_contains": ["エアコン", "触らず"],
+        "speech_not_contains": ["エアコンを消すね", "エアコンを消したよ", "local_fallback"],
+        "speech_occurrences_max": {"エアコン": 1}
+      }
+    },
+    {
+      "name": "room_light_state_query",
+      "text": "今リビングの電気はついてる？",
+      "initial_light_on": true,
+      "context_refs": {
+        "mock_room_light_state": "on",
+        "mock_room_light_confidence_label": "high"
+      },
+      "expect": {
+        "completed_status": "state_answer",
+        "execute_calls": 0,
+        "event_types": ["environment.state_query_answer"],
+        "speech_contains": ["電気", "ついて"],
+        "speech_not_contains": ["カメラ推定では", "local_fallback"],
+        "speech_occurrences_max": {"リビングの電気": 1}
+      }
+    }
+  ]
+}

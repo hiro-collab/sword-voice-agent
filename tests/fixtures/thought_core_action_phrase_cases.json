@@ -8,15 +8,26 @@
       "initial_light_on": false,
       "context_refs": {
         "mock_room_light_state": "off",
-        "mock_room_light_confidence_label": "high"
+        "mock_room_light_confidence_label": "high",
+        "mock_after_action_room_light_state": "on",
+        "mock_after_action_room_light_confidence_label": "high",
+        "mock_after_action_wait_matched": "true"
       },
       "expect": {
         "action_id": "light_on",
         "target": "light",
         "expected_state": "on",
-        "event_types": ["action.proposed", "tool.started", "turn.completed"],
+        "event_types": ["command.planned", "action.proposed", "action.reviewed", "tool.started", "turn.completed"],
         "speech_contains": ["リビングの電気をつけるね"],
         "speech_occurrences_max": {"リビングの電気": 2},
+        "command_plan_status": "ready",
+        "diff_before_status": "mismatch",
+        "review_status": "succeeded",
+        "review_reason": "target_state_matched",
+        "review_basis": "target_state",
+        "review_diff_status": "matched",
+        "post_action_feedback_saved": true,
+        "post_action_feedback_pending": false,
         "execute_calls": 1,
         "completed_status": "success"
       }
@@ -27,15 +38,26 @@
       "initial_light_on": true,
       "context_refs": {
         "mock_room_light_state": "on",
-        "mock_room_light_confidence_label": "high"
+        "mock_room_light_confidence_label": "high",
+        "mock_after_action_room_light_state": "off",
+        "mock_after_action_room_light_confidence_label": "high",
+        "mock_after_action_wait_matched": "true"
       },
       "expect": {
         "action_id": "light_off",
         "target": "light",
         "expected_state": "off",
-        "event_types": ["action.proposed", "tool.started", "turn.completed"],
+        "event_types": ["command.planned", "action.proposed", "action.reviewed", "tool.started", "turn.completed"],
         "speech_contains": ["リビングの電気を消すね"],
         "speech_occurrences_max": {"リビングの電気": 2},
+        "command_plan_status": "ready",
+        "diff_before_status": "mismatch",
+        "review_status": "succeeded",
+        "review_reason": "target_state_matched",
+        "review_basis": "target_state",
+        "review_diff_status": "matched",
+        "post_action_feedback_saved": true,
+        "post_action_feedback_pending": false,
         "execute_calls": 1,
         "completed_status": "success"
       }

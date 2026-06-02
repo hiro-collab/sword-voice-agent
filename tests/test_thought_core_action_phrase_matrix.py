@@ -66,6 +66,49 @@ class ThoughtCoreActionPhraseMatrixTest(TestCase):
                     self.assertEqual(len(tools.execute_calls), int(expect["execute_calls"]))
 
                 expected_action_id = expect.get("action_id")
+                expected_execute_calls = (
+                    int(expect["execute_calls"]) if "execute_calls" in expect else None
+                )
+                expected_completed_status = expect.get("completed_status")
+                should_execute_success = (
+                    bool(expected_action_id)
+                    and expected_execute_calls == 1
+                    and expected_completed_status == "success"
+                )
+                should_skip_already_satisfied = (
+                    bool(expected_action_id)
+                    and expected_execute_calls == 0
+                    and expected_completed_status == "noop"
+                )
+                should_check_command_plan = (
+                    "command_plan_status" in expect
+                    or "diff_before_status" in expect
+                    or should_execute_success
+                    or should_skip_already_satisfied
+                )
+                if should_check_command_plan:
+                    planned = self._last_event_data(events, "command.planned")
+                    self.assertIsNotNone(planned)
+                    assert planned is not None
+                    command_plan = planned.get("command_plan")
+                    self.assertIsInstance(command_plan, dict)
+                    assert isinstance(command_plan, dict)
+                    expected_plan_status = expect.get(
+                        "command_plan_status",
+                        "already_satisfied"
+                        if should_skip_already_satisfied
+                        else "ready",
+                    )
+                    expected_diff_status = expect.get(
+                        "diff_before_status",
+                        "matched" if should_skip_already_satisfied else "mismatch",
+                    )
+                    self.assertEqual(command_plan.get("status"), expected_plan_status)
+                    diff_before = planned.get("target_state_diff")
+                    self.assertIsInstance(diff_before, dict)
+                    assert isinstance(diff_before, dict)
+                    self.assertEqual(diff_before.get("status"), expected_diff_status)
+
                 if expected_action_id:
                     action = self._last_action(events)
                     self.assertIsNotNone(action)
@@ -82,11 +125,57 @@ class ThoughtCoreActionPhraseMatrixTest(TestCase):
                             expected_action_id,
                         )
 
+                should_check_review = (
+                    "review_status" in expect
+                    or "review_diff_status" in expect
+                    or should_execute_success
+                )
+                if should_check_review:
+                    review = self._last_event_data(events, "action.reviewed")
+                    self.assertIsNotNone(review)
+                    assert review is not None
+                    self.assertEqual(
+                        review.get("status"),
+                        expect.get("review_status", "succeeded"),
+                    )
+                    self.assertEqual(
+                        review.get("reason"),
+                        expect.get("review_reason", "target_state_matched"),
+                    )
+                    self.assertEqual(
+                        review.get("review_basis"),
+                        expect.get("review_basis", "target_state"),
+                    )
+                    target_state_diff = review.get("target_state_diff")
+                    self.assertIsInstance(target_state_diff, dict)
+                    assert isinstance(target_state_diff, dict)
+                    self.assertEqual(
+                        target_state_diff.get("status"),
+                        expect.get("review_diff_status", "matched"),
+                    )
+
                 if "completed_status" in expect:
                     completed = self._last_completed(events)
                     self.assertIsNotNone(completed)
                     assert completed is not None
                     self.assertEqual(completed.get("status"), expect["completed_status"])
+                if (
+                    "post_action_feedback_saved" in expect
+                    or "post_action_feedback_pending" in expect
+                ):
+                    completed = self._last_completed(events)
+                    self.assertIsNotNone(completed)
+                    assert completed is not None
+                    if "post_action_feedback_saved" in expect:
+                        self.assertEqual(
+                            bool(completed.get("post_action_feedback_saved")),
+                            bool(expect["post_action_feedback_saved"]),
+                        )
+                    if "post_action_feedback_pending" in expect:
+                        self.assertEqual(
+                            bool(completed.get("post_action_feedback_pending")),
+                            bool(expect["post_action_feedback_pending"]),
+                        )
 
     def _run_case(self, case: dict[str, object]) -> dict[str, object]:
         tools = MockThoughtTools(light_on=bool(case.get("initial_light_on", False)))
@@ -133,6 +222,18 @@ class ThoughtCoreActionPhraseMatrixTest(TestCase):
     def _last_completed(self, events: list[dict[str, object]]) -> dict[str, object] | None:
         for event in reversed(events):
             if event["type"] != "turn.completed":
+                continue
+            data = event.get("data")
+            return data if isinstance(data, dict) else None
+        return None
+
+    def _last_event_data(
+        self,
+        events: list[dict[str, object]],
+        event_type: str,
+    ) -> dict[str, object] | None:
+        for event in reversed(events):
+            if event["type"] != event_type:
                 continue
             data = event.get("data")
             return data if isinstance(data, dict) else None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Mapping
 
@@ -59,6 +60,8 @@ class ThoughtLoop:
         action_reasoner: ActionReasoner | None = None,
         input_understanding: InputUnderstanding | None = None,
         persona: AssistantPersona | None = None,
+        llm_visible_speech: bool | None = None,
+        require_llm_visible_speech: bool | None = None,
     ) -> None:
         self.tools = tools or build_tools_from_env()
         self.max_execute_attempts = 1
@@ -76,6 +79,17 @@ class ThoughtLoop:
         self.recent_speech_by_issue: dict[str, list[str]] = {}
         self._active_session_id = ""
         self._active_issue_key = ""
+        self._active_turn_input: TurnInput | None = None
+        self.llm_visible_speech = (
+            _env_bool("THOUGHT_CORE_LLM_VISIBLE_SPEECH_ENABLED", False)
+            if llm_visible_speech is None
+            else llm_visible_speech
+        )
+        self.require_llm_visible_speech = (
+            _env_bool("THOUGHT_CORE_REQUIRE_LLM_VISIBLE_SPEECH", False)
+            if require_llm_visible_speech is None
+            else require_llm_visible_speech
+        )
 
     def run(
         self,
@@ -88,7 +102,9 @@ class ThoughtLoop:
         events: list[ThoughtEvent] = _EventBuffer(event_sink)
         previous_active_session_id = self._active_session_id
         previous_active_issue_key = self._active_issue_key
+        previous_active_turn_input = self._active_turn_input
         self._active_session_id = turn_input.session_id
+        self._active_turn_input = turn_input
         try:
             input_frame = self._understand_input(turn_input)
             self._active_issue_key = self._speech_issue_key(turn_input, input_frame)
@@ -617,6 +633,7 @@ class ThoughtLoop:
         finally:
             self._active_session_id = previous_active_session_id
             self._active_issue_key = previous_active_issue_key
+            self._active_turn_input = previous_active_turn_input
 
     def run_dicts(
         self,
@@ -4130,6 +4147,7 @@ class ThoughtLoop:
             emotion="attentive",
             motion="small_nod",
             priority="immediate",
+            reflex=True,
         )
 
     def _input_ack_speech(
@@ -4376,7 +4394,34 @@ class ThoughtLoop:
         emotion: str,
         motion: str,
         priority: str,
+        reflex: bool = False,
     ) -> None:
+        phrase_generation = self._generate_visible_phrase(
+            events,
+            speech=speech,
+            display=display,
+            emotion=emotion,
+            motion=motion,
+            priority=priority,
+            reflex=reflex,
+        )
+        if phrase_generation.get("required_failed"):
+            events.append(
+                factory.emit(
+                    "phrase.generation_failed",
+                    {
+                        "boundary": TURN_RESPONDER_BOUNDARY,
+                        "reason": phrase_generation.get("status")
+                        or "llm_visible_speech_required",
+                        "detail": phrase_generation.get("detail") or "",
+                        "semantic_draft": speech,
+                    },
+                )
+            )
+            return
+        if phrase_generation.get("used_llm"):
+            speech = str(phrase_generation.get("speech") or speech)
+            display = str(phrase_generation.get("display") or speech)
         original_speech = speech
         previous_fragment = self._last_spoken_fragment(events) or self._last_issue_fragment()
         speech = self._coherent_stream_speech(events, speech)
@@ -4399,6 +4444,9 @@ class ThoughtLoop:
                 {
                     "delta": speech,
                     "channel": "speech",
+                    "phrase_generation": self._speech_generation_metadata(
+                        phrase_generation
+                    ),
                     "speech_context": {
                         "previous_fragment": previous_fragment,
                         "issue_key": self._active_issue_key,
@@ -4415,6 +4463,9 @@ class ThoughtLoop:
                     "emotion": emotion,
                     "motion": motion,
                     "priority": priority,
+                    "phrase_generation": self._speech_generation_metadata(
+                        phrase_generation
+                    ),
                     "speech_context": {
                         "previous_fragment": previous_fragment,
                         "issue_key": self._active_issue_key,
@@ -4423,6 +4474,139 @@ class ThoughtLoop:
             )
         )
         self._remember_stream_speech(speech)
+
+    def _generate_visible_phrase(
+        self,
+        events: list[ThoughtEvent],
+        *,
+        speech: str,
+        display: str,
+        emotion: str,
+        motion: str,
+        priority: str,
+        reflex: bool = False,
+    ) -> dict[str, Any]:
+        if reflex:
+            return {
+                "enabled": False,
+                "used_llm": False,
+                "status": "scripted_reflex_allowed",
+                "reflex": True,
+            }
+        if not self.llm_visible_speech:
+            return {"enabled": False, "used_llm": False, "status": "disabled"}
+        turn_input = self._active_turn_input
+        if turn_input is None:
+            return {"enabled": True, "used_llm": False, "status": "no_active_turn"}
+        response_context = self._response_context(
+            events,
+            current_stage="visible_phrase_generation",
+        )
+        response_context.update(
+            {
+                "response_goal": (
+                    "Generate this assistant-visible phrase in natural Japanese "
+                    "from the semantic facts. Do not copy semantic_draft verbatim. "
+                    "Prefer a concise continuation over repeating the device name."
+                ),
+                "semantic_draft": speech,
+                "display_draft": display,
+                "required_facts": self._visible_phrase_required_facts(speech),
+                "forbidden_claims": [
+                    "do not claim a device action happened unless the draft says it did",
+                    "do not ask the user to confirm when the draft is a completed action",
+                    "do not mention internal event names or local fallback",
+                    "do not start with stock acknowledgements like 了解",
+                    "do not copy labels such as カメラ推定では when a softer phrase works",
+                ],
+                "style_rules": [
+                    "one short sentence is usually enough",
+                    "if the previous phrase named the device, refer to it as その状態 or omit the repeated name",
+                    "sound like a spoken assistant, not a test fixture",
+                ],
+                "visible_phrase_contract": "llm-authored-visible-speech-v1",
+                "emotion": emotion,
+                "motion": motion,
+                "priority": priority,
+            }
+        )
+        try:
+            result = self.responder.respond(
+                turn_input,
+                response_context=response_context,
+            )
+        except Exception as exc:  # pragma: no cover - defensive responder boundary
+            return {
+                "enabled": True,
+                "used_llm": False,
+                "status": "responder_error",
+                "detail": str(exc),
+                "required_failed": self.require_llm_visible_speech,
+            }
+        if result.used_llm:
+            return {
+                "enabled": True,
+                "used_llm": True,
+                "status": result.status,
+                "adapter_kind": result.adapter_kind,
+                "provider": result.provider,
+                "model": result.model,
+                "speech": result.speech,
+                "display": result.display,
+                "metadata": result.metadata,
+            }
+        return {
+            "enabled": True,
+            "used_llm": False,
+            "status": result.status,
+            "adapter_kind": result.adapter_kind,
+            "provider": result.provider,
+            "model": result.model,
+            "detail": result.detail,
+            "required_failed": self.require_llm_visible_speech,
+        }
+
+    def _visible_phrase_required_facts(self, speech: str) -> list[str]:
+        facts: list[str] = []
+        for token in (
+            "電気",
+            "リビング",
+            "エアコン",
+            "扇風機",
+            "中扉",
+            "掃除機",
+            "つけ",
+            "消",
+            "開け",
+            "閉め",
+            "一時停止",
+            "すでに",
+            "確認",
+            "実行",
+        ):
+            if token in speech:
+                facts.append(token)
+        return facts[:8]
+
+    def _speech_generation_metadata(
+        self,
+        phrase_generation: dict[str, Any],
+    ) -> dict[str, Any]:
+        keys = (
+            "enabled",
+            "used_llm",
+            "status",
+            "adapter_kind",
+            "provider",
+            "model",
+            "required_failed",
+            "reflex",
+        )
+        return {
+            key: phrase_generation.get(key)
+            for key in keys
+            if key in phrase_generation
+        }
 
     def _coherent_stream_speech(
         self,
@@ -5012,3 +5196,10 @@ class ThoughtLoop:
             if str(device.get("id")) in targets and device.get("state") == expected_state:
                 return True
         return bool(execute_result.get("verified_by_bridge"))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name, "")
+    if not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "on", "yes"}

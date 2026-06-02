@@ -91,6 +91,36 @@ class RecordingContextResponder:
         )
 
 
+class VisiblePhraseResponder:
+    adapter_kind = "visible_phrase_test_responder"
+    provider = "test"
+    model = "test-model"
+
+    def __init__(self) -> None:
+        self.response_contexts: list[dict[str, object]] = []
+
+    def respond(self, turn, *, response_context=None):  # type: ignore[no-untyped-def]
+        context = dict(response_context or {})
+        self.response_contexts.append(context)
+        draft = str(context.get("semantic_draft") or "")
+        if "つけ" in draft:
+            speech = "LLM判断で、リビングの電気を点灯として扱います。"
+        elif "ついた" in draft:
+            speech = "LLM判断で、点灯後の状態まで確認しました。"
+        else:
+            speech = "LLM判断で、現在の状況に合わせて返します。"
+        return ResponderResult(
+            speech=speech,
+            display=speech,
+            status="llm_response",
+            adapter_kind=self.adapter_kind,
+            provider=self.provider,
+            model=self.model,
+            used_llm=True,
+            metadata={"semantic_draft_seen": bool(draft)},
+        )
+
+
 class ThoughtCoreContractTest(TestCase):
     def test_common_metadata_is_carried_by_all_events(self) -> None:
         events = ThoughtLoop().run_dicts(TURN)
@@ -2219,6 +2249,74 @@ class ThoughtCoreContractTest(TestCase):
         )
         self.assertEqual(final_message["data"]["speech"], "聞こえています。応答境界も動いています。")
         self.assertEqual(events[-1]["data"]["status"], "llm_response")
+
+    def test_home_action_visible_phrases_can_require_llm_boundary(self) -> None:
+        responder = VisiblePhraseResponder()
+        events = ThoughtLoop(
+            tools=MockThoughtTools(light_on=False),
+            responder=responder,
+            llm_visible_speech=True,
+            require_llm_visible_speech=True,
+        ).run_dicts(
+            {
+                **TURN,
+                "text": "リビングの電気をつけて",
+                "turn_id": "turn_llm_visible_phrase_light_on",
+            }
+        )
+        messages = [event for event in events if event["type"] == "assistant.message"]
+        generated_messages = [
+            event
+            for event in messages
+            if event["data"].get("phrase_generation", {}).get("enabled")
+        ]
+
+        self.assertGreaterEqual(len(generated_messages), 2)
+        self.assertTrue(
+            all(
+                event["data"]["phrase_generation"]["used_llm"]
+                for event in generated_messages
+            )
+        )
+        self.assertTrue(
+            all(
+                event["data"]["phrase_generation"]["adapter_kind"]
+                == "visible_phrase_test_responder"
+                for event in generated_messages
+            )
+        )
+        self.assertNotIn(
+            "了解、リビングの電気をつけるね",
+            "\n".join(event["data"]["speech"] for event in generated_messages),
+        )
+        self.assertIn(
+            "semantic_draft",
+            responder.response_contexts[-1],
+        )
+        self.assertEqual(events[-1]["data"]["status"], "success")
+
+    def test_required_llm_visible_phrase_fails_closed_without_llm(self) -> None:
+        events = ThoughtLoop(
+            tools=MockThoughtTools(light_on=False),
+            responder=StaticResponder(used_llm=False),
+            llm_visible_speech=True,
+            require_llm_visible_speech=True,
+        ).run_dicts(
+            {
+                **TURN,
+                "text": "リビングの電気をつけて",
+                "turn_id": "turn_llm_visible_phrase_required_failure",
+            }
+        )
+        event_types = [event["type"] for event in events]
+        visible_speech = "\n".join(
+            str(event["data"].get("speech") or "")
+            for event in events
+            if event["type"] == "assistant.message"
+        )
+
+        self.assertIn("phrase.generation_failed", event_types)
+        self.assertNotIn("了解、リビングの電気をつけるね", visible_speech)
 
     def test_responder_receives_compact_previous_phrase_context(self) -> None:
         tools = MockThoughtTools()
