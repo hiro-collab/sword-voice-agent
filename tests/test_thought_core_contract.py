@@ -819,6 +819,34 @@ class ThoughtCoreContractTest(TestCase):
         self.assertIn("掃除機を戻した", message)
         self.assertEqual(events[-1]["data"]["status"], "success")
 
+    def test_mock_action_success_speech_is_not_live_device_claim(self) -> None:
+        tools = MockThoughtTools(light_on=False)
+        events = ThoughtLoop(tools=tools).run_dicts(
+            {
+                **TURN,
+                "text": "電気をつけて",
+                "turn_id": "turn_mock_action_claim_boundary",
+            }
+        )
+        visible_speech = " ".join(
+            str(event["data"].get("speech") or "")
+            for event in events
+            if event["type"] == "assistant.message"
+        )
+        execute_result = next(
+            event["data"]["result"]
+            for event in events
+            if event["type"] == "tool.result" and event["data"]["tool"] == "home.execute"
+        )
+
+        self.assertIn("テストモード", visible_speech)
+        self.assertIn("実家電には送っていません", visible_speech)
+        self.assertNotIn("リビングの電気をつけたよ。", visible_speech)
+        self.assertFalse(execute_result["real_execution"])
+        self.assertFalse(execute_result["verified_by_bridge"])
+        self.assertEqual(execute_result["adapter"], "mock")
+        self.assertEqual(events[-1]["data"]["status"], "success")
+
     def test_all_cataloged_home_action_examples_route_to_action_ids(self) -> None:
         catalog = json.loads(
             (REPO_ROOT / "catalogs" / "actions" / "home-actions.json").read_text(

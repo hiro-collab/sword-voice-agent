@@ -151,6 +151,13 @@ class MockThoughtTools:
         self.execute_calls.append(action)
         attempt = self.execute_attempts_by_turn.get(turn.turn_id, 0) + 1
         self.execute_attempts_by_turn[turn.turn_id] = attempt
+        mock_metadata = {
+            "adapter": "mock",
+            "execution_mode": "mock",
+            "real_execution": False,
+            "executed": False,
+            "verified_by_bridge": False,
+        }
         failures_before_success = _optional_context_int(
             turn,
             "mock_execute_failures_before_success",
@@ -162,6 +169,7 @@ class MockThoughtTools:
                 "retryable": True,
                 "error": "mock_home_execute_failed",
                 "attempt": attempt,
+                **mock_metadata,
             }
         else:
             self.light_on = action.get("expected_state") == "on"
@@ -173,9 +181,11 @@ class MockThoughtTools:
             result = {
                 "status": "accepted",
                 "retryable": False,
-                "verified_by_bridge": True,
                 "command_id": f"cmd_{attempt:04d}",
                 "attempt": attempt,
+                "message": _mock_action_message(action),
+                "speak": _mock_action_message(action),
+                **mock_metadata,
             }
         if self.include_secret_in_execute_result:
             result["access_token"] = "mock-token-that-must-not-leak"
@@ -1277,6 +1287,36 @@ def _device_name(device_id: str) -> str:
         "door": "中扉",
         "vacuum": "掃除機",
     }.get(device_id, device_id)
+
+
+def _mock_action_message(action: dict[str, Any]) -> str:
+    target_name = str(
+        action.get("target_name")
+        or _device_name(str(action.get("target") or ""))
+        or "対象"
+    ).strip()
+    expected_state = str(action.get("expected_state") or "").strip()
+    if expected_state == "on":
+        action_text = f"{target_name}をつけた想定です"
+    elif expected_state == "off":
+        action_text = f"{target_name}を消した想定です"
+    elif expected_state == "open":
+        action_text = f"{target_name}を開けた想定です"
+    elif expected_state == "closed":
+        action_text = f"{target_name}を閉めた想定です"
+    elif expected_state == "stopped":
+        action_text = f"{target_name}を止めた想定です"
+    elif expected_state == "cleaning":
+        action_text = f"{target_name}の掃除を始めた想定です"
+    elif expected_state == "returning":
+        action_text = f"{target_name}を戻した想定です"
+    elif expected_state == "paused":
+        action_text = f"{target_name}を一時停止した想定です"
+    elif expected_state:
+        action_text = f"{target_name}を{expected_state}にした想定です"
+    else:
+        action_text = f"{target_name}の操作をした想定です"
+    return f"テストモード上では、{action_text}。実家電には送っていません。"
 
 
 def _bridge_body(turn: TurnInput, *, request_id: str) -> dict[str, Any]:

@@ -54,8 +54,9 @@ tool は単発能力として扱います。
 - `web.search`
 
 `home.preview` / `home.execute` は `thought-core.tool_adapter.v0` の境界です。
-既定は依存なしの mock adapter で、スタック起動時に Home Assistant bridge が有効な場合だけ
-`THOUGHT_CORE_TOOLS_ADAPTER=home_control` と bridge URL / token がプロセス環境から渡されます。
+既定は依存なしの mock adapter です。mock mode は no-live 確認用で、実家電には送信しません。
+成功時の発話も「テストモード上の想定」として扱います。実際の Home Assistant bridge へ送る場合だけ、
+`THOUGHT_CORE_TOOLS_ADAPTER=home_control` と bridge URL / token を設定します。
 この adapter は bridge の allowlist 上の `action_id` だけを呼び、Home Assistant の
 service 名や entity 名は Thought Core 側では生成しません。
 
