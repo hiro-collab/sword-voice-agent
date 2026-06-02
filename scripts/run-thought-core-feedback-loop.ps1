@@ -15,11 +15,13 @@ if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
 
 $runs = [Math]::Max(1, $Count)
 for ($index = 1; $index -le $runs; $index++) {
-    Write-Host ("thought-core feedback loop replay {0}/{1}" -f $index, $runs)
-    & $pythonPath -m unittest tests.test_thought_core_feedback_loop
+    Write-Host ("thought-core fast evaluation replay {0}/{1}" -f $index, $runs)
+    & $pythonPath -m unittest `
+        tests.test_thought_core_feedback_loop `
+        tests.test_thought_core_action_phrase_matrix
     if ($LASTEXITCODE -ne 0) {
-        throw "thought-core feedback loop replay failed at run $index"
+        throw "thought-core fast evaluation replay failed at run $index"
     }
 }
 
-Write-Host ("thought-core feedback loop replay passed x{0}" -f $runs)
+Write-Host ("thought-core fast evaluation replay passed x{0}" -f $runs)

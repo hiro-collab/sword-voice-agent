@@ -847,6 +847,67 @@ def detect_home_action_intent(
     return None
 
 
+def detect_home_action_ambiguity(text: str) -> dict[str, Any] | None:
+    normalized = text.replace(" ", "").replace("　", "")
+    lowered = normalized.lower()
+    if not normalized or _is_negative_home_action_request(normalized, lowered):
+        return None
+    target_groups = _mentioned_home_action_target_groups(normalized, lowered)
+    if len(target_groups) < 2:
+        return None
+    connectors = (
+        "と",
+        "もしくは",
+        "または",
+        "あるいは",
+        "又は",
+        "或いは",
+        "や",
+        "or",
+        "/",
+        "、",
+    )
+    has_connector = any(marker in normalized or marker in lowered for marker in connectors)
+    has_kana_choice = "か" in normalized and len(target_groups) >= 2
+    if not has_connector and not has_kana_choice:
+        return None
+    return {
+        "reason": "multiple_home_action_targets",
+        "targets": sorted(target_groups),
+        "text": text,
+    }
+
+
+def detect_home_action_negative_request(text: str) -> dict[str, Any] | None:
+    normalized = text.replace(" ", "").replace("　", "")
+    lowered = normalized.lower()
+    if not normalized or not _is_negative_home_action_request(normalized, lowered):
+        return None
+    target_groups = _mentioned_home_action_target_groups(normalized, lowered)
+    if not target_groups:
+        return None
+    return {
+        "reason": "negative_home_action_request",
+        "targets": sorted(target_groups),
+        "text": text,
+    }
+
+
+def _mentioned_home_action_target_groups(normalized: str, lowered: str) -> set[str]:
+    groups: set[str] = set()
+    target_words = {
+        "light": ("電気", "ライト", "照明"),
+        "fan": ("扇風機", "ファン"),
+        "aircon": ("エアコン", "冷房", "暖房", "空調"),
+        "door": ("中扉", "扉", "ドア"),
+        "vacuum": ("掃除機", "ロボット掃除機", "ルンバ"),
+    }
+    for group, words in target_words.items():
+        if any(word in normalized or word.lower() in lowered for word in words):
+            groups.add(group)
+    return groups
+
+
 def _is_negative_home_action_request(normalized: str, lowered: str) -> bool:
     negative_markers = (
         "ないで",

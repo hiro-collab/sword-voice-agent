@@ -21,6 +21,7 @@ TURN = {
 }
 
 CASES_PATH = Path(__file__).resolve().parent / "fixtures" / "thought_core_feedback_loop_cases.json"
+VISIBLE_SPEECH_TYPES = {"assistant.message", "feedback.requested"}
 
 
 class FeedbackLoopTools(MockThoughtTools):
@@ -54,6 +55,8 @@ class ThoughtCoreFeedbackLoopReplayTest(TestCase):
                     for event in result["events"]
                     if event["type"] == "assistant.message"
                 )
+                visible_speeches = self._visible_speeches(result["events"])
+                visible_speech = "\n".join(visible_speeches)
                 expect = case["expect"]
 
                 for event_type in expect.get("event_types", []):
@@ -70,6 +73,21 @@ class ThoughtCoreFeedbackLoopReplayTest(TestCase):
                     len(result["tools"].short_memory_write_calls),
                     expect.get("short_memory_writes_min", 0),
                 )
+                self._assert_contains_in_order(
+                    visible_speech,
+                    expect.get("speech_contains_in_order", []),
+                )
+                for phrase, max_count in expect.get(
+                    "speech_occurrences_max",
+                    {},
+                ).items():
+                    self.assertLessEqual(
+                        visible_speech.count(str(phrase)),
+                        int(max_count),
+                        f"{phrase!r} appears too often in visible speech",
+                    )
+                if expect.get("no_duplicate_visible_speech", False):
+                    self._assert_no_duplicate_visible_speech(visible_speeches)
 
     def _run_case(self, case: dict[str, object]) -> dict[str, object]:
         tools = FeedbackLoopTools(light_on=bool(case.get("initial_light_on", False)))
@@ -99,3 +117,47 @@ class ThoughtCoreFeedbackLoopReplayTest(TestCase):
                 )
             )
         return {"events": events, "tools": tools}
+
+    def _visible_speeches(self, events: list[dict[str, object]]) -> list[str]:
+        speeches: list[str] = []
+        for event in events:
+            if event["type"] not in VISIBLE_SPEECH_TYPES:
+                continue
+            data = event.get("data")
+            if not isinstance(data, dict):
+                continue
+            speech = data.get("speech")
+            if isinstance(speech, str) and speech.strip():
+                speeches.append(speech)
+        return speeches
+
+    def _assert_contains_in_order(
+        self,
+        text: str,
+        phrases: object,
+    ) -> None:
+        if not isinstance(phrases, list):
+            return
+        offset = -1
+        for phrase in phrases:
+            phrase_text = str(phrase)
+            position = text.find(phrase_text, offset + 1)
+            self.assertGreaterEqual(
+                position,
+                0,
+                f"{phrase_text!r} not found after index {offset}",
+            )
+            offset = position
+
+    def _assert_no_duplicate_visible_speech(self, speeches: list[str]) -> None:
+        seen: dict[str, str] = {}
+        for speech in speeches:
+            normalized = " ".join(speech.split())
+            if not normalized:
+                continue
+            self.assertNotIn(
+                normalized,
+                seen,
+                f"duplicate visible speech: {speech!r}",
+            )
+            seen[normalized] = speech

@@ -30,7 +30,9 @@ from .schema import TurnInput
 from .tools import (
     ThoughtTools,
     build_tools_from_env,
+    detect_home_action_ambiguity,
     detect_home_action_intent,
+    detect_home_action_negative_request,
     detect_room_light_state_query,
 )
 
@@ -125,9 +127,28 @@ class ThoughtLoop:
                 self._handle_room_light_state_query(events, factory, turn_input)
                 return events
 
-            if input_frame.kind != "home_command" and detect_home_action_intent(
-                turn_input.text
-            ) is None:
+            negative_action = detect_home_action_negative_request(turn_input.text)
+            if negative_action:
+                self._handle_home_action_negative_request(
+                    events,
+                    factory,
+                    turn_input,
+                    negative_action,
+                )
+                return events
+
+            action_ambiguity = detect_home_action_ambiguity(turn_input.text)
+            if action_ambiguity:
+                self._handle_home_action_ambiguity(
+                    events,
+                    factory,
+                    turn_input,
+                    action_ambiguity,
+                )
+                return events
+
+            action_intent = detect_home_action_intent(turn_input.text)
+            if action_intent is None:
                 self._handle_general_turn(events, factory, turn_input)
                 return events
 
@@ -3955,6 +3976,100 @@ class ThoughtLoop:
                 )
             )
             self._remember_stream_speech(audible_speech)
+
+    def _handle_home_action_ambiguity(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        ambiguity: dict[str, Any],
+    ) -> None:
+        speech = (
+            "対象が複数に見えるので、実行せずに止めておくね。"
+            "一つずつ、どれを操作するか指定してね。"
+        )
+        events.append(
+            factory.emit(
+                "action.clarification_requested",
+                {
+                    "reason": ambiguity.get("reason") or "ambiguous_home_action",
+                    "targets": ambiguity.get("targets") or [],
+                    "text_length": len(turn_input.text),
+                },
+            )
+        )
+        self._emit_message(
+            events,
+            factory,
+            speech=speech,
+            display=speech,
+            emotion="attentive",
+            motion="small_nod",
+            priority="normal",
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {
+                    "status": "needs_clarification",
+                    "reason": "ambiguous_home_action",
+                    "targets": ambiguity.get("targets") or [],
+                },
+            )
+        )
+
+    def _handle_home_action_negative_request(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        negative_action: dict[str, Any],
+    ) -> None:
+        targets = [
+            self._home_action_target_label(str(target))
+            for target in negative_action.get("targets") or []
+        ]
+        target_text = "、".join(targets) if targets else "その操作"
+        speech = f"了解、{target_text}は操作しないでおくね。"
+        events.append(
+            factory.emit(
+                "action.noop",
+                {
+                    "reason": negative_action.get("reason")
+                    or "negative_home_action_request",
+                    "targets": negative_action.get("targets") or [],
+                    "text_length": len(turn_input.text),
+                },
+            )
+        )
+        self._emit_message(
+            events,
+            factory,
+            speech=speech,
+            display=speech,
+            emotion="attentive",
+            motion="small_nod",
+            priority="normal",
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {
+                    "status": "noop",
+                    "reason": "negative_home_action_request",
+                    "targets": negative_action.get("targets") or [],
+                },
+            )
+        )
+
+    def _home_action_target_label(self, target: str) -> str:
+        return {
+            "light": "リビングの電気",
+            "fan": "扇風機",
+            "aircon": "エアコン",
+            "door": "中扉",
+            "vacuum": "掃除機",
+        }.get(target, target or "その操作")
 
     def _call_tool(
         self,

@@ -1,0 +1,312 @@
+{
+  "schema_version": 1,
+  "description": "No-live Thought Core phrase routing matrix for the current Home Control action universe.",
+  "cases": [
+    {
+      "name": "light_on",
+      "text": "電気をつけて",
+      "initial_light_on": false,
+      "context_refs": {
+        "mock_room_light_state": "off",
+        "mock_room_light_confidence_label": "high"
+      },
+      "expect": {
+        "action_id": "light_on",
+        "target": "light",
+        "expected_state": "on",
+        "event_types": ["action.proposed", "tool.started", "turn.completed"],
+        "speech_contains": ["リビングの電気をつけるね"],
+        "speech_occurrences_max": {"リビングの電気": 2},
+        "execute_calls": 1,
+        "completed_status": "success"
+      }
+    },
+    {
+      "name": "light_off",
+      "text": "電気を消して",
+      "initial_light_on": true,
+      "context_refs": {
+        "mock_room_light_state": "on",
+        "mock_room_light_confidence_label": "high"
+      },
+      "expect": {
+        "action_id": "light_off",
+        "target": "light",
+        "expected_state": "off",
+        "event_types": ["action.proposed", "tool.started", "turn.completed"],
+        "speech_contains": ["リビングの電気を消すね"],
+        "speech_occurrences_max": {"リビングの電気": 2},
+        "execute_calls": 1,
+        "completed_status": "success"
+      }
+    },
+    {
+      "name": "fan_on",
+      "text": "扇風機をつけて",
+      "initial_appliance_states": {"fan": "off"},
+      "expect": {
+        "action_id": "fan_on",
+        "target": "fan",
+        "expected_state": "on",
+        "event_types": ["action.proposed", "tool.started", "turn.completed"],
+        "speech_contains": ["扇風機をつけるね"],
+        "speech_occurrences_max": {"扇風機": 2},
+        "execute_calls": 1,
+        "completed_status": "success"
+      }
+    },
+    {
+      "name": "fan_off",
+      "text": "扇風機を消して",
+      "initial_appliance_states": {"fan": "on"},
+      "expect": {
+        "action_id": "fan_off",
+        "target": "fan",
+        "expected_state": "off",
+        "event_types": ["action.proposed", "tool.started", "turn.completed"],
+        "speech_contains": ["扇風機を消すね"],
+        "speech_occurrences_max": {"扇風機": 2},
+        "execute_calls": 1,
+        "completed_status": "success"
+      }
+    },
+    {
+      "name": "aircon_on",
+      "text": "エアコンをつけて",
+      "initial_appliance_states": {"aircon": "off"},
+      "expect": {
+        "action_id": "aircon_on",
+        "target": "aircon",
+        "expected_state": "on",
+        "event_types": ["action.proposed", "tool.started", "turn.completed"],
+        "speech_contains": ["エアコンをつけるね"],
+        "speech_not_contains": ["中扉"],
+        "speech_occurrences_max": {"エアコン": 2},
+        "execute_calls": 1,
+        "completed_status": "success"
+      }
+    },
+    {
+      "name": "aircon_off",
+      "text": "エアコンを消して",
+      "initial_appliance_states": {"aircon": "on"},
+      "expect": {
+        "action_id": "aircon_off",
+        "target": "aircon",
+        "expected_state": "off",
+        "event_types": ["action.proposed", "tool.started", "turn.completed"],
+        "speech_contains": ["エアコンを消すね"],
+        "speech_not_contains": ["中扉"],
+        "speech_occurrences_max": {"エアコン": 2},
+        "execute_calls": 1,
+        "completed_status": "success"
+      }
+    },
+    {
+      "name": "door_open",
+      "text": "中扉を開けて",
+      "initial_appliance_states": {"door": "closed"},
+      "expect": {
+        "action_id": "door_open",
+        "target": "door",
+        "expected_state": "open",
+        "event_types": ["action.proposed", "tool.started", "turn.completed"],
+        "speech_contains": ["中扉を開けるね"],
+        "speech_occurrences_max": {"中扉": 2},
+        "execute_calls": 1,
+        "completed_status": "success"
+      }
+    },
+    {
+      "name": "door_close",
+      "text": "中扉を閉めて",
+      "initial_appliance_states": {"door": "open"},
+      "expect": {
+        "action_id": "door_close",
+        "target": "door",
+        "expected_state": "closed",
+        "event_types": ["action.proposed", "tool.started", "turn.completed"],
+        "speech_contains": ["中扉を閉めるね"],
+        "speech_occurrences_max": {"中扉": 2},
+        "execute_calls": 1,
+        "completed_status": "success"
+      }
+    },
+    {
+      "name": "door_close_already_closed",
+      "text": "中扉を閉めて",
+      "initial_appliance_states": {"door": "closed"},
+      "expect": {
+        "action_id": "door_close",
+        "target": "door",
+        "expected_state": "closed",
+        "event_not_types": ["action.executed"],
+        "speech_contains": ["中扉はすでに"],
+        "speech_not_contains": ["中扉を閉めたよ", "了解、中扉を閉めるね"],
+        "execute_calls": 0,
+        "completed_status": "noop"
+      }
+    },
+    {
+      "name": "door_stop",
+      "text": "中扉を止めて",
+      "initial_appliance_states": {"door": "open"},
+      "expect": {
+        "action_id": "door_stop",
+        "target": "door",
+        "expected_state": "stopped",
+        "event_types": ["action.proposed", "tool.started", "turn.completed"],
+        "speech_contains": ["中扉を止めるね"],
+        "speech_occurrences_max": {"中扉": 2},
+        "execute_calls": 1,
+        "completed_status": "success"
+      }
+    },
+    {
+      "name": "vacuum_start",
+      "text": "掃除機を動かして",
+      "initial_appliance_states": {"vacuum": "paused"},
+      "expect": {
+        "action_id": "vacuum_start",
+        "target": "vacuum",
+        "expected_state": "cleaning",
+        "event_types": ["action.proposed", "tool.started", "turn.completed"],
+        "speech_contains": ["掃除機を動かすね"],
+        "speech_occurrences_max": {"掃除機": 2},
+        "execute_calls": 1,
+        "completed_status": "success"
+      }
+    },
+    {
+      "name": "vacuum_return",
+      "text": "掃除機を戻して",
+      "initial_appliance_states": {"vacuum": "cleaning"},
+      "expect": {
+        "action_id": "vacuum_return",
+        "target": "vacuum",
+        "expected_state": "returning",
+        "event_types": ["action.proposed", "tool.started", "turn.completed"],
+        "speech_contains": ["掃除機を戻すね"],
+        "speech_occurrences_max": {"掃除機": 2},
+        "execute_calls": 1,
+        "completed_status": "success"
+      }
+    },
+    {
+      "name": "vacuum_pause",
+      "text": "掃除機を一時停止して",
+      "initial_appliance_states": {"vacuum": "cleaning"},
+      "expect": {
+        "action_id": "vacuum_pause",
+        "target": "vacuum",
+        "expected_state": "paused",
+        "event_types": ["action.proposed", "tool.started", "turn.completed"],
+        "speech_contains": ["掃除機を一時停止するね"],
+        "speech_occurrences_max": {"掃除機": 2},
+        "execute_calls": 1,
+        "completed_status": "success"
+      }
+    },
+    {
+      "name": "aircon_off_already_off",
+      "text": "エアコンを消して",
+      "initial_appliance_states": {"aircon": "off"},
+      "expect": {
+        "action_id": "aircon_off",
+        "target": "aircon",
+        "expected_state": "off",
+        "event_not_types": ["action.executed"],
+        "speech_contains": ["エアコンはすでに消えています"],
+        "speech_not_contains": ["エアコンを消したよ", "了解、エアコンを消すね", "中扉"],
+        "execute_calls": 0,
+        "completed_status": "noop"
+      }
+    },
+    {
+      "name": "fan_off_already_off",
+      "text": "扇風機を消して",
+      "initial_appliance_states": {"fan": "off"},
+      "expect": {
+        "action_id": "fan_off",
+        "target": "fan",
+        "expected_state": "off",
+        "event_not_types": ["action.executed"],
+        "speech_contains": ["扇風機はすでに消えています"],
+        "speech_not_contains": ["扇風機を消したよ", "了解、扇風機を消すね"],
+        "execute_calls": 0,
+        "completed_status": "noop"
+      }
+    },
+    {
+      "name": "vacuum_pause_already_paused",
+      "text": "掃除機を一時停止して",
+      "initial_appliance_states": {"vacuum": "paused"},
+      "expect": {
+        "action_id": "vacuum_pause",
+        "target": "vacuum",
+        "expected_state": "paused",
+        "event_not_types": ["action.executed"],
+        "speech_contains": ["掃除機はすでに"],
+        "speech_not_contains": ["掃除機を一時停止したよ", "了解、掃除機を一時停止するね"],
+        "execute_calls": 0,
+        "completed_status": "noop"
+      }
+    },
+    {
+      "name": "compound_door_aircon_on_needs_clarification",
+      "text": "中扉とエアコンをつけて",
+      "initial_appliance_states": {"door": "closed", "aircon": "off"},
+      "expect": {
+        "event_types": ["action.clarification_requested", "turn.completed"],
+        "event_not_types": ["action.proposed", "action.executed"],
+        "speech_contains": ["対象が複数", "実行せず", "一つずつ"],
+        "speech_not_contains": ["エアコンをつけたよ", "了解、エアコンをつけるね"],
+        "execute_calls": 0,
+        "completed_status": "needs_clarification"
+      }
+    },
+    {
+      "name": "alternative_door_aircon_on_needs_clarification",
+      "text": "中扉もしくはエアコンをつけて",
+      "initial_appliance_states": {"door": "closed", "aircon": "off"},
+      "expect": {
+        "event_types": ["action.clarification_requested", "turn.completed"],
+        "event_not_types": ["action.proposed", "action.executed"],
+        "speech_contains": ["対象が複数", "実行せず", "一つずつ"],
+        "speech_not_contains": ["エアコンをつけたよ", "了解、エアコンをつけるね"],
+        "execute_calls": 0,
+        "completed_status": "needs_clarification"
+      }
+    },
+    {
+      "name": "alternative_aircon_fan_on_needs_clarification",
+      "text": "エアコンか扇風機をつけて",
+      "initial_appliance_states": {"aircon": "off", "fan": "off"},
+      "expect": {
+        "event_types": ["action.clarification_requested", "turn.completed"],
+        "event_not_types": ["action.proposed", "action.executed"],
+        "speech_contains": ["対象が複数", "実行せず", "一つずつ"],
+        "speech_not_contains": ["エアコンをつけたよ", "扇風機をつけたよ"],
+        "execute_calls": 0,
+        "completed_status": "needs_clarification"
+      }
+    },
+    {
+      "name": "negative_aircon_guard",
+      "text": "エアコンを消さないで",
+      "initial_appliance_states": {"aircon": "on"},
+      "expect": {
+        "event_not_types": ["action.proposed", "action.executed"],
+        "speech_contains": ["エアコンは操作しないでおくね"],
+        "speech_not_contains": [
+          "聞こえています",
+          "会話応答の境界",
+          "エアコンを消すね",
+          "中扉"
+        ],
+        "execute_calls": 0,
+        "completed_status": "noop"
+      }
+    }
+  ]
+}
