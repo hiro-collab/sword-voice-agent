@@ -25,10 +25,14 @@ function Resolve-HomeControlWorkspaceRoot {
         }
 
         $path = $resolved.Path
+        $hasControlPlaneLayout = (
+            (Test-Path -LiteralPath (Join-Path $path "control-plane\sword-voice-agent") -PathType Container) -or
+            (Test-Path -LiteralPath (Join-Path $path "sword-control-plane") -PathType Container)
+        )
         $hasSystemCellLayout = (
             (Test-Path -LiteralPath (Join-Path $path "organs\expression\aituber-kit") -PathType Container) -and
             (Test-Path -LiteralPath (Join-Path $path "organs\action\home-assistant-server") -PathType Container) -and
-            (Test-Path -LiteralPath (Join-Path $path "sword-control-plane") -PathType Container)
+            $hasControlPlaneLayout
         )
         $hasLegacyWorkspaceLayout = (
             (Test-Path -LiteralPath (Join-Path $path "aituber-kit") -PathType Container) -and

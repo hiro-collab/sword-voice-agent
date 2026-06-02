@@ -80,6 +80,24 @@ function Resolve-StackStateDir {
 $WorkspaceRoot = Resolve-HomeControlWorkspaceRoot -WorkspaceRoot $WorkspaceRoot -ScriptRoot $PSScriptRoot
 $StackStateDir = Resolve-StackStateDir -WorkspaceRoot $WorkspaceRoot -StackStateDir $StackStateDir
 
+function Resolve-WorkspaceDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
+        [Parameter(Mandatory = $true)][string[]]$RelativePaths,
+        [Parameter(Mandatory = $true)][string]$FallbackRelativePath
+    )
+
+    foreach ($relativePath in $RelativePaths) {
+        $candidate = Join-Path $WorkspaceRoot $relativePath
+        $resolved = Resolve-Path -LiteralPath $candidate -ErrorAction SilentlyContinue
+        if ($null -ne $resolved -and (Test-Path -LiteralPath $resolved.Path -PathType Container)) {
+            return $resolved.Path
+        }
+    }
+
+    return Join-Path $WorkspaceRoot $FallbackRelativePath
+}
+
 if ([string]::IsNullOrWhiteSpace($DifyDockerRoot)) {
     $DifyDockerRoot = [Environment]::GetEnvironmentVariable("DIFY_DOCKER_ROOT")
 }
@@ -100,10 +118,16 @@ if ([string]::IsNullOrWhiteSpace($TouchDesignerGuiRoot)) {
     $TouchDesignerGuiRoot = Join-Path $WorkspaceRoot "organs\display\touchdesigner-ai-controller"
 }
 if ([string]::IsNullOrWhiteSpace($DifyWatchRoot)) {
-    $DifyWatchRoot = Join-Path $WorkspaceRoot "sword-control-plane"
+    $DifyWatchRoot = Resolve-WorkspaceDirectory `
+        -WorkspaceRoot $WorkspaceRoot `
+        -RelativePaths @("control-plane\sword-voice-agent", "sword-control-plane") `
+        -FallbackRelativePath "control-plane\sword-voice-agent"
 }
 if ([string]::IsNullOrWhiteSpace($ThoughtCoreRoot)) {
-    $ThoughtCoreRoot = Join-Path $WorkspaceRoot "sword-control-plane"
+    $ThoughtCoreRoot = Resolve-WorkspaceDirectory `
+        -WorkspaceRoot $WorkspaceRoot `
+        -RelativePaths @("control-plane\sword-voice-agent", "sword-control-plane") `
+        -FallbackRelativePath "control-plane\sword-voice-agent"
 }
 if ([string]::IsNullOrWhiteSpace($EnvironmentStateServerRoot)) {
     $EnvironmentStateServerRoot = Join-Path $WorkspaceRoot "organs\environment\environment-state-server"
@@ -119,7 +143,10 @@ $DifyWatchEnvPath = Join-Path $DifyWatchRoot ".env"
 $ThoughtCoreScript = Join-Path $ThoughtCoreRoot "scripts\start-thought-core.ps1"
 $ThoughtCoreWatchScript = Join-Path $ThoughtCoreRoot "scripts\start-thought-core-watch.ps1"
 $ThoughtCoreEnvPath = Join-Path $ThoughtCoreRoot ".env"
-$AiTalkCoreRoot = Join-Path $WorkspaceRoot "organs\voice\ai-talk-core"
+$AiTalkCoreRoot = Resolve-WorkspaceDirectory `
+    -WorkspaceRoot $WorkspaceRoot `
+    -RelativePaths @("organs\speech-input\ai-talk-core", "organs\voice\ai-talk-core") `
+    -FallbackRelativePath "organs\speech-input\ai-talk-core"
 $LaunchVisionSnapshotProcessor = ((-not $SkipVisionSnapshotProcessor) -and (-not $SkipMediapipe) -and ($MediapipeMode -eq "mediamtx"))
 
 $StateDir = $StackStateDir
@@ -1385,13 +1412,13 @@ if (-not $SkipEnvironmentState) {
     Assert-Directory -Path $EnvironmentStateServerRoot -Label "environment-state-server"
 }
 if (-not $SkipDifyWatch) {
-    Assert-Directory -Path $DifyWatchRoot -Label "sword-control-plane"
+    Assert-Directory -Path $DifyWatchRoot -Label "control-plane"
     if (-not (Test-Path -LiteralPath $DifyWatchScript -PathType Leaf)) {
         throw "Dify watcher script not found: $DifyWatchScript"
     }
 }
 if ($EnableThoughtCore -or $EnableThoughtCoreWatch) {
-    Assert-Directory -Path $ThoughtCoreRoot -Label "sword-control-plane"
+    Assert-Directory -Path $ThoughtCoreRoot -Label "control-plane"
 }
 if ($EnableThoughtCore) {
     if (-not (Test-Path -LiteralPath $ThoughtCoreScript -PathType Leaf)) {
