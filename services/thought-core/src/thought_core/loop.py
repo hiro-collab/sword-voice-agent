@@ -122,6 +122,14 @@ class ThoughtLoop:
             if input_frame.kind == "state_query":
                 self._handle_room_light_state_query(events, factory, turn_input)
                 return events
+            if input_frame.kind == "motion_request":
+                self._handle_motion_request_turn(
+                    events,
+                    factory,
+                    turn_input,
+                    input_frame,
+                )
+                return events
             if self._handle_pending_action_review_if_needed(
                 events,
                 factory,
@@ -4250,6 +4258,172 @@ class ThoughtLoop:
                 },
             )
         )
+
+    def _handle_motion_request_turn(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        input_frame: InputFrame,
+    ) -> None:
+        event = factory.emit("motion.requested", {})
+        event.data.update(self._motion_request_payload(turn_input, input_frame, event))
+        events.append(event)
+        self._handle_general_turn(events, factory, turn_input)
+
+    def _motion_request_payload(
+        self,
+        turn_input: TurnInput,
+        input_frame: InputFrame,
+        event: ThoughtEvent,
+    ) -> dict[str, Any]:
+        metadata = input_frame.metadata.get("motion_request")
+        request = dict(metadata) if isinstance(metadata, dict) else {}
+        turn_key = self._speech_fragment_key(turn_input.turn_id or "turn")
+        legacy_kind = str(request.get("kind") or "expression_motion")
+        motion_kind = self._motion_stimulus_kind(legacy_kind)
+        tracks = self._motion_track_mask(legacy_kind)
+        required_tracks = self._motion_required_tracks(legacy_kind)
+        optional_tracks = [track for track in tracks if track not in set(required_tracks)]
+        motion_event_id = f"mot_evt_{turn_key}_001"
+        stimulus_id = f"mot_stim_{turn_key}_{motion_kind}"
+        stimulus_instance_id = f"mot_inst_{turn_key}_001"
+        return {
+            "schema_version": "motion_stimulus.v0",
+            "motion_event_id": motion_event_id,
+            "stimulus_id": stimulus_id,
+            "stimulus_instance_id": stimulus_instance_id,
+            "source_class": "user_command",
+            "source_family": "user_or_operator_command",
+            "source_origin": "thought_core",
+            "requested_at": event.timestamp,
+            "kind": motion_kind,
+            "request_mode": "play",
+            "phase": "queued",
+            "lifecycle_state": "queued",
+            "safe_visible_state": "requested",
+            "safe_display_name": self._motion_safe_display_name(legacy_kind, request),
+            "target_model_type": "vrm",
+            "track_mask": tracks,
+            "priority_by_track": self._motion_priority_by_track(tracks, required_tracks),
+            "requirements": {
+                "required_tracks": required_tracks,
+                "optional_tracks": optional_tracks,
+                "compatible_model_types": ["vrm"],
+                "provenance_required": True,
+                "allow_degraded": True,
+                "allow_fallback": True,
+            },
+            "payload_ref": self._motion_payload_ref(legacy_kind),
+            "intensity": self._motion_intensity(str(request.get("intensity") or "medium")),
+            "duration_ms": int(request.get("duration_ms") or 10000),
+            "loop": motion_kind == "dance_sequence",
+            "loop_count": 0,
+            "interrupt_policy": "replace_same_track",
+            "fallback_state": "neutral_idle",
+            "fallback_used": False,
+            "stop_reason": "none",
+            "trace": {
+                "event_id": event.event_id,
+                "turn_id": turn_input.turn_id,
+                "selection_id": f"mot_sel_{turn_key}_001",
+                "runtime_result_id": f"mot_res_{turn_key}_pending_001",
+                "motion_event_id": motion_event_id,
+                "stimulus_id": stimulus_id,
+                "stimulus_instance_id": stimulus_instance_id,
+            },
+            "redaction": {
+                "redaction_status": "summary_only",
+                "redaction_profile": "motion_contract_public_v0",
+                "shareability_class": "source_static_fixture",
+                "proof_layer": "source_static",
+            },
+            "safety": {
+                "raw_user_text_shared": False,
+                "raw_prompt_shared": False,
+                "raw_media_shared": False,
+                "raw_path_shared": False,
+                "raw_asset_filename_shared": False,
+                "provider_payload_shared": False,
+                "home_assistant_route": False,
+            },
+        }
+
+    def _motion_stimulus_kind(self, legacy_kind: str) -> str:
+        if legacy_kind == "dance":
+            return "dance_sequence"
+        if legacy_kind == "expression_motion":
+            return "expression"
+        if legacy_kind == "cancel":
+            return "stop"
+        return "action_indicator" if legacy_kind == "action_indicator" else "gesture"
+
+    def _motion_safe_display_name(
+        self,
+        legacy_kind: str,
+        request: dict[str, Any],
+    ) -> str:
+        if legacy_kind == "dance":
+            rhythm = str(request.get("rhythm_hint") or "none")
+            return "Music dance" if rhythm == "music_sync_requested" else "Dance sequence"
+        if legacy_kind == "expression_motion":
+            style = str(request.get("style") or "neutral")
+            return "Happy expression" if style == "happy" else "Expression motion"
+        if legacy_kind == "cancel":
+            return "Stop motion"
+        return "Action indicator"
+
+    def _motion_track_mask(self, legacy_kind: str) -> list[str]:
+        if legacy_kind == "dance":
+            return [
+                "body_root",
+                "spine",
+                "chest",
+                "neck",
+                "head",
+                "left_arm",
+                "right_arm",
+                "left_hand",
+                "right_hand",
+                "balance",
+            ]
+        if legacy_kind == "expression_motion":
+            return ["face", "head", "neck"]
+        return ["head", "face"]
+
+    def _motion_required_tracks(self, legacy_kind: str) -> list[str]:
+        if legacy_kind == "dance":
+            return ["body_root", "spine"]
+        if legacy_kind == "expression_motion":
+            return ["face"]
+        return ["head"]
+
+    def _motion_priority_by_track(
+        self,
+        tracks: list[str],
+        required_tracks: list[str],
+    ) -> list[dict[str, Any]]:
+        required = set(required_tracks)
+        return [
+            {"track": track, "priority": 70 if track in required else 35}
+            for track in tracks
+        ]
+
+    def _motion_intensity(self, intensity: str) -> str:
+        return {
+            "low": "subtle",
+            "medium": "normal",
+            "high": "expressive",
+        }.get(intensity, "normal")
+
+    def _motion_payload_ref(self, legacy_kind: str) -> str:
+        if legacy_kind == "dance":
+            return "motion.thought_core.dance_sequence.v0"
+        if legacy_kind == "expression_motion":
+            return "motion.thought_core.expression.v0"
+        if legacy_kind == "cancel":
+            return "motion.thought_core.stop.v0"
+        return "motion.thought_core.action_indicator.v0"
 
     def _response_context(
         self,

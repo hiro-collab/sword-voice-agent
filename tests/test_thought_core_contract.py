@@ -202,7 +202,10 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(action_event["data"]["action"]["action_id"], "light_off")
         self.assertEqual(action_event["data"]["action"]["expected_state"], "off")
         self.assertIn("了解、リビングの電気を消すね。", speeches)
-        self.assertIn("リビングの電気を消したよ。", speeches)
+        self.assertIn(
+            "テストモード上では、リビングの電気を消した想定です。実家電には送っていません。",
+            speeches,
+        )
         self.assertEqual(events[-1]["data"]["status"], "success")
 
     def test_retrieved_memory_is_attached_to_action_context(self) -> None:
@@ -2064,8 +2067,9 @@ class ThoughtCoreContractTest(TestCase):
         ]
         understood = next(event for event in events if event["type"] == "input.understood")
 
-        self.assertEqual(understood["data"]["kind"], "general")
+        self.assertEqual(understood["data"]["kind"], "motion_request")
         self.assertIn("responder.started", event_types)
+        self.assertIn("motion.requested", event_types)
         self.assertNotIn("action.proposed", event_types)
         self.assertNotIn("action.reviewed", event_types)
         self.assertNotIn("feedback.requested", event_types)

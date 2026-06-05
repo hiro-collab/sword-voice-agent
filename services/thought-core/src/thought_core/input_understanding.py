@@ -147,6 +147,18 @@ class LocalInputUnderstanding:
                 **action_fields,
             )
 
+        motion_request = _motion_request_metadata(text)
+        if motion_request is not None:
+            return InputFrame(
+                kind="motion_request",
+                target=str(motion_request["kind"]),
+                desired_state=str(motion_request["motion_intent"]),
+                is_command=True,
+                confidence=0.82,
+                reason=str(motion_request["reason"]),
+                metadata={"normalized": normalized, "motion_request": motion_request},
+            )
+
         return InputFrame(
             kind="general",
             confidence=0.55,
@@ -180,6 +192,55 @@ def _action_fields(action_intent: Any) -> dict[str, Any]:
             getattr(action_intent, "expected_state", "") or ""
         ),
     }
+
+
+def _motion_request_metadata(text: str) -> dict[str, Any] | None:
+    normalized = _normalize_text(text)
+    lowered = normalized.lower()
+    if not normalized:
+        return None
+
+    base: dict[str, Any] = {
+        "schema_version": "motion_stimulus.v0",
+        "kind": "dance",
+        "utterance_class": "explicit_motion_request",
+        "motion_intent": "dance",
+        "style": "neutral",
+        "intensity": "medium",
+        "duration_ms": 10000,
+        "rhythm_hint": "none",
+        "body_priority": ["upper_body", "arms", "head"],
+        "cancelable": True,
+        "home_action_allowed": False,
+        "raw_prompt_included": False,
+        "private_path_included": False,
+        "device_route_included": False,
+        "memory_candidate_policy": "separate_policy_required",
+        "default_should_remember": False,
+    }
+
+    if "踊" in normalized or "dance" in lowered:
+        if any(marker in normalized for marker in ("音楽", "曲", "リズム", "ビート")):
+            base["rhythm_hint"] = "music_sync_requested"
+        base["reason"] = "dance_motion_request"
+        return base
+
+    happy_markers = ("うれしそう", "嬉しそう", "楽しそう", "喜んで", "はしゃいで")
+    move_markers = ("動いて", "動きを", "動作", "身振り", "ジェスチャ")
+    if any(marker in normalized for marker in happy_markers) and any(
+        marker in normalized for marker in move_markers
+    ):
+        base.update(
+            {
+                "kind": "expression_motion",
+                "motion_intent": "happy_motion",
+                "style": "happy",
+                "reason": "happy_expression_motion_request",
+            }
+        )
+        return base
+
+    return None
 
 
 def _pending_state_from_action_review(

@@ -1,0 +1,520 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-agent-os.local/contracts/motion_stimulus.v0.schema.json",
+  "title": "Agent OS motion_stimulus.v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "motion_event_id",
+    "stimulus_id",
+    "stimulus_instance_id",
+    "source_class",
+    "source_origin",
+    "requested_at",
+    "kind",
+    "request_mode",
+    "phase",
+    "lifecycle_state",
+    "safe_visible_state",
+    "safe_display_name",
+    "target_model_type",
+    "track_mask",
+    "requirements",
+    "trace",
+    "redaction"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "motion_stimulus.v0"
+    },
+    "motion_event_id": {
+      "type": "string",
+      "pattern": "^mot_evt_[A-Za-z0-9_.:-]+$"
+    },
+    "stimulus_id": {
+      "type": "string",
+      "pattern": "^mot_stim_[A-Za-z0-9_.:-]+$"
+    },
+    "stimulus_instance_id": {
+      "type": "string",
+      "pattern": "^mot_inst_[A-Za-z0-9_.:-]+$"
+    },
+    "source_class": {
+      "type": "string",
+      "enum": [
+        "user_command",
+        "gui_operator_request",
+        "thought_context",
+        "reflex_forwarded"
+      ]
+    },
+    "source_family": {
+      "type": "string",
+      "enum": [
+        "user_or_operator_command",
+        "thought_core_contextual",
+        "reflex_external_state"
+      ]
+    },
+    "source_origin": {
+      "type": "string",
+      "enum": [
+        "thought_core",
+        "reflex",
+        "gui_input",
+        "driver",
+        "system",
+        "test"
+      ]
+    },
+    "requested_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "gesture",
+        "dance_sequence",
+        "expression",
+        "gaze",
+        "action_indicator",
+        "posture",
+        "speech_coupled",
+        "idle_overlay",
+        "stop",
+        "reset"
+      ]
+    },
+    "request_mode": {
+      "type": "string",
+      "enum": [
+        "preview",
+        "play",
+        "stop",
+        "reset"
+      ]
+    },
+    "lifecycle_state": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "preview_requested",
+        "preview_ready",
+        "play_requested",
+        "starting",
+        "active",
+        "releasing",
+        "completed",
+        "stopped",
+        "reset",
+        "unavailable",
+        "incompatible",
+        "degraded",
+        "failed_safe"
+      ]
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "preview_requested",
+        "preview_ready",
+        "play_requested",
+        "starting",
+        "active",
+        "releasing",
+        "completed",
+        "stopped",
+        "reset",
+        "unavailable",
+        "incompatible",
+        "degraded",
+        "failed_safe"
+      ]
+    },
+    "safe_visible_state": {
+      "type": "string",
+      "enum": [
+        "requested",
+        "preview_ready",
+        "previewing",
+        "playing",
+        "idle",
+        "stopped",
+        "completed",
+        "degraded",
+        "unavailable",
+        "incompatible",
+        "failed_safe"
+      ]
+    },
+    "safe_display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[A-Za-z0-9 _.:-]+$"
+    },
+    "target_model_type": {
+      "type": "string",
+      "enum": [
+        "vrm",
+        "live2d",
+        "pngtuber",
+        "unknown"
+      ]
+    },
+    "track_mask": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/track"
+      }
+    },
+    "priority_by_track": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "track",
+          "priority"
+        ],
+        "properties": {
+          "track": {
+            "$ref": "#/$defs/track"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          }
+        }
+      },
+      "default": []
+    },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_tracks",
+        "optional_tracks",
+        "compatible_model_types",
+        "provenance_required",
+        "allow_degraded",
+        "allow_fallback"
+      ],
+      "properties": {
+        "required_tracks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/track"
+          }
+        },
+        "optional_tracks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/track"
+          }
+        },
+        "compatible_model_types": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "vrm",
+              "live2d",
+              "pngtuber"
+            ]
+          }
+        },
+        "provenance_required": {
+          "type": "boolean"
+        },
+        "allow_degraded": {
+          "type": "boolean"
+        },
+        "allow_fallback": {
+          "type": "boolean"
+        }
+      }
+    },
+    "payload_ref": {
+      "type": "string",
+      "maxLength": 120,
+      "pattern": "^[a-z][a-z0-9_.:-]*$"
+    },
+    "target_context": {
+      "$ref": "#/$defs/target_context"
+    },
+    "intensity": {
+      "type": "string",
+      "enum": [
+        "subtle",
+        "normal",
+        "expressive"
+      ]
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 600000
+    },
+    "loop": {
+      "type": "boolean"
+    },
+    "loop_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "interrupt_policy": {
+      "type": "string",
+      "enum": [
+        "replace_same_track",
+        "queue",
+        "ignore_if_busy",
+        "stop",
+        "failed_safe"
+      ]
+    },
+    "fallback_state": {
+      "type": "string",
+      "enum": [
+        "none",
+        "neutral_idle",
+        "gesture_only",
+        "face_only",
+        "hold_current",
+        "stop_to_idle"
+      ]
+    },
+    "fallback_used": {
+      "type": "boolean"
+    },
+    "stop_reason": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^[a-z][a-z0-9_.:-]*$"
+    },
+    "trace": {
+      "$ref": "#/$defs/trace"
+    },
+    "redaction": {
+      "$ref": "#/$defs/redaction"
+    },
+    "safety": {
+      "$ref": "#/$defs/safety"
+    }
+  },
+  "$defs": {
+    "track": {
+      "type": "string",
+      "enum": [
+        "body_root",
+        "spine",
+        "chest",
+        "neck",
+        "head",
+        "left_arm",
+        "right_arm",
+        "left_hand",
+        "right_hand",
+        "face",
+        "mouth",
+        "eyes",
+        "gaze",
+        "balance"
+      ]
+    },
+    "target_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_kind",
+        "safe_target_label",
+        "indicator_intent"
+      ],
+      "properties": {
+        "target_kind": {
+          "type": "string",
+          "enum": [
+            "appliance",
+            "room",
+            "display_region",
+            "system_component",
+            "unknown"
+          ]
+        },
+        "safe_target_label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "^[A-Za-z0-9 _.:-]+$"
+        },
+        "topology_ref": {
+          "type": "string",
+          "maxLength": 160,
+          "pattern": "^topology://[A-Za-z0-9_/.: -]+$"
+        },
+        "topology_snapshot_id": {
+          "type": "string",
+          "maxLength": 120,
+          "pattern": "^[A-Za-z0-9_.:-]+$"
+        },
+        "action_request_id": {
+          "type": "string",
+          "pattern": "^act_req_[A-Za-z0-9_.:-]+$"
+        },
+        "action_phase": {
+          "type": "string",
+          "enum": [
+            "preview",
+            "executing",
+            "checking_feedback",
+            "completed",
+            "held",
+            "unknown"
+          ]
+        },
+        "indicator_intent": {
+          "type": "string",
+          "enum": [
+            "show_target",
+            "show_pending_operation",
+            "show_feedback_check",
+            "show_result",
+            "show_attention"
+          ]
+        }
+      }
+    },
+    "trace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "motion_event_id",
+        "stimulus_id",
+        "stimulus_instance_id"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "pattern": "^evt_[A-Za-z0-9_.:-]+$"
+        },
+        "turn_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]+$"
+        },
+        "episode_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]+$"
+        },
+        "issue_ticket_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]+$"
+        },
+        "observation_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]+$"
+        },
+        "selection_id": {
+          "type": "string",
+          "pattern": "^mot_sel_[A-Za-z0-9_.:-]+$"
+        },
+        "runtime_result_id": {
+          "type": "string",
+          "pattern": "^mot_res_[A-Za-z0-9_.:-]+$"
+        },
+        "motion_event_id": {
+          "type": "string",
+          "pattern": "^mot_evt_[A-Za-z0-9_.:-]+$"
+        },
+        "stimulus_id": {
+          "type": "string",
+          "pattern": "^mot_stim_[A-Za-z0-9_.:-]+$"
+        },
+        "stimulus_instance_id": {
+          "type": "string",
+          "pattern": "^mot_inst_[A-Za-z0-9_.:-]+$"
+        }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "redaction_status",
+        "redaction_profile",
+        "shareability_class",
+        "proof_layer"
+      ],
+      "properties": {
+        "redaction_status": {
+          "type": "string",
+          "enum": [
+            "summary_only",
+            "redacted"
+          ]
+        },
+        "redaction_profile": {
+          "type": "string",
+          "enum": [
+            "motion_contract_public_v0",
+            "motion_contract_internal_v0"
+          ]
+        },
+        "shareability_class": {
+          "type": "string",
+          "enum": [
+            "source_static_fixture",
+            "status_projection",
+            "event_journal_summary",
+            "debug_local_only"
+          ]
+        },
+        "proof_layer": {
+          "type": "string",
+          "enum": [
+            "source_static",
+            "no_live_runtime",
+            "visible_motion",
+            "real_device"
+          ]
+        }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "raw_user_text_shared": {
+          "const": false
+        },
+        "raw_prompt_shared": {
+          "const": false
+        },
+        "raw_media_shared": {
+          "const": false
+        },
+        "raw_path_shared": {
+          "const": false
+        },
+        "raw_asset_filename_shared": {
+          "const": false
+        },
+        "provider_payload_shared": {
+          "const": false
+        },
+        "home_assistant_route": {
+          "const": false
+        }
+      }
+    }
+  }
+}
