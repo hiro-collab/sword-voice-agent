@@ -793,6 +793,188 @@ const checkHttp = (targetUrl, timeoutMs = 1800) =>
     })
   })
 
+const fetchJson = (targetUrl, timeoutMs = 1800) =>
+  new Promise((resolve) => {
+    const client = targetUrl.startsWith('https:') ? https : http
+    const request = client.get(targetUrl, { timeout: timeoutMs }, (response) => {
+      let body = ''
+      response.setEncoding('utf8')
+      response.on('data', (chunk) => {
+        body += chunk
+      })
+      response.on('end', () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          resolve({
+            ok: false,
+            statusCode: response.statusCode,
+            detail: `HTTP ${response.statusCode}`
+          })
+          return
+        }
+        try {
+          resolve({
+            ok: true,
+            statusCode: response.statusCode,
+            detail: `HTTP ${response.statusCode}`,
+            payload: JSON.parse(body)
+          })
+        } catch {
+          resolve({
+            ok: false,
+            statusCode: response.statusCode,
+            detail: 'invalid JSON'
+          })
+        }
+      })
+    })
+    request.once('timeout', () => {
+      request.destroy()
+      resolve({ ok: false, statusCode: 0, detail: 'timeout' })
+    })
+    request.once('error', (error) => {
+      resolve({ ok: false, statusCode: 0, detail: error.code || error.message })
+    })
+  })
+
+const isPlainObject = (value) =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+
+const copyFields = (source, fields) => {
+  if (!isPlainObject(source)) {
+    return {}
+  }
+  const result = {}
+  for (const field of fields) {
+    if (Object.prototype.hasOwnProperty.call(source, field)) {
+      result[field] = source[field]
+    }
+  }
+  return result
+}
+
+const compactRoomLightSignal = (signal) => {
+  if (!isPlainObject(signal)) {
+    return null
+  }
+  const compact = copyFields(signal, [
+    'available',
+    'stale',
+    'state',
+    'effective_state',
+    'confidence_label',
+    'effective_confidence_label',
+    'authority',
+    'effective_authority',
+    'source',
+    'projected_by',
+    'source_snapshot_id',
+    'observed_at',
+    'updated_at',
+    'freshness',
+    'answer_hint'
+  ])
+  const evidence = copyFields(signal.evidence, [
+    'model',
+    'lighting_type',
+    'daylight_state',
+    'electric_on_probability',
+    'daylight_present_probability',
+    'dark_probability',
+    'confidence_label',
+    'observed_at',
+    'updated_at'
+  ])
+  if (Object.keys(evidence).length > 0) {
+    compact.evidence = evidence
+  }
+  return compact
+}
+
+const compactSourceStatus = (source) => {
+  if (!isPlainObject(source)) {
+    return null
+  }
+  return copyFields(source, [
+    'available',
+    'stale',
+    'status',
+    'state',
+    'source',
+    'updated_at',
+    'observed_at',
+    'freshness',
+    'snapshot_id'
+  ])
+}
+
+const compactEnvironmentForLauncherStatus = (indicatorPayload) => {
+  if (!isPlainObject(indicatorPayload) || !isPlainObject(indicatorPayload.environment)) {
+    return null
+  }
+  const environment = indicatorPayload.environment
+  const stateQueries = isPlainObject(environment.state_queries)
+    ? environment.state_queries
+    : {}
+  const sources = isPlainObject(environment.sources) ? environment.sources : {}
+  const vision = isPlainObject(environment.vision) ? environment.vision : {}
+  const compact = {
+    state_queries: {},
+    sources: {},
+    vision: {},
+    appliances: {}
+  }
+
+  const roomLight = compactRoomLightSignal(stateQueries.room_light)
+  if (roomLight) {
+    compact.state_queries.room_light = roomLight
+  }
+
+  for (const sourceId of [
+    'vision_snapshot_processor',
+    'camera_hub',
+    'home_assistant_bridge',
+    'home_assistant'
+  ]) {
+    const sourceStatus = compactSourceStatus(sources[sourceId])
+    if (sourceStatus) {
+      compact.sources[sourceId] = sourceStatus
+    }
+  }
+
+  const roomLightVision = compactRoomLightSignal(vision.room_light)
+  if (roomLightVision) {
+    compact.vision.room_light = roomLightVision
+  }
+
+  return compact
+}
+
+const shouldExposeEnvironmentStatus = () =>
+  !ALLOW_REMOTE && isLoopbackHost(HOST)
+
+const launcherCorsOrigin = () => {
+  const fallback = 'http://127.0.0.1:3000'
+  const configured = process.env.HOME_CONTROL_LAUNCHER_CORS_ORIGIN || fallback
+  try {
+    const parsed = new URL(configured)
+    return isLoopbackHost(parsed.hostname) ? parsed.origin : fallback
+  } catch {
+    return fallback
+  }
+}
+
+const launcherStatusCorsHeaders = () => {
+  if (!shouldExposeEnvironmentStatus()) {
+    return {}
+  }
+  return {
+    'Access-Control-Allow-Origin': launcherCorsOrigin(),
+    Vary: 'Origin',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type'
+  }
+}
+
 const checkWebSocketHandshake = (port, host = '127.0.0.1', timeoutMs = 1200) =>
   new Promise((resolve) => {
     const socket = new net.Socket()
@@ -1013,6 +1195,7 @@ const getStatus = async () => {
   const thoughtCoreHost =
     options.ThoughtCoreHost === '0.0.0.0' ? '127.0.0.1' : options.ThoughtCoreHost
   const thoughtCoreUrl = `http://${thoughtCoreHost}:${options.ThoughtCorePort}`
+  const exposeEnvironmentStatus = shouldExposeEnvironmentStatus()
   let voicevoxPort = 50021
   try {
     voicevoxPort = Number(new URL(voicevoxUrl).port || 50021)
@@ -1032,7 +1215,8 @@ const getStatus = async () => {
     thoughtCoreTcp,
     thoughtCoreHttp,
     voicevoxTcp,
-    voicevoxHttp
+    voicevoxHttp,
+    environmentIndicators
   ] = await Promise.all([
     checkTcp(options.HomeAssistantBridgePort),
     checkHttp(`http://127.0.0.1:${options.HomeAssistantBridgePort}/health`, 2500),
@@ -1045,7 +1229,14 @@ const getStatus = async () => {
     checkTcp(options.ThoughtCorePort, thoughtCoreHost),
     checkHttp(`${thoughtCoreUrl}/health`),
     checkTcp(voicevoxPort),
-    checkHttp(`${voicevoxUrl}/version`)
+    checkHttp(`${voicevoxUrl}/version`),
+    exposeEnvironmentStatus
+      ? fetchJson(`http://127.0.0.1:${options.EnvironmentStatePort}/indicators/current`)
+      : Promise.resolve({
+          ok: false,
+          statusCode: 0,
+          detail: 'environment status hidden for remote launcher'
+        })
   ])
 
   return {
@@ -1102,6 +1293,30 @@ const getStatus = async () => {
         http: voicevoxHttp,
         requireHttp: true
       })
+    },
+    environment:
+      exposeEnvironmentStatus && environmentIndicators.ok && environmentIndicators.payload
+        ? compactEnvironmentForLauncherStatus(environmentIndicators.payload)
+        : null,
+    environmentIndicatorState: {
+      exposed: exposeEnvironmentStatus,
+      payload_policy: exposeEnvironmentStatus
+        ? 'compact_whitelist'
+        : 'hidden_remote_launcher',
+      ok: Boolean(environmentIndicators.ok),
+      detail: environmentIndicators.detail || '-',
+      snapshot_id:
+        environmentIndicators.ok && environmentIndicators.payload
+          ? environmentIndicators.payload.snapshot_id || ''
+          : '',
+      stale:
+        environmentIndicators.ok && environmentIndicators.payload
+          ? Boolean(environmentIndicators.payload.stale)
+          : true,
+      age_ms:
+        environmentIndicators.ok && environmentIndicators.payload
+          ? environmentIndicators.payload.age_ms ?? null
+          : null
     }
   }
 }
@@ -1145,10 +1360,11 @@ const getState = async () => {
   }
 }
 
-const sendJson = (response, statusCode, payload) => {
+const sendJson = (response, statusCode, payload, extraHeaders = {}) => {
   response.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store'
+    'Cache-Control': 'no-store',
+    ...extraHeaders
   })
   response.end(JSON.stringify(payload))
 }
@@ -1185,12 +1401,18 @@ const serveStatic = (request, response, requestUrl) => {
 }
 
 const handleApi = async (request, response, requestUrl) => {
+  if (request.method === 'OPTIONS') {
+    const headers =
+      requestUrl.pathname === '/api/status' ? launcherStatusCorsHeaders() : {}
+    sendJson(response, 204, {}, headers)
+    return
+  }
   if (request.method === 'GET' && requestUrl.pathname === '/api/state') {
     sendJson(response, 200, await getState())
     return
   }
   if (request.method === 'GET' && requestUrl.pathname === '/api/status') {
-    sendJson(response, 200, await getStatus())
+    sendJson(response, 200, await getStatus(), launcherStatusCorsHeaders())
     return
   }
   if (request.method === 'GET' && requestUrl.pathname === '/api/logs') {
@@ -1271,7 +1493,9 @@ const server = http.createServer(async (request, response) => {
       return
     }
     if (request.method === 'OPTIONS') {
-      sendJson(response, 204, {})
+      const headers =
+        requestUrl.pathname === '/api/status' ? launcherStatusCorsHeaders() : {}
+      sendJson(response, 204, {}, headers)
       return
     }
     if (requestUrl.pathname.startsWith('/api/')) {
