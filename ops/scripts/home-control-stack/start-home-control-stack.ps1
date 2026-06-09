@@ -1690,6 +1690,7 @@ foreach ($name in @(
     "SWORD_THOUGHT_CORE_PERSONA",
     "THOUGHT_CORE_HOME_HTTP_TIMEOUT_S",
     "THOUGHT_CORE_ROOM_LIGHT_WAIT_TIMEOUT_MS",
+    "THOUGHT_CORE_TOOLS_ADAPTER",
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
     "OPENAI_MODEL"
@@ -1732,6 +1733,10 @@ if ($EnableThoughtCore -and (-not $SkipEnvironmentState)) {
         $thoughtCoreEnvironment["ENVIRONMENT_STATE_URL"] = "http://127.0.0.1:$EnvironmentStatePort/environment/current"
         $thoughtCoreEnvironment["ENVIRONMENT_API_TOKEN"] = $environmentToken
     }
+}
+$displayRuntimeEnvironment = @{}
+if ($thoughtCoreEnvironment.ContainsKey("THOUGHT_CORE_TOOLS_ADAPTER")) {
+    $displayRuntimeEnvironment["THOUGHT_CORE_TOOLS_ADAPTER"] = $thoughtCoreEnvironment["THOUGHT_CORE_TOOLS_ADAPTER"]
 }
 if ($StartThoughtCoreService) {
     $specs += New-ServiceSpec `
@@ -2026,6 +2031,7 @@ if (-not $SkipTouchDesignerGui) {
             $TouchDesignerGuiHost
         ) `
         -WorkingDirectory $TouchDesignerGuiToolsRoot `
+        -Environment $displayRuntimeEnvironment `
         -Module "touchdesigner-ai-controller" `
         -Role "display_runtime" `
         -AllowedProcessNames @("node")
