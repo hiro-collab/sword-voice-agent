@@ -318,6 +318,70 @@ function Assert-VoicevoxReady {
 
     $normalizedBaseUrl = $BaseUrl.TrimEnd("/")
     $versionUrl = "$normalizedBaseUrl/version"
+    $readinessHelper = Join-Path $WorkspaceRoot "scripts\check-voicevox-readiness.ps1"
+    if (Test-Path -LiteralPath $readinessHelper -PathType Leaf) {
+        try {
+            $helperOutput = & $readinessHelper `
+                -EndpointUrl $versionUrl `
+                -StartIfNeeded `
+                -TimeoutSeconds 45 `
+                -PollSeconds 2 `
+                -Json
+            $helperResult = $helperOutput | ConvertFrom-Json
+            $classification = [string]$helperResult.classification
+            $endpointInitial = [string]$helperResult.endpoint_initial
+            $endpointAfterStart = [string]$helperResult.endpoint_after_start
+            $startAttempted = [bool]$helperResult.start_attempted
+            if ($classification -eq "pass") {
+                if ($startAttempted) {
+                    Write-Host "[voicevox] started existing local VOICEVOX and reached $normalizedBaseUrl"
+                }
+                else {
+                    Write-Host "[voicevox] reachable: $normalizedBaseUrl"
+                }
+                return
+            }
+            throw @"
+VOICEVOX is not reachable, so AITuber voice output will fail.
+
+The startup helper checked the existing local VOICEVOX app but could not make the endpoint ready.
+
+Next action:
+  Start VOICEVOX manually, wait until the engine is ready, then rerun:
+    .\start-home-control-stack.bat -StopExisting
+
+Diagnostics:
+  checked URL: $versionUrl
+  endpoint before helper: $endpointInitial
+  endpoint after helper: $endpointAfterStart
+  start attempted: $startAttempted
+  helper classification: $classification
+  note: $($helperResult.note)
+
+If you intentionally do not use VOICEVOX, start this script with -SkipVoicevoxCheck.
+"@
+        }
+        catch {
+            if ($_.Exception.Message -match "^VOICEVOX is not reachable") {
+                throw
+            }
+            throw @"
+VOICEVOX readiness helper failed, so AITuber voice output may fail.
+
+Next action:
+  Start VOICEVOX manually, wait until the engine is ready, then rerun:
+    .\start-home-control-stack.bat -StopExisting
+
+Diagnostics:
+  checked URL: $versionUrl
+  helper: $readinessHelper
+  error: $($_.Exception.Message)
+
+If you intentionally do not use VOICEVOX, start this script with -SkipVoicevoxCheck.
+"@
+        }
+    }
+
     try {
         $response = Invoke-WebRequest -Uri $versionUrl -UseBasicParsing -TimeoutSec 2
         $version = ($response.Content | Out-String).Trim().Trim('"')
@@ -2049,12 +2113,26 @@ $shutdownStarted = $false
 $exitCode = 0
 
 try {
+    $mediapipeCameraHubChild = $null
+    $delayedVisionSnapshotSpecs = @()
     foreach ($spec in $specs) {
+        if ($spec.Name -eq "vision_snapshot_processor") {
+            $delayedVisionSnapshotSpecs += $spec
+            continue
+        }
         $children += Start-SupervisedProcess -Spec $spec
         Save-PidState -Children $children
         if ($spec.Name -eq "mediapipe_camera_hub_stack") {
-            Wait-CameraHubStackReady -Child $children[-1] -TimeoutSeconds $MediapipeReadyTimeoutSeconds
+            $mediapipeCameraHubChild = $children[-1]
         }
+        Start-Sleep -Milliseconds 500
+    }
+    if ($null -ne $mediapipeCameraHubChild) {
+        Wait-CameraHubStackReady -Child $mediapipeCameraHubChild -TimeoutSeconds $MediapipeReadyTimeoutSeconds
+    }
+    foreach ($spec in $delayedVisionSnapshotSpecs) {
+        $children += Start-SupervisedProcess -Spec $spec
+        Save-PidState -Children $children
         Start-Sleep -Milliseconds 500
     }
 
