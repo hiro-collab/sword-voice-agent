@@ -1,0 +1,126 @@
+{
+  "schema_version": "model-routing.task-profiles.v0",
+  "owner_module": "thought_core",
+  "profiles": [
+    {
+      "schema_version": "task_profile.v0",
+      "task_profile_id": "thought_core.ordinary_conversation_response.v0",
+      "task_class": "ordinary_conversation_response",
+      "owner_module": "thought_core",
+      "input_kind": "redacted_user_turn",
+      "output_kind": "response_text",
+      "risk_level": "low",
+      "privacy_level": "internal",
+      "latency_target": "interactive",
+      "context_need": "medium",
+      "reasoning_depth": "medium",
+      "determinism_required": "low",
+      "side_effect": "display_only",
+      "proof_authority_allowed": false,
+      "default_route_policy": "single",
+      "fallback_policy": "local_fallback",
+      "runtime_modifiers": [
+        "provider_unavailable",
+        "privacy_high",
+        "latency_pressure",
+        "cost_pressure",
+        "explicit_deep_review",
+        "review_blocker",
+        "repeated_failure"
+      ],
+      "non_claims": [
+        "not_provider_quality_proof",
+        "not_action_or_state_proof",
+        "not_review_ready",
+        "not_rr003_pass"
+      ]
+    },
+    {
+      "schema_version": "task_profile.v0",
+      "task_profile_id": "thought_core.audio_status_check.v0",
+      "task_class": "audio_status_check",
+      "owner_module": "thought_core",
+      "input_kind": "audio_status_request",
+      "output_kind": "route_summary",
+      "risk_level": "low",
+      "privacy_level": "internal",
+      "latency_target": "realtime",
+      "context_need": "none",
+      "reasoning_depth": "none",
+      "determinism_required": "must",
+      "side_effect": "none",
+      "proof_authority_allowed": false,
+      "default_route_policy": "no_llm",
+      "fallback_policy": "deterministic_hold",
+      "runtime_modifiers": [
+        "deterministic_confident",
+        "provider_unavailable"
+      ],
+      "non_claims": [
+        "not_mic_or_speaker_proof",
+        "not_provider_quality_proof",
+        "not_live_device_proof"
+      ]
+    },
+    {
+      "schema_version": "task_profile.v0",
+      "task_profile_id": "thought_core.motion_or_expression_intent.v0",
+      "task_class": "motion_or_expression_intent",
+      "owner_module": "thought_core",
+      "input_kind": "motion_expression_request",
+      "output_kind": "motion_request",
+      "risk_level": "medium",
+      "privacy_level": "internal",
+      "latency_target": "realtime",
+      "context_need": "low",
+      "reasoning_depth": "shallow",
+      "determinism_required": "high",
+      "side_effect": "display_only",
+      "proof_authority_allowed": false,
+      "default_route_policy": "no_llm",
+      "fallback_policy": "deterministic_hold",
+      "runtime_modifiers": [
+        "deterministic_confident",
+        "review_blocker",
+        "repeated_failure"
+      ],
+      "non_claims": [
+        "not_motion_runtime_proof",
+        "not_self_mirror_proof",
+        "not_semantic_expression_proof",
+        "not_rr003_pass"
+      ]
+    },
+    {
+      "schema_version": "task_profile.v0",
+      "task_profile_id": "thought_core.home_action_preview_or_review.v0",
+      "task_class": "home_action_preview_or_review",
+      "owner_module": "thought_core",
+      "input_kind": "action_or_state_request",
+      "output_kind": "action_preview",
+      "risk_level": "high",
+      "privacy_level": "sensitive",
+      "latency_target": "interactive",
+      "context_need": "high",
+      "reasoning_depth": "medium",
+      "determinism_required": "must",
+      "side_effect": "home_action",
+      "proof_authority_allowed": false,
+      "default_route_policy": "no_llm",
+      "fallback_policy": "human_review",
+      "runtime_modifiers": [
+        "deterministic_confident",
+        "safety_or_side_effect",
+        "review_blocker",
+        "issue_blocker",
+        "provider_unavailable"
+      ],
+      "non_claims": [
+        "not_live_action_approval",
+        "not_home_assistant_state_proof",
+        "not_physical_state_proof",
+        "not_review_ready"
+      ]
+    }
+  ]
+}

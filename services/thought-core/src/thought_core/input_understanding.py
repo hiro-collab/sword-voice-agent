@@ -100,6 +100,17 @@ class LocalInputUnderstanding:
                 **action_fields,
             )
 
+        if _is_audio_status_check(text):
+            return InputFrame(
+                kind="audio_check",
+                target="audio_input",
+                is_question=True,
+                confidence=0.83,
+                reason="audio_status_check",
+                metadata={"normalized": normalized},
+                **action_fields,
+            )
+
         pending_feedback_label = _room_light_feedback_label(
             text,
             pending=pending_state_query or _pending_state_from_action_review(
@@ -403,6 +414,50 @@ def _is_room_light_state_question(text: str) -> bool:
         return True
     return normalized.endswith(("か", "かな", "かね", "かい")) and bool(
         _explicit_room_light_state_label(normalized) or "状態" in normalized
+    )
+
+
+def _is_audio_status_check(text: str) -> bool:
+    normalized = _normalize_text(text)
+    lowered = normalized.lower()
+    if not normalized:
+        return False
+    audio_markers = (
+        "音声",
+        "マイク",
+        "声",
+        "聞こえ",
+        "聞き取",
+        "stt",
+        "speech",
+        "audio",
+    )
+    status_markers = (
+        "聞こえた",
+        "聞こえる",
+        "聞き取",
+        "認識",
+        "受け取",
+        "届いて",
+        "入力",
+        "テスト",
+        "確認",
+    )
+    question_markers = (
+        "確認して",
+        "確認してください",
+        "確認",
+        "ですか",
+        "ますか",
+        "かな",
+        "か",
+        "?",
+        "？",
+    )
+    return (
+        any(marker in normalized or marker in lowered for marker in audio_markers)
+        and any(marker in normalized or marker in lowered for marker in status_markers)
+        and any(marker in normalized or marker in lowered for marker in question_markers)
     )
 
 

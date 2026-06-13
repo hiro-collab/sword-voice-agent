@@ -38,6 +38,71 @@ from .tools import (
 )
 
 
+CURRENT_SAFE_CONTEXT_REF_KEYS = {
+    "event_id",
+    "turn_id",
+    "trace_id",
+    "observation_id",
+    "observation_ref",
+    "motion_event_id",
+    "stimulus_id",
+    "stimulus_instance_id",
+    "runtime_result_id",
+    "event_journal_entry_id",
+    "memory_candidate_id",
+}
+AUTHORITY_GATED_CONTEXT_REF_KEYS = {
+    "driver_result_id",
+    "body_schema_snapshot_id",
+    "verifier_result_id",
+}
+SAFE_CONTEXT_REF_KEYS = CURRENT_SAFE_CONTEXT_REF_KEYS | AUTHORITY_GATED_CONTEXT_REF_KEYS
+STRUCTURED_CONTEXT_KEYS = {
+    "working_memory_context",
+    "body_expression_context",
+    "prior_result_context",
+}
+UNSAFE_CONTEXT_KEY_PARTS = {
+    "raw",
+    "prompt",
+    "transcript",
+    "provider_payload",
+    "screenshot",
+    "frame",
+    "media",
+    "local_path",
+    "path",
+    "authorization",
+    "access_token",
+    "secret",
+    "password",
+    "credential",
+}
+WORKING_MEMORY_CONTEXT_FIELDS = SAFE_CONTEXT_REF_KEYS | {
+    "context_id",
+    "observed_at",
+    "stale_after",
+    "freshness",
+    "staleness",
+    "uncertainty",
+    "repetition",
+    "state_authority",
+    "authority",
+    "confidence",
+    "safe_for_thought_core_use",
+    "safe_to_act",
+    "not_proven",
+    "must_not_imply",
+}
+DRIVER_RESULT_AUTHORITIES = {
+    "motion_driver_result",
+    "motion_driver_result_contract",
+    "motion_driver_result.v0",
+    "driver_result_contract",
+}
+CONTEXT_VALUE_MAX_CHARS = 180
+
+
 class _EventBuffer(list[ThoughtEvent]):
     def __init__(self, event_sink: Callable[[ThoughtEvent], None] | None = None) -> None:
         super().__init__()
@@ -80,6 +145,7 @@ class ThoughtLoop:
         self._active_session_id = ""
         self._active_issue_key = ""
         self._active_turn_input: TurnInput | None = None
+        self._active_working_memory_context: dict[str, Any] = {}
         self.llm_visible_speech = (
             _env_bool("THOUGHT_CORE_LLM_VISIBLE_SPEECH_ENABLED", False)
             if llm_visible_speech is None
@@ -103,13 +169,18 @@ class ThoughtLoop:
         previous_active_session_id = self._active_session_id
         previous_active_issue_key = self._active_issue_key
         previous_active_turn_input = self._active_turn_input
+        previous_active_working_memory_context = self._active_working_memory_context
         self._active_session_id = turn_input.session_id
         self._active_turn_input = turn_input
+        self._active_working_memory_context = {}
         try:
             input_frame = self._understand_input(turn_input)
             self._active_issue_key = self._speech_issue_key(turn_input, input_frame)
             self._emit_input_ack(events, factory, turn_input, input_frame)
             self._emit_input_understood(events, factory, input_frame)
+            working_memory_context = self._build_working_memory_context(turn_input)
+            self._active_working_memory_context = working_memory_context
+            self._emit_context_trace_events(events, factory, working_memory_context)
             memory_context = self._retrieve_memory_context(events, factory, turn_input)
             self._hydrate_pending_action_review_from_memory(
                 turn_input,
@@ -121,6 +192,9 @@ class ThoughtLoop:
                 return events
             if input_frame.kind == "state_query":
                 self._handle_room_light_state_query(events, factory, turn_input)
+                return events
+            if input_frame.kind == "audio_check":
+                self._handle_audio_check_turn(events, factory, turn_input, input_frame)
                 return events
             if input_frame.kind == "motion_request":
                 self._handle_motion_request_turn(
@@ -443,6 +517,17 @@ class ThoughtLoop:
                     )
                     return events
 
+                if self._automatic_review_blocked_by_tracking(action, execute_result):
+                    self._complete_action_submitted_without_automatic_review(
+                        events,
+                        factory,
+                        action=action,
+                        execute_result=execute_result,
+                        attempts=attempt,
+                        confirmed=False,
+                    )
+                    return events
+
                 self._emit_stage_update(
                     events,
                     factory,
@@ -642,6 +727,7 @@ class ThoughtLoop:
             self._active_session_id = previous_active_session_id
             self._active_issue_key = previous_active_issue_key
             self._active_turn_input = previous_active_turn_input
+            self._active_working_memory_context = previous_active_working_memory_context
 
     def run_dicts(
         self,
@@ -1829,6 +1915,17 @@ class ThoughtLoop:
             return True
 
         if self._execution_was_accepted(execute_result):
+            if self._automatic_review_blocked_by_tracking(action, execute_result):
+                self.pending_confirmations.pop(turn_input.session_id, None)
+                self._complete_action_submitted_without_automatic_review(
+                    events,
+                    factory,
+                    action=action,
+                    execute_result=execute_result,
+                    attempts=int(execute_result.get("attempt") or 1),
+                    confirmed=True,
+                )
+                return True
             speech = self._action_recheck_cue_speech(action)
             self._emit_message(
                 events,
@@ -2584,6 +2681,8 @@ class ThoughtLoop:
             return False
         if not self._execution_was_accepted(execute_result):
             return False
+        if self._automatic_review_blocked_by_tracking(action, execute_result):
+            return False
         policy = self._action_review_policy(action)
         self._write_short_memory(
             events,
@@ -3329,6 +3428,79 @@ class ThoughtLoop:
         )
         return f"{phrase}操作を送信しました。反映後の状態を確認します。"
 
+    def _complete_action_submitted_without_automatic_review(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        *,
+        action: dict[str, Any],
+        execute_result: dict[str, Any],
+        attempts: int,
+        confirmed: bool,
+    ) -> None:
+        speech = self._action_external_observation_required_speech(
+            action,
+            execute_result,
+        )
+        self._emit_message(
+            events,
+            factory,
+            speech=speech,
+            display=speech,
+            emotion="focused",
+            motion="small_nod",
+            priority="immediate",
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {
+                    "status": "submitted_external_observation_required",
+                    "attempts": attempts,
+                    "action": action,
+                    "execute_status": execute_result.get("status"),
+                    "confirmed": confirmed,
+                    "proof_layer": "command_accepted_only",
+                    "state_tracking": _first_nonempty_text(
+                        action.get("state_tracking"),
+                        execute_result.get("state_tracking"),
+                    ),
+                    "verification_mode": _first_nonempty_text(
+                        action.get("verification_mode"),
+                        execute_result.get("verification_mode"),
+                    ),
+                    "state_authority": _first_nonempty_text(
+                        action.get("state_authority"),
+                        execute_result.get("state_authority"),
+                    ),
+                    "automatic_review_scheduled": False,
+                    "physical_state_confirmed": False,
+                },
+            )
+        )
+
+    def _action_external_observation_required_speech(
+        self,
+        action: dict[str, Any],
+        execute_result: dict[str, Any],
+    ) -> str:
+        base = str(execute_result.get("speak") or execute_result.get("message") or "").strip()
+        if not base:
+            phrase = str(
+                action.get("pre_action_phrase")
+                or action.get("target_name")
+                or action.get("action_id")
+                or "この操作"
+            ).strip()
+            base = f"{phrase}操作を送信しました"
+        if not base.endswith(("。", "！", "？", "!", "?")):
+            base = f"{base}。"
+        return (
+            f"{base}"
+            "ただし、この操作はHome Assistantだけでは物理状態を確認できないため、"
+            "実際に変わったかは外部確認が必要です。"
+        )
+
     def _can_retry_review_action(
         self,
         action: dict[str, Any],
@@ -3370,12 +3542,49 @@ class ThoughtLoop:
     ) -> bool:
         if not self._execution_was_accepted(execute_result):
             return False
+        if self._automatic_review_blocked_by_tracking(action, execute_result):
+            return False
         issued_at = str(execute_result.get("issued_at") or "")
         if self._parse_iso_datetime(issued_at) is None:
             return False
         if action.get("confirm_required"):
             return False
         return bool(self._review_checkpoints_ms(self._action_review_policy(action)))
+
+    def _automatic_review_blocked_by_tracking(
+        self,
+        action: dict[str, Any],
+        execute_result: dict[str, Any],
+    ) -> bool:
+        state_tracking = _first_nonempty_text(
+            action.get("state_tracking"),
+            execute_result.get("state_tracking"),
+        )
+        verification_mode = _first_nonempty_text(
+            action.get("verification_mode"),
+            execute_result.get("verification_mode"),
+        )
+        state_authority = _first_nonempty_text(
+            action.get("state_authority"),
+            execute_result.get("state_authority"),
+        )
+        if state_tracking in {
+            "external_required",
+            "ack_only",
+            "manual_required",
+            "unsupported",
+        }:
+            return True
+        if verification_mode in {
+            "external_observation",
+            "command_ack_only",
+            "manual_confirmation",
+            "unsupported",
+        }:
+            return True
+        if state_authority in {"open_loop", "submitted_only", "manual", "unknown"}:
+            return True
+        return False
 
     def _input_requests_home_action(
         self,
@@ -3609,11 +3818,28 @@ class ThoughtLoop:
         progress: dict[str, Any],
         review: dict[str, Any],
     ) -> None:
+        turn_key = self._speech_fragment_key(turn_input.turn_id or "turn")
+        candidate_id = f"mcand_{turn_key}_failure_pattern_001"
+        source_event_id = events[-1].event_id if events else ""
         item = {
             "schema_version": "memory.item.v0",
+            "memory_id": candidate_id,
             "memory_type": "failure_pattern",
             "scope": "failure_patterns",
             "status": "candidate",
+            "derived_from_event_id": source_event_id,
+            "why_record": "retry_or_review_budget_exhausted",
+            "evidence_summary_ref": f"event:{source_event_id}" if source_event_id else "",
+            "retention_class": "candidate_ephemeral_review",
+            "redaction_state": "summary_only_no_raw_evidence",
+            "deletion_or_forgetting_state": "deletable_candidate",
+            "protected_or_deletable": "deletable_unprotected",
+            "safe_to_act": False,
+            "safe_for_future_reasoning": {
+                "allowed": True,
+                "mode": "advisory_only",
+                "must_revalidate_current_state": True,
+            },
             "content": {
                 "action_id": str(action.get("action_id") or ""),
                 "target": str(action.get("target") or ""),
@@ -3634,10 +3860,31 @@ class ThoughtLoop:
                     turn_input.context_refs.get("trace_id") or f"trace_{turn_input.turn_id}"
                 ),
                 "turn_id": turn_input.turn_id,
+                "event_id": source_event_id,
             },
             "confidence": 0.72,
             "created_at": datetime.now(UTC).isoformat(),
         }
+        events.append(
+            factory.emit(
+                "memory.candidate_requested",
+                {
+                    "candidate_id": candidate_id,
+                    "memory_type": item["memory_type"],
+                    "scope": item["scope"],
+                    "derived_from_event_id": item["derived_from_event_id"],
+                    "why_record": item["why_record"],
+                    "evidence_summary_ref": item["evidence_summary_ref"],
+                    "retention_class": item["retention_class"],
+                    "redaction_state": item["redaction_state"],
+                    "deletion_or_forgetting_state": item["deletion_or_forgetting_state"],
+                    "protected_or_deletable": item["protected_or_deletable"],
+                    "safe_to_act": item["safe_to_act"],
+                    "safe_for_future_reasoning": item["safe_for_future_reasoning"],
+                    "durable_memory_claimed": False,
+                },
+            )
+        )
         result = self._call_tool(
             events,
             factory,
@@ -3648,11 +3895,12 @@ class ThoughtLoop:
             factory.emit(
                 "memory.candidate_recorded",
                 {
+                    "requested_candidate_id": candidate_id,
                     "scope": item["scope"],
                     "memory_type": item["memory_type"],
                     "action_id": item["content"]["action_id"],
                     "write_status": result.get("status"),
-                    "candidate_id": result.get("candidate_id"),
+                    "candidate_id": result.get("candidate_id") or candidate_id,
                     "written": bool(result.get("written", result.get("ok", False))),
                 },
             )
@@ -3861,6 +4109,266 @@ class ThoughtLoop:
             f"{len(items)}件の関連メモリを確認しました。"
             f"scope={', '.join(scopes)} / type={', '.join(types)}"
         )
+
+    def _build_working_memory_context(self, turn_input: TurnInput) -> dict[str, Any]:
+        refs = turn_input.context_refs
+        if not refs:
+            return {}
+
+        structured_context = self._structured_context_refs(refs)
+        direct_refs: list[dict[str, Any]] = []
+        pending_refs: list[dict[str, Any]] = []
+        ignored_refs: list[dict[str, Any]] = []
+        for key, value in refs.items():
+            ref_key = str(key)
+            if ref_key in STRUCTURED_CONTEXT_KEYS:
+                continue
+            if _is_unsafe_context_key(ref_key):
+                ignored_refs.append(
+                    {
+                        "key": ref_key,
+                        "reason": "unsafe_or_raw_context_ref",
+                    }
+                )
+                continue
+            if ref_key not in SAFE_CONTEXT_REF_KEYS:
+                continue
+            unsafe_value_reason = _unsafe_context_value_reason(value)
+            if unsafe_value_reason:
+                ignored_refs.append({"key": ref_key, "reason": unsafe_value_reason})
+                continue
+            safe_value = _safe_context_scalar(value)
+            if safe_value == "":
+                ignored_refs.append(
+                    {
+                        "key": ref_key,
+                        "reason": "non_scalar_or_empty_context_ref",
+                    }
+                )
+                continue
+            classification, reason = self._classify_context_ref(
+                ref_key,
+                safe_value,
+                structured_context,
+            )
+            if classification == "safe":
+                direct_refs.append({"key": ref_key, "value": safe_value})
+                continue
+            if classification == "pending":
+                pending_refs.append({"key": ref_key, "value": safe_value, "reason": reason})
+                continue
+            ignored_refs.append({"key": ref_key, "reason": reason})
+
+        self._add_structured_current_refs(direct_refs, structured_context)
+
+        if not structured_context and not direct_refs and not pending_refs and not ignored_refs:
+            return {}
+
+        structured_can_make_safe = (
+            structured_context.get("safe_for_thought_core_use") is True
+            and self._structured_context_can_make_safe(structured_context)
+        )
+        safe_for_use = bool(direct_refs or structured_can_make_safe)
+        context_id = str(
+            structured_context.get("context_id")
+            or self._context_id_from_refs(turn_input, direct_refs)
+        )
+        context: dict[str, Any] = {
+            "schema_version": "thought-core.working_memory_context.v0",
+            "context_id": context_id,
+            "status": "available" if safe_for_use else "ignored",
+            "received_ref_count": len(direct_refs) + len(pending_refs) + len(structured_context),
+            "safe_refs": direct_refs,
+            "pending_authority_refs": pending_refs,
+            "observed_at": structured_context.get("observed_at") or "",
+            "stale_after": structured_context.get("stale_after") or "",
+            "freshness": structured_context.get("freshness") or "unknown",
+            "staleness": structured_context.get("staleness") or "unknown",
+            "uncertainty": structured_context.get("uncertainty") or "unknown",
+            "repetition": structured_context.get("repetition") or {},
+            "state_authority": (
+                structured_context.get("state_authority")
+                or structured_context.get("authority")
+                or "supplied_context_refs"
+            ),
+            "safe_for_thought_core_use": safe_for_use,
+            "safe_to_act": False,
+            "not_proven": bool(structured_context.get("not_proven", True)),
+            "must_not_imply": _safe_context_list(
+                structured_context.get("must_not_imply"),
+                defaults=[
+                    "verified_current_state",
+                    "durable_memory",
+                    "safe_to_act",
+                ],
+            ),
+            "ignored_refs": ignored_refs,
+        }
+        for ref in direct_refs:
+            context.setdefault(ref["key"], ref["value"])
+        return context
+
+    def _classify_context_ref(
+        self,
+        ref_key: str,
+        safe_value: str,
+        structured_context: dict[str, Any],
+    ) -> tuple[str, str]:
+        if ref_key in CURRENT_SAFE_CONTEXT_REF_KEYS:
+            return "safe", ""
+        if ref_key == "driver_result_id":
+            if safe_value.startswith("driver-result-"):
+                return "ignored", "runtime_local_driver_result_id_not_authority"
+            if safe_value.startswith("mot_drv_"):
+                if self._has_explicit_driver_authority(structured_context):
+                    return "safe", ""
+                return "pending", "driver_result_id_pending_explicit_authority"
+            return "ignored", "driver_result_id_not_contract_shaped"
+        if ref_key in {"body_schema_snapshot_id", "verifier_result_id"}:
+            return "pending", f"{ref_key}_authority_route_not_open"
+        return "ignored", "unsupported_context_ref"
+
+    def _add_structured_current_refs(
+        self,
+        direct_refs: list[dict[str, Any]],
+        structured_context: dict[str, Any],
+    ) -> None:
+        existing = {str(ref.get("key") or "") for ref in direct_refs}
+        for key in CURRENT_SAFE_CONTEXT_REF_KEYS:
+            if key in existing:
+                continue
+            safe_value = _safe_context_scalar(structured_context.get(key))
+            if safe_value:
+                direct_refs.append(
+                    {
+                        "key": key,
+                        "value": safe_value,
+                        "source": "structured_context",
+                    }
+                )
+
+    def _structured_context_can_make_safe(self, structured_context: dict[str, Any]) -> bool:
+        for key in CURRENT_SAFE_CONTEXT_REF_KEYS:
+            if _safe_context_scalar(structured_context.get(key)):
+                return True
+        driver_result_id = _safe_context_scalar(structured_context.get("driver_result_id"))
+        if driver_result_id.startswith("mot_drv_"):
+            return self._has_explicit_driver_authority(structured_context)
+        has_future_authority_ref = any(
+            _safe_context_scalar(structured_context.get(key))
+            for key in AUTHORITY_GATED_CONTEXT_REF_KEYS
+        )
+        return not has_future_authority_ref
+
+    def _has_explicit_driver_authority(self, structured_context: dict[str, Any]) -> bool:
+        authority = str(
+            structured_context.get("state_authority")
+            or structured_context.get("authority")
+            or ""
+        ).strip()
+        return authority in DRIVER_RESULT_AUTHORITIES
+
+    def _structured_context_refs(self, refs: Mapping[str, Any]) -> dict[str, Any]:
+        context: dict[str, Any] = {}
+        for key in STRUCTURED_CONTEXT_KEYS:
+            value = refs.get(key)
+            if not isinstance(value, Mapping):
+                continue
+            for item_key, item_value in value.items():
+                text_key = str(item_key)
+                if text_key not in WORKING_MEMORY_CONTEXT_FIELDS:
+                    continue
+                if _is_unsafe_context_key(text_key):
+                    continue
+                if text_key == "repetition" and isinstance(item_value, Mapping):
+                    context[text_key] = {
+                        str(sub_key): _safe_context_scalar(sub_value)
+                        for sub_key, sub_value in item_value.items()
+                        if not _is_unsafe_context_key(str(sub_key))
+                    }
+                    continue
+                if text_key == "must_not_imply":
+                    context[text_key] = _safe_context_list(item_value)
+                    continue
+                if isinstance(item_value, bool | int | float):
+                    context[text_key] = item_value
+                    continue
+                safe_value = _safe_context_scalar(item_value)
+                if safe_value != "":
+                    context[text_key] = safe_value
+        return context
+
+    def _context_id_from_refs(
+        self,
+        turn_input: TurnInput,
+        direct_refs: list[dict[str, Any]],
+    ) -> str:
+        for ref in direct_refs:
+            if ref["key"] in {"event_id", "motion_event_id", "body_schema_snapshot_id"}:
+                return f"ctx_{self._speech_fragment_key(str(ref['value']))}"
+        return f"ctx_{self._speech_fragment_key(turn_input.turn_id or 'turn')}"
+
+    def _emit_context_trace_events(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        working_memory_context: dict[str, Any],
+    ) -> None:
+        if not working_memory_context:
+            return
+        safe_refs = list(working_memory_context.get("safe_refs", []))
+        pending_refs = list(working_memory_context.get("pending_authority_refs", []))
+        ignored_refs = list(working_memory_context.get("ignored_refs", []))
+        events.append(
+            factory.emit(
+                "context.received",
+                {
+                    "contract_name": "context_received",
+                    "context_id": working_memory_context.get("context_id"),
+                    "safe_ref_keys": [ref.get("key") for ref in safe_refs],
+                    "pending_authority_ref_keys": [ref.get("key") for ref in pending_refs],
+                    "ignored_ref_keys": [ref.get("key") for ref in ignored_refs],
+                    "working_memory_context": {
+                        "observed_at": working_memory_context.get("observed_at"),
+                        "stale_after": working_memory_context.get("stale_after"),
+                        "freshness": working_memory_context.get("freshness"),
+                        "staleness": working_memory_context.get("staleness"),
+                        "uncertainty": working_memory_context.get("uncertainty"),
+                        "state_authority": working_memory_context.get("state_authority"),
+                        "safe_for_thought_core_use": working_memory_context.get(
+                            "safe_for_thought_core_use"
+                        ),
+                        "safe_to_act": False,
+                        "not_proven": working_memory_context.get("not_proven"),
+                        "must_not_imply": working_memory_context.get("must_not_imply"),
+                    },
+                },
+            )
+        )
+        if ignored_refs:
+            events.append(
+                factory.emit(
+                    "context.ignored_with_reason",
+                    {
+                        "contract_name": "context_ignored_with_reason",
+                        "context_id": working_memory_context.get("context_id"),
+                        "ignored_refs": ignored_refs,
+                    },
+                )
+            )
+        if working_memory_context.get("safe_for_thought_core_use") is True:
+            events.append(
+                factory.emit(
+                    "context.used",
+                    {
+                        "contract_name": "context_used",
+                        "context_id": working_memory_context.get("context_id"),
+                        "used_by": ["thought_core.response_context"],
+                        "safe_to_act": False,
+                        "not_proven": working_memory_context.get("not_proven"),
+                    },
+                )
+            )
 
     def _understand_input(self, turn_input: TurnInput) -> InputFrame:
         return self.input_understanding.understand(
@@ -4205,7 +4713,76 @@ class ThoughtLoop:
             turn_input.text
         ) is not None:
             return "うん、操作できるか確認するね。"
+        if input_frame and input_frame.kind == "audio_check":
+            return "うん、音声入力の受け取り状態を確認するね。"
         return "うん、聞いたよ。"
+
+    def _handle_audio_check_turn(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        input_frame: InputFrame,
+    ) -> None:
+        speech = (
+            "音声入力はテキストとして受け取れています。"
+            "ただし、マイク音質やスピーカーから聞こえたかは、この応答だけでは確認できません。"
+        )
+        events.append(
+            factory.emit(
+                "audio.status_checked",
+                {
+                    "input_kind": input_frame.kind,
+                    "input_received_as_text": True,
+                    "audio_quality_confirmed": False,
+                    "speaker_output_confirmed": False,
+                    "proof_layer": "text_handoff_only",
+                    "non_claims": [
+                        "microphone_quality_proven",
+                        "speaker_output_heard",
+                        "raw_audio_reviewed",
+                    ],
+                },
+            )
+        )
+        self._emit_response_route_classified(
+            events,
+            factory,
+            turn_input=turn_input,
+            response_route="audio_status_check",
+            intent_kind=input_frame.kind,
+            responder_status="audio_status_check",
+            fallback_used=False,
+            provider_route="thought-core-audio-status",
+            used_llm=False,
+            non_claims=[
+                "microphone_quality_proven",
+                "speaker_output_heard",
+                "ordinary_conversation_quality",
+                "direct_dify_route_used",
+            ],
+        )
+        self._emit_message(
+            events,
+            factory,
+            speech=speech,
+            display=speech,
+            emotion="neutral",
+            motion="small_nod",
+            priority="normal",
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {
+                    "status": "audio_status_check",
+                    "input_received_as_text": True,
+                    "audio_quality_confirmed": False,
+                    "speaker_output_confirmed": False,
+                    "pending_action_review_continued": False,
+                },
+            )
+        )
 
     def _handle_general_turn(
         self,
@@ -4222,6 +4799,7 @@ class ThoughtLoop:
             turn_input,
             response_context=response_context,
         )
+        fallback_used = str(result.status or "").startswith("local_fallback")
         events.append(
             factory.emit(
                 "responder.completed",
@@ -4237,6 +4815,23 @@ class ThoughtLoop:
                     "response_context": response_context,
                 },
             )
+        )
+        self._emit_response_route_classified(
+            events,
+            factory,
+            turn_input=turn_input,
+            response_route="ordinary_conversation",
+            intent_kind="general",
+            responder_status=result.status,
+            fallback_used=fallback_used,
+            provider_route=result.provider,
+            used_llm=result.used_llm,
+            non_claims=[
+                "microphone_quality_proven",
+                "speaker_output_heard",
+                "device_action_proven",
+                "direct_dify_route_used",
+            ],
         )
         self._emit_message(
             events,
@@ -4259,6 +4854,41 @@ class ThoughtLoop:
             )
         )
 
+    def _emit_response_route_classified(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        *,
+        turn_input: TurnInput,
+        response_route: str,
+        intent_kind: str,
+        responder_status: str,
+        fallback_used: bool,
+        provider_route: str,
+        used_llm: bool,
+        non_claims: list[str],
+    ) -> None:
+        events.append(
+            factory.emit(
+                "thought_core.response_route_classified",
+                {
+                    "schema_version": "thought_core_response_route.v0",
+                    "turn_id": turn_input.turn_id,
+                    "trace_id": _safe_context_scalar(
+                        turn_input.context_refs.get("trace_id", "")
+                    ),
+                    "response_route": response_route,
+                    "intent_kind": intent_kind,
+                    "responder_status": responder_status,
+                    "fallback_used": fallback_used,
+                    "provider_route": provider_route,
+                    "used_llm": used_llm,
+                    "direct_dify_used": False,
+                    "non_claims": list(non_claims),
+                },
+            )
+        )
+
     def _handle_motion_request_turn(
         self,
         events: list[ThoughtEvent],
@@ -4266,6 +4896,21 @@ class ThoughtLoop:
         turn_input: TurnInput,
         input_frame: InputFrame,
     ) -> None:
+        events.append(
+            factory.emit(
+                "motion_or_action_intent.selected",
+                {
+                    "contract_name": "motion_or_action_intent_selected",
+                    "intent_kind": "motion",
+                    "input_kind": input_frame.kind,
+                    "contextual": bool(self._active_working_memory_context),
+                    "working_memory_context_id": self._active_working_memory_context.get(
+                        "context_id",
+                        "",
+                    ),
+                },
+            )
+        )
         event = factory.emit("motion.requested", {})
         event.data.update(self._motion_request_payload(turn_input, input_frame, event))
         events.append(event)
@@ -4440,6 +5085,8 @@ class ThoughtLoop:
             "recent_fragments": recent_fragments,
             "current_stage": current_stage,
         }
+        if self._active_working_memory_context.get("safe_for_thought_core_use") is True:
+            context["working_memory_context"] = dict(self._active_working_memory_context)
         if action:
             context["action_id"] = str(action.get("action_id") or "")
             context["target"] = str(action.get("target") or "")
@@ -5299,16 +5946,16 @@ class ThoughtLoop:
     def _home_action_messages(self, action: dict[str, Any]) -> dict[str, str]:
         action_id = str(action.get("action_id") or "")
         action_messages = {
-            "fan_on": ("扇風機をつける", "扇風機をつけたよ。"),
-            "fan_off": ("扇風機を消す", "扇風機を消したよ。"),
-            "aircon_on": ("エアコンをつける", "エアコンをつけたよ。"),
-            "aircon_off": ("エアコンを消す", "エアコンを消したよ。"),
-            "door_open": ("中扉を開ける", "中扉を開けたよ。"),
-            "door_close": ("中扉を閉める", "中扉を閉めたよ。"),
-            "door_stop": ("中扉を止める", "中扉を止めたよ。"),
-            "vacuum_start": ("掃除機を動かす", "掃除機を動かしたよ。"),
-            "vacuum_return": ("掃除機を戻す", "掃除機を戻したよ。"),
-            "vacuum_pause": ("掃除機を一時停止する", "掃除機を一時停止したよ。"),
+            "fan_on": ("扇風機をつける", "扇風機をつける操作を送信したよ。"),
+            "fan_off": ("扇風機を消す", "扇風機を消す操作を送信したよ。"),
+            "aircon_on": ("エアコンをつける", "エアコンをつける操作を送信したよ。"),
+            "aircon_off": ("エアコンを消す", "エアコンを消す操作を送信したよ。"),
+            "door_open": ("中扉を開ける", "中扉を開ける操作を送信したよ。"),
+            "door_close": ("中扉を閉める", "中扉を閉める操作を送信したよ。"),
+            "door_stop": ("中扉を止める", "中扉を止める操作を送信したよ。"),
+            "vacuum_start": ("掃除機を動かす", "掃除機を動かす操作を送信したよ。"),
+            "vacuum_return": ("掃除機を戻す", "掃除機を戻す操作を送信したよ。"),
+            "vacuum_pause": ("掃除機を一時停止する", "掃除機を一時停止する操作を送信したよ。"),
         }
         if action_id in action_messages:
             phrase, success_speech = action_messages[action_id]
@@ -5327,15 +5974,15 @@ class ThoughtLoop:
             return {
                 "before_speech": f"了解、{target_name}を消すね。",
                 "before_display": f"{target_name}を消します",
-                "success_speech": f"{target_name}を消したよ。",
-                "success_display": f"{target_name}をOFFにしました",
+                "success_speech": f"{target_name}を消す操作を送信したよ。",
+                "success_display": f"{target_name}を消す操作を送信しました",
                 "feedback_speech": "電気が消えたか確認できませんでした。状態を確認してもらえますか？",
             }
         return {
             "before_speech": f"了解、{target_name}をつけるね。",
             "before_display": f"{target_name}をつけます",
-            "success_speech": f"{target_name}をつけたよ。",
-            "success_display": f"{target_name}をONにしました",
+            "success_speech": f"{target_name}をつける操作を送信したよ。",
+            "success_display": f"{target_name}をつける操作を送信しました",
             "feedback_speech": "電気がついたか確認できませんでした。状態を確認してもらえますか？",
         }
 
@@ -5377,3 +6024,56 @@ def _env_bool(name: str, default: bool) -> bool:
     if not value.strip():
         return default
     return value.strip().lower() in {"1", "true", "on", "yes"}
+
+
+def _first_nonempty_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip().lower()
+        if text:
+            return text
+    return ""
+
+
+def _is_unsafe_context_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    return any(part in normalized for part in UNSAFE_CONTEXT_KEY_PARTS)
+
+
+def _safe_context_scalar(value: Any) -> str:
+    if isinstance(value, bool | int | float):
+        return str(value)
+    if not isinstance(value, str):
+        return ""
+    compact = " ".join(value.strip().split())
+    if not compact:
+        return ""
+    if _unsafe_context_value_reason(compact):
+        return ""
+    return compact[:CONTEXT_VALUE_MAX_CHARS]
+
+
+def _safe_context_list(value: Any, *, defaults: list[str] | None = None) -> list[str]:
+    if not isinstance(value, list):
+        return list(defaults or [])
+    safe_items: list[str] = []
+    for item in value[:12]:
+        safe_value = _safe_context_scalar(item)
+        if safe_value:
+            safe_items.append(safe_value)
+    return safe_items or list(defaults or [])
+
+
+def _unsafe_context_value_reason(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    compact = " ".join(value.strip().split())
+    lowered = compact.lower()
+    if "://" in lowered or lowered.startswith(("http://", "https://", "file://")):
+        return "url_like_context_ref_value"
+    if ":\\" in compact or compact.startswith("\\\\") or "/" in compact or "\\" in compact:
+        return "path_like_context_ref_value"
+    if lowered.startswith(("bearer ", "token ")) or "access_token=" in lowered or "api_key=" in lowered:
+        return "token_like_context_ref_value"
+    if "prompt:" in lowered or lowered.startswith(("system prompt", "developer prompt")):
+        return "prompt_like_context_ref_value"
+    return ""
