@@ -30,10 +30,13 @@
       "pre_action_phrase": "電気をつける",
       "expected_state": "on",
       "expected_effect": {
-        "domain": "switch",
-        "service": "turn_on",
-        "entity_id": "switch.raito",
-        "expected_state": "on"
+        "expected_state": "on",
+        "control_type": "stateless_toggle",
+        "state_authority": "open_loop",
+        "verification_mode": "external_observation",
+        "evidence_class": "external_observation_required",
+        "physical_state_source": "not_supported",
+        "unverified_state_label": "open_loop_toggle_submitted"
       },
       "risk_level": "low",
       "confirmation_required": false,
@@ -65,10 +68,13 @@
       "pre_action_phrase": "電気を消す",
       "expected_state": "off",
       "expected_effect": {
-        "domain": "switch",
-        "service": "turn_off",
-        "entity_id": "switch.raito",
-        "expected_state": "off"
+        "expected_state": "off",
+        "control_type": "stateless_toggle",
+        "state_authority": "open_loop",
+        "verification_mode": "external_observation",
+        "evidence_class": "external_observation_required",
+        "physical_state_source": "not_supported",
+        "unverified_state_label": "open_loop_toggle_submitted"
       },
       "risk_level": "low",
       "confirmation_required": false,
@@ -97,7 +103,15 @@
       ],
       "pre_action_phrase": "扇風機をつける",
       "expected_state": "on",
-      "expected_effect": { "expected_state": "on" },
+      "expected_effect": {
+        "expected_state": "on",
+        "control_type": "stateless_command",
+        "state_authority": "submitted_only",
+        "verification_mode": "command_ack_only",
+        "evidence_class": "command_ack_only",
+        "physical_state_source": "not_supported",
+        "unverified_state_label": "submitted_unverified"
+      },
       "risk_level": "low",
       "confirmation_required": false,
       "confirmation_reason": null,
@@ -126,7 +140,15 @@
       ],
       "pre_action_phrase": "扇風機を消す",
       "expected_state": "off",
-      "expected_effect": { "expected_state": "off" },
+      "expected_effect": {
+        "expected_state": "off",
+        "control_type": "stateless_command",
+        "state_authority": "submitted_only",
+        "verification_mode": "command_ack_only",
+        "evidence_class": "command_ack_only",
+        "physical_state_source": "not_supported",
+        "unverified_state_label": "submitted_unverified"
+      },
       "risk_level": "low",
       "confirmation_required": false,
       "confirmation_reason": null,
@@ -159,7 +181,10 @@
       "expected_state": "on",
       "expected_effect": {
         "expected_state": "on",
-        "evidence_class": "action_event_only",
+        "control_type": "stateless_command",
+        "state_authority": "submitted_only",
+        "verification_mode": "command_ack_only",
+        "evidence_class": "command_ack_only",
         "physical_state_source": "not_supported",
         "unverified_state_label": "submitted_unverified"
       },
@@ -189,8 +214,6 @@
         "エアコン切って",
         "エアコンを止めて",
         "エアコン止めて",
-        "エアコンを停止して",
-        "エアコン停止して",
         "冷房を消して",
         "冷房を止めて",
         "暖房を消して",
@@ -202,7 +225,10 @@
       "expected_state": "off",
       "expected_effect": {
         "expected_state": "off",
-        "evidence_class": "action_event_only",
+        "control_type": "stateless_command",
+        "state_authority": "submitted_only",
+        "verification_mode": "command_ack_only",
+        "evidence_class": "command_ack_only",
         "physical_state_source": "not_supported",
         "unverified_state_label": "submitted_unverified"
       },
@@ -218,7 +244,81 @@
         "appliance_id": "aircon",
         "state_path": "environment.appliances.aircon.state"
       },
-      "intent_examples": ["エアコンを停止してください"]
+      "intent_examples": ["エアコンを消して"]
+    },
+    "aircon_cool": {
+      "label": "エアコンを冷房にする",
+      "target": "aircon",
+      "target_label": "エアコン",
+      "verb": "冷房にする",
+      "aliases": [
+        "エアコンを冷房にして",
+        "エアコン冷房にして",
+        "冷房にして",
+        "冷房をつけて"
+      ],
+      "pre_action_phrase": "エアコンを冷房にする",
+      "expected_state": "cool",
+      "expected_effect": {
+        "expected_state": "cool",
+        "control_type": "mode_command",
+        "state_authority": "ha_entity",
+        "verification_mode": "ha_state",
+        "evidence_class": "ha_state",
+        "physical_state_source": "home_assistant",
+        "domain": "climate",
+        "service": "set_hvac_mode",
+        "entity_id": "climate.demo_aircon"
+      },
+      "risk_level": "medium",
+      "confirmation_required": true,
+      "confirmation_reason": "climate_control",
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.demo_aircon_cool",
+        "response_text": "エアコンを冷房にしました。"
+      },
+      "observation": {
+        "appliance_id": "aircon",
+        "state_path": "environment.appliances.aircon.state"
+      },
+      "intent_examples": ["エアコンを冷房にして"]
+    },
+    "aircon_hvac_off": {
+      "label": "エアコンを停止する",
+      "target": "aircon",
+      "target_label": "エアコン",
+      "verb": "停止する",
+      "aliases": [
+        "エアコンを停止して",
+        "エアコン停止して"
+      ],
+      "pre_action_phrase": "エアコンを停止する",
+      "expected_state": "off",
+      "expected_effect": {
+        "expected_state": "off",
+        "control_type": "mode_command",
+        "state_authority": "ha_entity",
+        "verification_mode": "ha_state",
+        "evidence_class": "ha_state",
+        "physical_state_source": "home_assistant",
+        "domain": "climate",
+        "service": "set_hvac_mode",
+        "entity_id": "climate.demo_aircon"
+      },
+      "risk_level": "medium",
+      "confirmation_required": true,
+      "confirmation_reason": "climate_control",
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.demo_aircon_hvac_off",
+        "response_text": "エアコンを停止しました。"
+      },
+      "observation": {
+        "appliance_id": "aircon",
+        "state_path": "environment.appliances.aircon.state"
+      },
+      "intent_examples": ["エアコンを停止して"]
     },
     "door_open": {
       "label": "中扉を開ける",
@@ -237,7 +337,15 @@
       ],
       "pre_action_phrase": "中扉を開ける",
       "expected_state": "open",
-      "expected_effect": { "expected_state": "open" },
+      "expected_effect": {
+        "expected_state": "open",
+        "control_type": "position_command",
+        "state_authority": "submitted_only",
+        "verification_mode": "command_ack_only",
+        "evidence_class": "command_ack_only",
+        "physical_state_source": "not_supported",
+        "unverified_state_label": "submitted_unverified"
+      },
       "risk_level": "medium",
       "confirmation_required": true,
       "confirmation_reason": "door_motion",
@@ -271,7 +379,15 @@
       ],
       "pre_action_phrase": "中扉を閉める",
       "expected_state": "closed",
-      "expected_effect": { "expected_state": "closed" },
+      "expected_effect": {
+        "expected_state": "closed",
+        "control_type": "position_command",
+        "state_authority": "submitted_only",
+        "verification_mode": "command_ack_only",
+        "evidence_class": "command_ack_only",
+        "physical_state_source": "not_supported",
+        "unverified_state_label": "submitted_unverified"
+      },
       "risk_level": "medium",
       "confirmation_required": true,
       "confirmation_reason": "door_motion",
@@ -301,7 +417,15 @@
       ],
       "pre_action_phrase": "中扉を止める",
       "expected_state": "stopped",
-      "expected_effect": { "expected_state": "stopped" },
+      "expected_effect": {
+        "expected_state": "stopped",
+        "control_type": "position_command",
+        "state_authority": "submitted_only",
+        "verification_mode": "command_ack_only",
+        "evidence_class": "command_ack_only",
+        "physical_state_source": "not_supported",
+        "unverified_state_label": "submitted_unverified"
+      },
       "risk_level": "medium",
       "confirmation_required": true,
       "confirmation_reason": "door_motion",
@@ -331,7 +455,15 @@
       ],
       "pre_action_phrase": "掃除機を動かす",
       "expected_state": "cleaning",
-      "expected_effect": { "expected_state": "cleaning" },
+      "expected_effect": {
+        "expected_state": "cleaning",
+        "control_type": "job_command",
+        "state_authority": "submitted_only",
+        "verification_mode": "command_ack_only",
+        "evidence_class": "command_ack_only",
+        "physical_state_source": "not_supported",
+        "unverified_state_label": "submitted_unverified"
+      },
       "risk_level": "medium",
       "confirmation_required": true,
       "confirmation_reason": "vacuum_motion",
@@ -361,7 +493,17 @@
       ],
       "pre_action_phrase": "掃除機を戻す",
       "expected_state": "returning",
-      "expected_effect": { "expected_state": "returning" },
+      "expected_effect": {
+        "expected_state": "docked",
+        "control_type": "job_command",
+        "state_authority": "ha_entity",
+        "verification_mode": "ha_state",
+        "evidence_class": "ha_state",
+        "physical_state_source": "home_assistant",
+        "domain": "vacuum",
+        "service": "return_to_base",
+        "entity_id": "vacuum.demo_cloud_target"
+      },
       "risk_level": "medium",
       "confirmation_required": true,
       "confirmation_reason": "vacuum_motion",
@@ -391,7 +533,15 @@
       ],
       "pre_action_phrase": "掃除機を一時停止する",
       "expected_state": "paused",
-      "expected_effect": { "expected_state": "paused" },
+      "expected_effect": {
+        "expected_state": "paused",
+        "control_type": "job_command",
+        "state_authority": "submitted_only",
+        "verification_mode": "command_ack_only",
+        "evidence_class": "command_ack_only",
+        "physical_state_source": "not_supported",
+        "unverified_state_label": "submitted_unverified"
+      },
       "risk_level": "medium",
       "confirmation_required": true,
       "confirmation_reason": "vacuum_motion",
@@ -405,6 +555,41 @@
         "state_path": "environment.appliances.vacuum.state"
       },
       "intent_examples": ["掃除機を一時停止して"]
+    },
+    "projection_mode": {
+      "label": "プロジェクションモードにする",
+      "target": "projection",
+      "target_label": "プロジェクション",
+      "verb": "切り替える",
+      "aliases": [
+        "プロジェクションモードにして",
+        "プロジェクションにして",
+        "投影モードにして"
+      ],
+      "pre_action_phrase": "プロジェクションモードにする",
+      "expected_state": "projection_mode",
+      "expected_effect": {
+        "expected_state": "projection_mode",
+        "control_type": "stateless_command",
+        "state_authority": "submitted_only",
+        "verification_mode": "command_ack_only",
+        "evidence_class": "command_ack_only",
+        "physical_state_source": "not_supported",
+        "unverified_state_label": "submitted_unverified"
+      },
+      "risk_level": "medium",
+      "confirmation_required": true,
+      "confirmation_reason": "display_mode",
+      "execution": {
+        "adapter": "home-assistant",
+        "ha_script": "script.projection_mode",
+        "response_text": "プロジェクションモードにしました。"
+      },
+      "observation": {
+        "appliance_id": "projection",
+        "state_path": "environment.appliances.projection.state"
+      },
+      "intent_examples": ["プロジェクションモードにして"]
     }
   }
 }

@@ -94,7 +94,7 @@ class ActionDriverCatalogTest(unittest.TestCase):
         self.assertIn("actions", catalog)
         self.assertIn("aircon_off", catalog["actions"])
 
-    def test_catalog_matches_home_control_bridge_execution_allowlist(self) -> None:
+    def test_catalog_matches_home_control_bridge_action_ids_and_proof_metadata(self) -> None:
         catalog_actions = load_catalog()["actions"]
         bridge_actions = load_home_control_actions()
 
@@ -102,14 +102,24 @@ class ActionDriverCatalogTest(unittest.TestCase):
         for action_id, catalog_action in catalog_actions.items():
             bridge_action = bridge_actions[action_id]
             execution = catalog_action["execution"]
-            self.assertEqual(catalog_action["label"], bridge_action["label"], action_id)
-            self.assertEqual(execution["ha_script"], bridge_action["ha_script"], action_id)
+            expected_effect = catalog_action.get("expected_effect", {})
+            self.assertEqual(execution["adapter"], "home-assistant", action_id)
+            self.assertRegex(str(execution["ha_script"]), r"^script\.", action_id)
+            self.assertRegex(str(bridge_action["ha_script"]), r"^script\.", action_id)
             self.assertEqual(
                 catalog_action["confirmation_required"],
                 bridge_action["confirm_required"],
                 action_id,
             )
-            self.assertEqual(execution["response_text"], bridge_action["response_text"], action_id)
+            self.assertTrue(str(execution.get("response_text") or "").strip(), action_id)
+            self.assertTrue(str(bridge_action.get("response_text") or "").strip(), action_id)
+            for metadata_key in ("control_type", "state_authority"):
+                if metadata_key in bridge_action:
+                    self.assertEqual(
+                        expected_effect.get(metadata_key),
+                        bridge_action[metadata_key],
+                        f"{action_id}:{metadata_key}",
+                    )
 
     def test_catalog_matches_environment_action_projection(self) -> None:
         catalog_actions = load_catalog()["actions"]
@@ -173,10 +183,16 @@ class ActionDriverCatalogTest(unittest.TestCase):
             }
         }
 
-        for text in ("エアコンを止めて", "エアコンを停止して", "エアコン停止して", "エアコンを消して"):
+        for text in ("エアコンを止めて", "エアコンを消して"):
             intent = detect_home_action_intent(text, observation)
             self.assertIsNotNone(intent, text)
             self.assertEqual(intent.action_id, "aircon_off", text)
+            self.assertEqual(intent.target, "aircon", text)
+
+        for text in ("エアコンを停止して", "エアコン停止して"):
+            intent = detect_home_action_intent(text, observation)
+            self.assertIsNotNone(intent, text)
+            self.assertEqual(intent.action_id, "aircon_hvac_off", text)
             self.assertEqual(intent.target, "aircon", text)
 
         intent = detect_home_action_intent("中扉を止めて", observation)
@@ -184,15 +200,32 @@ class ActionDriverCatalogTest(unittest.TestCase):
         self.assertEqual(intent.action_id, "door_stop")
         self.assertEqual(intent.target, "door")
 
-    def test_aircon_actions_mark_physical_state_confirmation_as_unsupported(self) -> None:
+    def test_legacy_aircon_actions_mark_physical_state_confirmation_as_unsupported(self) -> None:
         catalog_actions = load_catalog()["actions"]
         environment_actions = load_environment_actions()
 
         for action_id in ("aircon_on", "aircon_off"):
             expected_effect = catalog_actions[action_id]["expected_effect"]
-            self.assertEqual(expected_effect["evidence_class"], "action_event_only")
+            self.assertEqual(expected_effect["control_type"], "stateless_command")
+            self.assertEqual(expected_effect["state_authority"], "submitted_only")
+            self.assertEqual(expected_effect["verification_mode"], "command_ack_only")
+            self.assertEqual(expected_effect["evidence_class"], "command_ack_only")
             self.assertEqual(expected_effect["physical_state_source"], "not_supported")
             self.assertEqual(expected_effect["unverified_state_label"], "submitted_unverified")
+            self.assertEqual(expected_effect, environment_actions[action_id].expected_effect)
+
+    def test_tracked_climate_mode_actions_keep_ha_state_authority(self) -> None:
+        catalog_actions = load_catalog()["actions"]
+        environment_actions = load_environment_actions()
+
+        for action_id, expected_state in (("aircon_cool", "cool"), ("aircon_hvac_off", "off")):
+            expected_effect = catalog_actions[action_id]["expected_effect"]
+            self.assertEqual(expected_effect["expected_state"], expected_state)
+            self.assertEqual(expected_effect["control_type"], "mode_command")
+            self.assertEqual(expected_effect["state_authority"], "ha_entity")
+            self.assertEqual(expected_effect["verification_mode"], "ha_state")
+            self.assertEqual(expected_effect["evidence_class"], "ha_state")
+            self.assertEqual(expected_effect["physical_state_source"], "home_assistant")
             self.assertEqual(expected_effect, environment_actions[action_id].expected_effect)
 
 

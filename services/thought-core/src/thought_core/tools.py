@@ -1004,6 +1004,30 @@ def _builtin_home_action_candidates(
         ),
         (
             ("エアコン", "冷房", "暖房", "空調"),
+            ("冷房に", "冷房"),
+            HomeLightIntent(
+                action_id="aircon_cool",
+                expected_state="cool",
+                action_name="home.aircon.cool",
+                target="aircon",
+                target_name="エアコン",
+                pre_action_phrase="エアコンを冷房にする",
+            ),
+        ),
+        (
+            ("エアコン", "空調"),
+            ("停止",),
+            HomeLightIntent(
+                action_id="aircon_hvac_off",
+                expected_state="off",
+                action_name="home.aircon.hvac_off",
+                target="aircon",
+                target_name="エアコン",
+                pre_action_phrase="エアコンを停止する",
+            ),
+        ),
+        (
+            ("エアコン", "冷房", "暖房", "空調"),
             ("つけ", "点け", "付け", "オン", "入れ"),
             HomeLightIntent(
                 action_id="aircon_on",
@@ -1016,7 +1040,7 @@ def _builtin_home_action_candidates(
         ),
         (
             ("エアコン", "冷房", "暖房", "空調"),
-            ("消し", "消す", "止め", "停止", "オフ", "切っ", "切る"),
+            ("消し", "消す", "止め", "オフ", "切っ", "切る"),
             HomeLightIntent(
                 action_id="aircon_off",
                 expected_state="off",
@@ -1024,6 +1048,18 @@ def _builtin_home_action_candidates(
                 target="aircon",
                 target_name="エアコン",
                 pre_action_phrase="エアコンを消す",
+            ),
+        ),
+        (
+            ("プロジェクション", "投影"),
+            ("モード", "切り替", "して"),
+            HomeLightIntent(
+                action_id="projection_mode",
+                expected_state="projection_mode",
+                action_name="home.projection.mode",
+                target="projection",
+                target_name="プロジェクション",
+                pre_action_phrase="プロジェクションモードにする",
             ),
         ),
         (
