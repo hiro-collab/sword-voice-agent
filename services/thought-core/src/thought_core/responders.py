@@ -62,10 +62,18 @@ class LocalFallbackResponder:
         response_context: Mapping[str, Any] | None = None,
     ) -> ResponderResult:
         text = turn.text.replace(" ", "")
-        if "マイク" in text or "テスト" in text:
-            speech = "聞こえています。マイクテストは成功です。"
+        if any(marker in text for marker in ("音声", "マイク", "聞こえ", "聞き取")):
+            speech = (
+                "音声入力はテキストとして受け取れています。"
+                "ただし、マイク音質やスピーカー出力は別の確認が必要です。"
+            )
+        elif "テスト" in text:
+            speech = "入力は受け取れています。出力や機器状態の確認は別扱いです。"
         else:
-            speech = "聞こえています。今は会話応答の境界を準備中です。"
+            speech = (
+                "受け取りました。通常会話の詳しい応答は、応答アダプターの設定後に扱います。"
+                "今は要点だけ確認する形で返します。"
+            )
         return ResponderResult(
             speech=speech,
             display=speech,

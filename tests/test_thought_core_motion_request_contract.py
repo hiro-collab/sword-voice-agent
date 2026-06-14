@@ -78,34 +78,58 @@ class ThoughtCoreMotionRequestContractTest(TestCase):
         self.assertEqual(payload["safety"]["home_assistant_route"], False)
         self.assert_no_home_action(events, tools)
 
-    def test_happy_motion_request_maps_to_expression_motion(self) -> None:
+    def test_happy_motion_request_maps_to_expression_visible_contract(self) -> None:
         events, tools = self._run("うれしそうに動いて")
         payload = self._motion_payload(events)
 
         self.assertIsNotNone(payload)
         assert payload is not None
         self.assertEqual(payload["kind"], "expression")
+        self.assertEqual(payload["request_mode"], "apply")
         self.assertEqual(payload["safe_display_name"], "Happy expression")
-        self.assertEqual(payload["track_mask"], ["face", "head", "neck"])
+        self.assertEqual(
+            payload["track_mask"],
+            {"scope": "face_head", "channels": ["expression_weight"]},
+        )
         self.assertEqual(payload["requirements"]["required_tracks"], ["face"])
-        self.assertEqual(payload["payload_ref"], "motion.thought_core.expression.v0")
+        self.assertEqual(
+            payload["requirements"]["expression_profile_ref"],
+            "motion.runtime.vrm_expression_weights.v0",
+        )
+        self.assertEqual(
+            payload["requirements"]["expected_visible_change"],
+            "face_expression",
+        )
+        self.assertEqual(payload["requirements"]["expected_roi"], "avatar_face_head")
+        self.assertEqual(
+            payload["payload_ref"],
+            "motion.thought_core.expression_visible.v0",
+        )
+        self.assertNotEqual(payload["payload_ref"], "motion.thought_core.expression.v0")
         self.assertEqual(payload["safety"]["raw_user_text_shared"], False)
         self.assert_no_home_action(events, tools)
 
-    def test_motion_payload_matches_local_parent_contract_schema(self) -> None:
-        events, _tools = self._run("踊って")
-        payload = self._motion_payload(events)
-
-        self.assertIsNotNone(payload)
-        assert payload is not None
-        schema_path = (
+    def test_motion_payloads_match_local_and_root_contract_schemas(self) -> None:
+        schema_paths = [
             REPO_ROOT
             / "contracts"
             / "motion-stimulus"
-            / "motion-stimulus.v0.schema.json"
-        )
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
-        self.assertEqual(_validate_schema(payload, schema), [])
+            / "motion-stimulus.v0.schema.json",
+            REPO_ROOT.parent.parent
+            / "contracts"
+            / "motion_stimulus"
+            / "motion_stimulus.v0.schema.json",
+        ]
+        for text in ("踊って", "うれしそうに動いて"):
+            events, _tools = self._run(text)
+            payload = self._motion_payload(events)
+
+            self.assertIsNotNone(payload)
+            assert payload is not None
+            for schema_path in schema_paths:
+                with self.subTest(text=text, schema_path=str(schema_path)):
+                    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+                    self.assertEqual(_validate_schema(payload, schema), [])
 
     def test_home_action_does_not_emit_motion_request(self) -> None:
         events, tools = self._run("電気をつけて")
@@ -201,6 +225,18 @@ def _validate(
     errors: list[str] = []
     if "const" in schema and value != schema["const"]:
         return [f"{path}: expected const {schema['const']!r}"]
+
+    one_of = schema.get("oneOf")
+    if isinstance(one_of, list):
+        matches = 0
+        for option_schema in one_of:
+            if not isinstance(option_schema, dict):
+                continue
+            if not _validate(value, option_schema, root_schema, path):
+                matches += 1
+        if matches != 1:
+            return [f"{path}: expected exactly one oneOf match"]
+        return []
 
     expected_type = schema.get("type")
     if expected_type is not None and not _matches_type(value, expected_type):

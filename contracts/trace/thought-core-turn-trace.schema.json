@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/trace/thought-core-turn-trace.schema.json",
+  "title": "Thought Core Turn Trace",
+  "description": "Redacted no-live Thought Core turn lifecycle trace. This is runtime evidence, not durable learned memory.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "trace_id",
+    "turn_id",
+    "session_id",
+    "input_summary",
+    "prior_context_summary",
+    "working_memory_summary",
+    "events",
+    "memory_candidate_ids",
+    "redaction",
+    "non_claims"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "thought_core_turn_trace.v0"
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "turn_id": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "input_summary": {
+      "type": "object",
+      "required": [
+        "text_present",
+        "text_chars"
+      ],
+      "properties": {
+        "text_present": {
+          "type": "boolean"
+        },
+        "text_chars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "locale": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "prior_context_summary": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "working_memory_summary": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "event_type"
+        ],
+        "additionalProperties": true
+      }
+    },
+    "action_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "memory_retrieved": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "memory_candidate_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "degraded_state": {
+      "type": "string"
+    },
+    "redaction": {
+      "type": "object",
+      "required": [
+        "level",
+        "raw_text_stored",
+        "raw_media_stored",
+        "raw_secret_stored"
+      ],
+      "properties": {
+        "level": {
+          "type": "string"
+        },
+        "raw_text_stored": {
+          "const": false
+        },
+        "raw_media_stored": {
+          "const": false
+        },
+        "raw_secret_stored": {
+          "const": false
+        }
+      },
+      "additionalProperties": true
+    },
+    "non_claims": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}

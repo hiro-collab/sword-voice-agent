@@ -500,6 +500,10 @@ class HomeControlHttpTools:
                 "confirm_required": bool(payload.get("confirmation_required")),
                 "confirmation_token": payload.get("confirmation_token"),
                 "bridge_status": payload.get("status"),
+                "control_type": payload.get("control_type"),
+                "state_authority": payload.get("state_authority"),
+                "verification_mode": payload.get("verification_mode"),
+                "state_tracking": payload.get("state_tracking"),
                 "expected_effect": payload.get("expected_effect"),
                 "preview": payload.get("preview"),
             }
@@ -574,6 +578,10 @@ class HomeControlHttpTools:
             "speak": payload.get("speak"),
             "confirmation_token": payload.get("confirmation_token"),
             "expected_state": payload.get("expected_state"),
+            "control_type": payload.get("control_type"),
+            "state_authority": payload.get("state_authority"),
+            "verification_mode": payload.get("verification_mode"),
+            "state_tracking": payload.get("state_tracking"),
             "expected_effect": payload.get("expected_effect"),
         }
 
@@ -909,7 +917,7 @@ def _mentioned_home_action_target_groups(normalized: str, lowered: str) -> set[s
         "light": ("電気", "ライト", "照明"),
         "fan": ("扇風機", "ファン"),
         "aircon": ("エアコン", "冷房", "暖房", "空調"),
-        "door": ("中扉", "扉", "ドア"),
+        "door": ("中扉", "扉", "ドア", "カーテン"),
         "vacuum": ("掃除機", "ロボット掃除機", "ルンバ"),
     }
     for group, words in target_words.items():
@@ -1019,7 +1027,7 @@ def _builtin_home_action_candidates(
             ),
         ),
         (
-            ("中扉", "扉", "ドア"),
+            ("中扉", "扉", "ドア", "カーテン"),
             ("開け", "開い"),
             HomeLightIntent(
                 action_id="door_open",
@@ -1031,7 +1039,7 @@ def _builtin_home_action_candidates(
             ),
         ),
         (
-            ("中扉", "扉", "ドア"),
+            ("中扉", "扉", "ドア", "カーテン"),
             ("閉め", "閉じ"),
             HomeLightIntent(
                 action_id="door_close",
@@ -1043,7 +1051,7 @@ def _builtin_home_action_candidates(
             ),
         ),
         (
-            ("中扉", "扉", "ドア"),
+            ("中扉", "扉", "ドア", "カーテン"),
             ("止め", "停止"),
             HomeLightIntent(
                 action_id="door_stop",

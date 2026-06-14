@@ -15,6 +15,20 @@ $resolvedEnvPath = Resolve-SwordPath -Path $EnvPath
 if (Test-Path -LiteralPath $resolvedEnvPath -PathType Leaf) {
     Import-SwordEnv -EnvPath $resolvedEnvPath
 }
+if ($env:THOUGHT_CORE_FORCE_NO_PROVIDER -match "^(1|true|yes|on)$") {
+    $env:THOUGHT_CORE_LLM_ENABLED = "0"
+    $env:THOUGHT_CORE_ACTION_LLM_ENABLED = "0"
+    foreach ($name in @(
+        "THOUGHT_CORE_LLM_BASE_URL",
+        "THOUGHT_CORE_LLM_API_KEY",
+        "THOUGHT_CORE_LLM_MODEL",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL"
+    )) {
+        Set-Item -Path "Env:$name" -Value ""
+    }
+}
 if ([string]::IsNullOrWhiteSpace($env:THOUGHT_CORE_PERSONA) -and [string]::IsNullOrWhiteSpace($env:SWORD_THOUGHT_CORE_PERSONA)) {
     $env:THOUGHT_CORE_PERSONA = "cheerful_ossan"
 }

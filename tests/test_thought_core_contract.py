@@ -41,7 +41,7 @@ TURN = {
 
 GENERAL_TURN = {
     **TURN,
-    "text": "マイクテストです。聞こえていますか？",
+    "text": "今日は少し雑談しましょう。",
     "turn_id": "turn_general_001",
 }
 
@@ -207,6 +207,21 @@ class ThoughtCoreContractTest(TestCase):
             speeches,
         )
         self.assertEqual(events[-1]["data"]["status"], "success")
+
+    def test_curtain_alias_routes_to_inner_door_actions(self) -> None:
+        cases = {
+            "カーテンを開けて": ("door_open", "open"),
+            "カーテンを閉めて": ("door_close", "closed"),
+            "カーテンを止めて": ("door_stop", "stopped"),
+        }
+        for text, (action_id, expected_state) in cases.items():
+            with self.subTest(text=text):
+                intent = detect_home_action_intent(text)
+
+                self.assertIsNotNone(intent)
+                self.assertEqual(intent.action_id, action_id)
+                self.assertEqual(intent.target, "door")
+                self.assertEqual(intent.expected_state, expected_state)
 
     def test_retrieved_memory_is_attached_to_action_context(self) -> None:
         tools = MockThoughtTools(light_on=False)
@@ -1889,6 +1904,79 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(failed_marker["remaining_observations"], 0)
         self.assertEqual(len(tools.execute_calls), 1)
 
+    def test_external_required_action_does_not_schedule_auto_review(self) -> None:
+        class ExternalRequiredLightTools(MockThoughtTools):
+            def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+                return {
+                    "status": "ok",
+                    "observation_ref": f"obs_{reason}",
+                    "observation_source": "environment-state-server.mock",
+                    "facts": {"devices": [], "state_queries": {}},
+                    "environment": {"appliances": {}, "state_queries": {}},
+                }
+
+            def home_preview(self, turn, observation):  # type: ignore[no-untyped-def]
+                return {
+                    "status": "ok",
+                    "action": {
+                        "action_id": "light_on",
+                        "target": "light",
+                        "target_name": "リビングの電気",
+                        "expected_state": "on",
+                        "pre_action_phrase": "リビングの電気をつける",
+                        "confirm_required": False,
+                        "control_type": "stateless_toggle",
+                        "state_authority": "open_loop",
+                        "verification_mode": "external_observation",
+                        "state_tracking": "external_required",
+                    },
+                }
+
+            def home_execute(self, turn, action):  # type: ignore[no-untyped-def]
+                self.execute_calls.append(action)
+                return {
+                    "status": "accepted",
+                    "executed": True,
+                    "retryable": False,
+                    "command_id": "cmd_external_required_light",
+                    "attempt": len(self.execute_calls),
+                    "issued_at": "2026-05-08T00:00:00+00:00",
+                    "control_type": "stateless_toggle",
+                    "state_authority": "open_loop",
+                    "verification_mode": "external_observation",
+                    "state_tracking": "external_required",
+                    "message": "リビングの電気をつける操作を送信しました。",
+                    "speak": "リビングの電気をつける操作を送信しました。",
+                }
+
+        tools = ExternalRequiredLightTools()
+        loop = ThoughtLoop(tools=tools)
+        events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "リビングの電気をつけて",
+                "turn_id": "turn_external_required_light",
+            }
+        )
+        event_types = [event["type"] for event in events]
+        assistant_text = "\n".join(
+            str(event["data"].get("speech") or event["data"].get("display") or "")
+            for event in events
+            if event["type"] in {"assistant.message", "feedback.requested"}
+        )
+
+        self.assertNotIn("action.review_pending", event_types)
+        self.assertNotIn("action.reviewed", event_types)
+        self.assertNotIn("feedback.requested", event_types)
+        self.assertNotIn(TURN["session_id"], loop.pending_action_reviews)
+        self.assertEqual(tools.execute_calls[0]["state_tracking"], "external_required")
+        self.assertIn("操作を送信しました", assistant_text)
+        self.assertIn("物理状態を確認できない", assistant_text)
+        self.assertNotIn("少し待ってから環境を見直します", assistant_text)
+        self.assertEqual(events[-1]["data"]["status"], "submitted_external_observation_required")
+        self.assertFalse(events[-1]["data"]["automatic_review_scheduled"])
+        self.assertFalse(events[-1]["data"]["physical_state_confirmed"])
+
     def test_new_home_command_supersedes_pending_review_before_observing(self) -> None:
         tools = MockThoughtTools(light_on=True)
         loop = ThoughtLoop(tools=tools)
@@ -2078,6 +2166,70 @@ class ThoughtCoreContractTest(TestCase):
         self.assertIn(TURN["session_id"], loop.pending_action_reviews)
         self.assertEqual(events[-1]["data"]["status"], "llm_response")
 
+    def test_audio_check_does_not_continue_pending_action_review(self) -> None:
+        tools = MockThoughtTools(light_on=True)
+        loop = ThoughtLoop(tools=tools, responder=StaticResponder())
+        previous_action = {
+            "action_id": "light_on",
+            "target": "light",
+            "target_name": "リビングの電気",
+            "expected_state": "on",
+            "pre_action_phrase": "リビングの電気をつける",
+        }
+        loop.pending_action_reviews[TURN["session_id"]] = {
+            "action": previous_action,
+            "execute_result": {"status": "accepted", "executed": True},
+            "last_review": {"status": "pending"},
+            "observations_done": 1,
+            "execute_attempts": 1,
+            "policy": {"settle_ms": 1500, "observation_attempts": 2, "auto_retries": 1},
+        }
+
+        events = loop.run_dicts(
+            {
+                **TURN,
+                "text": "音声が聞こえたか確認してください",
+                "turn_id": "turn_audio_check_with_pending_review",
+            }
+        )
+        event_types = [event["type"] for event in events]
+        tool_names = [
+            event["data"]["tool"]
+            for event in events
+            if event["type"] == "tool.started"
+        ]
+        understood = next(event for event in events if event["type"] == "input.understood")
+        route = next(
+            event
+            for event in events
+            if event["type"] == "thought_core.response_route_classified"
+        )
+        final_message = [
+            event for event in events if event["type"] == "assistant.message"
+        ][-1]
+        serialized_route = json.dumps(route["data"], ensure_ascii=False)
+
+        self.assertEqual(understood["data"]["kind"], "audio_check")
+        self.assertIn("audio.status_checked", event_types)
+        self.assertNotIn("action.reviewed", event_types)
+        self.assertNotIn("feedback.requested", event_types)
+        self.assertNotIn("responder.started", event_types)
+        self.assertEqual(route["data"]["schema_version"], "thought_core_response_route.v0")
+        self.assertEqual(route["data"]["response_route"], "audio_status_check")
+        self.assertEqual(route["data"]["intent_kind"], "audio_check")
+        self.assertEqual(route["data"]["responder_status"], "audio_status_check")
+        self.assertFalse(route["data"]["fallback_used"])
+        self.assertFalse(route["data"]["direct_dify_used"])
+        self.assertNotIn("raw_prompt", serialized_route)
+        self.assertNotIn("raw_transcript", serialized_route)
+        self.assertNotIn("provider_payload", serialized_route)
+        self.assertEqual(tool_names, ["memory.retrieve"])
+        self.assertIn("テキストとして受け取れています", final_message["data"]["speech"])
+        self.assertIn("確認できません", final_message["data"]["speech"])
+        self.assertNotIn("電気", final_message["data"]["speech"])
+        self.assertIn(TURN["session_id"], loop.pending_action_reviews)
+        self.assertEqual(events[-1]["data"]["status"], "audio_status_check")
+
     def test_ambiguous_brightness_wording_does_not_execute_home_action(self) -> None:
         tools = MockThoughtTools(light_on=False)
         loop = ThoughtLoop(tools=tools, responder=StaticResponder())
@@ -2262,6 +2414,7 @@ class ThoughtCoreContractTest(TestCase):
                 "memory.retrieved",
                 "responder.started",
                 "responder.completed",
+                "thought_core.response_route_classified",
                 "assistant.speech_delta",
                 "assistant.message",
                 "turn.completed",
@@ -2269,6 +2422,11 @@ class ThoughtCoreContractTest(TestCase):
         )
         started = next(event for event in events if event["type"] == "responder.started")
         completed = next(event for event in events if event["type"] == "responder.completed")
+        route = next(
+            event
+            for event in events
+            if event["type"] == "thought_core.response_route_classified"
+        )
         final_message = [
             event for event in events if event["type"] == "assistant.message"
         ][-1]
@@ -2279,8 +2437,57 @@ class ThoughtCoreContractTest(TestCase):
             completed["data"]["response_context"]["current_stage"],
             "general_responder",
         )
+        self.assertEqual(route["data"]["schema_version"], "thought_core_response_route.v0")
+        self.assertEqual(route["data"]["response_route"], "ordinary_conversation")
+        self.assertEqual(route["data"]["intent_kind"], "general")
+        self.assertEqual(route["data"]["responder_status"], "llm_response")
+        self.assertFalse(route["data"]["fallback_used"])
+        self.assertFalse(route["data"]["direct_dify_used"])
+        self.assertNotIn("raw_prompt", route["data"])
+        self.assertNotIn("raw_transcript", route["data"])
+        self.assertNotIn("provider_payload", route["data"])
         self.assertEqual(final_message["data"]["speech"], "聞こえています。応答境界も動いています。")
         self.assertEqual(events[-1]["data"]["status"], "llm_response")
+
+    def test_general_turn_without_llm_marks_fallback_route_not_audio_check(self) -> None:
+        events = ThoughtLoop().run_dicts(
+            {
+                **GENERAL_TURN,
+                "text": "今日は作業の合間に軽く雑談したい",
+                "turn_id": "turn_general_fallback_route",
+            }
+        )
+        event_types = [event["type"] for event in events]
+        route = next(
+            event
+            for event in events
+            if event["type"] == "thought_core.response_route_classified"
+        )
+        final_message = [
+            event for event in events if event["type"] == "assistant.message"
+        ][-1]
+        serialized_route = json.dumps(route["data"], ensure_ascii=False)
+
+        self.assertNotIn("audio.status_checked", event_types)
+        self.assertIn("responder.started", event_types)
+        self.assertEqual(route["data"]["schema_version"], "thought_core_response_route.v0")
+        self.assertEqual(route["data"]["response_route"], "ordinary_conversation")
+        self.assertEqual(
+            route["data"]["responder_status"],
+            "local_fallback_no_llm_adapter",
+        )
+        self.assertTrue(route["data"]["fallback_used"])
+        self.assertFalse(route["data"]["used_llm"])
+        self.assertFalse(route["data"]["direct_dify_used"])
+        self.assertIn("microphone_quality_proven", route["data"]["non_claims"])
+        self.assertIn("speaker_output_heard", route["data"]["non_claims"])
+        self.assertNotIn("raw_prompt", serialized_route)
+        self.assertNotIn("raw_transcript", serialized_route)
+        self.assertNotIn("provider_payload", serialized_route)
+        self.assertNotIn("raw Dify", serialized_route)
+        self.assertNotIn("音声入力", final_message["data"]["speech"])
+        self.assertNotIn("マイク", final_message["data"]["speech"])
+        self.assertNotIn("スピーカー", final_message["data"]["speech"])
 
     def test_home_action_visible_phrases_can_require_llm_boundary(self) -> None:
         responder = VisiblePhraseResponder()

@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/diagnostics/thought-core-conversation-runtime-summary.schema.json",
+  "title": "Thought Core Conversation Runtime Summary",
+  "description": "Summary-only diagnostics for Thought Core conversation/runtime rows. This is review support, not provider quality proof, durable memory, or RR003 pass evidence by itself.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "summary_id",
+    "scenario_id",
+    "turn_id",
+    "session_id_ref",
+    "input_mode",
+    "runtime_path",
+    "response_route",
+    "provider_or_fallback",
+    "provider_called",
+    "used_llm",
+    "direct_dify_used",
+    "trace_ref",
+    "event_refs",
+    "completion_status",
+    "memory_context_used_class",
+    "visible_response_summary_class",
+    "relevance_coherence_class",
+    "test_observability",
+    "raw_prompt_published",
+    "raw_response_published",
+    "raw_provider_payload_published",
+    "raw_transcript_published",
+    "raw_media_published",
+    "private_path_published",
+    "provider_payload_included",
+    "proof_ceiling",
+    "does_not_prove",
+    "review_ready_impact"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "thought_core_conversation_runtime_summary.v0"
+    },
+    "summary_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "scenario_id": {
+      "type": "string"
+    },
+    "turn_id": {
+      "type": "string"
+    },
+    "session_id_ref": {
+      "type": "string"
+    },
+    "input_mode": {
+      "type": "string"
+    },
+    "runtime_path": {
+      "type": "string"
+    },
+    "response_route": {
+      "type": "string"
+    },
+    "provider_or_fallback": {
+      "enum": [
+        "provider_backed",
+        "local_fallback",
+        "non_provider_local_route",
+        "provider_blocked",
+        "not_applicable"
+      ]
+    },
+    "provider_called": {
+      "type": "boolean"
+    },
+    "used_llm": {
+      "type": "boolean"
+    },
+    "direct_dify_used": {
+      "type": "boolean"
+    },
+    "fallback_reason": {
+      "type": "string"
+    },
+    "trace_ref": {
+      "type": "string"
+    },
+    "event_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "event_id",
+          "event_type"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "completion_status": {
+      "type": "string"
+    },
+    "memory_context_used_class": {
+      "enum": [
+        "none",
+        "working_memory_only",
+        "memory_core_retrieval",
+        "blocked_not_executed"
+      ]
+    },
+    "memory_context_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "retrieval_depth": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "light_auto",
+        "conditional_deep",
+        "explicit_recall",
+        null
+      ]
+    },
+    "must_revalidate_current_state": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "visible_response_summary_class": {
+      "enum": [
+        "present_nonempty_short",
+        "present_nonempty_long",
+        "absent",
+        "blocked"
+      ]
+    },
+    "relevance_coherence_class": {
+      "type": "string"
+    },
+    "timing_bucket": {
+      "type": "string"
+    },
+    "test_observability": {
+      "const": "diagnostics_status"
+    },
+    "raw_prompt_published": {
+      "const": false
+    },
+    "raw_response_published": {
+      "const": false
+    },
+    "raw_provider_payload_published": {
+      "const": false
+    },
+    "raw_transcript_published": {
+      "const": false
+    },
+    "raw_media_published": {
+      "const": false
+    },
+    "private_path_published": {
+      "const": false
+    },
+    "provider_payload_included": {
+      "const": false
+    },
+    "proof_ceiling": {
+      "type": "string"
+    },
+    "does_not_prove": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "review_ready_impact": {
+      "type": "string"
+    },
+    "blocker_code": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

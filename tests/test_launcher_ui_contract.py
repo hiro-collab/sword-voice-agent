@@ -6,6 +6,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PUBLIC = ROOT / "tools" / "home-control-launcher" / "public"
 LAUNCHER_SERVER = ROOT / "tools" / "home-control-launcher" / "server.js"
 STACK_START_SCRIPT = ROOT / "ops" / "scripts" / "home-control-stack" / "start-home-control-stack.ps1"
+SYSTEM_SCRIPT = ROOT / "ops" / "scripts" / "system.ps1"
+THOUGHT_CORE_START_SCRIPT = ROOT / "scripts" / "start-thought-core.ps1"
 
 
 def read_public(name: str) -> str:
@@ -18,6 +20,14 @@ def read_launcher_server() -> str:
 
 def read_stack_start_script() -> str:
     return STACK_START_SCRIPT.read_text(encoding="utf-8")
+
+
+def read_system_script() -> str:
+    return SYSTEM_SCRIPT.read_text(encoding="utf-8")
+
+
+def read_thought_core_start_script() -> str:
+    return THOUGHT_CORE_START_SCRIPT.read_text(encoding="utf-8")
 
 
 class LauncherUiContractTest(TestCase):
@@ -69,6 +79,22 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("remaining", app)
         self.assertIn(".operation-progress", css)
 
+    def test_stop_stack_reports_verified_shutdown_or_residue(self) -> None:
+        server = read_launcher_server()
+        html = read_public("index.html")
+        app = read_public("app.js")
+
+        self.assertIn("collectStackStopVerification", server)
+        self.assertIn("waitForStackStopVerification", server)
+        self.assertIn("stopVerification", server)
+        self.assertIn("managed ports still listening", server)
+        self.assertIn("recorded processes still alive", server)
+        self.assertIn("formatStopVerificationDetail", app)
+        self.assertIn("Stop verified", app)
+        self.assertIn("Stop incomplete", app)
+        self.assertIn("Stop Launcher Only", html)
+        self.assertIn("Stop Launcher Only", app)
+
     def test_service_rows_mark_startup_booting_progress(self) -> None:
         app = read_public("app.js")
         css = read_public("styles.css")
@@ -115,3 +141,73 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("[ports] reclaiming stale managed port owner", stack_start)
         self.assertIn("Test-ExternalProcessDenied", stack_start)
         self.assertIn("AITuber Kit", stack_start)
+
+    def test_stack_start_uses_voicevox_readiness_helper(self) -> None:
+        stack_start = read_stack_start_script()
+
+        self.assertIn("scripts\\check-voicevox-readiness.ps1", stack_start)
+        self.assertIn("-StartIfNeeded", stack_start)
+        self.assertIn("started existing local VOICEVOX", stack_start)
+        self.assertIn("If you intentionally do not use VOICEVOX", stack_start)
+
+    def test_home_control_stack_prefers_local_live_config(self) -> None:
+        server = read_launcher_server()
+        stack_start = read_stack_start_script()
+
+        self.assertIn("DEFAULT_HOME_CONTROL_LIVE_CONFIG", server)
+        self.assertIn("'home-control.live.yaml'", server)
+        self.assertIn("defaultHomeControlConfigPath", server)
+        self.assertIn("!normalized.SkipHomeAssistantBridge", server)
+        self.assertIn("normalized.HomeControlConfigPath = defaultHomeControlConfigPath()", server)
+
+        self.assertIn("function Resolve-HomeControlConfigPath", stack_start)
+        self.assertIn("local\\env\\home-control.live.yaml", stack_start)
+        self.assertIn("function Assert-HomeControlConfigNotDemoLiveMapping", stack_start)
+        self.assertIn("script\\.demo_light_(on|off)", stack_start)
+        self.assertIn("selected bridge config still maps light actions to demo scripts", stack_start)
+
+    def test_launcher_status_exposes_home_control_config_state(self) -> None:
+        server = read_launcher_server()
+
+        self.assertIn("compactHomeControlConfigState", server)
+        self.assertIn("homeControlConfigState", server)
+        self.assertIn("expected_profile", server)
+        self.assertIn("active_profile", server)
+        self.assertIn("light_demo_mappings_present", server)
+        self.assertIn("live_home_invalid", server)
+        self.assertIn("payload_policy: 'compact_redacted'", server)
+
+    def test_stack_start_defers_camera_hub_ready_wait_until_after_spawn(self) -> None:
+        stack_start = read_stack_start_script()
+
+        self.assertIn("$mediapipeCameraHubChild = $null", stack_start)
+        self.assertIn("$delayedVisionSnapshotSpecs = @()", stack_start)
+        self.assertIn('$spec.Name -eq "vision_snapshot_processor"', stack_start)
+        self.assertIn("$mediapipeCameraHubChild = $children[-1]", stack_start)
+        self.assertIn("if ($null -ne $mediapipeCameraHubChild)", stack_start)
+        self.assertIn("foreach ($spec in $delayedVisionSnapshotSpecs)", stack_start)
+
+    def test_thought_core_no_provider_option_flows_to_child_after_env_import(self) -> None:
+        server = read_launcher_server()
+        app = read_public("app.js")
+        system = read_system_script()
+        stack_start = read_stack_start_script()
+        thought_start = read_thought_core_start_script()
+
+        self.assertIn("ThoughtCoreNoProvider: false", server)
+        self.assertIn("'ThoughtCoreNoProvider'", app)
+        self.assertIn("Thought Core fallback-only", app)
+        self.assertIn("[switch]$ThoughtCoreNoProvider", system)
+        self.assertIn("-ThoughtCoreNoProvider", system)
+        self.assertIn("[switch]$ThoughtCoreNoProvider", stack_start)
+        self.assertIn('"THOUGHT_CORE_FORCE_NO_PROVIDER"', stack_start)
+        self.assertIn('$thoughtCoreEnvironment["THOUGHT_CORE_LLM_ENABLED"] = "0"', stack_start)
+        self.assertIn(
+            '$thoughtCoreEnvironment["THOUGHT_CORE_ACTION_LLM_ENABLED"] = "0"',
+            stack_start,
+        )
+        import_index = thought_start.index("Import-SwordEnv")
+        force_index = thought_start.index("THOUGHT_CORE_FORCE_NO_PROVIDER")
+        self.assertLess(import_index, force_index)
+        self.assertIn('$env:THOUGHT_CORE_LLM_ENABLED = "0"', thought_start)
+        self.assertIn('$env:THOUGHT_CORE_ACTION_LLM_ENABLED = "0"', thought_start)

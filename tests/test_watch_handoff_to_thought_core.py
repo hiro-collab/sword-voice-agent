@@ -13,6 +13,7 @@ from sword_voice_agent.apps.watch_handoff_to_thought_core import (
     HandoffSignature,
     ThoughtCoreAituberForwarder,
     build_parser,
+    default_auto_review_pending,
     format_missing_handoff_message,
     format_watch_start_message,
     handoff_signature,
@@ -231,6 +232,14 @@ class WatchHandoffToThoughtCoreTest(TestCase):
 
         self.assertEqual(args.aituber_speech_max_chars, 40)
 
+    def test_auto_review_pending_defaults_to_explicit_opt_in(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(default_auto_review_pending())
+        with patch.dict("os.environ", {"THOUGHT_CORE_AUTO_REVIEW_PENDING": "1"}, clear=True):
+            self.assertTrue(default_auto_review_pending())
+        with patch.dict("os.environ", {"THOUGHT_CORE_AUTO_REVIEW_PENDING": "off"}, clear=True):
+            self.assertFalse(default_auto_review_pending())
+
     def test_run_pending_action_reviews_sends_synthetic_review_turn(self) -> None:
         with workspace_tempdir() as tmp:
             root = Path(tmp)
@@ -245,6 +254,7 @@ class WatchHandoffToThoughtCoreTest(TestCase):
                     "living_room_main",
                     "--status-dir",
                     "",
+                    "--auto-review-pending",
                     "--auto-review-max-delay-s",
                     "0.05",
                 ]

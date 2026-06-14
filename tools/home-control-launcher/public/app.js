@@ -18,6 +18,7 @@ const coreSwitchFields = [
   'StopExisting',
   'EnableThoughtCore',
   'EnableThoughtCoreWatch',
+  'ThoughtCoreNoProvider',
   'SkipAituber',
   'SkipHomeAssistantBridge',
   'SkipEnvironmentState',
@@ -92,6 +93,7 @@ const fieldLabels = {
   StopExisting: 'Restart managed services first',
   EnableThoughtCore: 'Thought Core API',
   EnableThoughtCoreWatch: 'Thought Core watcher',
+  ThoughtCoreNoProvider: 'Thought Core fallback-only',
   SkipAituber: 'Disable expression UI',
   SkipHomeAssistantBridge: 'Disable action bridge',
   SkipEnvironmentState: 'Disable environment state',
@@ -174,7 +176,7 @@ const renderActionButtons = () => {
   $('stop-button').textContent =
     state.busy && state.operation === 'stopping' ? 'Stopping...' : 'Stop Stack'
   $('stop-launcher-button').textContent =
-    state.busy && state.operation === 'stopping' ? 'Stopping...' : 'Stop Launcher'
+    state.busy && state.operation === 'stopping' ? 'Stopping...' : 'Stop Launcher Only'
   $('refresh-button').textContent = 'Refresh'
   $('save-config').textContent =
     state.busy && state.operation === 'saving' ? 'Saving...' : 'Save'
@@ -611,6 +613,39 @@ const setOperationProgressFromSummary = (summary, mode) => {
   renderOperation()
 }
 
+const formatStopVerificationDetail = (verification) => {
+  if (!verification) {
+    return 'Stop command completed, but shutdown verification was not returned.'
+  }
+  if (verification.ok) {
+    return `Stop verified. ${verification.checkedPortCount || 0} managed ports are closed and no recorded stack process remains.`
+  }
+  const issues = []
+  if (verification.pidFileExists) {
+    issues.push('PID registry still exists')
+  }
+  if (verification.aliveRecorded?.length) {
+    issues.push(
+      `alive PIDs: ${verification.aliveRecorded
+        .map((entry) => `${entry.name}#${entry.pid}`)
+        .join(', ')}`
+    )
+  }
+  if (verification.openPorts?.length) {
+    issues.push(
+      `open ports: ${verification.openPorts
+        .map((entry) => `${entry.label}:${entry.port}`)
+        .join(', ')}`
+    )
+  }
+  if (verification.timedOut) {
+    issues.push('verification timed out')
+  }
+  return issues.length > 0
+    ? `Stop incomplete. ${issues.join('; ')}.`
+    : 'Stop incomplete. Check the launcher log for remaining processes.'
+}
+
 const renderSystemSummary = (services = null, timestamp = '') => {
   const profile = state.profiles.find((item) => item.id === state.selectedProfileId)
   $('active-profile-name').textContent = profile ? profile.name : state.selectedProfileId
@@ -885,11 +920,11 @@ const stopStack = async () => {
   setOperation('stopping', 'Stop command is running. Waiting for the shutdown script.')
   setBusy(true, 'Stopping')
   try {
-    await api('/api/stop', {
+    const payload = await api('/api/stop', {
       method: 'POST',
       body: JSON.stringify({ stopDify: false })
     })
-    setOperation('stopped', 'Stop command completed. Service cards are refreshed below.')
+    setOperation('stopped', formatStopVerificationDetail(payload.stopVerification))
     await refreshState()
   } finally {
     setBusy(false)
@@ -898,7 +933,7 @@ const stopStack = async () => {
 
 const stopLauncher = async () => {
   const confirmed = window.confirm(
-    'Stop Sword System Launcher? System cell services are not stopped by this button.'
+    'Stop Sword System Launcher only? System cell services are not stopped by this button.'
   )
   if (!confirmed) {
     return
@@ -989,6 +1024,12 @@ const showError = (error) => {
     setOperation('blocked', error.payload.message || 'Another operation is already running.')
     $('save-state').textContent = state.remoteBusy ? 'Locked' : 'Ready'
     $('log-output').textContent = `${error.message}\n\n${$('log-output').textContent}`
+    return
+  }
+  if (error.payload?.stopVerification) {
+    setOperation('error', formatStopVerificationDetail(error.payload.stopVerification))
+    $('save-state').textContent = 'Error'
+    $('log-output').textContent = `${error.payload.message || error.message}\n\n${$('log-output').textContent}`
     return
   }
   setOperation('error', error.message || 'Check the launcher log for details.')

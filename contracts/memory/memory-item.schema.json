@@ -74,6 +74,54 @@
       },
       "additionalProperties": true
     },
+    "derived_from_event_id": {
+      "type": "string"
+    },
+    "why_record": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence_summary_ref": {
+      "type": "string"
+    },
+    "retention_class": {
+      "type": "string"
+    },
+    "redaction_state": {
+      "type": "string"
+    },
+    "deletion_or_forgetting_state": {
+      "type": "string"
+    },
+    "protected_or_deletable": {
+      "type": "string",
+      "enum": [
+        "deletable_unprotected",
+        "protected_user_requested",
+        "protected_policy",
+        "unknown"
+      ]
+    },
+    "safe_to_act": {
+      "type": "boolean",
+      "default": false
+    },
+    "safe_for_future_reasoning": {
+      "type": "object",
+      "properties": {
+        "allowed": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "must_revalidate_current_state": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": true
+    },
     "confidence": {
       "type": "number",
       "minimum": 0,

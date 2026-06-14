@@ -46,6 +46,7 @@ param(
     [switch]$SkipTouchDesignerGui,
     [switch]$EnableThoughtCore,
     [switch]$EnableThoughtCoreWatch,
+    [switch]$ThoughtCoreNoProvider,
     [switch]$StopExisting,
     [switch]$EnableHomeControlFaultInjection,
     [switch]$DryRun
@@ -132,10 +133,70 @@ if ([string]::IsNullOrWhiteSpace($ThoughtCoreRoot)) {
 if ([string]::IsNullOrWhiteSpace($EnvironmentStateServerRoot)) {
     $EnvironmentStateServerRoot = Join-Path $WorkspaceRoot "organs\environment\environment-state-server"
 }
-if ([string]::IsNullOrWhiteSpace($HomeControlConfigPath)) {
-    $HomeControlConfigPath = Join-Path $HomeAssistantServerRoot "config\home-control.yaml"
+
+function Resolve-HomeControlConfigPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
+        [Parameter(Mandatory = $true)][string]$HomeAssistantServerRoot,
+        [string]$ConfiguredPath = ""
+    )
+
+    $localLiveConfigPath = Join-Path $WorkspaceRoot "local\env\home-control.live.yaml"
+    if ([string]::IsNullOrWhiteSpace($ConfiguredPath)) {
+        if (Test-Path -LiteralPath $localLiveConfigPath -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $localLiveConfigPath).Path
+        }
+        return (Resolve-Path -LiteralPath (Join-Path $HomeAssistantServerRoot "config\home-control.yaml")).Path
+    }
+
+    if ([System.IO.Path]::IsPathRooted($ConfiguredPath)) {
+        return (Resolve-Path -LiteralPath $ConfiguredPath).Path
+    }
+
+    $workspaceRelativePath = Join-Path $WorkspaceRoot $ConfiguredPath
+    $workspaceRelativeResolved = Resolve-Path -LiteralPath $workspaceRelativePath -ErrorAction SilentlyContinue
+    if ($null -ne $workspaceRelativeResolved) {
+        return $workspaceRelativeResolved.Path
+    }
+    return (Resolve-Path -LiteralPath $ConfiguredPath).Path
 }
-$HomeControlConfigPath = (Resolve-Path -LiteralPath $HomeControlConfigPath).Path
+
+function Assert-HomeControlConfigNotDemoLiveMapping {
+    param(
+        [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
+        [Parameter(Mandatory = $true)][string]$ConfigPath
+    )
+
+    $localLiveConfigPath = Join-Path $WorkspaceRoot "local\env\home-control.live.yaml"
+    $localLiveResolved = Resolve-Path -LiteralPath $localLiveConfigPath -ErrorAction SilentlyContinue
+    if ($null -eq $localLiveResolved) {
+        return
+    }
+    if ($ConfigPath -ieq $localLiveResolved.Path) {
+        return
+    }
+    $configText = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8
+    if ($configText -match 'script\.demo_light_(on|off)') {
+        throw (
+            "Home Control live config exists, but the selected bridge config still maps light actions to demo scripts. " +
+            "Pass -HomeControlConfigPath local\env\home-control.live.yaml or restart the stack through Launch Manager with StopExisting enabled."
+        )
+    }
+}
+$HomeControlConfigPath = Resolve-HomeControlConfigPath `
+    -WorkspaceRoot $WorkspaceRoot `
+    -HomeAssistantServerRoot $HomeAssistantServerRoot `
+    -ConfiguredPath $HomeControlConfigPath
+if (-not $SkipHomeAssistantBridge) {
+    Assert-HomeControlConfigNotDemoLiveMapping -WorkspaceRoot $WorkspaceRoot -ConfigPath $HomeControlConfigPath
+    $localLiveConfigPath = Join-Path $WorkspaceRoot "local\env\home-control.live.yaml"
+    $localLiveResolved = Resolve-Path -LiteralPath $localLiveConfigPath -ErrorAction SilentlyContinue
+    $homeControlConfigLabel = $HomeControlConfigPath
+    if ($null -ne $localLiveResolved -and $HomeControlConfigPath -ieq $localLiveResolved.Path) {
+        $homeControlConfigLabel = "local/env/home-control.live.yaml"
+    }
+    Write-Host "[home_assistant_bridge] config: $homeControlConfigLabel"
+}
 $HomeAssistantEnvPath = Join-Path $HomeAssistantServerRoot ".env"
 $TouchDesignerGuiToolsRoot = Join-Path $TouchDesignerGuiRoot "tools"
 $DifyWatchScript = Join-Path $DifyWatchRoot "scripts\start-dify-watch.ps1"
@@ -1745,6 +1806,7 @@ if (-not $SkipEnvironmentState) {
 $thoughtCoreEnvironment = @{}
 foreach ($name in @(
     "THOUGHT_CORE_LLM_ENABLED",
+    "THOUGHT_CORE_ACTION_LLM_ENABLED",
     "THOUGHT_CORE_LLM_BASE_URL",
     "THOUGHT_CORE_LLM_API_KEY",
     "THOUGHT_CORE_LLM_MODEL",
@@ -1769,6 +1831,21 @@ foreach ($name in @(
 }
 if (-not $thoughtCoreEnvironment.ContainsKey("THOUGHT_CORE_PERSONA")) {
     $thoughtCoreEnvironment["THOUGHT_CORE_PERSONA"] = "cheerful_ossan"
+}
+if ($ThoughtCoreNoProvider) {
+    $thoughtCoreEnvironment["THOUGHT_CORE_FORCE_NO_PROVIDER"] = "1"
+    $thoughtCoreEnvironment["THOUGHT_CORE_LLM_ENABLED"] = "0"
+    $thoughtCoreEnvironment["THOUGHT_CORE_ACTION_LLM_ENABLED"] = "0"
+    foreach ($name in @(
+        "THOUGHT_CORE_LLM_BASE_URL",
+        "THOUGHT_CORE_LLM_API_KEY",
+        "THOUGHT_CORE_LLM_MODEL",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL"
+    )) {
+        $thoughtCoreEnvironment[$name] = ""
+    }
 }
 if ($EnableThoughtCore -and (-not $SkipHomeAssistantBridge)) {
     $homeControlToken = [Environment]::GetEnvironmentVariable("HOME_CONTROL_API_TOKEN")

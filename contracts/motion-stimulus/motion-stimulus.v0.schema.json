@@ -91,6 +91,7 @@
       "type": "string",
       "enum": [
         "preview",
+        "apply",
         "play",
         "stop",
         "reset"
@@ -166,12 +167,19 @@
       ]
     },
     "track_mask": {
-      "type": "array",
-      "minItems": 1,
-      "uniqueItems": true,
-      "items": {
-        "$ref": "#/$defs/track"
-      }
+      "oneOf": [
+        {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/track"
+          }
+        },
+        {
+          "$ref": "#/$defs/track_mask_object"
+        }
+      ]
     },
     "priority_by_track": {
       "type": "array",
@@ -240,6 +248,24 @@
         },
         "allow_fallback": {
           "type": "boolean"
+        },
+        "expression_profile_ref": {
+          "type": "string",
+          "enum": [
+            "motion.runtime.vrm_expression_weights.v0"
+          ]
+        },
+        "expected_visible_change": {
+          "type": "string",
+          "enum": [
+            "face_expression"
+          ]
+        },
+        "expected_roi": {
+          "type": "string",
+          "enum": [
+            "avatar_face_head"
+          ]
         }
       }
     },
@@ -330,6 +356,33 @@
         "gaze",
         "balance"
       ]
+    },
+    "track_mask_object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "channels"
+      ],
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": [
+            "face_head"
+          ]
+        },
+        "channels": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "expression_weight"
+            ]
+          }
+        }
+      }
     },
     "target_context": {
       "type": "object",

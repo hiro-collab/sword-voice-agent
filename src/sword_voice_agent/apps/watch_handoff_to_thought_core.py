@@ -401,7 +401,9 @@ def default_local_ack_mode() -> str:
 
 
 def default_auto_review_pending() -> bool:
-    value = os.environ.get("THOUGHT_CORE_AUTO_REVIEW_PENDING", "1").strip().lower()
+    value = os.environ.get("THOUGHT_CORE_AUTO_REVIEW_PENDING", "").strip().lower()
+    if not value:
+        return False
     return value not in {"0", "false", "no", "off"}
 
 

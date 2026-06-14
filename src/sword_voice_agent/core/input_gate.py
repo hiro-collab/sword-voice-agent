@@ -48,6 +48,8 @@ class GestureInputGate:
         min_confidence: float = 0.8,
         activation_delay_s: float = 0.3,
         release_delay_s: float = 0.5,
+        activation_gap_grace_s: float = 0.0,
+        min_activation_active_frames: int = 1,
     ) -> None:
         if not math.isfinite(min_confidence) or not 0.0 <= min_confidence <= 1.0:
             raise ValueError("min_confidence must be finite and between 0.0 and 1.0")
@@ -55,13 +57,21 @@ class GestureInputGate:
             raise ValueError("activation_delay_s must be finite and >= 0")
         if not math.isfinite(release_delay_s) or release_delay_s < 0:
             raise ValueError("release_delay_s must be finite and >= 0")
+        if not math.isfinite(activation_gap_grace_s) or activation_gap_grace_s < 0:
+            raise ValueError("activation_gap_grace_s must be finite and >= 0")
+        if min_activation_active_frames < 1:
+            raise ValueError("min_activation_active_frames must be >= 1")
 
         self.gesture_name = gesture_name
         self.min_confidence = min_confidence
         self.activation_delay_s = activation_delay_s
         self.release_delay_s = release_delay_s
+        self.activation_gap_grace_s = activation_gap_grace_s
+        self.min_activation_active_frames = min_activation_active_frames
         self._mic_enabled = False
         self._active_since: float | None = None
+        self._last_active_at: float | None = None
+        self._activation_active_count = 0
         self._inactive_since: float | None = None
 
     @property
@@ -71,6 +81,8 @@ class GestureInputGate:
     def reset(self) -> None:
         self._mic_enabled = False
         self._active_since = None
+        self._last_active_at = None
+        self._activation_active_count = 0
         self._inactive_since = None
 
     def update(self, state: GestureState) -> InputGateDecision:
@@ -82,31 +94,56 @@ class GestureInputGate:
 
         if raw_active:
             self._inactive_since = None
+            self._last_active_at = timestamp
             if self._active_since is None:
                 self._active_since = timestamp
+                self._activation_active_count = 0
                 reason = "gesture_detected"
+            self._activation_active_count += 1
 
             if (
                 not self._mic_enabled
                 and timestamp - self._active_since >= self.activation_delay_s
+                and self._activation_active_count >= self.min_activation_active_frames
             ):
                 self._mic_enabled = True
                 reason = "activation_delay_passed"
             elif not self._mic_enabled:
                 reason = "waiting_for_activation_delay"
         else:
-            self._active_since = None
+            within_activation_gap_grace = (
+                not self._mic_enabled
+                and self._active_since is not None
+                and self._last_active_at is not None
+                and self.activation_gap_grace_s > 0
+                and timestamp - self._last_active_at <= self.activation_gap_grace_s
+                and self._activation_active_count >= self.min_activation_active_frames
+            )
+            opened_after_gap_grace = False
+            if within_activation_gap_grace:
+                reason = "waiting_for_activation_gap_grace"
+                if timestamp - self._active_since >= self.activation_delay_s:
+                    self._mic_enabled = True
+                    reason = "activation_delay_passed_after_gap_grace"
+                    opened_after_gap_grace = True
+            else:
+                self._active_since = None
+                self._last_active_at = None
+                self._activation_active_count = 0
             if self._inactive_since is None:
                 self._inactive_since = timestamp
-                reason = "gesture_lost"
+                if not within_activation_gap_grace:
+                    reason = "gesture_lost"
 
             if (
+                not opened_after_gap_grace
+                and
                 self._mic_enabled
                 and timestamp - self._inactive_since >= self.release_delay_s
             ):
                 self._mic_enabled = False
                 reason = "release_delay_passed"
-            elif self._mic_enabled:
+            elif self._mic_enabled and not opened_after_gap_grace:
                 reason = "waiting_for_release_delay"
 
         return InputGateDecision(

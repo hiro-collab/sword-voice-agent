@@ -13,7 +13,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .event_journal import journal_from_env
 from .loop import ThoughtLoop
+from .provenance_diagnostics import build_child_provenance_diagnostics
 
 DEFAULT_MAX_BODY_BYTES = 64 * 1024
 
@@ -29,6 +31,7 @@ def create_server(
     thought_loop: ThoughtLoop | None = None,
 ) -> ThreadingHTTPServer:
     loop = thought_loop or ThoughtLoop()
+    event_journal = journal_from_env()
     allow_remote_api = _env_bool("THOUGHT_CORE_ALLOW_REMOTE_API")
     require_api_token = _env_bool("THOUGHT_CORE_REQUIRE_API_TOKEN")
     api_token = os.environ.get("THOUGHT_CORE_API_TOKEN", "").strip()
@@ -44,6 +47,32 @@ def create_server(
                 return
             if parsed.path == "/health":
                 self._send_json({"status": "ok", "service": "thought-core"})
+                return
+            if parsed.path == "/diagnostics/no-provider-child-provenance":
+                if not self._diagnostics_api_allowed():
+                    return
+                params = parse_qs(parsed.query)
+                self._send_json(
+                    build_child_provenance_diagnostics(
+                        selected_profile=_first(params, "selected_profile", ""),
+                        ops_profile=_first(params, "ops_profile", ""),
+                        top_level_text_present_class=_first(
+                            params,
+                            "top_level_text_present_class",
+                            "",
+                        ),
+                        top_level_text_marker_class=_first(
+                            params,
+                            "top_level_text_marker_class",
+                            "",
+                        ),
+                        context_ref_payload_class=_first(
+                            params,
+                            "context_ref_payload_class",
+                            "",
+                        ),
+                    )
+                )
                 return
             if parsed.path == "/turn/stream":
                 self._send_json(
@@ -85,6 +114,12 @@ def create_server(
             return
 
         def _turn_api_allowed(self) -> bool:
+            return self._api_allowed()
+
+        def _diagnostics_api_allowed(self) -> bool:
+            return self._api_allowed()
+
+        def _api_allowed(self) -> bool:
             local_request = self._local_request()
             if not local_request and not allow_remote_api:
                 self._send_json(
@@ -161,6 +196,7 @@ def create_server(
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
+            _write_journal_safely(event_journal, events)
             self._send_json({"events": events})
 
         def _read_json_body(self) -> dict[str, Any]:
@@ -213,21 +249,20 @@ def create_server(
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "close")
             self.end_headers()
+
+            def write_event(event: dict[str, Any]) -> None:
+                _write_journal_event_safely(event_journal, event)
+                self._write_sse_event(event)
+
             try:
-                loop.run_dicts(payload, event_sink=self._write_sse_event)
+                loop.run_dicts(payload, event_sink=write_event)
             except ValueError as exc:
-                self._write_sse_event(
-                    {
-                        "schema_version": "thought-core.event.v0",
-                        "event_id": "evt_bad_request",
-                        "turn_id": str(payload.get("turn_id") or ""),
-                        "session_id": str(payload.get("session_id") or ""),
-                        "seq": 1,
-                        "timestamp": "",
-                        "source": "thought-core",
-                        "type": "turn.error",
-                        "data": {"code": "bad_request", "message": str(exc)},
-                    }
+                write_event(
+                    _error_event(
+                        payload,
+                        code="bad_request",
+                        message=str(exc),
+                    )
                 )
             except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
                 return
@@ -289,6 +324,38 @@ def _env_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def _error_event(payload: dict[str, Any], *, code: str, message: str) -> dict[str, Any]:
+    return {
+        "schema_version": "thought-core.event.v0",
+        "event_id": "evt_bad_request",
+        "turn_id": str(payload.get("turn_id") or ""),
+        "session_id": str(payload.get("session_id") or ""),
+        "seq": 1,
+        "timestamp": "",
+        "source": "thought-core",
+        "type": "turn.error",
+        "data": {"code": code, "message": message},
+    }
+
+
+def _write_journal_safely(event_journal: Any, events: list[dict[str, Any]]) -> None:
+    if event_journal is None:
+        return
+    try:
+        event_journal.write_many(events)
+    except (OSError, TypeError, ValueError):
+        return
+
+
+def _write_journal_event_safely(event_journal: Any, event: dict[str, Any]) -> None:
+    if event_journal is None:
+        return
+    try:
+        event_journal.write_event(event)
+    except (OSError, TypeError, ValueError):
+        return
+
+
 def _parse_host_header(host_header: str):
     if not host_header:
         return None
@@ -336,6 +403,7 @@ def service_index_payload() -> dict[str, Any]:
         "console_command": "uv run sword-console --ai-talk-core-root ..\\ai-talk-core",
         "endpoints": {
             "health": "GET /health",
+            "no_provider_child_provenance": "GET /diagnostics/no-provider-child-provenance",
             "turn_json": "POST /turn",
             "turn_sse": "POST /turn?stream=true",
             "turn_sse_alias": "POST /turn/stream",

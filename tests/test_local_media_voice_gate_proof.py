@@ -96,6 +96,16 @@ class LocalMediaVoiceGateProofTest(TestCase):
             self.assertEqual(result["thought_core"]["observed_intent"], "home_light_on")
             self.assertEqual(result["thought_core"]["observed_action_id"], "light_on")
             self.assertEqual(result["thought_core"]["status"], "success")
+            self.assertEqual(result["chain"]["result"], "pass")
+            self.assertTrue(result["chain"]["ready_for_middle_review"])
+            self.assertEqual(
+                result["chain"]["layer_results"],
+                {
+                    "gate_opened": True,
+                    "stt_final_result": True,
+                    "thought_core_turn_completed": True,
+                },
+            )
             rendered = json.dumps(result, ensure_ascii=False)
             self.assertNotIn("電気をつけて", rendered)
             self.assertNotIn("raw assistant speech", rendered)
@@ -165,20 +175,284 @@ class LocalMediaVoiceGateProofTest(TestCase):
             self.assertFalse(result["safety"]["raw_media_shared"])
             self.assertFalse(result["safety"]["raw_transcript_shared"])
 
+    def test_expected_closed_fails_when_gesture_events_open_gate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            media_index = write_minimal_media_index(root, asset_id="gesture.victory")
+            gesture_events = write_jsonl(
+                root / "gesture-events.jsonl",
+                [
+                    gesture_event(timestamp=0.0, primary="sword_sign", active=True),
+                    gesture_event(timestamp=0.2, primary="sword_sign", active=True),
+                    gesture_event(timestamp=0.4, primary="sword_sign", active=True),
+                ],
+            )
 
-def write_minimal_media_index(root: Path) -> Path:
+            args = build_parser().parse_args(
+                [
+                    "--asset-id",
+                    "gesture.victory",
+                    "--media-index",
+                    str(media_index),
+                    "--gesture-events",
+                    str(gesture_events),
+                    "--gate-source",
+                    "gesture-events",
+                    "--expected-gate",
+                    "closed",
+                    "--known-limitation",
+                    "victory_false_open",
+                ]
+            )
+
+            result = run(args)
+
+            self.assertEqual(result["result"], "known_limitation_fail")
+            self.assertEqual(result["known_limitation"], "victory_false_open")
+            self.assertTrue(result["gate"]["opened"])
+            self.assertEqual(result["gate_expectation"]["observed"], "open")
+            self.assertFalse(result["gate_expectation"]["matched"])
+            self.assertEqual(result["chain"]["result"], "not_enough_evidence")
+            rendered = json.dumps(result, ensure_ascii=False)
+            self.assertNotIn(str(root), rendered)
+
+    def test_expected_closed_passes_when_gesture_events_keep_gate_closed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            media_index = write_minimal_media_index(root, asset_id="gesture.open_hand")
+            gesture_events = write_jsonl(
+                root / "gesture-events.jsonl",
+                [
+                    gesture_event(timestamp=0.0, primary="none", active=False),
+                    gesture_event(timestamp=0.2, primary="none", active=False),
+                    gesture_event(timestamp=0.4, primary="none", active=False),
+                ],
+            )
+
+            args = build_parser().parse_args(
+                [
+                    "--asset-id",
+                    "gesture.open_hand",
+                    "--media-index",
+                    str(media_index),
+                    "--gesture-events",
+                    str(gesture_events),
+                    "--gate-source",
+                    "gesture-events",
+                    "--expected-gate",
+                    "closed",
+                ]
+            )
+
+            result = run(args)
+
+            self.assertEqual(result["result"], "pass")
+            self.assertFalse(result["gate"]["opened"])
+            self.assertEqual(result["gate_expectation"]["observed"], "closed")
+            self.assertTrue(result["gate_expectation"]["matched"])
+
+    def test_expected_open_passes_from_gesture_events_without_raw_media(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            media_index = write_minimal_media_index(root, asset_id="gesture.sword")
+            gesture_events = write_jsonl(
+                root / "gesture-events.jsonl",
+                [
+                    gesture_event(timestamp=0.0, primary="sword_sign", active=True),
+                    gesture_event(timestamp=0.2, primary="sword_sign", active=True),
+                    gesture_event(timestamp=0.4, primary="sword_sign", active=True),
+                ],
+            )
+
+            args = build_parser().parse_args(
+                [
+                    "--asset-id",
+                    "gesture.sword",
+                    "--media-index",
+                    str(media_index),
+                    "--gesture-events",
+                    str(gesture_events),
+                    "--gate-source",
+                    "gesture-events",
+                    "--expected-gate",
+                    "open",
+                ]
+            )
+
+            result = run(args)
+
+            self.assertEqual(result["result"], "pass")
+            self.assertTrue(result["gate"]["opened"])
+            self.assertEqual(result["gesture"]["primary_counts"], {"sword_sign": 3})
+            self.assertFalse(result["safety"]["raw_media_shared"])
+            self.assertEqual(result["chain"]["result"], "not_enough_evidence")
+
+    def test_revised_gate_profile_requires_three_active_frames(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            media_index = write_json(
+                root / "media-index.json",
+                {
+                    "assets": [
+                        {"id": "gesture.sword", "kind": "video"},
+                        {"id": "gesture.open_hand", "kind": "video"},
+                        {"id": "gesture.victory", "kind": "video"},
+                    ]
+                },
+            )
+            sword_events = write_jsonl(
+                root / "sword-events.jsonl",
+                [
+                    gesture_event(timestamp=0.0, primary="sword_sign", active=True),
+                    gesture_event(timestamp=0.12, primary="sword_sign", active=True),
+                    gesture_event(timestamp=0.21, primary="sword_sign", active=True),
+                    gesture_event(timestamp=0.31, primary="none", active=False),
+                ],
+            )
+            open_hand_events = write_jsonl(
+                root / "open-hand-events.jsonl",
+                [
+                    gesture_event(timestamp=0.0, primary="sword_sign", active=True),
+                    gesture_event(timestamp=0.12, primary="sword_sign", active=True),
+                    gesture_event(timestamp=0.31, primary="none", active=False),
+                ],
+            )
+            victory_events = write_jsonl(
+                root / "victory-events.jsonl",
+                [
+                    gesture_event(timestamp=0.0, primary="sword_sign", active=True),
+                    gesture_event(timestamp=0.32, primary="sword_sign", active=True),
+                    gesture_event(timestamp=0.4, primary="none", active=False),
+                ],
+            )
+
+            sword = run_revised_gate_case(
+                media_index,
+                "gesture.sword",
+                sword_events,
+                expected_gate="open",
+            )
+            open_hand = run_revised_gate_case(
+                media_index,
+                "gesture.open_hand",
+                open_hand_events,
+                expected_gate="closed",
+            )
+            victory = run_revised_gate_case(
+                media_index,
+                "gesture.victory",
+                victory_events,
+                expected_gate="closed",
+                known_limitation="victory_false_open",
+            )
+
+            self.assertEqual(sword["result"], "pass")
+            self.assertEqual(sword["gate_expectation"]["observed"], "open")
+            self.assertEqual(open_hand["result"], "pass")
+            self.assertEqual(open_hand["gate_expectation"]["observed"], "closed")
+            self.assertEqual(victory["result"], "pass")
+            self.assertEqual(victory["gate_expectation"]["observed"], "closed")
+            self.assertEqual(
+                sword["gate"]["min_activation_active_frames"],
+                3,
+            )
+
+    def test_rejects_unsafe_known_limitation_label(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            media_index = write_minimal_media_index(root, asset_id="gesture.victory")
+
+            args = build_parser().parse_args(
+                [
+                    "--asset-id",
+                    "gesture.victory",
+                    "--media-index",
+                    str(media_index),
+                    "--known-limitation",
+                    "C:\\Users\\person\\private",
+                ]
+            )
+
+            with self.assertRaises(ValueError):
+                run(args)
+
+
+def write_minimal_media_index(
+    root: Path,
+    *,
+    asset_id: str = "voice.turn_light_on.20260603",
+) -> Path:
     return write_json(
         root / "media-index.json",
         {
             "assets": [
                 {
-                    "id": "voice.turn_light_on.20260603",
-                    "kind": "audio",
+                    "id": asset_id,
+                    "kind": "video" if asset_id.startswith("gesture.") else "audio",
                     "duration_sec": 2.5,
                 }
             ]
         },
     )
+
+
+def gesture_event(*, timestamp: float, primary: str, active: bool) -> object:
+    return {
+        "topic": "/vision/sword_sign/state",
+        "payload": {
+            "type": "gesture_state",
+            "source": "mediapipe_sword_sign",
+            "timestamp": timestamp,
+            "primary": primary,
+            "gestures": {
+                "sword_sign": {
+                    "active": active,
+                    "confidence": 0.95 if active else 0.05,
+                }
+            },
+            "stable": {
+                "gestures": {
+                    "sword_sign": {
+                        "active": active,
+                        "activated": active,
+                        "released": False,
+                        "confidence": 0.95 if active else 0.05,
+                    }
+                }
+            },
+        },
+    }
+
+
+def run_revised_gate_case(
+    media_index: Path,
+    asset_id: str,
+    gesture_events: Path,
+    *,
+    expected_gate: str,
+    known_limitation: str = "",
+) -> dict[str, object]:
+    argv = [
+        "--asset-id",
+        asset_id,
+        "--media-index",
+        str(media_index),
+        "--gesture-events",
+        str(gesture_events),
+        "--gate-source",
+        "gesture-events",
+        "--expected-gate",
+        expected_gate,
+        "--activation-delay",
+        "0.3",
+        "--activation-gap-grace",
+        "0.15",
+        "--min-activation-active-frames",
+        "3",
+    ]
+    if known_limitation:
+        argv.extend(["--known-limitation", known_limitation])
+    return run(build_parser().parse_args(argv))
 
 
 def write_json(path: Path, value: object) -> Path:

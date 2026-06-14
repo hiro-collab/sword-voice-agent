@@ -41,6 +41,7 @@ param(
     [switch]$SkipTouchDesignerGui,
     [switch]$EnableThoughtCore,
     [switch]$EnableThoughtCoreWatch,
+    [switch]$ThoughtCoreNoProvider,
     [switch]$StopExisting,
     [switch]$SkipVoicevoxCheck,
     [switch]$EnableHomeControlFaultInjection,
@@ -383,6 +384,7 @@ function New-StackStartArguments {
     Add-ArgumentIf -Arguments $arguments -Condition (-not (Test-ServiceSelected -Services $Services -ServiceId "touchdesigner_control_gui")) -Name "-SkipTouchDesignerGui"
     Add-ArgumentIf -Arguments $arguments -Condition (Test-ServiceSelected -Services $Services -ServiceId "thought_core_api") -Name "-EnableThoughtCore"
     Add-ArgumentIf -Arguments $arguments -Condition (Test-ServiceSelected -Services $Services -ServiceId "thought_core_watcher") -Name "-EnableThoughtCoreWatch"
+    Add-ArgumentIf -Arguments $arguments -Condition $ThoughtCoreNoProvider.IsPresent -Name "-ThoughtCoreNoProvider"
 
     Add-ArgumentIf -Arguments $arguments -Condition $MediapipeOpenBrowser.IsPresent -Name "-MediapipeOpenBrowser"
     Add-ArgumentIf -Arguments $arguments -Condition $MediapipeNoBrowser.IsPresent -Name "-MediapipeNoBrowser"

@@ -79,6 +79,20 @@ Environment State と同じ観測入力として扱います。取得メモリ�
 - `THOUGHT_CORE_MEMORY_POLICY_ROOT`
 - `THOUGHT_CORE_MEMORY_RETRIEVE_LIMIT`
 
+Event Journal に turn event を残す場合は、Thought Core API 側で opt-in します。
+これは OS 本体 `state-event-ingest` への完全接続ではなく、Thought Core API ローカルの
+最小 writer です。learned memory ではなく、turn の相関用 runtime history として扱います。
+発話本文、raw prompt、raw transcript、Home Assistant route、secret は routine journal に保存せず、
+event type、turn_id、tool status、observation ref、action id、working-memory freshness などの
+summary だけを JSONL に残します。
+
+- `THOUGHT_CORE_EVENT_JOURNAL_ENABLED=1`
+- `THOUGHT_CORE_EVENT_JOURNAL_DIR=.cache/agent-os/events`
+- `THOUGHT_CORE_EVENT_JOURNAL_PATH=<single-jsonl-path>`
+
+`THOUGHT_CORE_EVENT_JOURNAL_PATH` を指定した場合はその単一 JSONL に追記します。
+`DIR` だけの場合は `events-YYYY-MM-DD.jsonl` に日次追記します。
+
 LLM を有効にした場合も、1回の巨大 prompt で全部を決めません。
 `THOUGHT_CORE_ACTION_LLM_ENABLED=1` のとき、Action Reasoner は次の小さな境界に分けて
 OpenAI-compatible adapter へ問い合わせます。

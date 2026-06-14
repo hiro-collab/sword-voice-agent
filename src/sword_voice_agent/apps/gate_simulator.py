@@ -44,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gesture-name", default="sword_sign")
     parser.add_argument("--min-confidence", type=float, default=0.8)
     parser.add_argument("--activation-delay", type=float, default=0.3)
+    parser.add_argument("--activation-gap-grace", type=float, default=0.0)
+    parser.add_argument("--min-activation-active-frames", type=int, default=1)
     parser.add_argument("--release-delay", type=float, default=0.5)
     args = parser.parse_args(argv)
 
@@ -52,6 +54,8 @@ def main(argv: list[str] | None = None) -> int:
         min_confidence=args.min_confidence,
         activation_delay_s=args.activation_delay,
         release_delay_s=args.release_delay,
+        activation_gap_grace_s=args.activation_gap_grace,
+        min_activation_active_frames=args.min_activation_active_frames,
     )
 
     states = demo_states() if args.demo else states_from_stdin()

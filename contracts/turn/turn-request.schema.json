@@ -32,6 +32,117 @@
     "context_refs": {
       "type": "object",
       "default": {},
+      "properties": {
+        "event_id": {
+          "type": "string"
+        },
+        "trace_id": {
+          "type": "string"
+        },
+        "turn_id": {
+          "type": "string"
+        },
+        "observation_id": {
+          "type": "string"
+        },
+        "observation_ref": {
+          "type": "string"
+        },
+        "motion_event_id": {
+          "type": "string"
+        },
+        "stimulus_id": {
+          "type": "string"
+        },
+        "stimulus_instance_id": {
+          "type": "string"
+        },
+        "driver_result_id": {
+          "type": "string"
+        },
+        "runtime_result_id": {
+          "type": "string"
+        },
+        "verifier_result_id": {
+          "type": "string"
+        },
+        "body_schema_snapshot_id": {
+          "type": "string"
+        },
+        "event_journal_entry_id": {
+          "type": "string"
+        },
+        "memory_candidate_id": {
+          "type": "string"
+        },
+        "working_memory_context": {
+          "$ref": "#/$defs/working_memory_context"
+        },
+        "body_expression_context": {
+          "$ref": "#/$defs/working_memory_context"
+        },
+        "prior_result_context": {
+          "$ref": "#/$defs/working_memory_context"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "working_memory_context": {
+      "type": "object",
+      "properties": {
+        "context_id": {
+          "type": "string"
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "stale_after": {
+          "type": "string"
+        },
+        "freshness": {
+          "type": "string"
+        },
+        "staleness": {
+          "type": "string"
+        },
+        "uncertainty": {
+          "type": "string"
+        },
+        "repetition": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "state_authority": {
+          "type": "string"
+        },
+        "authority": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "safe_for_thought_core_use": {
+          "type": "boolean"
+        },
+        "safe_to_act": {
+          "type": "boolean",
+          "default": false
+        },
+        "not_proven": {
+          "type": "boolean",
+          "default": true
+        },
+        "must_not_imply": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
       "additionalProperties": true
     }
   },

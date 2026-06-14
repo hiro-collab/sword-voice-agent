@@ -4929,10 +4929,22 @@ class ThoughtLoop:
         motion_kind = self._motion_stimulus_kind(legacy_kind)
         tracks = self._motion_track_mask(legacy_kind)
         required_tracks = self._motion_required_tracks(legacy_kind)
-        optional_tracks = [track for track in tracks if track not in set(required_tracks)]
+        priority_tracks = self._motion_priority_tracks(legacy_kind)
+        optional_tracks = [
+            track for track in priority_tracks if track not in set(required_tracks)
+        ]
         motion_event_id = f"mot_evt_{turn_key}_001"
         stimulus_id = f"mot_stim_{turn_key}_{motion_kind}"
         stimulus_instance_id = f"mot_inst_{turn_key}_001"
+        requirements: dict[str, Any] = {
+            "required_tracks": required_tracks,
+            "optional_tracks": optional_tracks,
+            "compatible_model_types": ["vrm"],
+            "provenance_required": True,
+            "allow_degraded": True,
+            "allow_fallback": True,
+        }
+        requirements.update(self._motion_expression_visible_requirements(legacy_kind))
         return {
             "schema_version": "motion_stimulus.v0",
             "motion_event_id": motion_event_id,
@@ -4943,22 +4955,18 @@ class ThoughtLoop:
             "source_origin": "thought_core",
             "requested_at": event.timestamp,
             "kind": motion_kind,
-            "request_mode": "play",
+            "request_mode": self._motion_request_mode(legacy_kind),
             "phase": "queued",
             "lifecycle_state": "queued",
             "safe_visible_state": "requested",
             "safe_display_name": self._motion_safe_display_name(legacy_kind, request),
             "target_model_type": "vrm",
             "track_mask": tracks,
-            "priority_by_track": self._motion_priority_by_track(tracks, required_tracks),
-            "requirements": {
-                "required_tracks": required_tracks,
-                "optional_tracks": optional_tracks,
-                "compatible_model_types": ["vrm"],
-                "provenance_required": True,
-                "allow_degraded": True,
-                "allow_fallback": True,
-            },
+            "priority_by_track": self._motion_priority_by_track(
+                priority_tracks,
+                required_tracks,
+            ),
+            "requirements": requirements,
             "payload_ref": self._motion_payload_ref(legacy_kind),
             "intensity": self._motion_intensity(str(request.get("intensity") or "medium")),
             "duration_ms": int(request.get("duration_ms") or 10000),
@@ -5018,7 +5026,12 @@ class ThoughtLoop:
             return "Stop motion"
         return "Action indicator"
 
-    def _motion_track_mask(self, legacy_kind: str) -> list[str]:
+    def _motion_request_mode(self, legacy_kind: str) -> str:
+        if legacy_kind == "expression_motion":
+            return "apply"
+        return "play"
+
+    def _motion_track_mask(self, legacy_kind: str) -> list[str] | dict[str, Any]:
         if legacy_kind == "dance":
             return [
                 "body_root",
@@ -5033,8 +5046,14 @@ class ThoughtLoop:
                 "balance",
             ]
         if legacy_kind == "expression_motion":
-            return ["face", "head", "neck"]
+            return {"scope": "face_head", "channels": ["expression_weight"]}
         return ["head", "face"]
+
+    def _motion_priority_tracks(self, legacy_kind: str) -> list[str]:
+        if legacy_kind == "expression_motion":
+            return ["face", "head", "neck"]
+        tracks = self._motion_track_mask(legacy_kind)
+        return tracks if isinstance(tracks, list) else []
 
     def _motion_required_tracks(self, legacy_kind: str) -> list[str]:
         if legacy_kind == "dance":
@@ -5065,10 +5084,22 @@ class ThoughtLoop:
         if legacy_kind == "dance":
             return "motion.thought_core.dance_sequence.v0"
         if legacy_kind == "expression_motion":
-            return "motion.thought_core.expression.v0"
+            return "motion.thought_core.expression_visible.v0"
         if legacy_kind == "cancel":
             return "motion.thought_core.stop.v0"
         return "motion.thought_core.action_indicator.v0"
+
+    def _motion_expression_visible_requirements(
+        self,
+        legacy_kind: str,
+    ) -> dict[str, Any]:
+        if legacy_kind != "expression_motion":
+            return {}
+        return {
+            "expression_profile_ref": "motion.runtime.vrm_expression_weights.v0",
+            "expected_visible_change": "face_expression",
+            "expected_roi": "avatar_face_head",
+        }
 
     def _response_context(
         self,

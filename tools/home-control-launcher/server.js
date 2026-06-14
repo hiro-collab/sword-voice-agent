@@ -64,7 +64,19 @@ const STACK_LOG_MAX_BYTES = Number(
 const STACK_LOG_BACKUPS = Number(
   process.env.HOME_CONTROL_LAUNCHER_STACK_LOG_BACKUPS || 3
 )
+const STOP_VERIFY_TIMEOUT_MS = Number(
+  process.env.HOME_CONTROL_LAUNCHER_STOP_VERIFY_TIMEOUT_MS || 12000
+)
+const STOP_VERIFY_INTERVAL_MS = Number(
+  process.env.HOME_CONTROL_LAUNCHER_STOP_VERIFY_INTERVAL_MS || 600
+)
 const PRIMARY_PROFILE_ID = 'thought-core-v0'
+const DEFAULT_HOME_CONTROL_LIVE_CONFIG = path.join(
+  WORKSPACE_ROOT,
+  'local',
+  'env',
+  'home-control.live.yaml'
+)
 
 function resolveStackStateDir() {
   const configured = readArg(
@@ -134,6 +146,7 @@ const DEFAULT_OPTIONS = {
   SkipTouchDesignerGui: false,
   EnableThoughtCore: false,
   EnableThoughtCoreWatch: false,
+  ThoughtCoreNoProvider: false,
   StopExisting: true,
   EnableHomeControlFaultInjection: false,
   ...(PORT_MODE_OPTIONS[PORT_MODE] || {})
@@ -185,6 +198,45 @@ const ensureRuntimeDirs = () => {
 }
 
 const nowIso = () => new Date().toISOString()
+
+const defaultHomeControlConfigPath = () =>
+  fs.existsSync(DEFAULT_HOME_CONTROL_LIVE_CONFIG)
+    ? DEFAULT_HOME_CONTROL_LIVE_CONFIG
+    : ''
+
+const homeControlConfigProfileFromPath = (configPath) => {
+  const normalized = String(configPath || '').replace(/\\/g, '/').toLowerCase()
+  const name = path.basename(normalized)
+  if (!normalized) return 'unknown'
+  if (normalized.endsWith('/local/env/home-control.live.yaml')) return 'local'
+  if (name.includes('example') || name.includes('demo')) return 'demo'
+  if (name.includes('local') || name.includes('private') || normalized.includes('/local/')) return 'private'
+  if (name.includes('generated') || normalized.includes('/.cache/')) return 'generated'
+  return 'custom'
+}
+
+const compactHomeControlConfigState = (options, healthPayload) => {
+  const expectedProfile = options.SkipHomeAssistantBridge
+    ? 'skipped'
+    : homeControlConfigProfileFromPath(options.HomeControlConfigPath)
+  const health = isPlainObject(healthPayload) ? healthPayload : {}
+  const activeProfile = typeof health.config_profile === 'string'
+    ? health.config_profile
+    : 'unknown'
+  const lightDemoMappingsPresent = Boolean(health.light_demo_mappings_present)
+  const demoMappingsPresent = Boolean(health.demo_mappings_present)
+  const liveHomeInvalid = !options.SkipHomeAssistantBridge &&
+    expectedProfile === 'local' &&
+    lightDemoMappingsPresent
+  return {
+    expected_profile: expectedProfile,
+    active_profile: activeProfile,
+    demo_mappings_present: demoMappingsPresent,
+    light_demo_mappings_present: lightDemoMappingsPresent,
+    live_home_invalid: liveHomeInvalid,
+    payload_policy: 'compact_redacted'
+  }
+}
 
 const rotateStackLogIfNeeded = (incomingBytes = 0) => {
   if (!Number.isFinite(STACK_LOG_MAX_BYTES) || STACK_LOG_MAX_BYTES <= 0) {
@@ -263,6 +315,8 @@ const readLauncherConfig = () =>
 const readLauncherState = () => readJsonFile(LAUNCHER_STATE_FILE, {})
 
 const readPidState = () => readJsonFile(PID_FILE, { processes: [] })
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const normalizeIpAddress = (value) => {
   const normalized = String(value || '')
@@ -383,6 +437,9 @@ const normalizeOptions = (profileId, overrides = {}) => {
   }
   if (normalized.MediapipeOpenBrowser) {
     normalized.MediapipeNoBrowser = false
+  }
+  if (!normalized.SkipHomeAssistantBridge && !normalized.HomeControlConfigPath) {
+    normalized.HomeControlConfigPath = defaultHomeControlConfigPath()
   }
   return normalized
 }
@@ -729,17 +786,30 @@ const runScriptAndCollect = (scriptPath, scriptArgs = [], timeoutMs = 30000) =>
 const stopStack = async (body) => {
   const config = readLauncherConfig()
   const profileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
+  const options = normalizeOptions(profileId, config.options || {})
   const scriptArgs = ['stop', '-Profile', opsProfileFor(profileId), '-Force']
   if (body && body.stopDify) {
     scriptArgs.push('-StopDify')
   }
+  const beforeStopVerification = await collectStackStopVerification(options)
   const result = await runScriptAndCollect(SYSTEM_SCRIPT, scriptArgs, 45000)
+  const stopVerification = await waitForStackStopVerification(options)
+  const ok = Boolean(result.ok && stopVerification.ok)
+  const payload = {
+    ...result,
+    ok,
+    beforeStopVerification,
+    stopVerification,
+    message: ok
+      ? 'Stop verified: all managed stack processes and ports are clear.'
+      : describeStopVerificationFailure(stopVerification, result)
+  }
   writeJsonFile(LAUNCHER_STATE_FILE, {
     ...readLauncherState(),
     stoppedAt: nowIso(),
-    lastStop: result
+    lastStop: payload
   })
-  return result
+  return payload
 }
 
 const isProcessAlive = (pid) => {
@@ -773,6 +843,173 @@ const checkTcp = (port, host = '127.0.0.1', timeoutMs = 1200) =>
     socket.once('error', (error) => finish(false, error.code || error.message))
     socket.connect(port, host)
   })
+
+const loopbackHost = (host) =>
+  !host || host === '0.0.0.0' || host === 'localhost' ? '127.0.0.1' : host
+
+const managedStopPortTargets = (options) => {
+  const mediamtxEnabled = !options.SkipMediapipe && options.MediapipeMode === 'mediamtx'
+  return [
+    {
+      key: 'home_assistant_bridge',
+      label: 'Action bridge',
+      host: loopbackHost(options.HomeAssistantBridgeHost),
+      port: options.HomeAssistantBridgePort,
+      enabled: !options.SkipHomeAssistantBridge
+    },
+    {
+      key: 'environment_state_server',
+      label: 'Environment state',
+      host: '127.0.0.1',
+      port: options.EnvironmentStatePort,
+      enabled: !options.SkipEnvironmentState
+    },
+    {
+      key: 'mediapipe_camera_hub',
+      label: 'Reflex Camera Hub',
+      host: '127.0.0.1',
+      port: options.MediapipePort,
+      enabled: !options.SkipMediapipe
+    },
+    {
+      key: 'mediapipe_browser_monitor',
+      label: 'Reflex monitor',
+      host: '127.0.0.1',
+      port: options.MediapipeBrowserMonitorPort,
+      enabled: mediamtxEnabled
+    },
+    {
+      key: 'mediapipe_rtsp',
+      label: 'Reflex RTSP',
+      host: '127.0.0.1',
+      port: 8554,
+      enabled: mediamtxEnabled
+    },
+    {
+      key: 'mediapipe_web_media',
+      label: 'Reflex web media',
+      host: '127.0.0.1',
+      port: 8889,
+      enabled: mediamtxEnabled
+    },
+    {
+      key: 'vision_snapshot_processor',
+      label: 'Vision snapshot',
+      host: '127.0.0.1',
+      port: options.VisionSnapshotProcessorPort,
+      enabled: !options.SkipVisionSnapshotProcessor && !options.SkipMediapipe
+    },
+    {
+      key: 'aituber_kit',
+      label: 'Expression runtime',
+      host: loopbackHost(options.AituberHost),
+      port: options.AituberPort,
+      enabled: !options.SkipAituber
+    },
+    {
+      key: 'touchdesigner_control_gui',
+      label: 'Display runtime GUI',
+      host: loopbackHost(options.TouchDesignerGuiHost),
+      port: options.TouchDesignerGuiPort,
+      enabled: !options.SkipTouchDesignerGui
+    },
+    {
+      key: 'thought_core_api',
+      label: 'Thought Core API',
+      host: loopbackHost(options.ThoughtCoreHost),
+      port: options.ThoughtCorePort,
+      enabled: options.EnableThoughtCore
+    }
+  ].filter((target) => target.enabled && Number.isInteger(Number(target.port)))
+}
+
+const compactPidEntry = (entry) => ({
+  name: String(entry.name || 'unknown'),
+  module: String(entry.module || ''),
+  role: String(entry.role || ''),
+  pid: Number(entry.pid) || null
+})
+
+const collectStackStopVerification = async (options) => {
+  const pidFileExists = fs.existsSync(PID_FILE)
+  const pidState = readPidState()
+  const recordedProcesses = Array.isArray(pidState.processes)
+    ? pidState.processes
+    : []
+  const aliveRecorded = recordedProcesses
+    .filter((entry) => isProcessAlive(entry.pid))
+    .map(compactPidEntry)
+  const checkedPorts = await Promise.all(
+    managedStopPortTargets(options).map(async (target) => ({
+      key: target.key,
+      label: target.label,
+      host: target.host,
+      port: Number(target.port),
+      tcp: await checkTcp(Number(target.port), target.host, 450)
+    }))
+  )
+  const openPorts = checkedPorts
+    .filter((target) => target.tcp && target.tcp.ok)
+    .map((target) => ({
+      key: target.key,
+      label: target.label,
+      host: target.host,
+      port: target.port,
+      detail: target.tcp.detail || 'listen'
+    }))
+  return {
+    ok: !pidFileExists && aliveRecorded.length === 0 && openPorts.length === 0,
+    checkedAt: nowIso(),
+    pidFileExists,
+    recordedProcessCount: recordedProcesses.length,
+    aliveRecorded,
+    checkedPortCount: checkedPorts.length,
+    openPorts
+  }
+}
+
+const waitForStackStopVerification = async (options) => {
+  const deadline = Date.now() + STOP_VERIFY_TIMEOUT_MS
+  let verification = await collectStackStopVerification(options)
+  while (!verification.ok && Date.now() < deadline) {
+    await sleep(STOP_VERIFY_INTERVAL_MS)
+    verification = await collectStackStopVerification(options)
+  }
+  return {
+    ...verification,
+    timedOut: !verification.ok
+  }
+}
+
+const describeStopVerificationFailure = (verification, scriptResult) => {
+  const parts = []
+  if (!scriptResult || !scriptResult.ok) {
+    parts.push('shutdown script failed or timed out')
+  }
+  if (verification && verification.pidFileExists) {
+    parts.push('PID registry still exists')
+  }
+  if (verification && verification.aliveRecorded && verification.aliveRecorded.length > 0) {
+    parts.push(
+      `recorded processes still alive: ${verification.aliveRecorded
+        .map((entry) => `${entry.name}#${entry.pid}`)
+        .join(', ')}`
+    )
+  }
+  if (verification && verification.openPorts && verification.openPorts.length > 0) {
+    parts.push(
+      `managed ports still listening: ${verification.openPorts
+        .map((entry) => `${entry.label}:${entry.port}`)
+        .join(', ')}`
+    )
+  }
+  if (verification && verification.timedOut) {
+    parts.push('stop verification timed out')
+  }
+  return parts.length > 0
+    ? `Stop did not fully clear the stack: ${parts.join('; ')}.`
+    : 'Stop did not fully clear the stack. Check the launcher log.'
+}
 
 const checkHttp = (targetUrl, timeoutMs = 1800) =>
   new Promise((resolve) => {
@@ -1206,6 +1443,7 @@ const getStatus = async () => {
   const [
     homeTcp,
     homeHttp,
+    homeHealth,
     environmentTcp,
     environmentHttp,
     aituberTcp,
@@ -1220,6 +1458,15 @@ const getStatus = async () => {
   ] = await Promise.all([
     checkTcp(options.HomeAssistantBridgePort),
     checkHttp(`http://127.0.0.1:${options.HomeAssistantBridgePort}/health`, 2500),
+    checkHttp(`http://127.0.0.1:${options.HomeAssistantBridgePort}/health`, 2500).then((result) =>
+      result.ok
+        ? fetchJson(`http://127.0.0.1:${options.HomeAssistantBridgePort}/health`, 2500)
+        : Promise.resolve({
+            ok: false,
+            statusCode: 0,
+            detail: result.detail || 'home-control bridge health unavailable'
+          })
+    ),
     checkTcp(options.EnvironmentStatePort),
     checkHttp(`http://127.0.0.1:${options.EnvironmentStatePort}/health`),
     checkTcp(options.AituberPort),
@@ -1317,7 +1564,11 @@ const getStatus = async () => {
         environmentIndicators.ok && environmentIndicators.payload
           ? environmentIndicators.payload.age_ms ?? null
           : null
-    }
+    },
+    homeControlConfigState: compactHomeControlConfigState(
+      options,
+      homeHealth.ok ? homeHealth.payload : null
+    )
   }
 }
 
