@@ -9,6 +9,7 @@ THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core" / "src"
 sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 
 from thought_core.loop import ThoughtLoop  # noqa: E402
+from thought_core.input_understanding import LocalInputUnderstanding  # noqa: E402
 from thought_core.schema import TurnInput  # noqa: E402
 from thought_core.tools import MockThoughtTools  # noqa: E402
 
@@ -44,6 +45,22 @@ class CatalogStatusTools(MockThoughtTools):
                 "expected_state": "off",
             },
         ]
+        return observation
+
+
+class StaleAirconStatusTools(MockThoughtTools):
+    def environment_observe(self, turn: TurnInput, *, reason: str) -> dict[str, object]:
+        observation = super().environment_observe(turn, reason=reason)
+        environment = observation.setdefault("environment", {})
+        assert isinstance(environment, dict)
+        appliances = environment.setdefault("appliances", {})
+        assert isinstance(appliances, dict)
+        appliances["aircon"] = {
+            "state": "off",
+            "stale": True,
+            "updated_at": "2026-06-15T00:00:00+09:00",
+            "source": "home_assistant.mock",
+        }
         return observation
 
 
@@ -186,6 +203,190 @@ class EnvironmentStateGroundingTest(TestCase):
         self.assertIn("現在状態としては断定", message["speech"])
         self.assertNotIn("現在の物理状態は確認済み", message["speech"])
 
+    def test_aircon_status_questions_bypass_pending_room_light_feedback(self) -> None:
+        for text in ("エアコンはついてる？", "エアコンついてるか確認して"):
+            with self.subTest(text=text):
+                tools = StaleAirconStatusTools(light_on=True)
+                loop = ThoughtLoop(tools=tools)
+                loop.run_dicts(
+                    {
+                        **TURN,
+                        "text": "電気ついてる？",
+                        "turn_id": f"turn_pending_room_light_before_aircon_{self._safe_id(text)}",
+                    }
+                )
+
+                events = loop.run_dicts(
+                    {
+                        **TURN,
+                        "text": text,
+                        "turn_id": f"turn_aircon_status_{self._safe_id(text)}",
+                    }
+                )
+                event_types = [event["type"] for event in events]
+                tool_names = [
+                    event["data"]["tool"]
+                    for event in events
+                    if event["type"] == "tool.started"
+                ]
+                understood = next(
+                    event for event in events if event["type"] == "input.understood"
+                )
+                grounding = self._grounding(events)
+                message = self._last_message(events)
+                serialized_grounding = json.dumps(
+                    grounding,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+
+                self.assertEqual(understood["data"]["kind"], "environment_status_query")
+                self.assertEqual(understood["data"]["target"], "appliance_state")
+                self.assertEqual(understood["data"]["reason"], "aircon_state_status_question")
+                self.assertEqual(grounding["query_class"], "appliance_state")
+                self.assertEqual(grounding["target_appliance_class"], "aircon")
+                self.assertEqual(grounding["freshness_class"], "stale")
+                self.assertEqual(grounding["proof_ceiling"], "external_observation_required")
+                self.assertNotIn("state_query.feedback_saved", event_types)
+                self.assertNotIn("responder.started", event_types)
+                self.assertNotIn("home.preview", tool_names)
+                self.assertNotIn("home.execute", tool_names)
+                self.assertEqual(tools.state_query_feedback_calls, [])
+                self.assertIn("エアコン", message["speech"])
+                self.assertIn("オフ扱い", message["speech"])
+                self.assertIn("最後に分かっている範囲", message["speech"])
+                self.assertIn("現在状態としては断定", message["speech"])
+                self.assertIn("物理状態", message["speech"])
+                self.assertNotIn("物理的に確認済み", message["speech"])
+                self.assertNotIn("home_assistant.mock", serialized_grounding)
+                self.assertNotIn("climate.", serialized_grounding)
+
+    def test_appliance_status_paraphrases_use_structured_target_intent_split(self) -> None:
+        cases = [
+            (
+                "direct_aircon",
+                "エアコンついてる？",
+                "appliance_state",
+                "appliance",
+                "aircon",
+                "clear_status_query",
+            ),
+            (
+                "polite_aircon",
+                "エアコンが今ついてるか見てもらえる？",
+                "appliance_state",
+                "appliance",
+                "aircon",
+                "clear_status_query",
+            ),
+            (
+                "mood_context_aircon",
+                "暑いんだけど、冷房入ってる感じ？",
+                "appliance_state",
+                "appliance",
+                "aircon",
+                "clear_status_query",
+            ),
+            (
+                "capability_status",
+                "今どの家電の状態が分かる？",
+                "appliance_state",
+                "home_control",
+                "",
+                "clear_status_query",
+            ),
+            (
+                "ambiguous_status_safe",
+                "エアコンどう",
+                "appliance_state",
+                "appliance",
+                "aircon",
+                "low_confidence_status_query",
+            ),
+        ]
+        for (
+            case_name,
+            text,
+            query_class,
+            target_class,
+            appliance_class,
+            ambiguity_class,
+        ) in cases:
+            with self.subTest(case=case_name):
+                events = ThoughtLoop(tools=StaleAirconStatusTools(light_on=True)).run_dicts(
+                    {
+                        **TURN,
+                        "text": text,
+                        "turn_id": f"turn_appliance_paraphrase_{case_name}",
+                    }
+                )
+                understood = next(
+                    event for event in events if event["type"] == "input.understood"
+                )
+                grounding = self._grounding(events)
+                event_types = [event["type"] for event in events]
+                tool_names = [
+                    event["data"]["tool"]
+                    for event in events
+                    if event["type"] == "tool.started"
+                ]
+
+                self.assertEqual(understood["data"]["kind"], "environment_status_query")
+                self.assertEqual(understood["data"]["target"], query_class)
+                self.assertEqual(understood["data"]["metadata"]["intent_class"], "status_query")
+                self.assertEqual(
+                    understood["data"]["metadata"]["target_class"],
+                    target_class,
+                )
+                self.assertEqual(
+                    understood["data"]["metadata"]["appliance_class"],
+                    appliance_class,
+                )
+                self.assertEqual(
+                    understood["data"]["metadata"]["classification_schema"],
+                    "thought_core_intent_classification.v0",
+                )
+                self.assertEqual(
+                    understood["data"]["metadata"]["ambiguity_class"],
+                    ambiguity_class,
+                )
+                self.assertEqual(understood["data"]["metadata"]["llm_assist_used"], "false")
+                self.assertEqual(
+                    understood["data"]["metadata"]["safety_guardrail"],
+                    "status_query_never_executes_home_action",
+                )
+                self.assertEqual(grounding["query_class"], query_class)
+                self.assertNotIn("home.preview", tool_names)
+                self.assertNotIn("home.execute", tool_names)
+                self.assertNotIn("responder.started", event_types)
+
+    def test_negative_command_and_status_question_remain_distinct(self) -> None:
+        classifier = LocalInputUnderstanding()
+        command_frame = classifier.understand(
+            TurnInput.from_mapping(
+                {
+                    **TURN,
+                    "text": "エアコン消して",
+                    "turn_id": "turn_aircon_off_command_classification",
+                }
+            )
+        )
+        status_frame = classifier.understand(
+            TurnInput.from_mapping(
+                {
+                    **TURN,
+                    "text": "エアコン消えてる？",
+                    "turn_id": "turn_aircon_off_status_classification",
+                }
+            )
+        )
+
+        self.assertNotEqual(command_frame.kind, "environment_status_query")
+        self.assertEqual(status_frame.kind, "environment_status_query")
+        self.assertEqual(status_frame.target, "appliance_state")
+        self.assertEqual(status_frame.metadata["intent_class"], "status_query")
+        self.assertEqual(status_frame.metadata["appliance_class"], "aircon")
+
     def _grounding(self, events: list[dict[str, object]]) -> dict[str, object]:
         return next(
             event["data"]
@@ -199,6 +400,9 @@ class EnvironmentStateGroundingTest(TestCase):
             for event in events
             if event["type"] == "assistant.message"
         ][-1]
+
+    def _safe_id(self, text: str) -> str:
+        return "confirm" if "確認" in text else "question"
 
 
 if __name__ == "__main__":

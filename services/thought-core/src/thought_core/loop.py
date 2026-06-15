@@ -4862,6 +4862,13 @@ class ThoughtLoop:
         )
         facts = observation.get("facts") if isinstance(observation.get("facts"), dict) else {}
         devices = self._safe_environment_devices(facts, environment)
+        target_appliance = str(input_frame.metadata.get("appliance_class") or "")
+        if target_appliance:
+            devices.sort(
+                key=lambda device: 0
+                if device.get("kind") == target_appliance
+                else 1
+            )
         action_families = self._safe_environment_action_families(environment)
         room_light = self._room_light_from_observation(observation)
         memory_summary = self._safe_memory_grounding_summary(memory_context)
@@ -4884,6 +4891,7 @@ class ThoughtLoop:
             "schema_version": "thought_core_environment_grounding.v0",
             "status": "environment_status_answer",
             "query_class": query_class,
+            "target_appliance_class": target_appliance,
             "input_kind": input_frame.kind,
             "environment_status": env_status,
             "observation_ref_present": bool(observation.get("observation_ref")),

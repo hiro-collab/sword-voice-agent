@@ -56,6 +56,14 @@ class InputFrame:
         }
 
 
+@dataclass(frozen=True)
+class _StatusTarget:
+    target_class: str
+    appliance_class: str = ""
+    confidence: float = 0.0
+    reason: str = ""
+
+
 class InputUnderstanding(Protocol):
     adapter_kind: str
     provider: str
@@ -111,13 +119,29 @@ class LocalInputUnderstanding:
                 **action_fields,
             )
 
+        direct_feedback_label = _direct_room_light_feedback_label(text)
+        if direct_feedback_label:
+            return InputFrame(
+                kind="state_feedback",
+                target="room_light",
+                asserted_state=direct_feedback_label,
+                is_feedback=True,
+                is_command=has_action,
+                confidence=0.78,
+                reason="direct_room_light_state_report",
+                continued_as_command=has_action,
+                metadata={"normalized": normalized, "pending": False},
+                **action_fields,
+            )
+
         environment_status = _environment_status_query_metadata(text)
         if environment_status is not None:
+            confidence_hint = float(environment_status.get("confidence_hint") or 0.8)
             return InputFrame(
                 kind="environment_status_query",
                 target=str(environment_status["query_class"]),
                 is_question=True,
-                confidence=0.8,
+                confidence=confidence_hint,
                 reason=str(environment_status["reason"]),
                 metadata={"normalized": normalized, **environment_status},
                 **action_fields,
@@ -140,21 +164,6 @@ class LocalInputUnderstanding:
                 reason="feedback_for_pending_room_light_state",
                 continued_as_command=has_action,
                 metadata={"normalized": normalized, "pending": True},
-                **action_fields,
-            )
-
-        direct_feedback_label = _direct_room_light_feedback_label(text)
-        if direct_feedback_label:
-            return InputFrame(
-                kind="state_feedback",
-                target="room_light",
-                asserted_state=direct_feedback_label,
-                is_feedback=True,
-                is_command=has_action,
-                confidence=0.78,
-                reason="direct_room_light_state_report",
-                continued_as_command=has_action,
-                metadata={"normalized": normalized, "pending": False},
                 **action_fields,
             )
 
@@ -474,6 +483,9 @@ def _environment_status_query_metadata(text: str) -> dict[str, str] | None:
     lowered = normalized.lower()
     if not normalized:
         return None
+    structured_status = _structured_status_query_metadata(normalized, lowered)
+    if structured_status is not None:
+        return structured_status
     if _looks_like_home_action_command(text):
         return None
 
@@ -553,6 +565,265 @@ def _environment_status_query_metadata(text: str) -> dict[str, str] | None:
             "reason": "current_environment_status_question",
         }
     return None
+
+
+def _structured_status_query_metadata(
+    normalized: str,
+    lowered: str,
+) -> dict[str, str] | None:
+    target = _extract_status_target(normalized, lowered)
+    if target is None:
+        return None
+
+    status_score = _status_question_score(normalized)
+    if target.target_class == "memory":
+        if status_score <= 0:
+            return None
+        return _status_metadata(
+            query_class="memory_grounded_status",
+            reason="memory_dependent_status_question",
+            target=target,
+            status_score=status_score,
+        )
+
+    if target.target_class == "home_control":
+        if status_score <= 0:
+            return None
+        query_class = "appliance_state" if _mentions_state_surface(normalized) else "home_control_availability"
+        reason = (
+            "appliance_state_status_question"
+            if query_class == "appliance_state"
+            else "home_control_availability_question"
+        )
+        return _status_metadata(
+            query_class=query_class,
+            reason=reason,
+            target=target,
+            status_score=status_score,
+        )
+
+    if target.target_class == "environment":
+        if status_score <= 0:
+            return None
+        return _status_metadata(
+            query_class="current_environment_status",
+            reason="current_environment_status_question",
+            target=target,
+            status_score=status_score,
+        )
+
+    if target.target_class != "appliance":
+        return None
+    if _looks_like_action_only_request(normalized) and not _has_question_or_check_cue(
+        normalized
+    ):
+        return None
+    if status_score <= 0:
+        return None
+    return _status_metadata(
+        query_class="appliance_state",
+        reason=f"{target.appliance_class}_state_status_question",
+        target=target,
+        status_score=status_score,
+    )
+
+
+def _extract_status_target(normalized: str, lowered: str) -> _StatusTarget | None:
+    appliance_markers = {
+        "aircon": (
+            "エアコン",
+            "クーラー",
+            "冷房",
+            "暖房",
+            "空調",
+            "aircon",
+            "a/c",
+        ),
+        "fan": ("扇風機", "ファン", "fan"),
+        "door": ("中扉", "ドア", "カーテン", "cover", "door"),
+        "vacuum": ("掃除機", "ロボット掃除機", "vacuum"),
+    }
+    for appliance, markers in appliance_markers.items():
+        if any(marker in normalized for marker in markers) or any(
+            marker in lowered for marker in markers
+        ):
+            return _StatusTarget(
+                target_class="appliance",
+                appliance_class=appliance,
+                confidence=0.9,
+                reason=f"{appliance}_target_detected",
+            )
+    if any(
+        marker in lowered
+        for marker in ("home assistant", "home control")
+    ) or any(
+        marker in normalized
+        for marker in ("ホームアシスタント", "ホームコントロール", "家電")
+    ):
+        return _StatusTarget(
+            target_class="home_control",
+            confidence=0.82,
+            reason="home_control_target_detected",
+        )
+    if any(
+        marker in normalized
+        for marker in (
+            "今の状況",
+            "現在の状況",
+            "今の状態",
+            "現在の状態",
+            "周り",
+            "まわり",
+            "環境",
+            "見えて",
+            "見える",
+            "状況",
+            "ステータス",
+            "状態",
+        )
+    ):
+        if any(
+            marker in normalized
+            for marker in (
+                "覚えて",
+                "記憶",
+                "前に",
+                "前回",
+                "以前",
+                "さっき",
+                "これまで",
+                "踏まえて",
+            )
+        ):
+            return _StatusTarget(
+                target_class="memory",
+                confidence=0.78,
+                reason="memory_context_target_detected",
+            )
+        return _StatusTarget(
+            target_class="environment",
+            confidence=0.78,
+            reason="environment_target_detected",
+        )
+    return None
+
+
+def _status_question_score(normalized: str) -> int:
+    status_markers = (
+        "?",
+        "？",
+        "か",
+        "確認",
+        "見て",
+        "見てもら",
+        "調べ",
+        "状態",
+        "どう",
+        "どの",
+        "分かる",
+        "わかる",
+        "感じ",
+        "ついてる",
+        "ついている",
+        "点いてる",
+        "付いてる",
+        "入ってる",
+        "入っている",
+        "オン",
+        "消えてる",
+        "消えている",
+        "オフ",
+        "切れてる",
+        "動いてる",
+        "動いている",
+        "動作",
+        "稼働",
+        "運転",
+        "止まって",
+        "止まった",
+    )
+    return sum(1 for marker in status_markers if marker in normalized)
+
+
+def _mentions_state_surface(normalized: str) -> bool:
+    return any(
+        marker in normalized
+        for marker in (
+            "状態",
+            "どうな",
+            "ついて",
+            "消えて",
+            "動いて",
+            "分かる",
+            "わかる",
+        )
+    )
+
+
+def _looks_like_action_only_request(normalized: str) -> bool:
+    return any(
+        marker in normalized
+        for marker in (
+            "つけて",
+            "点けて",
+            "付けて",
+            "オンにして",
+            "消して",
+            "オフにして",
+            "切って",
+            "開けて",
+            "閉めて",
+            "止めて",
+            "戻して",
+        )
+    )
+
+
+def _has_question_or_check_cue(normalized: str) -> bool:
+    return any(
+        marker in normalized
+        for marker in (
+            "?",
+            "？",
+            "か",
+            "確認",
+            "状態",
+            "どう",
+            "ついてる",
+            "ついている",
+            "消えてる",
+            "消えている",
+            "入ってる",
+            "入っている",
+        )
+    )
+
+
+def _status_metadata(
+    *,
+    query_class: str,
+    reason: str,
+    target: _StatusTarget,
+    status_score: int,
+) -> dict[str, str]:
+    confidence = min(0.92, max(0.55, target.confidence + (status_score * 0.03)))
+    ambiguity_class = (
+        "clear_status_query" if status_score >= 2 else "low_confidence_status_query"
+    )
+    return {
+        "query_class": query_class,
+        "reason": reason,
+        "intent_class": "status_query",
+        "target_class": target.target_class,
+        "appliance_class": target.appliance_class,
+        "confidence_hint": f"{confidence:.2f}",
+        "ambiguity_class": ambiguity_class,
+        "classification_schema": "thought_core_intent_classification.v0",
+        "classifier_mode": "local_deterministic_guarded",
+        "llm_assist_used": "false",
+        "llm_assist_status": "not_enabled_in_local_input_understanding",
+        "safety_guardrail": "status_query_never_executes_home_action",
+    }
 
 
 def _is_audio_status_check(text: str) -> bool:
