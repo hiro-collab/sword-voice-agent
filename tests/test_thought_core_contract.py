@@ -817,6 +817,68 @@ class ThoughtCoreContractTest(TestCase):
         self.assertIn("すでに消えています", message)
         self.assertEqual(events[-1]["data"]["status"], "noop")
 
+    def test_environment_action_readiness_metadata_reaches_home_action(self) -> None:
+        class ReadinessMetadataTools(MockThoughtTools):
+            def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+                observation = super().environment_observe(turn, reason=reason)
+                observation["environment"]["action_readiness"] = {
+                    "schema_version": "home_control_action_readiness.v0",
+                    "test_now_count": 1,
+                    "blocked_candidate_count": 0,
+                    "proof_ceilings": {"ha_visible_vacuum_return_checkstate_layer": 1},
+                }
+                observation["environment"]["actions"] = [
+                    {
+                        "action_id": "vacuum_return",
+                        "aliases": ["掃除機を戻して"],
+                        "label": "掃除機を戻す",
+                        "appliance_id": "vacuum",
+                        "target_label": "掃除機",
+                        "verb": "戻す",
+                        "pre_action_phrase": "掃除機を戻す",
+                        "expected_state": "returning",
+                        "control_type": "stateful_command",
+                        "state_authority": "home_assistant",
+                        "verification_mode": "ha_state",
+                        "state_tracking": "tracked",
+                        "proof_ceiling": "ha_visible_vacuum_return_checkstate_layer",
+                        "live_test_readiness": "test_now",
+                        "live_test_blockers": [],
+                        "restore_action_id": "",
+                        "stop_action_id": "",
+                        "terminal_action": True,
+                        "safety_requirements": [],
+                    }
+                ]
+                return observation
+
+        tools = ReadinessMetadataTools()
+        events = ThoughtLoop(tools=tools).run_dicts(
+            {
+                **TURN,
+                "text": "掃除機を戻して",
+                "turn_id": "turn_vacuum_return_readiness_metadata",
+            }
+        )
+        action_event = next(event for event in events if event["type"] == "action.proposed")
+        proposed = action_event["data"]["action"]
+
+        self.assertEqual(proposed["action_id"], "vacuum_return")
+        self.assertEqual(proposed["state_tracking"], "tracked")
+        self.assertEqual(proposed["verification_mode"], "ha_state")
+        self.assertEqual(proposed["state_authority"], "home_assistant")
+        self.assertEqual(
+            proposed["proof_ceiling"],
+            "ha_visible_vacuum_return_checkstate_layer",
+        )
+        self.assertEqual(proposed["live_test_readiness"], "test_now")
+        self.assertTrue(proposed["terminal_action"])
+        self.assertEqual(tools.execute_calls[0]["proof_ceiling"], proposed["proof_ceiling"])
+        self.assertEqual(
+            tools.execute_calls[0]["live_test_readiness"],
+            proposed["live_test_readiness"],
+        )
+
     def test_vacuum_return_uses_dify_action_id_dictionary(self) -> None:
         tools = MockThoughtTools()
         events = ThoughtLoop(tools=tools).run_dicts(
@@ -2463,10 +2525,16 @@ class ThoughtCoreContractTest(TestCase):
             for event in events
             if event["type"] == "thought_core.response_route_classified"
         )
+        completed = next(
+            event for event in events if event["type"] == "responder.completed"
+        )
         final_message = [
             event for event in events if event["type"] == "assistant.message"
         ][-1]
         serialized_route = json.dumps(route["data"], ensure_ascii=False)
+        visible_speech = str(final_message["data"].get("speech") or "")
+        visible_display = str(final_message["data"].get("display") or "")
+        visible_text = f"{visible_speech}\n{visible_display}"
 
         self.assertNotIn("audio.status_checked", event_types)
         self.assertIn("responder.started", event_types)
@@ -2479,15 +2547,91 @@ class ThoughtCoreContractTest(TestCase):
         self.assertTrue(route["data"]["fallback_used"])
         self.assertFalse(route["data"]["used_llm"])
         self.assertFalse(route["data"]["direct_dify_used"])
+        self.assertEqual(completed["data"]["adapter_kind"], "local_fallback")
+        self.assertEqual(completed["data"]["provider"], "thought-core")
+        self.assertEqual(completed["data"]["model"], "local-rule-v0")
         self.assertIn("microphone_quality_proven", route["data"]["non_claims"])
         self.assertIn("speaker_output_heard", route["data"]["non_claims"])
         self.assertNotIn("raw_prompt", serialized_route)
         self.assertNotIn("raw_transcript", serialized_route)
         self.assertNotIn("provider_payload", serialized_route)
         self.assertNotIn("raw Dify", serialized_route)
-        self.assertNotIn("音声入力", final_message["data"]["speech"])
-        self.assertNotIn("マイク", final_message["data"]["speech"])
-        self.assertNotIn("スピーカー", final_message["data"]["speech"])
+        self.assertIn("入力は受け取りました", visible_text)
+        self.assertIn("通常会話用LLMが未接続", visible_text)
+        self.assertIn("簡易応答", visible_text)
+        for user_visible_internal_term in (
+            "応答アダプター",
+            "アダプターの設定後",
+            "アダプター",
+            "adapter",
+            "設定後",
+        ):
+            self.assertNotIn(user_visible_internal_term, visible_text)
+        self.assertNotIn("音声入力", visible_text)
+        self.assertNotIn("マイク", visible_text)
+        self.assertNotIn("スピーカー", visible_text)
+
+    def test_general_local_fallback_question_matrix_stays_user_facing(self) -> None:
+        cases = [
+            ("greeting", "こんにちは、元気？"),
+            ("capability_question", "今なにができる？"),
+            ("planning_question", "今日の作業をどう進めればいい？"),
+            ("follow_up_question", "さっきの話の続きで相談したい"),
+            ("creative_question", "短い冗談を言って"),
+            ("ambiguous_help", "ちょっと困ってるんだけど"),
+            ("test_question", "これはテストです"),
+        ]
+        forbidden_visible_terms = (
+            "応答アダプター",
+            "アダプターの設定後",
+            "アダプター",
+            "adapter",
+            "local_fallback",
+            "provider_payload",
+            "raw_prompt",
+        )
+
+        for case_name, text in cases:
+            with self.subTest(case=case_name):
+                events = ThoughtLoop().run_dicts(
+                    {
+                        **GENERAL_TURN,
+                        "text": text,
+                        "turn_id": f"turn_general_fallback_matrix_{case_name}",
+                    }
+                )
+                route = next(
+                    event
+                    for event in events
+                    if event["type"] == "thought_core.response_route_classified"
+                )
+                completed = next(
+                    event for event in events if event["type"] == "responder.completed"
+                )
+                final_message = [
+                    event for event in events if event["type"] == "assistant.message"
+                ][-1]
+                visible_speech = str(final_message["data"].get("speech") or "")
+                visible_display = str(final_message["data"].get("display") or "")
+                visible_text = f"{visible_speech}\n{visible_display}"
+
+                self.assertTrue(visible_speech.strip())
+                self.assertTrue(visible_display.strip())
+                self.assertEqual(route["data"]["response_route"], "ordinary_conversation")
+                self.assertTrue(route["data"]["fallback_used"])
+                self.assertFalse(route["data"]["used_llm"])
+                self.assertFalse(route["data"]["direct_dify_used"])
+                self.assertEqual(completed["data"]["adapter_kind"], "local_fallback")
+                self.assertEqual(completed["data"]["provider"], "thought-core")
+                self.assertEqual(completed["data"]["model"], "local-rule-v0")
+                self.assertIn("入力", visible_text)
+                if "テスト" in text:
+                    self.assertIn("出力や機器状態の確認は別扱い", visible_text)
+                else:
+                    self.assertIn("通常会話用LLMが未接続", visible_text)
+                    self.assertIn("簡易応答", visible_text)
+                for forbidden_visible_term in forbidden_visible_terms:
+                    self.assertNotIn(forbidden_visible_term, visible_text)
 
     def test_home_action_visible_phrases_can_require_llm_boundary(self) -> None:
         responder = VisiblePhraseResponder()

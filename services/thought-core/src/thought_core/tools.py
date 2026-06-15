@@ -58,6 +58,17 @@ class HomeLightIntent:
     noop: bool = False
     reason: str = ""
     reason_text: str = ""
+    control_type: str = ""
+    state_authority: str = ""
+    verification_mode: str = ""
+    state_tracking: str = ""
+    proof_ceiling: str = ""
+    live_test_readiness: str = ""
+    live_test_blockers: tuple[str, ...] = ()
+    restore_action_id: str = ""
+    stop_action_id: str = ""
+    terminal_action: bool = False
+    safety_requirements: tuple[str, ...] = ()
 
 
 @dataclass
@@ -1241,6 +1252,17 @@ def _intent_from_environment_actions(
             noop=bool(action.get("noop")),
             reason=str(action.get("reason") or ""),
             reason_text=str(action.get("reason_text") or ""),
+            control_type=str(action.get("control_type") or ""),
+            state_authority=str(action.get("state_authority") or ""),
+            verification_mode=str(action.get("verification_mode") or ""),
+            state_tracking=str(action.get("state_tracking") or ""),
+            proof_ceiling=str(action.get("proof_ceiling") or ""),
+            live_test_readiness=str(action.get("live_test_readiness") or ""),
+            live_test_blockers=_tuple_of_text(action.get("live_test_blockers")),
+            restore_action_id=str(action.get("restore_action_id") or ""),
+            stop_action_id=str(action.get("stop_action_id") or ""),
+            terminal_action=bool(action.get("terminal_action")),
+            safety_requirements=_tuple_of_text(action.get("safety_requirements")),
         )
     if len(matches) == 1:
         return next(iter(matches.values()))
@@ -1268,7 +1290,7 @@ def _action_from_intent(intent: HomeLightIntent) -> dict[str, Any]:
     target_aliases = [intent.target, intent.action_id]
     if intent.target == "light":
         target_aliases.append("living_room_light")
-    return {
+    action = {
         "action": intent.action_name,
         "action_id": intent.action_id,
         "target": intent.target,
@@ -1282,6 +1304,32 @@ def _action_from_intent(intent: HomeLightIntent) -> dict[str, Any]:
         "reason": intent.reason,
         "reason_text": intent.reason_text,
     }
+    optional_fields: dict[str, Any] = {
+        "control_type": intent.control_type,
+        "state_authority": intent.state_authority,
+        "verification_mode": intent.verification_mode,
+        "state_tracking": intent.state_tracking,
+        "proof_ceiling": intent.proof_ceiling,
+        "live_test_readiness": intent.live_test_readiness,
+        "restore_action_id": intent.restore_action_id,
+        "stop_action_id": intent.stop_action_id,
+    }
+    for key, value in optional_fields.items():
+        if value:
+            action[key] = value
+    if intent.live_test_blockers:
+        action["live_test_blockers"] = list(intent.live_test_blockers)
+    if intent.safety_requirements:
+        action["safety_requirements"] = list(intent.safety_requirements)
+    if intent.terminal_action:
+        action["terminal_action"] = True
+    return action
+
+
+def _tuple_of_text(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item).strip() for item in value if str(item).strip())
 
 
 def _noop_message(action: dict[str, Any]) -> str:

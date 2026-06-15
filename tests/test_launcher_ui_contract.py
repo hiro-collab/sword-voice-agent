@@ -38,6 +38,12 @@ def read_thought_core_start_script() -> str:
     return THOUGHT_CORE_START_SCRIPT.read_text(encoding="utf-8")
 
 
+def extract_between(text: str, start: str, end: str) -> str:
+    start_index = text.index(start)
+    end_index = text.index(end, start_index)
+    return text[start_index:end_index]
+
+
 class LauncherUiContractTest(TestCase):
     def test_launch_configuration_uses_progressive_disclosure(self) -> None:
         html = read_public("index.html")
@@ -52,8 +58,11 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("<summary>", html)
         self.assertIn("Core ports", html)
         self.assertIn("Core services", html)
-        self.assertIn("Compatibility runtime", html)
+        self.assertIn("Provider", html)
         self.assertIn("Advanced overrides", html)
+        self.assertIn("Start Stack starts enabled/expected services only.", html)
+        self.assertIn('id="launch-scope-enabled"', html)
+        self.assertIn('id="launch-scope-skipped"', html)
 
     def test_launcher_first_view_keeps_quick_links_and_density_hooks(self) -> None:
         html = read_public("index.html")
@@ -69,10 +78,153 @@ class LauncherUiContractTest(TestCase):
         app = read_public("app.js")
 
         self.assertIn("const renderLaunchSummary", app)
+        self.assertIn("const summarizeLaunchScope", app)
         self.assertIn("Duplicate port values", app)
         self.assertIn("Check conflict", app)
         self.assertIn("services-summary", app)
+        self.assertIn("launch-scope-enabled", app)
+        self.assertIn("launch-scope-skipped", app)
         self.assertIn("ports-drawer-summary", app)
+
+    def test_launcher_switches_read_as_positive_start_scope(self) -> None:
+        html = read_public("index.html")
+        app = read_public("app.js")
+
+        self.assertIn("Start Stack starts enabled/expected services only.", html)
+        self.assertIn("const displaySwitchValue", app)
+        self.assertIn("const setSwitchValue", app)
+        self.assertIn("field.startsWith('Skip') ? !state.options[field]", app)
+        self.assertIn("field.startsWith('Skip') ? !checked : checked", app)
+        self.assertIn("Start expression UI", app)
+        self.assertIn("Start action bridge", app)
+        self.assertIn("Start environment state", app)
+        self.assertIn("Start reflex sensor", app)
+        self.assertIn("Start vision snapshot", app)
+        self.assertIn("Start display runtime GUI", app)
+        self.assertIn("Require VOICEVOX readiness check", app)
+        self.assertNotIn("Disable expression UI", app)
+        self.assertNotIn("Disable action bridge", app)
+
+    def test_launcher_review_ui_hides_dify_compatibility_controls(self) -> None:
+        html = read_public("index.html")
+        app = read_public("app.js")
+
+        self.assertNotIn("Dify compatibility runtime", html)
+        self.assertNotIn("Dify compatibility port", html)
+        self.assertNotIn("Dify compatibility runtime root", html)
+        self.assertNotIn("compatibility-switch-grid", html)
+        self.assertNotIn("runtime-drawer-summary", html)
+        self.assertNotIn('id="DifyPort"', html)
+        self.assertNotIn('id="DifyDockerRoot"', html)
+        self.assertNotIn("Start local Dify compatibility runtime", app)
+        self.assertNotIn("Run Dify compatibility watcher", app)
+        self.assertNotIn("Dify compatibility skipped", app)
+        self.assertNotIn("renderSwitchGroup('compatibility-switch-grid'", app)
+        self.assertNotIn("'DifyPort',", app)
+        self.assertNotIn("'DifyDockerRoot',", app)
+        self.assertNotIn("Legacy paths active", app)
+        self.assertNotIn("Legacy paths off", app)
+
+    def test_launcher_public_ui_supports_english_and_japanese_language_mode(self) -> None:
+        html = read_public("index.html")
+        app = read_public("app.js")
+
+        self.assertIn('id="language-switch"', html)
+        self.assertIn('data-language="en"', html)
+        self.assertIn('data-language="ja"', html)
+        self.assertIn('data-i18n="launch.title"', html)
+        self.assertIn('data-i18n="launchScope.statement"', html)
+        self.assertIn('data-i18n="quickLinks.title"', html)
+        self.assertIn('data-i18n="command.title"', html)
+        self.assertIn('data-i18n="log.title"', html)
+
+        self.assertIn("const LANGUAGE_STORAGE_KEY = 'sword.launcher.language'", app)
+        self.assertIn("const translations", app)
+        self.assertIn("document.documentElement.lang = state.language", app)
+        self.assertIn("window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language)", app)
+        self.assertIn("'launch.title': 'Launch configuration'", app)
+        self.assertIn("'launch.title': '起動設定'", app)
+        self.assertIn("'button.start': 'Start Stack'", app)
+        self.assertIn("'button.start': '起動する'", app)
+        self.assertIn("'launchScope.statement': 'Start Stack starts enabled/expected services only.'", app)
+        self.assertIn("'launchScope.statement': 'Start Stack は有効な起動対象だけを開始します。'", app)
+        self.assertIn("'service.header.target': 'Start target'", app)
+        self.assertIn("'service.header.target': '起動対象'", app)
+        self.assertIn("'quickLinks.title': '確認リンク'", app)
+        self.assertIn("'command.title': '起動コマンド確認'", app)
+        self.assertIn("'log.title': 'ランチャー記録'", app)
+
+    def test_launcher_language_mode_preserves_technical_values_and_dify_cleanup(self) -> None:
+        html = read_public("index.html")
+        app = read_public("app.js")
+
+        self.assertIn('data-i18n="port.expression">Expression</span><input id="AituberPort"', html)
+        self.assertIn('data-i18n="port.thoughtCore">Thought Core</span><input id="ThoughtCorePort"', html)
+        self.assertIn("<span>VOICEVOX URL</span>", html)
+        self.assertIn('id="HomeControlConfigPath"', html)
+        self.assertIn("$('command-preview').textContent = formatReviewCommandPreview(commandLine)", app)
+        self.assertIn(r".replace(/\s+-SkipDifyWatch\b/g, '')", app)
+        self.assertNotIn("Dify compatibility runtime", html)
+        self.assertNotIn("Dify compatibility port", html)
+        self.assertNotIn("Dify compatibility runtime root", html)
+
+    def test_launcher_japanese_copy_uses_meaning_first_labels(self) -> None:
+        app = read_public("app.js")
+
+        ja_table = extract_between(app, "  ja: {", "  }\n}\n\nconst t =")
+        service_labels_ja = extract_between(app, "const serviceLabelsJa = {", "}\nconst hiddenServiceKeys")
+        launch_scope_labels_ja = extract_between(app, "const launchScopeLabelsJa = {", "}\n\nconst fieldLabels")
+        field_labels_ja = extract_between(app, "const fieldLabelsJa = {", "}\n\nconst switchDescriptions")
+        switch_descriptions_ja = extract_between(app, "const switchDescriptionsJa = {", "}\n\nconst positiveDisplayFields")
+        endpoint_labels_ja = extract_between(app, "  const labelsJa = {", "  }\n  if (state.language === 'ja')")
+
+        self.assertIn("'port.thoughtCore': '思考中枢'", ja_table)
+        self.assertIn("'summary.fallbackOnly': '簡易応答のみ'", ja_table)
+        self.assertIn("'summary.providerAllowed': '会話LLMを使用'", ja_table)
+        self.assertIn("thought_core_api: '思考中枢API'", service_labels_ja)
+        self.assertIn("thought_core_watcher: '思考中枢の監視'", service_labels_ja)
+        self.assertIn("vision_snapshot_processor: '視覚状態の取得'", service_labels_ja)
+        self.assertIn("EnableThoughtCore: '思考中枢API'", launch_scope_labels_ja)
+        self.assertIn("SkipVisionSnapshotProcessor: '視覚状態の取得'", launch_scope_labels_ja)
+        self.assertIn("EnableThoughtCore: '思考中枢APIを起動'", field_labels_ja)
+        self.assertIn("SkipVisionSnapshotProcessor: '視覚状態の取得を起動'", field_labels_ja)
+        self.assertIn("外部LLMを使わない簡易応答のみ", switch_descriptions_ja)
+        self.assertIn("'Thought Core health': '思考中枢の状態'", endpoint_labels_ja)
+        self.assertIn("'Vision Snapshot Processor WebSocket': '視覚状態取得WebSocket'", endpoint_labels_ja)
+
+        for japanese_block in [
+            ja_table,
+            service_labels_ja,
+            launch_scope_labels_ja,
+            field_labels_ja,
+            switch_descriptions_ja,
+            endpoint_labels_ja,
+        ]:
+            self.assertNotIn("ソート", japanese_block)
+            self.assertNotIn("ビジョンスナップショット", japanese_block)
+            self.assertNotIn("フォールバック", japanese_block)
+            self.assertNotIn("プロバイダー", japanese_block)
+
+    def test_launcher_command_preview_hides_backend_dify_compatibility_flags(self) -> None:
+        app = read_public("app.js")
+
+        self.assertIn("const formatReviewCommandPreview", app)
+        self.assertIn("const setCommandPreview", app)
+        self.assertIn("-SkipDifyWatch", app)
+        self.assertIn("-SkipDify", app)
+        self.assertIn("-DifyPort", app)
+        self.assertIn("-DifyDockerRoot", app)
+        self.assertIn("setCommandPreview(preview.commandLine)", app)
+        self.assertIn("setCommandPreview(payload.preview?.commandLine || '')", app)
+        self.assertIn(
+            "$('command-preview').textContent = formatReviewCommandPreview(commandLine)",
+            app,
+        )
+        self.assertIn(r".replace(/\s+-SkipDifyWatch\b/g, '')", app)
+        self.assertIn(r".replace(/\s+-SkipDify\b/g, '')", app)
+        self.assertIn(r".replace(/\s+-DifyPort\s+", app)
+        self.assertIn(r".replace(/\s+-DifyDockerRoot\s+", app)
+        self.assertNotIn("$('command-preview').textContent = commandLine", app)
 
     def test_operation_banner_exposes_startup_progress_bar(self) -> None:
         html = read_public("index.html")
@@ -116,6 +268,28 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("@keyframes service-row-boot-line", css)
         self.assertIn("@media (prefers-reduced-motion: reduce)", css)
         self.assertIn("position: absolute", css)
+
+    def test_service_rows_expose_startup_target_without_claiming_runtime_state(self) -> None:
+        app = read_public("app.js")
+        css = read_public("styles.css")
+
+        self.assertIn("const serviceStartupTargetFields", app)
+        self.assertIn("const startupTargetFieldsByService", app)
+        self.assertIn("const serviceStartupTargetBlockers", app)
+        self.assertIn("vision_snapshot_processor: ['SkipVisionSnapshotProcessor']", app)
+        self.assertIn("voicevox: ['SkipVoicevoxCheck']", app)
+        self.assertIn("t('service.requires', { targets: targetBlockers.join(', ') })", app)
+        self.assertIn("const setServiceStartupTarget", app)
+        self.assertIn('data-service-startup-target="${escapeHtml(name)}"', app)
+        self.assertIn('data-startup-target="${included ? \'included\' : \'skipped\'}"', app)
+        self.assertIn("Startup target only; current runtime state is unchanged.", app)
+        self.assertIn("renderControls()", app)
+        self.assertIn("renderLaunchSummary()", app)
+        self.assertIn("renderServices(state.latestServices || {})", app)
+        self.assertIn("Start target", app)
+        self.assertIn(".service-startup-target", css)
+        self.assertIn(".service-target-toggle", css)
+        self.assertIn('.service-row[data-startup-target="skipped"]', css)
 
     def test_quick_links_use_display_safe_environment_endpoint(self) -> None:
         server = read_launcher_server()
@@ -204,7 +378,14 @@ class LauncherUiContractTest(TestCase):
 
         self.assertIn("ThoughtCoreNoProvider: false", server)
         self.assertIn("'ThoughtCoreNoProvider'", app)
-        self.assertIn("Thought Core fallback-only", app)
+        self.assertIn("Use configured conversation LLM", app)
+        self.assertIn("configured Thought Core LLM provider", app)
+        self.assertIn("local fallback-only mode", app)
+        self.assertNotIn("Use OpenAI-compatible LLM responses", app)
+        self.assertIn("const positiveDisplayFields = new Set(['ThoughtCoreNoProvider'])", app)
+        self.assertIn("positiveDisplayFields.has(field)", app)
+        self.assertIn("setOption(field, !checked)", app)
+        self.assertNotIn("Force Thought Core fallback-only", app)
         self.assertIn("[switch]$ThoughtCoreNoProvider", system)
         self.assertIn("-ThoughtCoreNoProvider", system)
         self.assertIn("[switch]$ThoughtCoreNoProvider", stack_start)
@@ -264,3 +445,35 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("payload_policy: 'compact_redacted'", server)
         self.assertIn("live_home_invalid", server)
         self.assertNotIn("requestedProfileId: profileId", server)
+
+    def test_launcher_environment_status_whitelists_action_readiness_without_raw_ha_fields(self) -> None:
+        server = read_launcher_server()
+        action_compactor = extract_between(
+            server,
+            "const compactActionReadiness = (action) =>",
+            "const compactActionReadinessSummary = (summary) =>",
+        )
+        summary_compactor = extract_between(
+            server,
+            "const compactActionReadinessSummary = (summary) =>",
+            "const compactEnvironmentForLauncherStatus = (indicatorPayload) =>",
+        )
+
+        self.assertIn("const compactActionReadiness = (action) =>", server)
+        self.assertIn("const compactActionReadinessSummary = (summary) =>", server)
+        self.assertIn("action_readiness", server)
+        self.assertIn("'proof_ceiling'", action_compactor)
+        self.assertIn("'live_test_readiness'", action_compactor)
+        self.assertIn("'live_test_blockers'", action_compactor)
+        self.assertIn("'restore_action_id'", action_compactor)
+        self.assertIn("'stop_action_id'", action_compactor)
+        self.assertIn("'test_now_count'", summary_compactor)
+        self.assertIn("'blocked_candidate_count'", summary_compactor)
+        self.assertNotIn("'expected_effect'", action_compactor)
+        self.assertNotIn("'entity_id'", action_compactor)
+        self.assertNotIn("'domain'", action_compactor)
+        self.assertNotIn("'service'", action_compactor)
+        self.assertNotIn("'HOME_ASSISTANT_TOKEN'", action_compactor)
+        self.assertNotIn("'expected_effect'", summary_compactor)
+        self.assertNotIn("'entity_id'", summary_compactor)
+        self.assertNotIn("'HOME_ASSISTANT_TOKEN'", summary_compactor)

@@ -71,8 +71,8 @@ class LocalFallbackResponder:
             speech = "入力は受け取れています。出力や機器状態の確認は別扱いです。"
         else:
             speech = (
-                "受け取りました。通常会話の詳しい応答は、応答アダプターの設定後に扱います。"
-                "今は要点だけ確認する形で返します。"
+                "入力は受け取りました。通常会話用LLMが未接続のため、"
+                "今は簡易応答で返しています。"
             )
         return ResponderResult(
             speech=speech,

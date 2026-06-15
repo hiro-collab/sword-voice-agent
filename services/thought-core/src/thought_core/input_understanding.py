@@ -111,6 +111,18 @@ class LocalInputUnderstanding:
                 **action_fields,
             )
 
+        environment_status = _environment_status_query_metadata(text)
+        if environment_status is not None:
+            return InputFrame(
+                kind="environment_status_query",
+                target=str(environment_status["query_class"]),
+                is_question=True,
+                confidence=0.8,
+                reason=str(environment_status["reason"]),
+                metadata={"normalized": normalized, **environment_status},
+                **action_fields,
+            )
+
         pending_feedback_label = _room_light_feedback_label(
             text,
             pending=pending_state_query or _pending_state_from_action_review(
@@ -230,6 +242,19 @@ def _motion_request_metadata(text: str) -> dict[str, Any] | None:
         "default_should_remember": False,
     }
 
+    if _looks_like_motion_stop_request(normalized, lowered):
+        base.update(
+            {
+                "kind": "cancel",
+                "utterance_class": "explicit_motion_stop_request",
+                "motion_intent": "stop",
+                "duration_ms": 0,
+                "body_priority": ["body_root", "spine", "head", "face"],
+                "reason": "dance_motion_stop_request",
+            }
+        )
+        return base
+
     if "踊" in normalized or "dance" in lowered:
         if any(marker in normalized for marker in ("音楽", "曲", "リズム", "ビート")):
             base["rhythm_hint"] = "music_sync_requested"
@@ -252,6 +277,33 @@ def _motion_request_metadata(text: str) -> dict[str, Any] | None:
         return base
 
     return None
+
+
+def _looks_like_motion_stop_request(normalized: str, lowered: str) -> bool:
+    target_markers = (
+        "踊",
+        "ダンス",
+        "dance",
+        "dancing",
+        "motion",
+        "モーション",
+        "動き",
+        "動作",
+    )
+    stop_markers = (
+        "止め",
+        "停止",
+        "やめ",
+        "中止",
+        "キャンセル",
+        "ストップ",
+        "stop",
+        "cancel",
+        "quit",
+    )
+    return any(marker in normalized for marker in target_markers) and any(
+        marker in lowered for marker in stop_markers
+    )
 
 
 def _pending_state_from_action_review(
@@ -415,6 +467,92 @@ def _is_room_light_state_question(text: str) -> bool:
     return normalized.endswith(("か", "かな", "かね", "かい")) and bool(
         _explicit_room_light_state_label(normalized) or "状態" in normalized
     )
+
+
+def _environment_status_query_metadata(text: str) -> dict[str, str] | None:
+    normalized = _normalize_text(text)
+    lowered = normalized.lower()
+    if not normalized:
+        return None
+    if _looks_like_home_action_command(text):
+        return None
+
+    question_markers = (
+        "?",
+        "？",
+        "教えて",
+        "確認",
+        "見て",
+        "どう",
+        "どんな",
+        "何が",
+        "なにが",
+        "使える",
+        "できる",
+        "ですか",
+        "ますか",
+    )
+    if not any(marker in normalized for marker in question_markers):
+        return None
+
+    memory_markers = (
+        "覚えて",
+        "記憶",
+        "前に",
+        "前回",
+        "以前",
+        "さっき",
+        "これまで",
+        "踏まえて",
+    )
+    if any(marker in normalized for marker in memory_markers) and any(
+        marker in normalized for marker in ("状況", "状態", "文脈", "作業", "続き")
+    ):
+        return {
+            "query_class": "memory_grounded_status",
+            "reason": "memory_dependent_status_question",
+        }
+
+    home_control_markers = (
+        "home assistant",
+        "ホームアシスタント",
+        "home control",
+        "ホームコントロール",
+        "家電",
+    )
+    if any(marker in lowered for marker in home_control_markers) or any(
+        marker in normalized for marker in home_control_markers
+    ):
+        if any(marker in normalized for marker in ("状態", "どうな", "ついて", "消えて")):
+            return {
+                "query_class": "appliance_state",
+                "reason": "appliance_state_status_question",
+            }
+        return {
+            "query_class": "home_control_availability",
+            "reason": "home_control_availability_question",
+        }
+
+    environment_markers = (
+        "今の状況",
+        "現在の状況",
+        "今の状態",
+        "現在の状態",
+        "周り",
+        "まわり",
+        "環境",
+        "見えて",
+        "見える",
+        "状況",
+        "ステータス",
+        "状態",
+    )
+    if any(marker in normalized for marker in environment_markers):
+        return {
+            "query_class": "current_environment_status",
+            "reason": "current_environment_status_question",
+        }
+    return None
 
 
 def _is_audio_status_check(text: str) -> bool:

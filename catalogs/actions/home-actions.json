@@ -340,11 +340,13 @@
       "expected_effect": {
         "expected_state": "open",
         "control_type": "position_command",
-        "state_authority": "submitted_only",
-        "verification_mode": "command_ack_only",
-        "evidence_class": "command_ack_only",
-        "physical_state_source": "not_supported",
-        "unverified_state_label": "submitted_unverified"
+        "state_authority": "ha_entity",
+        "verification_mode": "ha_state",
+        "evidence_class": "ha_state",
+        "physical_state_source": "home_assistant",
+        "domain": "cover",
+        "service": "open_cover",
+        "entity_id": "cover.demo_curtain"
       },
       "risk_level": "medium",
       "confirmation_required": true,
@@ -382,11 +384,13 @@
       "expected_effect": {
         "expected_state": "closed",
         "control_type": "position_command",
-        "state_authority": "submitted_only",
-        "verification_mode": "command_ack_only",
-        "evidence_class": "command_ack_only",
-        "physical_state_source": "not_supported",
-        "unverified_state_label": "submitted_unverified"
+        "state_authority": "ha_entity",
+        "verification_mode": "ha_state",
+        "evidence_class": "ha_state",
+        "physical_state_source": "home_assistant",
+        "domain": "cover",
+        "service": "close_cover",
+        "entity_id": "cover.demo_curtain"
       },
       "risk_level": "medium",
       "confirmation_required": true,
@@ -458,11 +462,13 @@
       "expected_effect": {
         "expected_state": "cleaning",
         "control_type": "job_command",
-        "state_authority": "submitted_only",
-        "verification_mode": "command_ack_only",
-        "evidence_class": "command_ack_only",
-        "physical_state_source": "not_supported",
-        "unverified_state_label": "submitted_unverified"
+        "state_authority": "ha_entity",
+        "verification_mode": "ha_state",
+        "evidence_class": "ha_state",
+        "physical_state_source": "home_assistant",
+        "domain": "vacuum",
+        "service": "start",
+        "entity_id": "vacuum.demo_cloud_target"
       },
       "risk_level": "medium",
       "confirmation_required": true,
@@ -536,11 +542,13 @@
       "expected_effect": {
         "expected_state": "paused",
         "control_type": "job_command",
-        "state_authority": "submitted_only",
-        "verification_mode": "command_ack_only",
-        "evidence_class": "command_ack_only",
-        "physical_state_source": "not_supported",
-        "unverified_state_label": "submitted_unverified"
+        "state_authority": "ha_entity",
+        "verification_mode": "ha_state",
+        "evidence_class": "ha_state",
+        "physical_state_source": "home_assistant",
+        "domain": "vacuum",
+        "service": "pause",
+        "entity_id": "vacuum.demo_cloud_target"
       },
       "risk_level": "medium",
       "confirmation_required": true,

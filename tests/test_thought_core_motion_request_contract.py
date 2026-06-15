@@ -66,6 +66,48 @@ class ThoughtCoreMotionRequestContractTest(TestCase):
         self.assert_parent_required_fields(payload)
         self.assert_no_home_action(events, tools)
 
+    def test_dance_stop_requests_emit_stop_contract_without_home_action(self) -> None:
+        for text in (
+            "踊りをやめて",
+            "踊るのを止めて",
+            "踊りを停止して",
+            "stop dancing",
+            "cancel dance",
+        ):
+            with self.subTest(text=text):
+                events, tools = self._run(text)
+                understood = next(
+                    event for event in events if event["type"] == "input.understood"
+                )
+                payload = self._motion_payload(events)
+                visible_speech = "\n".join(
+                    str(event["data"].get("speech") or "")
+                    for event in events
+                    if event["type"] == "assistant.message"
+                )
+
+                self.assertEqual(understood["data"]["kind"], "motion_request")
+                self.assertEqual(understood["data"]["target"], "cancel")
+                self.assertEqual(understood["data"]["desired_state"], "stop")
+                self.assertEqual(understood["data"]["reason"], "dance_motion_stop_request")
+                self.assertIsNotNone(payload)
+                assert payload is not None
+                self.assertEqual(payload["schema_version"], "motion_stimulus.v0")
+                self.assertEqual(payload["kind"], "stop")
+                self.assertEqual(payload["request_mode"], "stop")
+                self.assertEqual(payload["payload_ref"], "motion.thought_core.stop.v0")
+                self.assertEqual(payload["safe_display_name"], "Stop motion")
+                self.assertEqual(payload["duration_ms"], 0)
+                self.assertEqual(payload["loop"], False)
+                self.assertEqual(payload["interrupt_policy"], "stop")
+                self.assertEqual(payload["fallback_state"], "stop_to_idle")
+                self.assertEqual(payload["stop_reason"], "user_requested")
+                self.assertNotEqual(payload["kind"], "dance_sequence")
+                self.assertNotEqual(payload["request_mode"], "play")
+                self.assertNotIn("止まりました", visible_speech)
+                self.assertNotIn("停止しました", visible_speech)
+                self.assert_no_home_action(events, tools)
+
     def test_music_dance_request_carries_rhythm_hint_only(self) -> None:
         events, tools = self._run("音楽に合わせて踊って")
         payload = self._motion_payload(events)
@@ -120,7 +162,7 @@ class ThoughtCoreMotionRequestContractTest(TestCase):
             / "motion_stimulus"
             / "motion_stimulus.v0.schema.json",
         ]
-        for text in ("踊って", "うれしそうに動いて"):
+        for text in ("踊って", "うれしそうに動いて", "踊りをやめて"):
             events, _tools = self._run(text)
             payload = self._motion_payload(events)
 

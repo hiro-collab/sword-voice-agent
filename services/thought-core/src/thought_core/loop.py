@@ -193,6 +193,15 @@ class ThoughtLoop:
             if input_frame.kind == "state_query":
                 self._handle_room_light_state_query(events, factory, turn_input)
                 return events
+            if input_frame.kind == "environment_status_query":
+                self._handle_environment_status_query_turn(
+                    events,
+                    factory,
+                    turn_input,
+                    input_frame,
+                    memory_context,
+                )
+                return events
             if input_frame.kind == "audio_check":
                 self._handle_audio_check_turn(events, factory, turn_input, input_frame)
                 return events
@@ -579,21 +588,16 @@ class ThoughtLoop:
                         action,
                         after_observation,
                     )
-                    success_speech = (
-                        str(execute_result.get("speak") or execute_result.get("message") or "")
-                        or messages["success_speech"]
+                    response = self._canonical_action_result_response(
+                        execute_result,
+                        messages,
+                        post_action_feedback,
                     )
-                    success_display = success_speech or messages["success_display"]
-                    if post_action_feedback["speech_suffix"]:
-                        success_speech = (
-                            f"{success_speech} {post_action_feedback['speech_suffix']}"
-                        )
-                        success_display = f"{success_display} / 映像確認"
                     self._emit_message(
                         events,
                         factory,
-                        speech=success_speech,
-                        display=success_display,
+                        speech=response["speech"],
+                        display=response["display"],
                         emotion="satisfied",
                         motion="small_nod",
                         priority="normal",
@@ -1993,19 +1997,16 @@ class ThoughtLoop:
                 action,
                 after_observation,
             )
-            success_speech = (
-                str(execute_result.get("speak") or execute_result.get("message") or "")
-                or messages["success_speech"]
+            response = self._canonical_action_result_response(
+                execute_result,
+                messages,
+                post_action_feedback,
             )
-            success_display = success_speech or messages["success_display"]
-            if post_action_feedback["speech_suffix"]:
-                success_speech = f"{success_speech} {post_action_feedback['speech_suffix']}"
-                success_display = f"{success_display} / 映像確認"
             self._emit_message(
                 events,
                 factory,
-                speech=success_speech,
-                display=success_display,
+                speech=response["speech"],
+                display=response["display"],
                 emotion="satisfied",
                 motion="small_nod",
                 priority="normal",
@@ -4680,6 +4681,8 @@ class ThoughtLoop:
             return "うん、確認中の操作があるよ。"
         if input_frame and input_frame.kind == "state_query":
             return "うん、状態を見てみるね。"
+        if input_frame and input_frame.kind == "environment_status_query":
+            return "うん、いま分かる状態を確認するね。"
         if input_frame and input_frame.kind == "state_feedback":
             if input_frame.continued_as_command:
                 return "うん、状態も受け取って操作も確認するね。"
@@ -4783,6 +4786,482 @@ class ThoughtLoop:
                 },
             )
         )
+
+    def _handle_environment_status_query_turn(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        input_frame: InputFrame,
+        memory_context: dict[str, Any],
+    ) -> None:
+        observation = self._call_tool(
+            events,
+            factory,
+            "environment.observe",
+            lambda: self.tools.environment_observe(turn_input, reason="status_query"),
+        )
+        grounding = self._environment_grounding_summary(
+            observation,
+            memory_context,
+            input_frame,
+        )
+        events.append(factory.emit("environment.grounding_summary", grounding))
+        self._emit_response_route_classified(
+            events,
+            factory,
+            turn_input=turn_input,
+            response_route="environment_state_grounded",
+            intent_kind=input_frame.kind,
+            responder_status=str(grounding.get("status") or "environment_status_answer"),
+            fallback_used=False,
+            provider_route="deterministic_environment_grounding",
+            used_llm=False,
+            non_claims=list(grounding.get("does_not_prove", [])),
+        )
+        speech = self._environment_grounded_speech(grounding)
+        self._emit_message(
+            events,
+            factory,
+            speech=speech,
+            display=speech,
+            emotion="focused",
+            motion="think",
+            priority="normal",
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {
+                    "status": "environment_status_answer",
+                    "query_class": grounding.get("query_class"),
+                    "grounding_status": grounding.get("environment_status"),
+                    "home_control_bridge_class": grounding.get(
+                        "home_control_bridge_class"
+                    ),
+                    "ha_readiness_class": grounding.get("ha_readiness_class"),
+                    "memory_context_used_class": grounding.get(
+                        "memory_context_used_class"
+                    ),
+                    "proof_ceiling": grounding.get("proof_ceiling"),
+                    "must_revalidate_current_state": True,
+                },
+            )
+        )
+
+    def _environment_grounding_summary(
+        self,
+        observation: dict[str, Any],
+        memory_context: dict[str, Any],
+        input_frame: InputFrame,
+    ) -> dict[str, Any]:
+        environment = (
+            observation.get("environment")
+            if isinstance(observation.get("environment"), dict)
+            else {}
+        )
+        facts = observation.get("facts") if isinstance(observation.get("facts"), dict) else {}
+        devices = self._safe_environment_devices(facts, environment)
+        action_families = self._safe_environment_action_families(environment)
+        room_light = self._room_light_from_observation(observation)
+        memory_summary = self._safe_memory_grounding_summary(memory_context)
+        freshness_class = self._environment_freshness_class(
+            observation,
+            devices,
+            room_light,
+        )
+        env_status = str(observation.get("status") or "unknown")
+        bridge_class, ha_class = self._environment_availability_classes(
+            observation,
+            action_families,
+        )
+        query_class = str(
+            input_frame.metadata.get("query_class")
+            or input_frame.target
+            or "current_environment_status"
+        )
+        return {
+            "schema_version": "thought_core_environment_grounding.v0",
+            "status": "environment_status_answer",
+            "query_class": query_class,
+            "input_kind": input_frame.kind,
+            "environment_status": env_status,
+            "observation_ref_present": bool(observation.get("observation_ref")),
+            "observation_source_class": self._observation_source_class(
+                observation.get("observation_source")
+            ),
+            "freshness_class": freshness_class,
+            "home_control_bridge_class": bridge_class,
+            "ha_readiness_class": ha_class,
+            "checktracking_class": "unknown",
+            "checkstate_class": self._checkstate_class(room_light),
+            "readable_devices": devices[:8],
+            "readable_device_count": len(devices),
+            "available_action_families": action_families[:8],
+            "memory_context_used_class": memory_summary["used_class"],
+            "memory_context": memory_summary,
+            "authority_ordering": [
+                "latest_user_instruction",
+                "current_environment_state",
+                "safety_boundaries",
+                "safe_relevant_memory_reference_only",
+                "stale_history_non_authoritative",
+            ],
+            "current_authority_ordering_result": "current_environment_before_memory",
+            "proof_ceiling": self._environment_proof_ceiling(devices, room_light),
+            "must_revalidate_current_state": True,
+            "raw_private_publication_flags": {
+                "raw_prompt_shared": False,
+                "raw_transcript_shared": False,
+                "provider_payload_shared": False,
+                "raw_home_assistant_entity_shared": False,
+                "raw_device_identifier_shared": False,
+                "raw_memory_shared": False,
+                "private_path_shared": False,
+            },
+            "does_not_prove": [
+                "current_physical_appliance_state",
+                "home_control_action_success",
+                "physical_light_on_off",
+                "fan_airflow_or_running_state",
+                "door_obstruction_safety",
+                "vacuum_path_or_floor_safety",
+                "physical_hvac_comfort",
+                "durable_memory_truth",
+                "provider_backed_conversation_quality",
+            ],
+        }
+
+    def _environment_grounded_speech(self, grounding: dict[str, Any]) -> str:
+        status = str(grounding.get("environment_status") or "unknown")
+        freshness = str(grounding.get("freshness_class") or "unknown")
+        query_class = str(grounding.get("query_class") or "")
+        bridge = str(grounding.get("home_control_bridge_class") or "unknown")
+        ha_class = str(grounding.get("ha_readiness_class") or "unknown")
+        devices = grounding.get("readable_devices")
+        action_families = grounding.get("available_action_families")
+        memory = grounding.get("memory_context")
+        device_text = self._readable_device_sentence(devices if isinstance(devices, list) else [])
+        action_text = self._action_family_sentence(
+            action_families if isinstance(action_families, list) else []
+        )
+        memory_text = self._memory_grounding_sentence(
+            memory if isinstance(memory, dict) else {},
+            query_class=query_class,
+        )
+
+        if status not in {"ok", "available"}:
+            return (
+                "現在のEnvironment Stateは取得できません。"
+                f"状態クラスは{self._safe_status_label(status)}です。"
+                "推測では答えず、使える情報が戻るまで現在状態としては断定しません。"
+                f"{memory_text}"
+            )
+
+        freshness_text = (
+            "取得情報は古い可能性があるため、最後に分かっている範囲として答えます。"
+            "現在状態としては断定しません。"
+            if freshness in {"stale", "unknown", "unavailable"}
+            else "現在取得できるEnvironment Stateを優先して見ています。"
+        )
+        parts = [
+            freshness_text,
+            f"Home Control/HAは{self._safe_status_label(bridge)}、"
+            f"状態読み取りは{self._safe_status_label(ha_class)}として扱います。",
+        ]
+        if device_text:
+            parts.append(device_text)
+        if query_class == "home_control_availability" or action_text:
+            parts.append(action_text or "操作カタログはこの応答では確認できません。")
+        if memory_text:
+            parts.append(memory_text)
+        parts.append(
+            "これはHAやEnvironment State上の要約で、物理状態や安全確認の証明ではありません。"
+        )
+        return "".join(parts)
+
+    def _safe_environment_devices(
+        self,
+        facts: dict[str, Any],
+        environment: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        fact_devices = facts.get("devices")
+        if isinstance(fact_devices, list):
+            candidates.extend(item for item in fact_devices if isinstance(item, dict))
+        appliances = environment.get("appliances")
+        if isinstance(appliances, dict):
+            for key, appliance in appliances.items():
+                if isinstance(appliance, dict):
+                    item = dict(appliance)
+                    item.setdefault("kind", key)
+                    candidates.append(item)
+        seen: set[tuple[str, str]] = set()
+        safe_devices: list[dict[str, Any]] = []
+        for item in candidates:
+            kind = self._safe_device_kind(item.get("kind") or item.get("id"))
+            if not kind:
+                continue
+            state_class = self._safe_state_class(item.get("state"))
+            key = (kind, state_class)
+            if key in seen:
+                continue
+            seen.add(key)
+            safe_devices.append(
+                {
+                    "kind": kind,
+                    "label": self._safe_device_label(kind),
+                    "state_class": state_class,
+                    "freshness_class": (
+                        "stale" if self._as_bool(item.get("stale")) is True else "fresh"
+                    ),
+                    "proof_ceiling": self._device_proof_ceiling(kind, item),
+                }
+            )
+        return safe_devices
+
+    def _safe_environment_action_families(
+        self,
+        environment: dict[str, Any],
+    ) -> list[str]:
+        actions = environment.get("actions")
+        if not isinstance(actions, list):
+            return []
+        families: set[str] = set()
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            family = self._safe_device_kind(
+                action.get("appliance_id")
+                or action.get("target")
+                or str(action.get("action_id") or "").split("_")[0]
+            )
+            if family:
+                families.add(family)
+        return sorted(families)
+
+    def _safe_memory_grounding_summary(
+        self,
+        memory_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        item_count = self._int_value(memory_context.get("item_count"), 0)
+        status = str(memory_context.get("status") or "unknown")
+        return {
+            "status": status,
+            "item_count": item_count,
+            "used_class": "reference_only" if item_count > 0 else "not_available",
+            "source_class": self._memory_source_class(memory_context.get("source")),
+            "current_authority": False,
+            "must_revalidate_current_state": True,
+            "raw_memory_shared": False,
+        }
+
+    def _environment_freshness_class(
+        self,
+        observation: dict[str, Any],
+        devices: list[dict[str, Any]],
+        room_light: dict[str, Any],
+    ) -> str:
+        status = str(observation.get("status") or "unknown")
+        if status in {"skipped", "failed", "unavailable"}:
+            return "unavailable"
+        if room_light and self._as_bool(room_light.get("stale")) is True:
+            return "stale"
+        if any(device.get("freshness_class") == "stale" for device in devices):
+            return "stale"
+        return "fresh" if status == "ok" else "unknown"
+
+    def _environment_availability_classes(
+        self,
+        observation: dict[str, Any],
+        action_families: list[str],
+    ) -> tuple[str, str]:
+        status = str(observation.get("status") or "unknown")
+        source = str(observation.get("observation_source") or "").lower()
+        if status == "ok":
+            bridge = "bridge_available" if action_families else "bridge_skipped"
+            return bridge, "ha_state_surface_readable"
+        if "unconfigured" in source or status == "skipped":
+            return "config_missing", "ha_not_configured"
+        if status == "failed":
+            return "bridge_unavailable", "ha_unavailable"
+        return "unknown", "unknown"
+
+    def _observation_source_class(self, source: Any) -> str:
+        text = str(source or "").lower()
+        if not text:
+            return "unknown"
+        if "mock" in text:
+            return "environment_state_mock"
+        if "http" in text or "environment-state-server" in text:
+            return "environment_state_surface"
+        if "unconfigured" in text:
+            return "environment_state_unconfigured"
+        return "environment_state_surface"
+
+    def _checkstate_class(self, room_light: dict[str, Any]) -> str:
+        if not room_light:
+            return "unknown"
+        if room_light.get("available") is False:
+            return "unavailable"
+        if self._as_bool(room_light.get("stale")) is True:
+            return "stale"
+        state = str(room_light.get("state") or "").lower()
+        if state in {"on", "off", "daylight"}:
+            return "matched"
+        return "unknown"
+
+    def _environment_proof_ceiling(
+        self,
+        devices: list[dict[str, Any]],
+        room_light: dict[str, Any],
+    ) -> str:
+        if room_light and self._as_bool(room_light.get("stale")) is True:
+            return "external_observation_required"
+        if any(device.get("proof_ceiling") == "HA_visible_state_only" for device in devices):
+            return "HA_visible_state_only"
+        if devices:
+            return "external_observation_required"
+        return "physical_proof_not_available"
+
+    def _device_proof_ceiling(self, kind: str, item: dict[str, Any]) -> str:
+        source = str(item.get("source") or item.get("authority") or "").lower()
+        if self._as_bool(item.get("stale")) is True:
+            return "external_observation_required"
+        if "home_assistant" in source or "ha" in source:
+            return "HA_visible_state_only"
+        if kind in {"light", "fan"}:
+            return "external_observation_required"
+        if kind in {"door", "vacuum", "aircon"}:
+            return "HA_visible_state_only"
+        return "physical_proof_not_available"
+
+    def _safe_device_kind(self, value: Any) -> str:
+        text = str(value or "").strip().lower()
+        aliases = {
+            "living_room_light": "light",
+            "light": "light",
+            "fan": "fan",
+            "aircon": "aircon",
+            "climate": "aircon",
+            "door": "door",
+            "cover": "door",
+            "vacuum": "vacuum",
+        }
+        return aliases.get(text, "")
+
+    def _safe_device_label(self, kind: str) -> str:
+        return {
+            "light": "リビングの電気",
+            "fan": "扇風機",
+            "aircon": "エアコン",
+            "door": "ドア/カバー",
+            "vacuum": "掃除機",
+        }.get(kind, "家電")
+
+    def _safe_state_class(self, value: Any) -> str:
+        text = str(value or "").strip().lower()
+        aliases = {
+            "on": "on",
+            "off": "off",
+            "open": "open",
+            "closed": "closed",
+            "closing": "moving",
+            "opening": "moving",
+            "running": "running",
+            "cleaning": "running",
+            "paused": "paused",
+            "idle": "idle",
+            "docked": "docked",
+            "returning": "returning",
+            "heat": "active",
+            "cool": "active",
+            "auto": "active",
+            "unknown": "unknown",
+            "unavailable": "unavailable",
+        }
+        return aliases.get(text, "unknown")
+
+    def _safe_status_label(self, value: str) -> str:
+        labels = {
+            "ok": "取得済み",
+            "available": "利用可能",
+            "bridge_available": "利用可能",
+            "bridge_skipped": "状態面は確認済み、操作カタログは未確認",
+            "bridge_unavailable": "利用不可",
+            "config_missing": "未設定",
+            "ha_state_surface_readable": "読み取り可能",
+            "ha_unavailable": "利用不可",
+            "ha_not_configured": "未設定",
+            "fresh": "新しい",
+            "stale": "古い可能性あり",
+            "unknown": "不明",
+            "failed": "取得失敗",
+            "skipped": "未設定",
+        }
+        return labels.get(value, "不明")
+
+    def _readable_device_sentence(self, devices: list[Any]) -> str:
+        fragments: list[str] = []
+        state_labels = {
+            "on": "オン扱い",
+            "off": "オフ扱い",
+            "open": "開いている扱い",
+            "closed": "閉じている扱い",
+            "moving": "移動中扱い",
+            "running": "動作中扱い",
+            "paused": "一時停止扱い",
+            "idle": "待機扱い",
+            "docked": "帰還済み扱い",
+            "returning": "帰還中扱い",
+            "active": "有効扱い",
+            "unavailable": "利用不可扱い",
+            "unknown": "不明",
+        }
+        for device in devices[:4]:
+            if not isinstance(device, dict):
+                continue
+            label = str(device.get("label") or "家電")
+            state = str(device.get("state_class") or "unknown")
+            freshness = str(device.get("freshness_class") or "unknown")
+            prefix = "最後に分かっている範囲では" if freshness == "stale" else ""
+            fragments.append(f"{prefix}{label}は{state_labels.get(state, '不明')}です")
+        if not fragments:
+            return "現在この応答で要約できる家電状態はありません。"
+        return "読める状態は、" + "、".join(fragments) + "。"
+
+    def _action_family_sentence(self, action_families: list[Any]) -> str:
+        labels = [self._safe_device_label(str(family)) for family in action_families[:5]]
+        labels = [label for label in labels if label]
+        if not labels:
+            return ""
+        return "操作カタログ上は、" + "、".join(labels) + "の系統を確認できます。"
+
+    def _memory_grounding_sentence(
+        self,
+        memory: dict[str, Any],
+        *,
+        query_class: str,
+    ) -> str:
+        count = self._int_value(memory.get("item_count"), 0)
+        if count <= 0:
+            if query_class == "memory_grounded_status":
+                return "関連メモリは見つからないため、現在の情報だけで答えます。"
+            return ""
+        return (
+            f"関連メモリは{count}件、参考情報として確認しました。"
+            "ただし現在状態の根拠にはせず、最新のEnvironment Stateを優先します。"
+        )
+
+    def _memory_source_class(self, source: Any) -> str:
+        text = str(source or "").lower()
+        if "mock" in text:
+            return "mock_memory"
+        if "local" in text:
+            return "local_memory"
+        if "memory" in text:
+            return "memory_retrieve"
+        return "unknown"
 
     def _handle_general_turn(
         self,
@@ -4969,13 +5448,13 @@ class ThoughtLoop:
             "requirements": requirements,
             "payload_ref": self._motion_payload_ref(legacy_kind),
             "intensity": self._motion_intensity(str(request.get("intensity") or "medium")),
-            "duration_ms": int(request.get("duration_ms") or 10000),
+            "duration_ms": self._motion_duration_ms(request.get("duration_ms")),
             "loop": motion_kind == "dance_sequence",
             "loop_count": 0,
-            "interrupt_policy": "replace_same_track",
-            "fallback_state": "neutral_idle",
+            "interrupt_policy": self._motion_interrupt_policy(legacy_kind),
+            "fallback_state": self._motion_fallback_state(legacy_kind),
             "fallback_used": False,
-            "stop_reason": "none",
+            "stop_reason": self._motion_stop_reason(legacy_kind),
             "trace": {
                 "event_id": event.event_id,
                 "turn_id": turn_input.turn_id,
@@ -5029,6 +5508,8 @@ class ThoughtLoop:
     def _motion_request_mode(self, legacy_kind: str) -> str:
         if legacy_kind == "expression_motion":
             return "apply"
+        if legacy_kind == "cancel":
+            return "stop"
         return "play"
 
     def _motion_track_mask(self, legacy_kind: str) -> list[str] | dict[str, Any]:
@@ -5047,6 +5528,8 @@ class ThoughtLoop:
             ]
         if legacy_kind == "expression_motion":
             return {"scope": "face_head", "channels": ["expression_weight"]}
+        if legacy_kind == "cancel":
+            return ["body_root", "spine", "head", "face"]
         return ["head", "face"]
 
     def _motion_priority_tracks(self, legacy_kind: str) -> list[str]:
@@ -5060,7 +5543,18 @@ class ThoughtLoop:
             return ["body_root", "spine"]
         if legacy_kind == "expression_motion":
             return ["face"]
+        if legacy_kind == "cancel":
+            return ["body_root"]
         return ["head"]
+
+    def _motion_interrupt_policy(self, legacy_kind: str) -> str:
+        return "stop" if legacy_kind == "cancel" else "replace_same_track"
+
+    def _motion_fallback_state(self, legacy_kind: str) -> str:
+        return "stop_to_idle" if legacy_kind == "cancel" else "neutral_idle"
+
+    def _motion_stop_reason(self, legacy_kind: str) -> str:
+        return "user_requested" if legacy_kind == "cancel" else "none"
 
     def _motion_priority_by_track(
         self,
@@ -5079,6 +5573,15 @@ class ThoughtLoop:
             "medium": "normal",
             "high": "expressive",
         }.get(intensity, "normal")
+
+    def _motion_duration_ms(self, value: Any) -> int:
+        if value is None:
+            return 10000
+        try:
+            duration_ms = int(value)
+        except (TypeError, ValueError):
+            return 10000
+        return min(max(duration_ms, 0), 600000)
 
     def _motion_payload_ref(self, legacy_kind: str) -> str:
         if legacy_kind == "dance":
@@ -5290,10 +5793,13 @@ class ThoughtLoop:
         motion = persona_message.motion
         if display_matches_speech:
             display = speech
+        message_index = sum(1 for event in events if event.type == "assistant.message") + 1
+        message_id = f"msg_{self._speech_fragment_key(factory.turn_id)}_{message_index:03d}"
         events.append(
             factory.emit(
                 "assistant.speech_delta",
                 {
+                    "message_id": message_id,
                     "delta": speech,
                     "channel": "speech",
                     "phrase_generation": self._speech_generation_metadata(
@@ -5310,6 +5816,7 @@ class ThoughtLoop:
             factory.emit(
                 "assistant.message",
                 {
+                    "message_id": message_id,
                     "speech": speech,
                     "display": display,
                     "emotion": emotion,
@@ -6016,6 +6523,21 @@ class ThoughtLoop:
             "success_display": f"{target_name}をつける操作を送信しました",
             "feedback_speech": "電気がついたか確認できませんでした。状態を確認してもらえますか？",
         }
+
+    def _canonical_action_result_response(
+        self,
+        execute_result: dict[str, Any],
+        messages: dict[str, str],
+        post_action_feedback: dict[str, Any],
+    ) -> dict[str, str]:
+        speech = (
+            str(execute_result.get("speak") or execute_result.get("message") or "").strip()
+            or messages["success_speech"]
+        )
+        suffix = str(post_action_feedback.get("speech_suffix") or "").strip()
+        if suffix:
+            speech = f"{speech} {suffix}"
+        return {"speech": speech, "display": speech}
 
     def _already_satisfied_message(self, action: dict[str, Any]) -> str:
         target_name = str(action.get("target_name") or "対象").strip()

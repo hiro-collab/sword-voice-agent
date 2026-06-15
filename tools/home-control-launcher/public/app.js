@@ -1,4 +1,20 @@
+const LANGUAGE_STORAGE_KEY = 'sword.launcher.language'
+const supportedLanguages = new Set(['en', 'ja'])
+
+const readInitialLanguage = () => {
+  try {
+    const stored = window.localStorage.getItem(LANGUAGE_STORAGE_KEY)
+    if (supportedLanguages.has(stored)) {
+      return stored
+    }
+  } catch {
+    // Local storage is optional; the launcher still works without persistence.
+  }
+  return String(window.navigator?.language || '').toLowerCase().startsWith('ja') ? 'ja' : 'en'
+}
+
 const state = {
+  language: readInitialLanguage(),
   profiles: [],
   selectedProfileId: 'thought-core-v0',
   options: {},
@@ -11,7 +27,359 @@ const state = {
     visible: false
   },
   remoteBusy: false,
-  remoteOperation: null
+  remoteOperation: null,
+  latestServices: {},
+  latestEndpoints: [],
+  latestStatusTimestamp: ''
+}
+
+const translations = {
+  en: {
+    'language.aria': 'Language',
+    'operation.progressAria': 'Stack startup progress',
+    'mission.aria': 'Launcher summary',
+    'metric.readiness': 'Stack readiness',
+    'metric.loading': 'Loading',
+    'metric.readinessDetail': 'Checking local services',
+    'metric.activeProfile': 'Active profile',
+    'metric.profilePending': 'Configuration pending',
+    'metric.onlineServices': 'Online services',
+    'metric.awaitingStatus': 'Awaiting status',
+    'metric.attention': 'Attention',
+    'metric.noSignal': 'No signal yet',
+    'launch.title': 'Launch configuration',
+    'launch.profile': 'Profile',
+    'launch.mediapipeStartup': 'MediaPipe startup',
+    'launch.cameraName': 'Camera name',
+    'mediapipe.normal': 'Normal',
+    'mediapipe.normalTitle': 'Normal: MediaMTX video plus CameraHub WebSocket',
+    'mediapipe.cameraHub': 'CameraHub only',
+    'mediapipe.cameraHubTitle': 'Diagnostics: CameraHub WebSocket only',
+    'mediapipe.gui': 'Python GUI',
+    'mediapipe.guiTitle': 'Diagnostics: CameraHub plus Python GUI',
+    'summary.title': 'Launch summary',
+    'summary.aria': 'Launch configuration summary',
+    'summary.services': 'Services',
+    'summary.diagnostics': 'Diagnostics',
+    'summary.provider': 'Provider',
+    'summary.ports': 'Ports',
+    'summary.enabled': 'enabled',
+    'summary.servicesNoun': 'services',
+    'summary.off': 'Off',
+    'summary.togglesOn': 'toggles on',
+    'summary.noTestToggles': 'No test toggles',
+    'summary.fallbackOnly': 'Fallback only',
+    'summary.providerAllowed': 'Provider allowed',
+    'summary.checkConflict': 'Check conflict',
+    'summary.set': 'set',
+    'summary.duplicatePorts': 'Duplicate port values',
+    'summary.coreBindings': 'Core bindings',
+    'launchScope.aria': 'Start Stack service scope',
+    'launchScope.statement': 'Start Stack starts enabled/expected services only.',
+    'launchScope.enabled': 'Enabled: {value}',
+    'launchScope.skipped': 'Skipped: {value}',
+    'value.pending': 'Pending',
+    'value.none': 'none',
+    'ports.title': 'Core ports',
+    'ports.bindings': 'Port bindings',
+    'services.drawerTitle': 'Core services',
+    'services.drawerSummary': 'Normal system cell controls',
+    'diagnostics.drawerTitle': 'Diagnostics',
+    'diagnostics.drawerSummary': 'Camera and test-mode controls',
+    'advanced.title': 'Advanced overrides',
+    'advanced.subtitle': 'Paths and external services',
+    'advanced.actionBridgeConfigPath': 'Action bridge config path',
+    'surface.control': 'CONTROL',
+    'surface.read': 'READ',
+    'services.title': 'Services',
+    'quickLinks.title': 'Quick Links',
+    'quickLinks.subtitle': 'Local surfaces',
+    'command.title': 'Command preview',
+    'log.title': 'Launcher log',
+    'log.recentOutput': 'Recent output',
+    'port.expression': 'Expression',
+    'port.thoughtCore': 'Thought Core',
+    'port.displayRuntime': 'Display runtime',
+    'port.actionBridge': 'Action bridge',
+    'port.environment': 'Environment',
+    'port.mediapipe': 'MediaPipe',
+    'port.visionWs': 'Vision WS',
+    'button.refresh': 'Refresh',
+    'button.start': 'Start Stack',
+    'button.starting': 'Starting...',
+    'button.stopStack': 'Stop Stack',
+    'button.stopping': 'Stopping...',
+    'button.stopLauncher': 'Stop Launcher Only',
+    'button.save': 'Save',
+    'button.saving': 'Saving...',
+    'button.copy': 'Copy',
+    'saveState.working': 'Working',
+    'saveState.locked': 'Locked',
+    'saveState.ready': 'Ready',
+    'saveState.starting': 'Starting',
+    'saveState.stopping': 'Stopping',
+    'saveState.saving': 'Saving',
+    'saveState.saved': 'Saved',
+    'saveState.copied': 'Copied',
+    'saveState.logCopied': 'Log copied',
+    'saveState.error': 'Error',
+    'operation.idle': 'Launcher standby',
+    'operation.starting': 'Starting stack',
+    'operation.started': 'Stack online',
+    'operation.stopping': 'Stopping stack',
+    'operation.stopped': 'Stack stopped',
+    'operation.saving': 'Saving config',
+    'operation.blocked': 'Action blocked',
+    'operation.error': 'Action failed',
+    'operation.waiting': 'Waiting for an action.',
+    'operation.remoteBusy': 'Another {type} operation is running. Started {time}.',
+    'readiness.starting': 'Starting',
+    'readiness.stopping': 'Stopping',
+    'readiness.stopped': 'Stopped',
+    'readiness.locked': 'Locked',
+    'readiness.error': 'Action failed',
+    'readiness.ready': 'Ready',
+    'readiness.manual': 'Manual',
+    'readiness.checkStack': 'Check stack',
+    'readiness.warmingUp': 'Warming up',
+    'progress.stopping': 'Stopping...',
+    'progress.checking': 'Checking...',
+    'progress.remaining': '{percent}% · {remaining} {noun} remaining',
+    'progress.service': 'service',
+    'progress.services': 'services',
+    'status.awaiting': 'Awaiting status',
+    'status.unknown': 'Unknown',
+    'status.noLog': 'No launcher log yet.',
+    'status.expectedOnline': '{online}/{total} expected services online',
+    'status.startWatching': '{online}/{total} expected services online. Watching startup progress.',
+    'status.startAccepted': 'Start command accepted. Waiting for service status.',
+    'status.allOnline': 'All expected services are online. Updated {time}.',
+    'status.updated': 'Updated {time}',
+    'status.nominal': 'All expected services nominal',
+    'status.attention': '{warn} warming, {down} down',
+    'stop.noVerification': 'Stop command completed, but shutdown verification was not returned.',
+    'stop.verified': 'Stop verified. {count} managed ports are closed and no recorded stack process remains.',
+    'stop.pidRegistry': 'PID registry still exists',
+    'stop.alivePids': 'alive PIDs: {value}',
+    'stop.openPorts': 'open ports: {value}',
+    'stop.timedOut': 'verification timed out',
+    'stop.incomplete': 'Stop incomplete. {issues}.',
+    'stop.incompleteGeneric': 'Stop incomplete. Check the launcher log for remaining processes.',
+    'service.systemCell': 'system cell',
+    'service.profileOff': 'profile off',
+    'service.requires': 'Requires {targets} to be enabled before Start Stack can include this target.',
+    'service.blocked': 'Blocked',
+    'service.targetTitle': 'Startup target only; current runtime state is unchanged.',
+    'service.includeAria': 'Include {name} when Start Stack runs',
+    'service.target': 'Target',
+    'service.skip': 'Skip',
+    'service.fixed': 'Fixed',
+    'service.tableAria': 'Runtime organ status',
+    'service.header.state': 'State',
+    'service.header.organ': 'Organ',
+    'service.header.target': 'Start target',
+    'endpoint.skipped': 'skipped',
+    'endpoint.websocketReference': 'WebSocket reference',
+    'endpoint.backgroundReference': 'background reference',
+    'endpoint.reference': 'reference',
+    'endpoint.stageView': 'passive clean view',
+    'endpoint.operatorPreview': 'operator preview',
+    'endpoint.localApi': 'local API',
+    'endpoint.cameraFeed': 'camera feed',
+    'endpoint.displayRuntime': 'display runtime',
+    'endpoint.speechRuntime': 'speech runtime',
+    'endpoint.openBrowser': 'open browser',
+    'endpoint.open': 'open',
+    'endpoint.group.openBrowser': 'Open in browser',
+    'endpoint.group.localApis': 'Local APIs and feeds',
+    'endpoint.group.backgroundLinks': 'Background links',
+    'action.startSending': 'Start command is being sent. Waiting for the supervisor to spawn.',
+    'action.startAcceptedWatching': 'Start command accepted. Watching services come online.',
+    'action.stopRunning': 'Stop command is running. Waiting for the shutdown script.',
+    'action.stopLauncherConfirm': 'Stop Sword System Launcher only? System cell services are not stopped by this button.',
+    'action.stopLauncherShuttingDown': 'Launcher server is shutting down. System cell services are unchanged.',
+    'action.launcherStopped': 'Launcher stopped. Close this tab or start it again from the terminal.',
+    'action.savingConfig': 'Writing launcher configuration.',
+    'error.operationInProgress': 'Another operation is already running.',
+    'error.checkLog': 'Check the launcher log for details.'
+  },
+  ja: {
+    'language.aria': '表示言語',
+    'operation.progressAria': '起動の進行状況',
+    'mission.aria': 'ランチャー概要',
+    'metric.readiness': '起動準備',
+    'metric.loading': '読み込み中',
+    'metric.readinessDetail': 'このPC上の機能を確認中',
+    'metric.activeProfile': '選択中の構成',
+    'metric.profilePending': '設定待ち',
+    'metric.onlineServices': '稼働中の機能',
+    'metric.awaitingStatus': '状態取得待ち',
+    'metric.attention': '注意',
+    'metric.noSignal': 'まだ状態未取得',
+    'launch.title': '起動設定',
+    'launch.profile': '構成',
+    'launch.mediapipeStartup': 'カメラ入力の起動方式',
+    'launch.cameraName': 'カメラ名',
+    'mediapipe.normal': '通常',
+    'mediapipe.normalTitle': '通常: MediaMTX映像とCameraHub通信',
+    'mediapipe.cameraHub': 'CameraHubのみ',
+    'mediapipe.cameraHubTitle': '診断: CameraHub通信のみ',
+    'mediapipe.gui': 'Pythonカメラ画面',
+    'mediapipe.guiTitle': '診断: CameraHubとPythonカメラ画面',
+    'summary.title': '起動内容',
+    'summary.aria': '起動設定の要約',
+    'summary.services': '起動機能',
+    'summary.diagnostics': '診断',
+    'summary.provider': '会話LLM',
+    'summary.ports': 'ポート',
+    'summary.enabled': '有効',
+    'summary.servicesNoun': '機能',
+    'summary.off': 'なし',
+    'summary.togglesOn': '項目有効',
+    'summary.noTestToggles': 'テスト項目なし',
+    'summary.fallbackOnly': '簡易応答のみ',
+    'summary.providerAllowed': '会話LLMを使用',
+    'summary.checkConflict': '競合確認',
+    'summary.set': '設定済み',
+    'summary.duplicatePorts': '重複ポートあり',
+    'summary.coreBindings': '中核ポート割り当て',
+    'launchScope.aria': '起動対象の範囲',
+    'launchScope.statement': 'Start Stack は有効な起動対象だけを開始します。',
+    'launchScope.enabled': '有効: {value}',
+    'launchScope.skipped': '起動しない: {value}',
+    'value.pending': '待機中',
+    'value.none': 'なし',
+    'ports.title': '中核ポート',
+    'ports.bindings': 'ポート割り当て',
+    'services.drawerTitle': '起動する中核機能',
+    'services.drawerSummary': '通常構成で起動する機能',
+    'diagnostics.drawerTitle': '診断',
+    'diagnostics.drawerSummary': 'カメラと診断用の項目',
+    'advanced.title': '詳細設定',
+    'advanced.subtitle': 'パスと外部接続',
+    'advanced.actionBridgeConfigPath': '家電操作ブリッジ設定パス',
+    'surface.control': '操作',
+    'surface.read': '確認',
+    'services.title': '機能の状態',
+    'quickLinks.title': '確認リンク',
+    'quickLinks.subtitle': 'このPC上の画面',
+    'command.title': '起動コマンド確認',
+    'log.title': 'ランチャー記録',
+    'log.recentOutput': '直近の出力',
+    'port.expression': '表情表示',
+    'port.thoughtCore': '思考中枢',
+    'port.displayRuntime': '投影表示',
+    'port.actionBridge': '操作ブリッジ',
+    'port.environment': '環境状態',
+    'port.mediapipe': 'MediaPipe',
+    'port.visionWs': '視覚状態WS',
+    'button.refresh': '更新',
+    'button.start': '起動する',
+    'button.starting': '起動中...',
+    'button.stopStack': '全体を停止',
+    'button.stopping': '停止中...',
+    'button.stopLauncher': 'ランチャーだけ停止',
+    'button.save': '保存',
+    'button.saving': '保存中...',
+    'button.copy': 'コピー',
+    'saveState.working': '処理中',
+    'saveState.locked': 'ロック中',
+    'saveState.ready': '準備完了',
+    'saveState.starting': '起動中',
+    'saveState.stopping': '停止中',
+    'saveState.saving': '保存中',
+    'saveState.saved': '保存済み',
+    'saveState.copied': 'コピー済み',
+    'saveState.logCopied': 'ログをコピー済み',
+    'saveState.error': 'エラー',
+    'operation.idle': '起動待機中',
+    'operation.starting': '起動処理中',
+    'operation.started': '稼働中',
+    'operation.stopping': '停止処理中',
+    'operation.stopped': '停止済み',
+    'operation.saving': '設定保存中',
+    'operation.blocked': '操作できません',
+    'operation.error': '操作失敗',
+    'operation.waiting': '操作待ちです。',
+    'operation.remoteBusy': '別の{type}操作が実行中です。開始: {time}。',
+    'readiness.starting': '起動中',
+    'readiness.stopping': '停止中',
+    'readiness.stopped': '停止済み',
+    'readiness.locked': 'ロック中',
+    'readiness.error': '操作失敗',
+    'readiness.ready': '準備完了',
+    'readiness.manual': '手動',
+    'readiness.checkStack': '起動状態を確認',
+    'readiness.warmingUp': '起動調整中',
+    'progress.stopping': '停止中...',
+    'progress.checking': '確認中...',
+    'progress.remaining': '{percent}% · 残り{remaining}{noun}',
+    'progress.service': '機能',
+    'progress.services': '機能',
+    'status.awaiting': '状態取得待ち',
+    'status.unknown': '不明',
+    'status.noLog': 'ランチャー記録はまだありません。',
+    'status.expectedOnline': '{online}/{total} 起動対象が稼働中',
+    'status.startWatching': '{online}/{total} 起動対象が稼働中。起動の進行を確認中。',
+    'status.startAccepted': '起動コマンドを受理しました。機能の状態を待っています。',
+    'status.allOnline': '起動対象はすべて稼働中です。更新: {time}。',
+    'status.updated': '更新: {time}',
+    'status.nominal': '起動対象はすべて正常',
+    'status.attention': '起動調整中 {warn}、停止中 {down}',
+    'stop.noVerification': '停止コマンドは完了しましたが、停止検証が返りませんでした。',
+    'stop.verified': '停止を検証しました。管理対象ポート {count} 件は閉じており、記録済みの起動プロセスは残っていません。',
+    'stop.pidRegistry': 'PIDレジストリが残っています',
+    'stop.alivePids': '生存PID: {value}',
+    'stop.openPorts': '開いているポート: {value}',
+    'stop.timedOut': '検証タイムアウト',
+    'stop.incomplete': '停止未完了。{issues}。',
+    'stop.incompleteGeneric': '停止未完了。残存プロセスはランチャー記録を確認してください。',
+    'service.systemCell': '中核システム',
+    'service.profileOff': 'この構成では使わない',
+    'service.requires': 'Start Stackにこの対象を含めるには、先に {targets} を起動対象にしてください。',
+    'service.blocked': '対象外',
+    'service.targetTitle': '起動対象だけを変更します。現在の実行状態は変わりません。',
+    'service.includeAria': 'Start Stack実行時に {name} を含める',
+    'service.target': '対象',
+    'service.skip': '起動しない',
+    'service.fixed': '固定',
+    'service.tableAria': '実行中機能の状態',
+    'service.header.state': '状態',
+    'service.header.organ': '機能',
+    'service.header.target': '起動対象',
+    'endpoint.skipped': '対象外',
+    'endpoint.websocketReference': 'WebSocket参照',
+    'endpoint.backgroundReference': '裏側の参照',
+    'endpoint.reference': '参照',
+    'endpoint.stageView': '投影表示',
+    'endpoint.operatorPreview': '操作プレビュー',
+    'endpoint.localApi': 'ローカルAPI',
+    'endpoint.cameraFeed': 'カメラ映像',
+    'endpoint.displayRuntime': '表示実行画面',
+    'endpoint.speechRuntime': '音声実行画面',
+    'endpoint.openBrowser': 'ブラウザーを開く',
+    'endpoint.open': '開く',
+    'endpoint.group.openBrowser': 'ブラウザーで開く',
+    'endpoint.group.localApis': 'ローカルAPIと状態配信',
+    'endpoint.group.backgroundLinks': '裏側の参照リンク',
+    'action.startSending': '起動コマンドを送信中です。管理プロセスの起動を待っています。',
+    'action.startAcceptedWatching': '起動コマンドを受理しました。各機能が稼働するまで確認します。',
+    'action.stopRunning': '停止コマンドを実行中です。シャットダウンスクリプトを待っています。',
+    'action.stopLauncherConfirm': 'Sword System Launcherだけを停止しますか？このボタンでは中核システムの各機能は停止しません。',
+    'action.stopLauncherShuttingDown': 'ランチャーサーバーを停止中です。中核システムの各機能は変更されません。',
+    'action.launcherStopped': 'ランチャーを停止しました。このタブを閉じるか、ターミナルから再起動してください。',
+    'action.savingConfig': 'ランチャー設定を書き込み中です。',
+    'error.operationInProgress': '別の操作がすでに実行中です。',
+    'error.checkLog': '詳細はランチャーログを確認してください。'
+  }
+}
+
+const t = (key, values = {}) => {
+  const table = translations[state.language] || translations.en
+  const template = table[key] || translations.en[key] || key
+  return template.replace(/\{([^}]+)\}/g, (_, name) =>
+    Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : `{${name}}`
+  )
 }
 
 const coreSwitchFields = [
@@ -35,11 +403,8 @@ const diagnosticSwitchFields = [
   'EnableHomeControlFaultInjection'
 ]
 
-const legacySwitchFields = ['SkipDify', 'SkipDifyWatch']
-
 const portFields = [
   'AituberPort',
-  'DifyPort',
   'ThoughtCorePort',
   'TouchDesignerGuiPort',
   'HomeAssistantBridgePort',
@@ -61,7 +426,6 @@ const corePortFields = [
 const textFields = [
   'MediapipeCameraName',
   'VoicevoxUrl',
-  'DifyDockerRoot',
   'HomeControlConfigPath'
 ]
 
@@ -76,6 +440,17 @@ const serviceLabels = {
   thought_core_watcher: 'Thought Core watcher',
   voicevox: 'VOICEVOX speech'
 }
+const serviceLabelsJa = {
+  home_assistant_bridge: '操作ブリッジ',
+  environment_state_server: '環境状態',
+  mediapipe: 'カメラ反射入力',
+  vision_snapshot_processor: '視覚状態の取得',
+  aituber_kit: '表情表示',
+  touchdesigner_control_gui: '投影表示GUI',
+  thought_core_api: '思考中枢API',
+  thought_core_watcher: '思考中枢の監視',
+  voicevox: 'VOICEVOX音声'
+}
 const hiddenServiceKeys = new Set(['dify'])
 const serviceRoles = {
   home_assistant_bridge: 'action boundary',
@@ -88,26 +463,87 @@ const serviceRoles = {
   thought_core_watcher: 'conscious bridge',
   voicevox: 'speech'
 }
+const serviceRolesJa = {
+  home_assistant_bridge: '操作境界',
+  environment_state_server: '環境',
+  mediapipe: '反射',
+  vision_snapshot_processor: '視覚入力',
+  aituber_kit: '表情',
+  touchdesigner_control_gui: '表示',
+  thought_core_api: '思考中枢',
+  thought_core_watcher: '思考監視',
+  voicevox: '音声'
+}
+
+const launchScopeItems = [
+  { field: 'EnableThoughtCore', label: 'Thought Core API', enabledWhen: 'truthy' },
+  { field: 'EnableThoughtCoreWatch', label: 'Thought Core watcher', enabledWhen: 'truthy' },
+  { field: 'SkipAituber', label: 'Expression UI', enabledWhen: 'falsy' },
+  { field: 'SkipHomeAssistantBridge', label: 'Action bridge', enabledWhen: 'falsy' },
+  { field: 'SkipEnvironmentState', label: 'Environment state', enabledWhen: 'falsy' },
+  { field: 'SkipMediapipe', label: 'Reflex sensor', enabledWhen: 'falsy' },
+  { field: 'SkipVisionSnapshotProcessor', label: 'Vision snapshot', enabledWhen: 'falsy' },
+  { field: 'SkipTouchDesignerGui', label: 'Display runtime GUI', enabledWhen: 'falsy' },
+  { field: 'SkipVoicevoxCheck', label: 'VOICEVOX readiness check', enabledWhen: 'falsy' }
+]
+
+const launchScopeLabelsJa = {
+  EnableThoughtCore: '思考中枢API',
+  EnableThoughtCoreWatch: '思考中枢の監視',
+  SkipAituber: '表情表示',
+  SkipHomeAssistantBridge: '操作ブリッジ',
+  SkipEnvironmentState: '環境状態',
+  SkipMediapipe: 'カメラ反射入力',
+  SkipVisionSnapshotProcessor: '視覚状態の取得',
+  SkipTouchDesignerGui: '投影表示GUI',
+  SkipVoicevoxCheck: 'VOICEVOX準備確認'
+}
 
 const fieldLabels = {
   StopExisting: 'Restart managed services first',
-  EnableThoughtCore: 'Thought Core API',
-  EnableThoughtCoreWatch: 'Thought Core watcher',
-  ThoughtCoreNoProvider: 'Thought Core fallback-only',
-  SkipAituber: 'Disable expression UI',
-  SkipHomeAssistantBridge: 'Disable action bridge',
-  SkipEnvironmentState: 'Disable environment state',
-  SkipMediapipe: 'Disable reflex sensor',
-  SkipVisionSnapshotProcessor: 'Disable vision snapshot',
-  SkipTouchDesignerGui: 'Disable display runtime GUI',
-  SkipVoicevoxCheck: 'Skip VOICEVOX readiness check',
+  EnableThoughtCore: 'Start Thought Core API',
+  EnableThoughtCoreWatch: 'Run Thought Core watcher',
+  ThoughtCoreNoProvider: 'Use configured conversation LLM',
+  SkipAituber: 'Start expression UI',
+  SkipHomeAssistantBridge: 'Start action bridge',
+  SkipEnvironmentState: 'Start environment state',
+  SkipMediapipe: 'Start reflex sensor',
+  SkipVisionSnapshotProcessor: 'Start vision snapshot',
+  SkipTouchDesignerGui: 'Start display runtime GUI',
+  SkipVoicevoxCheck: 'Require VOICEVOX readiness check',
   MediapipeOpenBrowser: 'Open MediaPipe monitor',
-  MediapipeNoBrowser: 'Keep MediaPipe monitor hidden',
+  MediapipeNoBrowser: 'Hide MediaPipe monitor',
   MediapipePythonGui: 'Use Python camera GUI',
-  EnableHomeControlFaultInjection: 'Enable action bridge fault injection',
-  SkipDify: 'Use external compatibility runtime / skip local start',
-  SkipDifyWatch: 'Disable compatibility watcher'
+  EnableHomeControlFaultInjection: 'Enable action bridge fault injection'
 }
+const fieldLabelsJa = {
+  StopExisting: '管理対象機能を先に再起動',
+  EnableThoughtCore: '思考中枢APIを起動',
+  EnableThoughtCoreWatch: '思考中枢の監視を実行',
+  ThoughtCoreNoProvider: '設定済み会話LLMを使用',
+  SkipAituber: '表情表示を起動',
+  SkipHomeAssistantBridge: '操作ブリッジを起動',
+  SkipEnvironmentState: '環境状態を起動',
+  SkipMediapipe: 'カメラ反射入力を起動',
+  SkipVisionSnapshotProcessor: '視覚状態の取得を起動',
+  SkipTouchDesignerGui: '投影表示GUIを起動',
+  SkipVoicevoxCheck: 'VOICEVOX準備確認を必須にする',
+  MediapipeOpenBrowser: 'カメラ確認画面（MediaPipe）を開く',
+  MediapipeNoBrowser: 'カメラ確認画面（MediaPipe）を隠す',
+  MediapipePythonGui: 'Pythonカメラ画面を使う',
+  EnableHomeControlFaultInjection: '操作ブリッジ障害注入を有効化'
+}
+
+const switchDescriptions = {
+  ThoughtCoreNoProvider:
+    'Checked lets ordinary conversation use the configured Thought Core LLM provider. Unchecked starts local fallback-only mode.'
+}
+const switchDescriptionsJa = {
+  ThoughtCoreNoProvider:
+    'チェック時は通常会話で設定済み会話LLMを使います。未チェック時は外部LLMを使わない簡易応答のみで起動します。'
+}
+
+const positiveDisplayFields = new Set(['ThoughtCoreNoProvider'])
 
 const enableFieldsByService = {
   thought_core_api: ['EnableThoughtCore'],
@@ -124,6 +560,23 @@ const skipFieldsByService = {
   voicevox: ['SkipVoicevoxCheck', 'SkipAituber']
 }
 
+const startupTargetFieldsByService = {
+  thought_core_api: ['EnableThoughtCore'],
+  thought_core_watcher: ['EnableThoughtCoreWatch'],
+  home_assistant_bridge: ['SkipHomeAssistantBridge'],
+  environment_state_server: ['SkipEnvironmentState'],
+  mediapipe: ['SkipMediapipe'],
+  vision_snapshot_processor: ['SkipVisionSnapshotProcessor'],
+  aituber_kit: ['SkipAituber'],
+  touchdesigner_control_gui: ['SkipTouchDesignerGui'],
+  voicevox: ['SkipVoicevoxCheck']
+}
+
+const startupTargetDependenciesByService = {
+  vision_snapshot_processor: [{ field: 'SkipMediapipe', label: 'Reflex sensor', labelJa: 'カメラ反射入力' }],
+  voicevox: [{ field: 'SkipAituber', label: 'Expression UI', labelJa: '表情表示' }]
+}
+
 const operationLabels = {
   idle: 'Launcher standby',
   starting: 'Starting stack',
@@ -134,8 +587,93 @@ const operationLabels = {
   blocked: 'Action blocked',
   error: 'Action failed'
 }
+const operationLabelKeys = {
+  idle: 'operation.idle',
+  starting: 'operation.starting',
+  started: 'operation.started',
+  stopping: 'operation.stopping',
+  stopped: 'operation.stopped',
+  saving: 'operation.saving',
+  blocked: 'operation.blocked',
+  error: 'operation.error'
+}
 
 const $ = (id) => document.getElementById(id)
+
+const operationLabel = (operation) => t(operationLabelKeys[operation] || 'operation.idle')
+
+const localizedFieldLabel = (value) =>
+  state.language === 'ja' && fieldLabelsJa[value] ? fieldLabelsJa[value] : fieldLabels[value]
+
+const localizedSwitchDescription = (field) =>
+  state.language === 'ja' && switchDescriptionsJa[field] ? switchDescriptionsJa[field] : switchDescriptions[field]
+
+const localizedLaunchScopeLabel = (item) =>
+  state.language === 'ja' && launchScopeLabelsJa[item.field] ? launchScopeLabelsJa[item.field] : item.label
+
+const localizedServiceLabel = (name) =>
+  state.language === 'ja' && serviceLabelsJa[name] ? serviceLabelsJa[name] : serviceLabels[name]
+
+const localizedServiceRole = (name) =>
+  state.language === 'ja' && serviceRolesJa[name] ? serviceRolesJa[name] : serviceRoles[name]
+
+const setSaveState = (key) => {
+  $('save-state').textContent = t(key)
+}
+
+const updateLanguageButtons = () => {
+  document.documentElement.lang = state.language
+  document.querySelectorAll('[data-language]').forEach((button) => {
+    const active = button.dataset.language === state.language
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', active ? 'true' : 'false')
+  })
+}
+
+const applyStaticTranslations = () => {
+  updateLanguageButtons()
+  document.querySelectorAll('[data-i18n]').forEach((element) => {
+    element.textContent = t(element.dataset.i18n)
+  })
+  document.querySelectorAll('[data-i18n-title]').forEach((element) => {
+    element.title = t(element.dataset.i18nTitle)
+  })
+  document.querySelectorAll('[data-i18n-aria-label]').forEach((element) => {
+    element.setAttribute('aria-label', t(element.dataset.i18nAriaLabel))
+  })
+  $('copy-command').textContent = t('button.copy')
+  $('copy-log').textContent = t('button.copy')
+  $('log-path').textContent = t('log.recentOutput')
+  if (!state.busy) {
+    $('save-state').textContent = state.remoteBusy ? t('saveState.locked') : t('saveState.ready')
+  }
+  if (!state.latestStatusTimestamp) {
+    $('status-time').textContent = t('status.awaiting')
+  }
+}
+
+const setLanguage = (language) => {
+  if (!supportedLanguages.has(language) || state.language === language) {
+    return
+  }
+  state.language = language
+  try {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language)
+  } catch {
+    // Local storage is optional; the selected language still applies in-memory.
+  }
+  applyLanguage()
+}
+
+const applyLanguage = () => {
+  applyStaticTranslations()
+  renderOperation()
+  renderActionButtons()
+  renderControls()
+  renderSystemSummary(state.latestServices || null, state.latestStatusTimestamp)
+  renderServices(state.latestServices || {})
+  renderEndpoints(state.latestEndpoints || [])
+}
 
 const api = async (path, options = {}) => {
   const response = await fetch(path, {
@@ -159,10 +697,10 @@ const setBusy = (busy, label = '') => {
   state.busy = busy
   document.body.dataset.busy = busy ? 'true' : 'false'
   $('save-state').textContent = busy
-    ? label || 'Working'
+    ? label || t('saveState.working')
     : state.remoteBusy
-      ? 'Locked'
-      : 'Ready'
+      ? t('saveState.locked')
+      : t('saveState.ready')
   renderActionButtons()
 }
 
@@ -172,19 +710,19 @@ const renderActionButtons = () => {
     $(id).disabled = disabled
   }
   $('start-button').textContent =
-    state.busy && state.operation === 'starting' ? 'Starting...' : 'Start Stack'
+    state.busy && state.operation === 'starting' ? t('button.starting') : t('button.start')
   $('stop-button').textContent =
-    state.busy && state.operation === 'stopping' ? 'Stopping...' : 'Stop Stack'
+    state.busy && state.operation === 'stopping' ? t('button.stopping') : t('button.stopStack')
   $('stop-launcher-button').textContent =
-    state.busy && state.operation === 'stopping' ? 'Stopping...' : 'Stop Launcher Only'
-  $('refresh-button').textContent = 'Refresh'
+    state.busy && state.operation === 'stopping' ? t('button.stopping') : t('button.stopLauncher')
+  $('refresh-button').textContent = t('button.refresh')
   $('save-config').textContent =
-    state.busy && state.operation === 'saving' ? 'Saving...' : 'Save'
+    state.busy && state.operation === 'saving' ? t('button.saving') : t('button.save')
 }
 
 const setOperation = (operation, detail = '') => {
   state.operation = operation
-  state.operationDetail = detail || operationLabels[operation] || ''
+  state.operationDetail = detail || operationLabel(operation) || ''
   if (!['starting', 'stopping'].includes(operation)) {
     state.operationProgress = {
       percent: operation === 'started' || operation === 'stopped' ? 100 : 0,
@@ -203,8 +741,8 @@ const renderOperation = () => {
   const operation = state.operation || 'idle'
   banner.hidden = operation === 'idle'
   banner.className = `operation-banner ${operation}`
-  $('operation-title').textContent = operationLabels[operation] || operationLabels.idle
-  $('operation-detail').textContent = state.operationDetail || 'Waiting for an action.'
+  $('operation-title').textContent = operationLabel(operation)
+  $('operation-detail').textContent = state.operationDetail || t('operation.waiting')
   const progress = state.operationProgress || {}
   const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0))
   const progressNode = $('operation-progress')
@@ -217,11 +755,11 @@ const renderOperation = () => {
 
 const renderOperationReadiness = () => {
   const readinessStates = {
-    starting: ['Starting', 'warn'],
-    stopping: ['Stopping', 'warn'],
-    stopped: ['Stopped', 'warn'],
-    blocked: ['Locked', 'warn'],
-    error: ['Action failed', 'down']
+    starting: ['readiness.starting', 'warn'],
+    stopping: ['readiness.stopping', 'warn'],
+    stopped: ['readiness.stopped', 'warn'],
+    blocked: ['readiness.locked', 'warn'],
+    error: ['readiness.error', 'down']
   }
   const readiness = readinessStates[state.operation]
   if (!readiness) {
@@ -230,7 +768,7 @@ const renderOperationReadiness = () => {
   const readinessCard = $('readiness-card')
   readinessCard.classList.remove('ready', 'warn', 'down')
   readinessCard.classList.add(readiness[1])
-  $('readiness-label').textContent = readiness[0]
+  $('readiness-label').textContent = t(readiness[0])
   $('readiness-detail').textContent = state.operationDetail
 }
 
@@ -257,9 +795,9 @@ const applyServerOperation = (operation) => {
     const uiOperation = operationUiType(operation.type)
     setOperation(
       uiOperation,
-      `Another ${operation.type} operation is running. Started ${formatTimestamp(operation.startedAt)}.`
+      t('operation.remoteBusy', { type: operation.type, time: formatTimestamp(operation.startedAt) })
     )
-    $('save-state').textContent = 'Locked'
+    setSaveState('saveState.locked')
     return
   }
 
@@ -278,6 +816,18 @@ const currentOptions = () => ({
   ...state.options
 })
 
+const formatReviewCommandPreview = (commandLine) =>
+  String(commandLine || '')
+    .replace(/\s+-SkipDifyWatch\b/g, '')
+    .replace(/\s+-SkipDify\b/g, '')
+    .replace(/\s+-DifyPort\s+(?:"[^"]*"|'[^']*'|\S+)/g, '')
+    .replace(/\s+-DifyDockerRoot\s+(?:"[^"]*"|'[^']*'|\S+)/g, '')
+    .trim()
+
+const setCommandPreview = (commandLine) => {
+  $('command-preview').textContent = formatReviewCommandPreview(commandLine)
+}
+
 const applyProfileDefaults = async () => {
   const preview = await api('/api/preview', {
     method: 'POST',
@@ -287,7 +837,7 @@ const applyProfileDefaults = async () => {
     })
   })
   state.options = preview.options
-  $('command-preview').textContent = preview.commandLine
+  setCommandPreview(preview.commandLine)
   renderControls()
   renderSystemSummary()
 }
@@ -314,29 +864,45 @@ const isLaunchServiceEnabled = (field) => {
   return Boolean(state.options[field])
 }
 
+const launchScopeItemIsEnabled = (item) =>
+  item.enabledWhen === 'falsy' ? !state.options[item.field] : Boolean(state.options[item.field])
+
+const summarizeLaunchScope = () => {
+  const summary = {
+    enabled: [],
+    skipped: []
+  }
+  for (const item of launchScopeItems) {
+    if (launchScopeItemIsEnabled(item)) {
+      summary.enabled.push(localizedLaunchScopeLabel(item))
+    } else {
+      summary.skipped.push(localizedLaunchScopeLabel(item))
+    }
+  }
+  return summary
+}
+
 const summarizeLaunchServices = () => {
-  const serviceFields = coreSwitchFields.filter((field) => field !== 'StopExisting')
-  const enabled = serviceFields.filter((field) => isLaunchServiceEnabled(field)).length
-  const total = serviceFields.length
+  const enabled = launchScopeItems.filter((item) => launchScopeItemIsEnabled(item)).length
+  const total = launchScopeItems.length
   return {
-    card: `${enabled}/${total} enabled`,
-    drawer: `${enabled}/${total} services`
+    card: `${enabled}/${total} ${t('summary.enabled')}`,
+    drawer: `${enabled}/${total} ${t('summary.servicesNoun')}`
   }
 }
 
 const summarizeDiagnostics = () => {
   const enabled = diagnosticSwitchFields.filter((field) => state.options[field]).length
   return {
-    card: enabled ? `${enabled} enabled` : 'Off',
-    drawer: enabled ? `${enabled} toggles on` : 'No test toggles'
+    card: enabled ? `${enabled} ${t('summary.enabled')}` : t('summary.off'),
+    drawer: enabled ? `${enabled} ${t('summary.togglesOn')}` : t('summary.noTestToggles')
   }
 }
 
 const summarizeRuntime = () => {
-  const compatibilityActive = !state.options.SkipDify || !state.options.SkipDifyWatch
+  const fallbackOnly = Boolean(state.options.ThoughtCoreNoProvider)
   return {
-    card: compatibilityActive ? 'Compat on' : 'Standard',
-    drawer: compatibilityActive ? 'Legacy paths active' : 'Legacy paths off'
+    card: fallbackOnly ? t('summary.fallbackOnly') : t('summary.providerAllowed')
   }
 }
 
@@ -344,22 +910,28 @@ const summarizePorts = () => {
   const values = corePortFields.map((field) => String(state.options[field] || '').trim()).filter(Boolean)
   const duplicates = values.filter((value, index) => values.indexOf(value) !== index)
   return {
-    card: duplicates.length ? 'Check conflict' : `${values.length}/${corePortFields.length} set`,
-    drawer: duplicates.length ? 'Duplicate port values' : 'Core bindings'
+    card: duplicates.length ? t('summary.checkConflict') : `${values.length}/${corePortFields.length} ${t('summary.set')}`,
+    drawer: duplicates.length ? t('summary.duplicatePorts') : t('summary.coreBindings')
   }
 }
 
 const renderLaunchSummary = () => {
+  const scope = summarizeLaunchScope()
   const services = summarizeLaunchServices()
   const diagnostics = summarizeDiagnostics()
   const runtime = summarizeRuntime()
   const ports = summarizePorts()
   $('services-summary').textContent = services.card
+  $('launch-scope-enabled').textContent = t('launchScope.enabled', {
+    value: scope.enabled.join(', ') || t('value.none')
+  })
+  $('launch-scope-skipped').textContent = t('launchScope.skipped', {
+    value: scope.skipped.join(', ') || t('value.none')
+  })
   $('services-drawer-summary').textContent = services.drawer
   $('diagnostics-summary').textContent = diagnostics.card
   $('diagnostics-drawer-summary').textContent = diagnostics.drawer
   $('runtime-summary').textContent = runtime.card
-  $('runtime-drawer-summary').textContent = runtime.drawer
   $('ports-summary').textContent = ports.card
   $('ports-drawer-summary').textContent = ports.drawer
 }
@@ -384,7 +956,7 @@ const renderControls = () => {
   $('active-profile-name').textContent = profile ? profile.name : state.selectedProfileId
   $('active-profile-detail').textContent = state.options.MediapipeMode
     ? `MediaPipe: ${state.options.MediapipeMode}`
-    : 'Configuration pending'
+    : t('metric.profilePending')
   renderLaunchSummary()
 
   for (const field of portFields) {
@@ -401,7 +973,6 @@ const renderControls = () => {
 
   renderSwitchGroup('core-switch-grid', coreSwitchFields)
   renderSwitchGroup('diagnostic-switch-grid', diagnosticSwitchFields)
-  renderSwitchGroup('legacy-switch-grid', legacySwitchFields)
 }
 
 const groupProfiles = (profiles) => {
@@ -419,28 +990,51 @@ const groupProfiles = (profiles) => {
 const visibleProfilesForSelect = (profiles) =>
   (profiles || []).filter((profile) => !profile.hidden || profile.id === state.selectedProfileId)
 
+const displaySwitchValue = (field) => {
+  if (positiveDisplayFields.has(field)) {
+    return !state.options[field]
+  }
+  return field.startsWith('Skip') ? !state.options[field] : Boolean(state.options[field])
+}
+
+const setSwitchValue = (field, checked) => {
+  if (positiveDisplayFields.has(field)) {
+    setOption(field, !checked)
+    return
+  }
+  setOption(field, field.startsWith('Skip') ? !checked : checked)
+}
+
 const renderSwitchGroup = (elementId, fields) => {
   const switchGrid = $(elementId)
   switchGrid.innerHTML = fields
     .map(
-      (field) => `
+      (field) => {
+        const description = localizedSwitchDescription(field)
+          ? `<small class="switch-description">${escapeHtml(localizedSwitchDescription(field))}</small>`
+          : ''
+        return `
         <label class="switch-row">
-          <span>${labelFor(field)}</span>
-          <input type="checkbox" data-switch="${field}" ${state.options[field] ? 'checked' : ''} />
+          <span class="switch-copy">
+            <strong>${labelFor(field)}</strong>
+            ${description}
+          </span>
+          <input type="checkbox" data-switch="${field}" ${displaySwitchValue(field) ? 'checked' : ''} />
         </label>
       `
+      }
     )
     .join('')
 
   switchGrid.querySelectorAll('[data-switch]').forEach((input) => {
     input.addEventListener('change', (event) => {
-      setOption(event.target.dataset.switch, event.target.checked)
+      setSwitchValue(event.target.dataset.switch, event.target.checked)
     })
   })
 }
 
 const labelFor = (value) =>
-  fieldLabels[value] ||
+  localizedFieldLabel(value) ||
   value
     .replace(/^Skip/, 'Skip ')
     .replace(/^Stop/, 'Stop ')
@@ -458,9 +1052,9 @@ const escapeHtml = (value) =>
 const stateClass = (serviceState) =>
   `state-${String(serviceState || 'down').toLowerCase().replace(/_/g, '-')}`
 
-const serviceDisplayName = (name) => serviceLabels[name] || labelFor(name)
+const serviceDisplayName = (name) => localizedServiceLabel(name) || labelFor(name)
 
-const serviceRole = (name) => serviceRoles[name] || 'system cell'
+const serviceRole = (name) => localizedServiceRole(name) || t('service.systemCell')
 
 const serviceStateShort = (serviceState) => {
   const value = String(serviceState || 'DOWN').toUpperCase()
@@ -497,28 +1091,56 @@ const endpointDisplayName = (name) => {
     'Environment display state': 'Env state',
     'Environment indicators': 'Env indicators',
     'VOICEVOX': 'Speech',
-    'Thought Core watcher': 'Core watch',
-    'Compatibility workflow UI': 'Compatibility UI',
-    'Compatibility watcher': 'Compatibility watch'
+    'Thought Core watcher': 'Core watch'
+  }
+  const labelsJa = {
+    'AITuber Kit': '表情表示',
+    'Expression runtime': '操作画面',
+    'AITuber Cube Vault': '表情キューブ保管庫',
+    'Expression cube vault': 'アバター保管庫',
+    'Display control GUI/API': '投影表示GUI/API',
+    'Display runtime GUI/API': '表示',
+    'Home Assistant bridge health': '操作ブリッジ状態',
+    'Action bridge health': '操作',
+    'MediaPipe Browser Monitor': 'カメラ反射入力の確認画面',
+    'Reflex browser monitor': 'Camera Hub',
+    'MediaMTX video': '反射カメラ映像',
+    'Reflex camera video': '映像',
+    'MediaPipe Camera Hub WebSocket': '反射Camera Hub WebSocket',
+    'Reflex Camera Hub WebSocket': 'Camera WS',
+    'Vision Snapshot Processor WebSocket': '視覚状態取得WebSocket',
+    'Vision snapshot WebSocket': '視覚状態WS',
+    'TouchDesigner UDP receiver': '表示UDP受信',
+    'Display UDP receiver': 'TD UDP',
+    'Projection Visual': '操作ステージ',
+    'Passive Projection': 'ステージ',
+    'Thought Core API index': '思考中枢API',
+    'Thought Core health': '思考中枢の状態',
+    'Environment display state': '環境状態',
+    'Environment indicators': '環境指標',
+    'VOICEVOX': '音声',
+    'Thought Core watcher': '思考中枢の監視'
+  }
+  if (state.language === 'ja') {
+    return labelsJa[name] || labels[name] || name
   }
   return labels[name] || name
 }
 
 const endpointTargetLabel = (endpoint, kind, canOpen) => {
-  if (!endpoint.enabled) return 'skipped'
+  if (!endpoint.enabled) return t('endpoint.skipped')
   if (!canOpen) {
-    if (kind === 'websocket') return 'WebSocket reference'
-    if (kind === 'background') return 'background reference'
-    return 'reference'
+    if (kind === 'websocket') return t('endpoint.websocketReference')
+    if (kind === 'background') return t('endpoint.backgroundReference')
+    return t('endpoint.reference')
   }
-  if (kind === 'stage') return 'passive clean view'
-  if (endpoint.name === 'Projection Visual') return 'operator preview'
-  if (kind === 'api' || kind === 'thought') return 'local API'
-  if (kind === 'camera') return 'camera feed'
-  if (kind === 'display') return 'display runtime'
-  if (kind === 'speech') return 'speech runtime'
-  if (kind === 'compatibility') return 'compatibility'
-  return 'open browser'
+  if (kind === 'stage') return t('endpoint.stageView')
+  if (endpoint.name === 'Projection Visual') return t('endpoint.operatorPreview')
+  if (kind === 'api' || kind === 'thought') return t('endpoint.localApi')
+  if (kind === 'camera') return t('endpoint.cameraFeed')
+  if (kind === 'display') return t('endpoint.displayRuntime')
+  if (kind === 'speech') return t('endpoint.speechRuntime')
+  return t('endpoint.openBrowser')
 }
 
 const serviceIsIncluded = (name) => {
@@ -529,6 +1151,13 @@ const serviceIsIncluded = (name) => {
   const skipFields = skipFieldsByService[name] || []
   return !skipFields.some((field) => state.options[field])
 }
+
+const serviceStartupTargetFields = (name) => startupTargetFieldsByService[name] || []
+
+const serviceStartupTargetBlockers = (name) =>
+  (startupTargetDependenciesByService[name] || [])
+    .filter((dependency) => !displaySwitchValue(dependency.field))
+    .map((dependency) => (state.language === 'ja' && dependency.labelJa ? dependency.labelJa : dependency.label))
 
 const serviceStateGroup = (serviceState) => {
   const value = String(serviceState || 'DOWN').toUpperCase()
@@ -546,15 +1175,25 @@ const serviceIsBooting = (service, included) =>
   included &&
   serviceStateGroup(service?.state) !== 'ok'
 
+const setServiceStartupTarget = (name, checked) => {
+  const fields = serviceStartupTargetFields(name)
+  for (const field of fields) {
+    setSwitchValue(field, checked)
+  }
+  renderControls()
+  renderLaunchSummary()
+  renderServices(state.latestServices || {})
+}
+
 const formatTimestamp = (value) => {
   if (!value) {
-    return 'Awaiting status'
+    return t('status.awaiting')
   }
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) {
     return value
   }
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(state.language === 'ja' ? 'ja-JP' : undefined, {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit'
@@ -588,7 +1227,7 @@ const setOperationProgressFromSummary = (summary, mode) => {
   if (!summary || summary.total <= 0) {
     state.operationProgress = {
       percent: 8,
-      label: mode === 'stopping' ? 'Stopping...' : 'Checking...',
+      label: mode === 'stopping' ? t('progress.stopping') : t('progress.checking'),
       visible: true
     }
     renderOperation()
@@ -601,13 +1240,13 @@ const setOperationProgressFromSummary = (summary, mode) => {
     ? summary.online
     : Math.max(0, summary.total - summary.online)
   const percent = Math.round((count / summary.total) * 100)
-  const noun = remaining === 1 ? 'service' : 'services'
+  const noun = remaining === 1 ? t('progress.service') : t('progress.services')
   state.operationProgress = {
     percent,
     label:
       remaining === 0
         ? `${percent}%`
-        : `${percent}% · ${remaining} ${noun} remaining`,
+        : t('progress.remaining', { percent, remaining, noun }),
     visible: true
   }
   renderOperation()
@@ -615,35 +1254,39 @@ const setOperationProgressFromSummary = (summary, mode) => {
 
 const formatStopVerificationDetail = (verification) => {
   if (!verification) {
-    return 'Stop command completed, but shutdown verification was not returned.'
+    return t('stop.noVerification')
   }
   if (verification.ok) {
-    return `Stop verified. ${verification.checkedPortCount || 0} managed ports are closed and no recorded stack process remains.`
+    return t('stop.verified', { count: verification.checkedPortCount || 0 })
   }
   const issues = []
   if (verification.pidFileExists) {
-    issues.push('PID registry still exists')
+    issues.push(t('stop.pidRegistry'))
   }
   if (verification.aliveRecorded?.length) {
     issues.push(
-      `alive PIDs: ${verification.aliveRecorded
-        .map((entry) => `${entry.name}#${entry.pid}`)
-        .join(', ')}`
+      t('stop.alivePids', {
+        value: verification.aliveRecorded
+          .map((entry) => `${entry.name}#${entry.pid}`)
+          .join(', ')
+      })
     )
   }
   if (verification.openPorts?.length) {
     issues.push(
-      `open ports: ${verification.openPorts
-        .map((entry) => `${entry.label}:${entry.port}`)
-        .join(', ')}`
+      t('stop.openPorts', {
+        value: verification.openPorts
+          .map((entry) => `${entry.label}:${entry.port}`)
+          .join(', ')
+      })
     )
   }
   if (verification.timedOut) {
-    issues.push('verification timed out')
+    issues.push(t('stop.timedOut'))
   }
   return issues.length > 0
-    ? `Stop incomplete. ${issues.join('; ')}.`
-    : 'Stop incomplete. Check the launcher log for remaining processes.'
+    ? t('stop.incomplete', { issues: issues.join('; ') })
+    : t('stop.incompleteGeneric')
 }
 
 const renderSystemSummary = (services = null, timestamp = '') => {
@@ -651,7 +1294,7 @@ const renderSystemSummary = (services = null, timestamp = '') => {
   $('active-profile-name').textContent = profile ? profile.name : state.selectedProfileId
   $('active-profile-detail').textContent = state.options.MediapipeMode
     ? `MediaPipe: ${state.options.MediapipeMode}`
-    : 'Configuration pending'
+    : t('metric.profilePending')
 
   if (!services) {
     return
@@ -662,10 +1305,10 @@ const renderSystemSummary = (services = null, timestamp = '') => {
     setOperationProgressFromSummary(summary, 'starting')
     const detail =
       summary.total > 0
-        ? `${summary.online}/${summary.total} expected services online. Watching startup progress.`
-        : 'Start command accepted. Waiting for service status.'
+        ? t('status.startWatching', { online: summary.online, total: summary.total })
+        : t('status.startAccepted')
     if (summary.total > 0 && summary.online === summary.total) {
-      setOperation('started', `All expected services are online. Updated ${formatTimestamp(timestamp)}.`)
+      setOperation('started', t('status.allOnline', { time: formatTimestamp(timestamp) }))
     } else {
       setOperation('starting', detail)
     }
@@ -677,25 +1320,25 @@ const renderSystemSummary = (services = null, timestamp = '') => {
   const readinessCard = $('readiness-card')
   readinessCard.classList.remove('ready', 'warn', 'down')
 
-  let readinessLabel = 'Ready'
+  let readinessLabel = t('readiness.ready')
   let readinessClass = 'ready'
   if (state.operation === 'starting') {
-    readinessLabel = 'Starting'
+    readinessLabel = t('readiness.starting')
     readinessClass = 'warn'
   } else if (state.operation === 'stopping') {
-    readinessLabel = 'Stopping'
+    readinessLabel = t('readiness.stopping')
     readinessClass = 'warn'
   } else if (state.operation === 'stopped') {
-    readinessLabel = 'Stopped'
+    readinessLabel = t('readiness.stopped')
     readinessClass = 'warn'
   } else if (summary.total === 0) {
-    readinessLabel = 'Manual'
+    readinessLabel = t('readiness.manual')
     readinessClass = 'warn'
   } else if (summary.down > 0) {
-    readinessLabel = 'Check stack'
+    readinessLabel = t('readiness.checkStack')
     readinessClass = 'down'
   } else if (summary.warn > 0) {
-    readinessLabel = 'Warming up'
+    readinessLabel = t('readiness.warmingUp')
     readinessClass = 'warn'
   }
   readinessCard.classList.add(readinessClass)
@@ -705,29 +1348,56 @@ const renderSystemSummary = (services = null, timestamp = '') => {
     state.operation === 'stopping' ||
     state.operation === 'stopped'
       ? state.operationDetail
-      : `${summary.online}/${summary.total} expected services online`
+      : t('status.expectedOnline', { online: summary.online, total: summary.total })
   $('online-count').textContent = `${summary.online}/${summary.total}`
-  $('online-detail').textContent = `Updated ${formatTimestamp(timestamp)}`
+  $('online-detail').textContent = t('status.updated', { time: formatTimestamp(timestamp) })
   $('attention-count').textContent = String(attention)
   $('attention-detail').textContent =
-    attention === 0 ? 'All expected services nominal' : `${summary.warn} warming, ${summary.down} down`
+    attention === 0 ? t('status.nominal') : t('status.attention', { warn: summary.warn, down: summary.down })
 }
 
 const renderServices = (services) => {
+  state.latestServices = services || {}
   const names = Object.keys(services || {}).filter((name) => !hiddenServiceKeys.has(name))
   $('service-list').innerHTML = names
     .reduce(
       (markup, name) => {
         const service = services[name]
         const included = serviceIsIncluded(name)
+        const targetFields = serviceStartupTargetFields(name)
+        const targetBlockers = serviceStartupTargetBlockers(name)
         const group = serviceStateGroup(service.state)
         const isBooting = serviceIsBooting(service, included)
         const rowClass = included ? '' : ' service-skipped'
+        const targetControl =
+          targetBlockers.length > 0
+            ? `
+              <span
+                class="service-target-badge"
+                title="${escapeHtml(t('service.requires', { targets: targetBlockers.join(', ') }))}"
+              >
+                ${escapeHtml(t('service.blocked'))}
+              </span>
+            `
+            : targetFields.length > 0
+            ? `
+              <label class="service-target-toggle" title="${escapeHtml(t('service.targetTitle'))}">
+                <input
+                  type="checkbox"
+                  data-service-startup-target="${escapeHtml(name)}"
+                  ${included ? 'checked' : ''}
+                  aria-label="${escapeHtml(t('service.includeAria', { name: serviceDisplayName(name) }))}"
+                />
+                <span>${included ? escapeHtml(t('service.target')) : escapeHtml(t('service.skip'))}</span>
+              </label>
+            `
+            : `<span class="service-target-badge">${escapeHtml(t('service.fixed'))}</span>`
         return `${markup}
           <div
             class="service-row${rowClass}"
             data-state-group="${group}"
             data-booting="${isBooting ? 'true' : 'false'}"
+            data-startup-target="${included ? 'included' : 'skipped'}"
             role="row"
           >
             <span class="service-status" role="cell">
@@ -742,9 +1412,10 @@ const renderServices = (services) => {
             <span class="service-title" role="cell">
               <span class="service-name">${escapeHtml(serviceDisplayName(name))}</span>
               <span class="service-key">
-                ${escapeHtml(serviceRole(name))}${included ? '' : ' / profile off'}
+                ${escapeHtml(serviceRole(name))}${included ? '' : ` / ${escapeHtml(t('service.profileOff'))}`}
               </span>
             </span>
+            <span class="service-startup-target" role="cell">${targetControl}</span>
             <span class="service-metric" role="cell">${service.pid || '-'}</span>
             <span class="service-metric" role="cell" title="${escapeHtml(service.tcp?.detail || '-')}">
               ${escapeHtml(service.tcp?.detail || '-')}
@@ -756,22 +1427,31 @@ const renderServices = (services) => {
         `
       },
       `
-        <div class="service-rack" role="table" aria-label="Runtime organ status">
+        <div class="service-rack" role="table" aria-label="${escapeHtml(t('service.tableAria'))}">
           <div class="service-rack-header" role="row">
-            <span role="columnheader">State</span>
-            <span role="columnheader">Organ</span>
+            <span role="columnheader">${escapeHtml(t('service.header.state'))}</span>
+            <span role="columnheader">${escapeHtml(t('service.header.organ'))}</span>
+            <span role="columnheader">${escapeHtml(t('service.header.target'))}</span>
             <span role="columnheader">PID</span>
             <span role="columnheader">TCP</span>
             <span role="columnheader">HTTP</span>
           </div>
       `
     ) + '</div>'
+
+  $('service-list')
+    .querySelectorAll('[data-service-startup-target]')
+    .forEach((input) => {
+      input.addEventListener('change', (event) => {
+        setServiceStartupTarget(event.target.dataset.serviceStartupTarget, event.target.checked)
+      })
+    })
 }
 
 const renderEndpoints = (endpoints) => {
   const groups = new Map()
   for (const endpoint of endpoints || []) {
-    if (endpointKind(endpoint) === 'compatibility' && !endpoint.enabled) {
+    if (endpointKind(endpoint) === 'compatibility') {
       continue
     }
     if (!groups.has(endpoint.group)) {
@@ -788,7 +1468,9 @@ const renderEndpoints = (endpoints) => {
           const attrs = canOpen
             ? `href="${escapeHtml(endpoint.url)}" target="_blank" rel="noreferrer"`
             : 'href="#" aria-disabled="true" tabindex="-1"'
-          const status = endpoint.enabled ? (canOpen ? 'open' : 'reference') : 'skipped'
+          const status = endpoint.enabled
+            ? (canOpen ? t('endpoint.open') : t('endpoint.reference'))
+            : t('endpoint.skipped')
           const className = endpoint.enabled ? (canOpen ? '' : 'reference-only') : 'disabled'
           const kind = endpointKind(endpoint)
           const title = endpoint.url
@@ -808,12 +1490,21 @@ const renderEndpoints = (endpoints) => {
         .join('')
       return `
         <section class="endpoint-group">
-          <h3>${escapeHtml(group)}</h3>
+          <h3>${escapeHtml(endpointGroupLabel(group))}</h3>
           <div class="endpoint-links">${links}</div>
         </section>
       `
     })
     .join('')
+}
+
+const endpointGroupLabel = (group) => {
+  const labels = {
+    'Open in browser': 'endpoint.group.openBrowser',
+    'Local APIs and feeds': 'endpoint.group.localApis',
+    'Background links': 'endpoint.group.backgroundLinks'
+  }
+  return labels[group] ? t(labels[group]) : group
 }
 
 const endpointKind = (endpoint) => {
@@ -841,8 +1532,6 @@ const endpointIcon = (kind) => {
     display: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8"></path><path d="M12 16v4"></path><path d="M7 8h10"></path></svg>',
     speech: '<svg viewBox="0 0 24 24"><path d="M11 5L6 9H3v6h3l5 4z"></path><path d="M15 9a4 4 0 0 1 0 6"></path><path d="M18 6a8 8 0 0 1 0 12"></path></svg>',
     camera: '<svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"></path><circle cx="12" cy="13" r="3"></circle></svg>',
-    legacy: '<svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M7 7v13"></path><path d="M17 7v13"></path><path d="M9 4h6l2 3H7z"></path><path d="M10 11h4"></path></svg>',
-    compatibility: '<svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M7 7v13"></path><path d="M17 7v13"></path><path d="M9 4h6l2 3H7z"></path><path d="M10 11h4"></path></svg>',
     background: '<svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"></path><path d="M8 10h8"></path><path d="M8 14h5"></path></svg>',
     link: '<svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"></path><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"></path></svg>'
   }
@@ -859,7 +1548,7 @@ const refreshPreview = async () => {
       })
     })
     state.options = preview.options
-    $('command-preview').textContent = preview.commandLine
+    setCommandPreview(preview.commandLine)
   } catch (error) {
     $('command-preview').textContent = error.message
   }
@@ -873,34 +1562,39 @@ const refreshState = async () => {
   $('workspace-root').textContent = payload.portMode
     ? `${payload.workspaceRoot} · ${payload.portMode}`
     : payload.workspaceRoot
-  $('status-time').textContent = payload.status?.timestamp || 'Unknown'
-  $('command-preview').textContent = payload.preview?.commandLine || ''
-  $('log-output').textContent = payload.logTail || 'No launcher log yet.'
+  $('status-time').textContent = payload.status?.timestamp || t('status.unknown')
+  state.latestStatusTimestamp = payload.status?.timestamp || ''
+  state.latestServices = payload.status?.services || {}
+  state.latestEndpoints = payload.endpoints || []
+  setCommandPreview(payload.preview?.commandLine || '')
+  $('log-output').textContent = payload.logTail || t('status.noLog')
   renderControls()
   applyServerOperation(payload.operation || payload.status?.operation)
-  renderSystemSummary(payload.status?.services || {}, payload.status?.timestamp)
-  renderServices(payload.status?.services || {})
-  renderEndpoints(payload.endpoints || [])
+  renderSystemSummary(state.latestServices, state.latestStatusTimestamp)
+  renderServices(state.latestServices)
+  renderEndpoints(state.latestEndpoints)
 }
 
 const refreshStatusOnly = async () => {
   const payload = await api('/api/status')
-  $('status-time').textContent = payload.timestamp || 'Unknown'
+  $('status-time').textContent = payload.timestamp || t('status.unknown')
+  state.latestStatusTimestamp = payload.timestamp || ''
+  state.latestServices = payload.services || {}
   applyServerOperation(payload.operation)
-  renderSystemSummary(payload.services || {}, payload.timestamp)
-  renderServices(payload.services || {})
+  renderSystemSummary(state.latestServices, state.latestStatusTimestamp)
+  renderServices(state.latestServices)
   const logs = await api('/api/logs')
-  $('log-output').textContent = logs.logTail || 'No launcher log yet.'
+  $('log-output').textContent = logs.logTail || t('status.noLog')
 }
 
 const refreshLogsOnly = async () => {
   const logs = await api('/api/logs')
-  $('log-output').textContent = logs.logTail || 'No launcher log yet.'
+  $('log-output').textContent = logs.logTail || t('status.noLog')
 }
 
 const startStack = async () => {
-  setOperation('starting', 'Start command is being sent. Waiting for the supervisor to spawn.')
-  setBusy(true, 'Starting')
+  setOperation('starting', t('action.startSending'))
+  setBusy(true, t('saveState.starting'))
   try {
     await api('/api/start', {
       method: 'POST',
@@ -909,7 +1603,7 @@ const startStack = async () => {
         options: currentOptions()
       })
     })
-    setOperation('starting', 'Start command accepted. Watching services come online.')
+    setOperation('starting', t('action.startAcceptedWatching'))
     await refreshState()
   } finally {
     setBusy(false)
@@ -917,8 +1611,8 @@ const startStack = async () => {
 }
 
 const stopStack = async () => {
-  setOperation('stopping', 'Stop command is running. Waiting for the shutdown script.')
-  setBusy(true, 'Stopping')
+  setOperation('stopping', t('action.stopRunning'))
+  setBusy(true, t('saveState.stopping'))
   try {
     const payload = await api('/api/stop', {
       method: 'POST',
@@ -933,13 +1627,13 @@ const stopStack = async () => {
 
 const stopLauncher = async () => {
   const confirmed = window.confirm(
-    'Stop Sword System Launcher only? System cell services are not stopped by this button.'
+    t('action.stopLauncherConfirm')
   )
   if (!confirmed) {
     return
   }
-  setOperation('stopping', 'Launcher server is shutting down. System cell services are unchanged.')
-  setBusy(true, 'Stopping')
+  setOperation('stopping', t('action.stopLauncherShuttingDown'))
+  setBusy(true, t('saveState.stopping'))
   try {
     await api('/api/shutdown', { method: 'POST' })
   } catch (error) {
@@ -947,15 +1641,15 @@ const stopLauncher = async () => {
       throw error
     }
   }
-  setOperation('stopped', 'Launcher stopped. Close this tab or start it again from the terminal.')
+  setOperation('stopped', t('action.launcherStopped'))
   document.querySelectorAll('button, input, select').forEach((element) => {
     element.disabled = true
   })
 }
 
 const saveConfig = async () => {
-  setOperation('saving', 'Writing launcher configuration.')
-  setBusy(true, 'Saving')
+  setOperation('saving', t('action.savingConfig'))
+  setBusy(true, t('saveState.saving'))
   try {
     await api('/api/save-config', {
       method: 'POST',
@@ -964,9 +1658,9 @@ const saveConfig = async () => {
         options: currentOptions()
       })
     })
-    $('save-state').textContent = 'Saved'
+    setSaveState('saveState.saved')
     window.setTimeout(() => {
-      $('save-state').textContent = 'Ready'
+      setSaveState('saveState.ready')
     }, 1200)
   } finally {
     setBusy(false)
@@ -975,6 +1669,9 @@ const saveConfig = async () => {
 }
 
 const bindControls = () => {
+  document.querySelectorAll('[data-language]').forEach((button) => {
+    button.addEventListener('click', () => setLanguage(button.dataset.language))
+  })
   $('profile-select').addEventListener('change', (event) => {
     state.selectedProfileId = event.target.value
     applyProfileDefaults().catch(showError)
@@ -1001,16 +1698,16 @@ const bindControls = () => {
   $('stop-launcher-button').addEventListener('click', () => stopLauncher().catch(showError))
   $('copy-command').addEventListener('click', async () => {
     await navigator.clipboard.writeText($('command-preview').textContent)
-    $('save-state').textContent = 'Copied'
+    setSaveState('saveState.copied')
     window.setTimeout(() => {
-      $('save-state').textContent = 'Ready'
+      setSaveState('saveState.ready')
     }, 1200)
   })
   $('copy-log').addEventListener('click', async () => {
     await navigator.clipboard.writeText($('log-output').textContent)
-    $('save-state').textContent = 'Log copied'
+    setSaveState('saveState.logCopied')
     window.setTimeout(() => {
-      $('save-state').textContent = 'Ready'
+      setSaveState('saveState.ready')
     }, 1200)
   })
 }
@@ -1021,22 +1718,23 @@ const showError = (error) => {
     const operation = error.payload.operation
     state.remoteBusy = Boolean(operation && operation.busy)
     state.remoteOperation = state.remoteBusy ? operation : null
-    setOperation('blocked', error.payload.message || 'Another operation is already running.')
-    $('save-state').textContent = state.remoteBusy ? 'Locked' : 'Ready'
+    setOperation('blocked', error.payload.message || t('error.operationInProgress'))
+    $('save-state').textContent = state.remoteBusy ? t('saveState.locked') : t('saveState.ready')
     $('log-output').textContent = `${error.message}\n\n${$('log-output').textContent}`
     return
   }
   if (error.payload?.stopVerification) {
     setOperation('error', formatStopVerificationDetail(error.payload.stopVerification))
-    $('save-state').textContent = 'Error'
+    setSaveState('saveState.error')
     $('log-output').textContent = `${error.payload.message || error.message}\n\n${$('log-output').textContent}`
     return
   }
-  setOperation('error', error.message || 'Check the launcher log for details.')
-  $('save-state').textContent = 'Error'
+  setOperation('error', error.message || t('error.checkLog'))
+  setSaveState('saveState.error')
   $('log-output').textContent = `${error.message}\n\n${$('log-output').textContent}`
 }
 
+applyStaticTranslations()
 bindControls()
 refreshState()
   .then(() => {
