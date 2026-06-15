@@ -306,6 +306,36 @@ const writeJsonFile = (filePath, value) => {
 
 const readProfiles = () => readJsonFile(PROFILE_FILE, [])
 
+const compactProfileId = (profileId) => {
+  const value = String(profileId || '').trim()
+  if (!value) {
+    return 'missing'
+  }
+  const compact = value.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 80)
+  return compact || 'invalid'
+}
+
+const profileIds = () =>
+  readProfiles()
+    .map((profile) => String(profile && profile.id || '').trim())
+    .filter(Boolean)
+
+const unknownProfilePayload = (profileId) => ({
+  ok: false,
+  error: 'unknown_profile',
+  resultClass: 'blocked_unknown_profile',
+  requestedProfileClass: compactProfileId(profileId),
+  knownProfileIds: profileIds()
+})
+
+const requireKnownProfile = (profileId) => {
+  const requested = String(profileId || '').trim()
+  if (!requested || !profileIds().includes(requested)) {
+    return unknownProfilePayload(profileId)
+  }
+  return null
+}
+
 const readLauncherConfig = () =>
   readJsonFile(LAUNCHER_CONFIG_FILE, {
     selectedProfileId: PRIMARY_PROFILE_ID,
@@ -589,6 +619,10 @@ const buildPowerShellCommand = (scriptPath, scriptArgs = []) => [
 ]
 
 const previewCommand = (profileId, optionOverrides = {}) => {
+  const profileError = requireKnownProfile(profileId)
+  if (profileError) {
+    return profileError
+  }
   const options = normalizeOptions(profileId, optionOverrides)
   const command = buildPowerShellCommand(SYSTEM_SCRIPT, buildSystemStartArgs(profileId, options))
   return {
@@ -663,6 +697,9 @@ const runExclusiveStackOperation = async (type, action) => {
 const startStack = (profileId, optionOverrides = {}) => {
   ensureRuntimeDirs()
   const preview = previewCommand(profileId, optionOverrides)
+  if (!preview.ok) {
+    return preview
+  }
   saveConfig(profileId, preview.options)
 
   appendStackLog(
@@ -786,6 +823,10 @@ const runScriptAndCollect = (scriptPath, scriptArgs = [], timeoutMs = 30000) =>
 const stopStack = async (body) => {
   const config = readLauncherConfig()
   const profileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
+  const profileError = requireKnownProfile(profileId)
+  if (profileError) {
+    return profileError
+  }
   const options = normalizeOptions(profileId, config.options || {})
   const scriptArgs = ['stop', '-Profile', opsProfileFor(profileId), '-Force']
   if (body && body.stopDify) {
@@ -1421,6 +1462,13 @@ const getEndpoints = (options) => {
 }
 
 const getStatus = async () => {
+  const config = readLauncherConfig()
+  const selectedProfileId = config.selectedProfileId || PRIMARY_PROFILE_ID
+  const profileConfigState = requireKnownProfile(selectedProfileId) || {
+    ok: true,
+    resultClass: 'known_profile',
+    selectedProfileId
+  }
   const options = effectiveStatusOptions()
   const pids = pidMap()
   const mediapipeEntry =
@@ -1491,6 +1539,7 @@ const getStatus = async () => {
     timestamp: nowIso(),
     workspaceRoot: WORKSPACE_ROOT,
     operation: operationState(),
+    profileConfigState,
     services: {
       home_assistant_bridge: serviceState({
         entry: pids.home_assistant_bridge,
@@ -1682,6 +1731,11 @@ const handleApi = async (request, response, requestUrl) => {
   if (request.method === 'POST' && requestUrl.pathname === '/api/save-config') {
     const body = await readBody(request)
     const profileId = body.profileId || PRIMARY_PROFILE_ID
+    const profileError = requireKnownProfile(profileId)
+    if (profileError) {
+      sendJson(response, 400, profileError)
+      return
+    }
     const options = normalizeOptions(profileId, body.options || {})
     saveConfig(profileId, options)
     sendJson(response, 200, { ok: true, profileId, options })
@@ -1689,15 +1743,28 @@ const handleApi = async (request, response, requestUrl) => {
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/start') {
     const body = await readBody(request)
+    const profileId = body.profileId || PRIMARY_PROFILE_ID
+    const profileError = requireKnownProfile(profileId)
+    if (profileError) {
+      sendJson(response, 400, profileError)
+      return
+    }
     const result = await runExclusiveStackOperation(
       'start',
-      async () => startStack(body.profileId || PRIMARY_PROFILE_ID, body.options || {})
+      async () => startStack(profileId, body.options || {})
     )
     sendJson(response, result.statusCode, result.payload)
     return
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/stop') {
     const body = await readBody(request)
+    const config = readLauncherConfig()
+    const profileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
+    const profileError = requireKnownProfile(profileId)
+    if (profileError) {
+      sendJson(response, 400, profileError)
+      return
+    }
     const result = await runExclusiveStackOperation(
       'stop',
       async () => stopStack(body)
@@ -1708,6 +1775,11 @@ const handleApi = async (request, response, requestUrl) => {
   if (request.method === 'POST' && requestUrl.pathname === '/api/status-script') {
     const config = readLauncherConfig()
     const profileId = config.selectedProfileId || PRIMARY_PROFILE_ID
+    const profileError = requireKnownProfile(profileId)
+    if (profileError) {
+      sendJson(response, 400, profileError)
+      return
+    }
     const options = normalizeOptions(profileId, config.options || {})
     sendJson(
       response,

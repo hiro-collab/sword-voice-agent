@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from unittest import TestCase
 
@@ -5,6 +6,7 @@ from unittest import TestCase
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC = ROOT / "tools" / "home-control-launcher" / "public"
 LAUNCHER_SERVER = ROOT / "tools" / "home-control-launcher" / "server.js"
+LAUNCHER_PROFILES = ROOT / "tools" / "home-control-launcher" / "config" / "default-profiles.json"
 STACK_START_SCRIPT = ROOT / "ops" / "scripts" / "home-control-stack" / "start-home-control-stack.ps1"
 SYSTEM_SCRIPT = ROOT / "ops" / "scripts" / "system.ps1"
 THOUGHT_CORE_START_SCRIPT = ROOT / "scripts" / "start-thought-core.ps1"
@@ -16,6 +18,12 @@ def read_public(name: str) -> str:
 
 def read_launcher_server() -> str:
     return LAUNCHER_SERVER.read_text(encoding="utf-8")
+
+
+def read_launcher_profiles() -> list[dict]:
+    payload = json.loads(LAUNCHER_PROFILES.read_text(encoding="utf-8"))
+    assert isinstance(payload, list)
+    return payload
 
 
 def read_stack_start_script() -> str:
@@ -211,3 +219,48 @@ class LauncherUiContractTest(TestCase):
         self.assertLess(import_index, force_index)
         self.assertIn('$env:THOUGHT_CORE_LLM_ENABLED = "0"', thought_start)
         self.assertIn('$env:THOUGHT_CORE_ACTION_LLM_ENABLED = "0"', thought_start)
+
+    def test_launcher_blocks_unknown_profile_parser_paths_before_stack_start(self) -> None:
+        server = read_launcher_server()
+
+        self.assertIn("const requireKnownProfile", server)
+        self.assertIn("unknown_profile", server)
+        self.assertIn("blocked_unknown_profile", server)
+        self.assertIn("requestedProfileClass: compactProfileId(profileId)", server)
+        self.assertIn("const profileError = requireKnownProfile(profileId)", server)
+        self.assertIn("if (!preview.ok)", server)
+        self.assertIn("sendJson(response, 400, profileError)", server)
+        self.assertIn("profileConfigState", server)
+
+    def test_launcher_profiles_keep_skip_enabled_combinations_explicit(self) -> None:
+        profiles = {profile["id"]: profile for profile in read_launcher_profiles()}
+
+        thought_core = profiles["thought-core-v0"]["options"]
+        self.assertTrue(thought_core["SkipDify"])
+        self.assertTrue(thought_core["SkipDifyWatch"])
+        self.assertTrue(thought_core["EnableThoughtCore"])
+        self.assertTrue(thought_core["EnableThoughtCoreWatch"])
+
+        camera_debug = profiles["camera-debug"]["options"]
+        self.assertTrue(camera_debug["SkipHomeAssistantBridge"])
+        self.assertTrue(camera_debug["SkipAituber"])
+        self.assertTrue(camera_debug["SkipTouchDesignerGui"])
+        self.assertFalse(camera_debug["MediapipeNoBrowser"])
+        self.assertTrue(camera_debug["MediapipeOpenBrowser"])
+
+        aituber_only = profiles["aituber-only"]["options"]
+        self.assertTrue(aituber_only["SkipHomeAssistantBridge"])
+        self.assertTrue(aituber_only["SkipEnvironmentState"])
+        self.assertTrue(aituber_only["SkipMediapipe"])
+        self.assertTrue(aituber_only["SkipVisionSnapshotProcessor"])
+        self.assertTrue(aituber_only["SkipTouchDesignerGui"])
+
+    def test_launcher_config_status_uses_compact_redacted_classes(self) -> None:
+        server = read_launcher_server()
+
+        self.assertIn("compactProfileId", server)
+        self.assertIn("knownProfileIds: profileIds()", server)
+        self.assertIn("homeControlConfigProfileFromPath", server)
+        self.assertIn("payload_policy: 'compact_redacted'", server)
+        self.assertIn("live_home_invalid", server)
+        self.assertNotIn("requestedProfileId: profileId", server)
