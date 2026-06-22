@@ -57,6 +57,7 @@ const LOG_DIR = path.join(STATE_DIR, 'logs')
 const PID_FILE = path.join(STATE_DIR, 'pids.json')
 const LAUNCHER_CONFIG_FILE = path.join(STATE_DIR, 'launcher-config.json')
 const LAUNCHER_STATE_FILE = path.join(STATE_DIR, 'launcher-state.json')
+const DEMO_SAFE_SETTINGS_FILE = path.join(STATE_DIR, 'demo-safe-settings.json')
 const STACK_LOG_FILE = path.join(LOG_DIR, 'launcher-stack.log')
 const STACK_LOG_MAX_BYTES = Number(
   process.env.HOME_CONTROL_LAUNCHER_STACK_LOG_MAX_BYTES || 5 * 1024 * 1024
@@ -77,6 +78,10 @@ const DEFAULT_HOME_CONTROL_LIVE_CONFIG = path.join(
   'env',
   'home-control.live.yaml'
 )
+const DEMO_SAFE_DEFAULTS_CANDIDATES = [
+  path.join(WORKSPACE_ROOT, 'manifests', 'demo-safe-settings', 'defaults.json'),
+  path.join(PROJECT_ROOT, '..', '..', 'manifests', 'demo-safe-settings', 'defaults.json')
+]
 
 function resolveStackStateDir() {
   const configured = readArg(
@@ -337,6 +342,188 @@ const readLauncherConfig = () =>
 const readLauncherState = () => readJsonFile(LAUNCHER_STATE_FILE, {})
 
 const readPidState = () => readJsonFile(PID_FILE, { processes: [] })
+
+const resolveDemoSafeDefaultsFile = () =>
+  DEMO_SAFE_DEFAULTS_CANDIDATES.find((candidate) => fs.existsSync(candidate)) || null
+
+const readDemoSafeDefaults = () => {
+  const filePath = resolveDemoSafeDefaultsFile()
+  const payload = filePath ? readJsonFile(filePath, null) : null
+  const rows = Array.isArray(payload && payload.rows) ? payload.rows : []
+  return {
+    schema_version: payload && payload.schema_version || 'demo_safe_settings.v0',
+    settings_class: 'demo_safe_settings',
+    tracked_defaults_class: filePath
+      ? 'repo_manifest_demo_safe_settings_defaults'
+      : 'repo_manifest_demo_safe_settings_defaults_missing',
+    local_override_class:
+      payload && payload.local_override_class ||
+      'launcher_state_dir_gitignored_demo_settings_json',
+    fresh_clone_default_enabled: Boolean(payload && payload.fresh_clone_default_enabled),
+    rows
+  }
+}
+
+const compactDemoSafeId = (id) => {
+  const value = String(id || '').trim()
+  if (!value) {
+    return 'missing'
+  }
+  return value.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 96) || 'invalid'
+}
+
+const toBool = (value, fallback = false) =>
+  typeof value === 'boolean' ? value : fallback
+
+const toBoundedInt = (value, fallback, min = 0, max = 3600) => {
+  const numberValue = Number(value)
+  if (!Number.isInteger(numberValue)) {
+    return fallback
+  }
+  return Math.max(min, Math.min(max, numberValue))
+}
+
+const readDemoSafeOverrideMap = () => {
+  const payload = readJsonFile(DEMO_SAFE_SETTINGS_FILE, {})
+  const rows = payload && payload.rows && typeof payload.rows === 'object'
+    ? payload.rows
+    : {}
+  return rows
+}
+
+const normalizeDemoSafeRow = (row, override = {}) => {
+  const restoreSupported = toBool(row.restore_supported, false)
+  return {
+    id: compactDemoSafeId(row.id),
+    area: compactDemoSafeId(row.area || 'general'),
+    label: String(row.label || row.id || 'Demo-safe row'),
+    description: String(row.description || ''),
+    enabled: toBool(override.enabled, toBool(row.enabled, false)),
+    restore_supported: restoreSupported,
+    restore_required: restoreSupported
+      ? toBool(override.restore_required, toBool(row.restore_required, false))
+      : false,
+    max_action_count: toBoundedInt(
+      override.max_action_count,
+      toBoundedInt(row.max_action_count, 0, 0, 25),
+      0,
+      25
+    ),
+    max_duration_sec: toBoundedInt(
+      override.max_duration_sec,
+      toBoundedInt(row.max_duration_sec, 0, 0, 3600),
+      0,
+      3600
+    ),
+    source_class: compactDemoSafeId(row.source_class || 'source_static'),
+    proof_ceiling: compactDemoSafeId(row.proof_ceiling || 'source_static_readiness'),
+    does_not_prove: Array.isArray(row.does_not_prove)
+      ? row.does_not_prove.map((item) => compactDemoSafeId(item))
+      : [],
+    hold_classes: Array.isArray(row.hold_classes)
+      ? row.hold_classes.map((item) => compactDemoSafeId(item))
+      : []
+  }
+}
+
+const effectiveDemoSafeSettings = () => {
+  const defaults = readDemoSafeDefaults()
+  const overrides = readDemoSafeOverrideMap()
+  const rows = defaults.rows.map((row) =>
+    normalizeDemoSafeRow(row, overrides[compactDemoSafeId(row.id)] || {})
+  )
+  const enabled = rows.filter((row) => row.enabled)
+  const defaultRowsAllOff = defaults.rows.every((row) => !toBool(row.enabled, false))
+  return {
+    schema_version: defaults.schema_version,
+    settings_class: defaults.settings_class,
+    rows,
+    summary: {
+      total: rows.length,
+      enabled: enabled.length,
+      enabled_appliance: enabled.filter((row) => row.area === 'appliance').length,
+      enabled_readiness: enabled.filter((row) => row.area !== 'appliance').length,
+      all_enabled_default_false:
+        defaults.fresh_clone_default_enabled === false && defaultRowsAllOff
+    },
+    persistence: {
+      tracked_defaults_class: defaults.tracked_defaults_class,
+      local_override_class: defaults.local_override_class,
+      local_override_present: fs.existsSync(DEMO_SAFE_SETTINGS_FILE),
+      raw_path_publication: false
+    }
+  }
+}
+
+const saveDemoSafeSettings = (settings = {}) => {
+  const inputRows = Array.isArray(settings.rows)
+    ? settings.rows
+    : Array.isArray(settings)
+      ? settings
+      : []
+  const overrideById = new Map(
+    inputRows.map((row) => [compactDemoSafeId(row.id), row])
+  )
+  const defaults = readDemoSafeDefaults()
+  const rows = {}
+  for (const row of defaults.rows) {
+    const id = compactDemoSafeId(row.id)
+    const override = overrideById.get(id) || {}
+    const normalized = normalizeDemoSafeRow(row, override)
+    rows[id] = {
+      enabled: normalized.enabled,
+      restore_required: normalized.restore_required,
+      max_action_count: normalized.max_action_count,
+      max_duration_sec: normalized.max_duration_sec
+    }
+  }
+  writeJsonFile(DEMO_SAFE_SETTINGS_FILE, {
+    schema_version: 'demo_safe_settings.local.v0',
+    settings_class: 'demo_safe_settings',
+    updated_at: nowIso(),
+    rows
+  })
+  return effectiveDemoSafeSettings()
+}
+
+const readinessSourceForDemoSafeRow = (row, statusPayload) => {
+  const services = statusPayload && statusPayload.services || {}
+  const serviceState = (name) => String(services[name] && services[name].state || '').toUpperCase()
+  if (row.id === 'audio.voicevox_local_speech') {
+    return serviceState('voicevox')
+  }
+  if (row.id === 'avatar.aituber_projection_surface') {
+    return serviceState('aituber_kit')
+  }
+  if (row.id === 'avatar.expression_or_motion_request') {
+    return serviceState('thought_core_api')
+  }
+  if (row.id === 'display.projection_visual_mode') {
+    return serviceState('touchdesigner_control_gui') || serviceState('aituber_kit')
+  }
+  return ''
+}
+
+const demoReadinessStatus = (settings, statusPayload) => ({
+  schema_version: 'demo_readiness_status.v0',
+  status_class: 'demo_readiness_status',
+  rows: (settings.rows || []).map((row) => {
+    const sourceState = readinessSourceForDemoSafeRow(row, statusPayload)
+    const ok = sourceState === 'OK' || sourceState === 'OK_EXTERNAL'
+    return {
+      id: row.id,
+      status_class: sourceState
+        ? ok ? 'ready_class' : 'not_ready_class'
+        : 'not_checked_class',
+      source_class: row.source_class,
+      proof_ceiling: row.proof_ceiling,
+      does_not_prove: row.does_not_prove || [],
+      last_checked_class: statusPayload && statusPayload.timestamp
+        ? 'current_launcher_status_timestamp'
+        : 'not_checked'
+    }
+  })
+})
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -618,6 +805,7 @@ const previewCommand = (profileId, optionOverrides = {}) => {
     profileId,
     opsProfile: opsProfileFor(profileId),
     options,
+    demoSafeGate: effectiveDemoSafeSettings().summary,
     command,
     commandLine: formatCommand(command)
   }
@@ -1713,6 +1901,8 @@ const getState = async () => {
   const selectedProfileId = config.selectedProfileId || PRIMARY_PROFILE_ID
   const options = normalizeOptions(selectedProfileId, config.options || {})
   const preview = previewCommand(selectedProfileId, options)
+  const status = await getStatus()
+  const demoSafeSettings = effectiveDemoSafeSettings()
   return {
     ok: true,
     projectRoot: PROJECT_ROOT,
@@ -1726,7 +1916,9 @@ const getState = async () => {
     },
     launcherState: readLauncherState(),
     operation: operationState(),
-    status: await getStatus(),
+    status,
+    demoSafeSettings,
+    demoReadinessStatus: demoReadinessStatus(demoSafeSettings, status),
     endpoints: getEndpoints(options),
     preview,
     logTail: readTextTail(STACK_LOG_FILE)
@@ -1811,7 +2003,10 @@ const handleApi = async (request, response, requestUrl) => {
     }
     const options = normalizeOptions(profileId, body.options || {})
     saveConfig(profileId, options)
-    sendJson(response, 200, { ok: true, profileId, options })
+    const demoSafeSettings = body.demoSettings
+      ? saveDemoSafeSettings(body.demoSettings)
+      : effectiveDemoSafeSettings()
+    sendJson(response, 200, { ok: true, profileId, options, demoSafeSettings })
     return
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/start') {

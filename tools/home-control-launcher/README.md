@@ -27,8 +27,14 @@ Runtime state is written under `.cache/home-control-stack/` by default:
 .cache/home-control-stack/
   launcher-config.json
   launcher-state.json
+  demo-safe-settings.json
   logs/launcher-stack.log
 ```
+
+`demo-safe-settings.json` stores local operator choices for the Launcher Demo
+settings drawer. It is local state, not tracked source; fresh clones use the
+tracked defaults from `manifests/demo-safe-settings/defaults.json` and start
+with demo-safe candidates disabled.
 
 To test an alternate compatible state directory, set
 `HOME_CONTROL_STACK_STATE_DIR` before starting the launcher or pass

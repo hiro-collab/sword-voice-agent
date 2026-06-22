@@ -38,6 +38,35 @@
 | TouchDesigner visual trigger | TouchDesigner runtime | UDP 9001 | 視覚演出状態 |
 | projection files and event log | `StatusStore` | `.cache/sword_voice_agent` | 表示・デバッグ用 |
 
+## Launcher Demo-Safe Settings
+
+`demo_safe_settings.v0` is the Launcher-owned operator settings projection for
+bounded local demos. The tracked defaults live in the workspace repo at
+`manifests/demo-safe-settings/defaults.json`. Fresh clones must treat those
+tracked defaults as candidate metadata only and must start with every candidate
+`enabled=false`.
+
+Local operator overrides are stored by the Launcher in the existing gitignored
+stack state directory as `demo-safe-settings.json`. That local file is the
+authority for the operator's current demo-safe choices on that machine. It may
+store only normalized setting fields such as `enabled`, `restore_required`,
+`max_action_count`, and `max_duration_sec`; it must not store secrets, raw Home
+Assistant values, raw transcripts, media, screenshots, provider payloads, or
+private paths.
+
+`demo_readiness_status.v0` is a read-only Launcher status projection derived
+from local readiness/status checks. It carries classes such as `status_class`,
+`source_class`, `proof_ceiling`, `does_not_prove`, and `last_checked_class`.
+It is not an editable setting and is not the authority for actual audio
+playback, browser-visible avatar motion, Projection Visual / Self Mirror
+success, Home Assistant state, external observation, or physical device state.
+
+Settings and readiness are not command authorization. They do not submit Home
+Assistant or Home Control commands, do not execute proof routes, do not publish
+raw/private values, and do not create release/readiness/final-pass authority.
+Any demo action still needs the explicit route gate that owns command
+submission, restore/off behavior, cleanup, and proof wording.
+
 ## Memory And Policy Authority
 
 | Area | Authority | Current / target storage | Rule |

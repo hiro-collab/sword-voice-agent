@@ -30,7 +30,14 @@ const state = {
   remoteOperation: null,
   latestServices: {},
   latestEndpoints: [],
-  latestStatusTimestamp: ''
+  latestStatusTimestamp: '',
+  demoSafeSettings: {
+    rows: [],
+    summary: { total: 0, enabled: 0, enabled_appliance: 0, enabled_readiness: 0 }
+  },
+  demoReadinessStatus: {
+    rows: []
+  }
 }
 
 const translations = {
@@ -63,6 +70,7 @@ const translations = {
     'summary.diagnostics': 'Diagnostics',
     'summary.provider': 'Provider',
     'summary.ports': 'Ports',
+    'summary.demoSafe': 'Demo-safe',
     'summary.enabled': 'enabled',
     'summary.servicesNoun': 'services',
     'summary.off': 'Off',
@@ -86,6 +94,21 @@ const translations = {
     'services.drawerSummary': 'Normal system cell controls',
     'diagnostics.drawerTitle': 'Diagnostics',
     'diagnostics.drawerSummary': 'Camera and test-mode controls',
+    'demoSafe.drawerTitle': 'Demo settings',
+    'demoSafe.drawerSummary': '{enabled}/{total} enabled',
+    'demoSafe.enabled': 'Enabled',
+    'demoSafe.restoreRequired': 'Restore',
+    'demoSafe.maxActions': 'Max actions',
+    'demoSafe.maxDuration': 'Max seconds',
+    'demoSafe.readiness': 'Readiness',
+    'demoSafe.defaultOff': 'Default off',
+    'demoSafe.noneEnabled': 'All off',
+    'demoSafe.notApplicable': 'N/A',
+    'demoSafe.appliance': 'Appliance',
+    'demoSafe.audio': 'Audio',
+    'demoSafe.avatar': 'Avatar',
+    'demoSafe.display': 'Display',
+    'demoSafe.general': 'General',
     'advanced.title': 'Advanced overrides',
     'advanced.subtitle': 'Paths and external services',
     'advanced.actionBridgeConfigPath': 'Action bridge config path',
@@ -232,6 +255,7 @@ const translations = {
     'summary.diagnostics': '診断',
     'summary.provider': '会話LLM',
     'summary.ports': 'ポート',
+    'summary.demoSafe': 'デモ安全',
     'summary.enabled': '有効',
     'summary.servicesNoun': '機能',
     'summary.off': 'なし',
@@ -255,6 +279,21 @@ const translations = {
     'services.drawerSummary': '通常構成で起動する機能',
     'diagnostics.drawerTitle': '診断',
     'diagnostics.drawerSummary': 'カメラと診断用の項目',
+    'demoSafe.drawerTitle': 'デモ設定',
+    'demoSafe.drawerSummary': '{enabled}/{total} 有効',
+    'demoSafe.enabled': '有効',
+    'demoSafe.restoreRequired': '復元',
+    'demoSafe.maxActions': '最大操作',
+    'demoSafe.maxDuration': '最大秒数',
+    'demoSafe.readiness': '準備',
+    'demoSafe.defaultOff': '初期値はオフ',
+    'demoSafe.noneEnabled': 'すべてオフ',
+    'demoSafe.notApplicable': '対象外',
+    'demoSafe.appliance': '家電',
+    'demoSafe.audio': '音声',
+    'demoSafe.avatar': 'アバター',
+    'demoSafe.display': '表示',
+    'demoSafe.general': 'その他',
     'advanced.title': '詳細設定',
     'advanced.subtitle': 'パスと外部接続',
     'advanced.actionBridgeConfigPath': '家電操作ブリッジ設定パス',
@@ -909,12 +948,30 @@ const summarizePorts = () => {
   }
 }
 
+const demoSafeRows = () => state.demoSafeSettings?.rows || []
+
+const demoReadinessById = () =>
+  new Map((state.demoReadinessStatus?.rows || []).map((row) => [row.id, row]))
+
+const summarizeDemoSafe = () => {
+  const summary = state.demoSafeSettings?.summary || {}
+  const total = Number(summary.total) || demoSafeRows().length
+  const enabled = Number(summary.enabled) || demoSafeRows().filter((row) => row.enabled).length
+  return {
+    card: enabled > 0 ? `${enabled}/${total} ${t('summary.enabled')}` : t('demoSafe.noneEnabled'),
+    drawer: total > 0
+      ? t('demoSafe.drawerSummary', { enabled, total })
+      : t('demoSafe.defaultOff')
+  }
+}
+
 const renderLaunchSummary = () => {
   const scope = summarizeLaunchScope()
   const services = summarizeLaunchServices()
   const diagnostics = summarizeDiagnostics()
   const runtime = summarizeRuntime()
   const ports = summarizePorts()
+  const demoSafe = summarizeDemoSafe()
   $('services-summary').textContent = services.card
   $('launch-scope-enabled').textContent = t('launchScope.enabled', {
     value: scope.enabled.join(', ') || t('value.none')
@@ -928,6 +985,8 @@ const renderLaunchSummary = () => {
   $('runtime-summary').textContent = runtime.card
   $('ports-summary').textContent = ports.card
   $('ports-drawer-summary').textContent = ports.drawer
+  $('demo-safe-summary').textContent = demoSafe.card
+  $('demo-safe-drawer-summary').textContent = demoSafe.drawer
 }
 
 const renderControls = () => {
@@ -967,6 +1026,7 @@ const renderControls = () => {
 
   renderSwitchGroup('core-switch-grid', coreSwitchFields)
   renderSwitchGroup('diagnostic-switch-grid', diagnosticSwitchFields)
+  renderDemoSafeSettings()
 }
 
 const groupProfiles = (profiles) => {
@@ -1026,6 +1086,135 @@ const renderSwitchGroup = (elementId, fields) => {
     })
   })
 }
+
+const demoSafeAreaLabel = (area) => t(`demoSafe.${area}`) === `demoSafe.${area}`
+  ? labelFor(area)
+  : t(`demoSafe.${area}`)
+
+const readinessDisplayClass = (statusClass) =>
+  String(statusClass || 'not_checked_class').replace(/_/g, '-')
+
+const renderDemoSafeSettings = () => {
+  const container = $('demo-safe-settings-list')
+  const readiness = demoReadinessById()
+  const rows = demoSafeRows()
+  if (rows.length === 0) {
+    container.innerHTML = `<p class="demo-safe-empty">${escapeHtml(t('demoSafe.defaultOff'))}</p>`
+    return
+  }
+  container.innerHTML = rows
+    .map((row) => {
+      const status = readiness.get(row.id) || {}
+      const doesNotProve = (row.does_not_prove || []).join(', ')
+      const restoreDisabled = row.restore_supported ? '' : 'disabled'
+      return `
+        <section class="demo-safe-row" data-demo-safe-row="${escapeHtml(row.id)}">
+          <div class="demo-safe-row-header">
+            <span>${escapeHtml(demoSafeAreaLabel(row.area || 'general'))}</span>
+            <strong>${escapeHtml(row.label || row.id)}</strong>
+          </div>
+          <p>${escapeHtml(row.description || '')}</p>
+          <div class="demo-safe-controls">
+            <label class="demo-safe-toggle">
+              <input
+                type="checkbox"
+                data-demo-safe-id="${escapeHtml(row.id)}"
+                data-demo-safe-field="enabled"
+                ${row.enabled ? 'checked' : ''}
+              />
+              <span>${escapeHtml(t('demoSafe.enabled'))}</span>
+            </label>
+            <label class="demo-safe-toggle ${row.restore_supported ? '' : 'disabled'}">
+              <input
+                type="checkbox"
+                data-demo-safe-id="${escapeHtml(row.id)}"
+                data-demo-safe-field="restore_required"
+                ${row.restore_required ? 'checked' : ''}
+                ${restoreDisabled}
+              />
+              <span>${escapeHtml(row.restore_supported ? t('demoSafe.restoreRequired') : t('demoSafe.notApplicable'))}</span>
+            </label>
+            <label class="demo-safe-limit">
+              <span>${escapeHtml(t('demoSafe.maxActions'))}</span>
+              <input
+                type="number"
+                min="0"
+                max="25"
+                data-demo-safe-id="${escapeHtml(row.id)}"
+                data-demo-safe-field="max_action_count"
+                value="${Number(row.max_action_count) || 0}"
+              />
+            </label>
+            <label class="demo-safe-limit">
+              <span>${escapeHtml(t('demoSafe.maxDuration'))}</span>
+              <input
+                type="number"
+                min="0"
+                max="3600"
+                data-demo-safe-id="${escapeHtml(row.id)}"
+                data-demo-safe-field="max_duration_sec"
+                value="${Number(row.max_duration_sec) || 0}"
+              />
+            </label>
+          </div>
+          <div class="demo-safe-readiness ${escapeHtml(readinessDisplayClass(status.status_class))}">
+            <span>${escapeHtml(t('demoSafe.readiness'))}</span>
+            <strong>${escapeHtml(status.status_class || 'not_checked_class')}</strong>
+          </div>
+          <small class="demo-safe-proof">
+            ${escapeHtml(row.proof_ceiling || 'source_static_readiness')}
+            ${doesNotProve ? ` / ${escapeHtml(doesNotProve)}` : ''}
+          </small>
+        </section>
+      `
+    })
+    .join('')
+
+  container.querySelectorAll('[data-demo-safe-id]').forEach((input) => {
+    input.addEventListener('change', (event) => {
+      const element = event.target
+      const field = element.dataset.demoSafeField
+      const value = element.type === 'checkbox' ? element.checked : Number(element.value)
+      setDemoSafeField(element.dataset.demoSafeId, field, value)
+    })
+  })
+}
+
+const setDemoSafeField = (id, field, value) => {
+  const row = demoSafeRows().find((item) => item.id === id)
+  if (!row) {
+    return
+  }
+  if (field === 'enabled') {
+    row.enabled = Boolean(value)
+  } else if (field === 'restore_required') {
+    row.restore_required = row.restore_supported ? Boolean(value) : false
+  } else if (field === 'max_action_count') {
+    row.max_action_count = Math.max(0, Math.min(25, Number(value) || 0))
+  } else if (field === 'max_duration_sec') {
+    row.max_duration_sec = Math.max(0, Math.min(3600, Number(value) || 0))
+  }
+  const enabled = demoSafeRows().filter((item) => item.enabled)
+  state.demoSafeSettings.summary = {
+    ...(state.demoSafeSettings.summary || {}),
+    total: demoSafeRows().length,
+    enabled: enabled.length,
+    enabled_appliance: enabled.filter((item) => item.area === 'appliance').length,
+    enabled_readiness: enabled.filter((item) => item.area !== 'appliance').length
+  }
+  renderLaunchSummary()
+  renderDemoSafeSettings()
+}
+
+const currentDemoSafeSettings = () => ({
+  rows: demoSafeRows().map((row) => ({
+    id: row.id,
+    enabled: Boolean(row.enabled),
+    restore_required: Boolean(row.restore_required),
+    max_action_count: Number(row.max_action_count) || 0,
+    max_duration_sec: Number(row.max_duration_sec) || 0
+  }))
+})
 
 const labelFor = (value) =>
   localizedFieldLabel(value) ||
@@ -1559,6 +1748,11 @@ const refreshState = async () => {
   state.latestStatusTimestamp = payload.status?.timestamp || ''
   state.latestServices = payload.status?.services || {}
   state.latestEndpoints = payload.endpoints || []
+  state.demoSafeSettings = payload.demoSafeSettings || {
+    rows: [],
+    summary: { total: 0, enabled: 0, enabled_appliance: 0, enabled_readiness: 0 }
+  }
+  state.demoReadinessStatus = payload.demoReadinessStatus || { rows: [] }
   setCommandPreview(payload.preview?.commandLine || '')
   $('log-output').textContent = payload.logTail || t('status.noLog')
   renderControls()
@@ -1648,9 +1842,11 @@ const saveConfig = async () => {
       method: 'POST',
       body: JSON.stringify({
         profileId: state.selectedProfileId,
-        options: currentOptions()
+        options: currentOptions(),
+        demoSettings: currentDemoSafeSettings()
       })
     })
+    await refreshState()
     setSaveState('saveState.saved')
     window.setTimeout(() => {
       setSaveState('saveState.ready')

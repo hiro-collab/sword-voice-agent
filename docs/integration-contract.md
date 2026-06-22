@@ -25,6 +25,46 @@ start/status/stop scripts at another compatible state directory with
 `-StackStateDir <path>` or `HOME_CONTROL_STACK_STATE_DIR`. Relative paths are
 resolved from the workspace root. The default path remains unchanged.
 
+## Launcher API
+
+The local Launcher exposes operator configuration and readiness/status
+projections for the current workspace. These payloads are summary/status
+contracts only. They are not live command authority, not Home Assistant or Home
+Control proof execution, and not release/readiness/final-pass approval.
+
+`GET /api/state` includes:
+
+| Field | Meaning |
+|---|---|
+| `demoSafeSettings` | Effective `demo_safe_settings.v0` rows formed from tracked defaults plus local gitignored operator overrides. Rows carry setting fields such as `enabled`, `restore_required`, `max_action_count`, `max_duration_sec`, `proof_ceiling`, and `does_not_prove`. |
+| `demoReadinessStatus` | Read-only `demo_readiness_status.v0` rows derived from local service/status checks. Rows carry `status_class`, `source_class`, `proof_ceiling`, `does_not_prove`, and `last_checked_class`. |
+
+`POST /api/save-config` accepts the existing profile/options payload and may
+also include:
+
+```json
+{
+  "demoSettings": {
+    "rows": [
+      {
+        "id": "appliance.aircon_cool_restore",
+        "enabled": false,
+        "restore_required": true,
+        "max_action_count": 1,
+        "max_duration_sec": 120
+      }
+    ]
+  }
+}
+```
+
+The Launcher persists only normalized local override fields into its gitignored
+state directory. It ignores unknown demo row ids and re-normalizes values
+against tracked defaults. API consumers must treat `demoSafeSettings` as local
+operator preference/config and `demoReadinessStatus` as read-only status. Neither
+payload authorizes preview, dry-run, live execute, Home Assistant service calls,
+Home Control `/actions` execution, raw/private publication, or proof upgrade.
+
 ## Camera Hub
 
 | Item | Contract |

@@ -4,9 +4,11 @@ from unittest import TestCase
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PRODUCT_ROOT = ROOT.parents[1]
 PUBLIC = ROOT / "tools" / "home-control-launcher" / "public"
 LAUNCHER_SERVER = ROOT / "tools" / "home-control-launcher" / "server.js"
 LAUNCHER_PROFILES = ROOT / "tools" / "home-control-launcher" / "config" / "default-profiles.json"
+DEMO_SAFE_DEFAULTS = PRODUCT_ROOT / "manifests" / "demo-safe-settings" / "defaults.json"
 STACK_START_SCRIPT = ROOT / "ops" / "scripts" / "home-control-stack" / "start-home-control-stack.ps1"
 SYSTEM_SCRIPT = ROOT / "ops" / "scripts" / "system.ps1"
 THOUGHT_CORE_START_SCRIPT = ROOT / "scripts" / "start-thought-core.ps1"
@@ -23,6 +25,12 @@ def read_launcher_server() -> str:
 def read_launcher_profiles() -> list[dict]:
     payload = json.loads(LAUNCHER_PROFILES.read_text(encoding="utf-8"))
     assert isinstance(payload, list)
+    return payload
+
+
+def read_demo_safe_defaults() -> dict:
+    payload = json.loads(DEMO_SAFE_DEFAULTS.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
     return payload
 
 
@@ -63,6 +71,53 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("Start Stack starts enabled/expected services only.", html)
         self.assertIn('id="launch-scope-enabled"', html)
         self.assertIn('id="launch-scope-skipped"', html)
+
+    def test_launcher_exposes_demo_safe_settings_without_claiming_proof(self) -> None:
+        html = read_public("index.html")
+        app = read_public("app.js")
+        server = read_launcher_server()
+
+        self.assertIn('id="demo-safe-summary"', html)
+        self.assertIn('id="demo-safe-drawer-summary"', html)
+        self.assertIn('id="demo-safe-settings-list"', html)
+        self.assertIn("Demo settings", html)
+
+        self.assertIn("demoSafeSettings", app)
+        self.assertIn("demoReadinessStatus", app)
+        self.assertIn("const renderDemoSafeSettings", app)
+        self.assertIn("const currentDemoSafeSettings", app)
+        self.assertIn("max_duration_sec", app)
+        self.assertIn("does_not_prove", app)
+
+        self.assertIn("DEMO_SAFE_SETTINGS_FILE", server)
+        self.assertIn("effectiveDemoSafeSettings", server)
+        self.assertIn("demoReadinessStatus", server)
+        self.assertIn("launcher_state_dir_gitignored_demo_settings_json", server)
+
+    def test_demo_safe_defaults_start_disabled_and_separate_readiness(self) -> None:
+        defaults = read_demo_safe_defaults()
+        rows = defaults["rows"]
+        row_ids = {row["id"] for row in rows}
+
+        self.assertEqual(defaults["schema_version"], "demo_safe_settings.v0")
+        self.assertFalse(defaults["fresh_clone_default_enabled"])
+        self.assertTrue(rows)
+        self.assertTrue(all(row["enabled"] is False for row in rows))
+
+        self.assertIn("appliance.aircon_cool_restore", row_ids)
+        self.assertIn("audio.voicevox_local_speech", row_ids)
+        self.assertIn("audio.browser_or_pc_output_awareness", row_ids)
+        self.assertIn("avatar.aituber_projection_surface", row_ids)
+        self.assertIn("avatar.expression_or_motion_request", row_ids)
+        self.assertIn("display.projection_visual_mode", row_ids)
+        self.assertIn("display.self_mirror_visible_motion", row_ids)
+
+        for row in rows:
+            self.assertIn("restore_required", row)
+            self.assertIn("max_action_count", row)
+            self.assertIn("max_duration_sec", row)
+            self.assertIn("proof_ceiling", row)
+            self.assertIn("does_not_prove", row)
 
     def test_launcher_first_view_keeps_quick_links_and_density_hooks(self) -> None:
         html = read_public("index.html")
