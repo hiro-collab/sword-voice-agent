@@ -12,7 +12,7 @@
 | `organs/reflex/mediapipe-sword-sign` | `https://github.com/hiro-collab/mediapipe-sword-sign.git` | Camera Hub / gesture topics |
 | `organs/expression/tts-service` | `https://github.com/hiro-collab/tts-service.git` | Local TTS HTTP source |
 | `organs/expression/avatar-service` | `https://github.com/hiro-collab/avatar-service.git` | Standalone VRM avatar runtime |
-| `organs/environment/environment-state-server` | `https://github.com/hiro-collab/environment-state-server.git` | Environment snapshot API for Dify and displays |
+| `organs/environment/environment-state-server` | `https://github.com/hiro-collab/environment-state-server.git` | Environment snapshot API for Thought Core and displays |
 | `organs/environment/vision-snapshot-processor` | local/Git-managed module | Low-frequency vision snapshot input |
 | `organs/action/home-assistant-server` | `https://github.com/hiro-collab/home-assistant-server.git` | Home Assistant safety bridge |
 | `organs/expression/aituber-kit` | `https://github.com/hiro-collab/aituber-kit-sword.git` | Local fork of official AITuber Kit; keep `origin` for upstream if needed |
@@ -27,7 +27,6 @@ Do not commit these files or directories:
 
 - `.env` and `.env.*`
 - `organs\action\home-assistant-server\config\home-control.yaml`
-- Dify Studio app `ENV` values
 - API keys, Home Assistant tokens, local auth tokens, or credentials
 - `organs\expression\aituber-kit\public\scripts\live2dcubismcore.min.js`
 - custom or redistribution-sensitive VRM files, including `organs\expression\aituber-kit\public\vrm\Nutachisan.vrm` and `organs\reflex\mediapipe-sword-sign\.vrm\`

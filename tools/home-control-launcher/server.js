@@ -124,25 +124,21 @@ const DEFAULT_OPTIONS = {
   AituberPort: 3000,
   TouchDesignerGuiHost: '127.0.0.1',
   TouchDesignerGuiPort: 8788,
-  DifyPort: 8080,
   ThoughtCoreHost: '127.0.0.1',
   ThoughtCorePort: 18787,
   VoicevoxUrl: '',
-  DifyDockerRoot: '',
   HomeControlConfigPath: '',
   MediapipeMode: 'mediamtx',
   MediapipeCameraName: 'HD Pro Webcam C920',
   MediapipeOpenBrowser: false,
   MediapipeNoBrowser: true,
   MediapipePythonGui: false,
-  SkipDify: false,
   SkipVoicevoxCheck: false,
   SkipHomeAssistantBridge: false,
   SkipEnvironmentState: false,
   SkipMediapipe: false,
   SkipVisionSnapshotProcessor: false,
   SkipAituber: false,
-  SkipDifyWatch: false,
   SkipTouchDesignerGui: false,
   EnableThoughtCore: false,
   EnableThoughtCoreWatch: false,
@@ -153,8 +149,6 @@ const DEFAULT_OPTIONS = {
 }
 
 const OPS_PROFILE_BY_LAUNCHER_PROFILE = {
-  'full-stack': 'full-local',
-  'dify-external': 'full-local',
   'no-touchdesigner': 'thought-core-v0',
   'thought-core-v0': 'thought-core-v0',
   'thought-core-experimental': 'thought-core-experimental',
@@ -173,7 +167,6 @@ const NUMBER_FIELDS = new Set([
   'VisionSnapshotProcessorPort',
   'AituberPort',
   'TouchDesignerGuiPort',
-  'DifyPort',
   'ThoughtCorePort'
 ])
 
@@ -183,7 +176,6 @@ const STRING_FIELDS = new Set([
   'TouchDesignerGuiHost',
   'ThoughtCoreHost',
   'VoicevoxUrl',
-  'DifyDockerRoot',
   'HomeControlConfigPath',
   'MediapipeMode',
   'MediapipeCameraName'
@@ -560,7 +552,6 @@ const buildSystemStartArgs = (profileId, options) => {
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'AituberPort', options.AituberPort)
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'TouchDesignerGuiHost', options.TouchDesignerGuiHost)
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'TouchDesignerGuiPort', options.TouchDesignerGuiPort)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'DifyPort', options.DifyPort)
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'ThoughtCoreHost', options.ThoughtCoreHost)
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'ThoughtCorePort', options.ThoughtCorePort)
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeMode', options.MediapipeMode)
@@ -568,9 +559,6 @@ const buildSystemStartArgs = (profileId, options) => {
 
   if (options.VoicevoxUrl) {
     addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'VoicevoxUrl', options.VoicevoxUrl)
-  }
-  if (options.DifyDockerRoot) {
-    addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'DifyDockerRoot', options.DifyDockerRoot)
   }
   if (options.HomeControlConfigPath) {
     addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'HomeControlConfigPath', options.HomeControlConfigPath)
@@ -829,9 +817,6 @@ const stopStack = async (body) => {
   }
   const options = normalizeOptions(profileId, config.options || {})
   const scriptArgs = ['stop', '-Profile', opsProfileFor(profileId), '-Force']
-  if (body && body.stopDify) {
-    scriptArgs.push('-StopDify')
-  }
   const beforeStopVerification = await collectStackStopVerification(options)
   const result = await runScriptAndCollect(SYSTEM_SCRIPT, scriptArgs, 45000)
   const stopVerification = await waitForStackStopVerification(options)
@@ -1473,12 +1458,6 @@ const getEndpoints = (options) => {
     },
     {
       group: 'Open in browser',
-      name: 'Compatibility workflow UI',
-      url: `http://127.0.0.1:${options.DifyPort}`,
-      enabled: !options.SkipDify
-    },
-    {
-      group: 'Open in browser',
       name: 'Thought Core API index',
       url: thoughtCoreUrl,
       enabled: options.EnableThoughtCore
@@ -1539,12 +1518,6 @@ const getEndpoints = (options) => {
       name: 'Thought Core health',
       url: `${thoughtCoreUrl}/health`,
       enabled: options.EnableThoughtCore
-    },
-    {
-      group: 'Background links',
-      name: 'Compatibility watcher',
-      url: 'no browser URL',
-      enabled: !options.SkipDifyWatch
     },
     {
       group: 'Background links',

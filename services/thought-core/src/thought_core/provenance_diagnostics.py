@@ -69,9 +69,7 @@ def build_child_provenance_diagnostics(
         ),
         "provider_config_presence_class": provider_presence,
         "provider_config_key_classes": provider_classes,
-        "direct_dify_exclusion_class": (
-            "thought_core_child_current_route_does_not_use_direct_dify"
-        ),
+        "external_provider_route_class": "thought_core_child_route",
         "stale_or_reused_process_class": "running_child_identity_observed_by_endpoint",
         "imported_input_understanding_hash_class": module_hash_class(
             "thought_core.input_understanding"

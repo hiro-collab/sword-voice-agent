@@ -54,16 +54,9 @@ class OpsManifestTest(TestCase):
     def test_profile_service_sets_match_current_lifecycle_modes(self) -> None:
         profiles = _load_profile_manifests()
 
-        full_local = set(profiles["full-local"]["services"])
-        self.assertIn("dify_stack", full_local)
-        self.assertIn("dify_watcher", full_local)
-        self.assertNotIn("thought_core_api", full_local)
-
         thought_core = _resolve_profile_services("thought-core-v0", profiles)
         self.assertIn("thought_core_api", thought_core)
         self.assertIn("thought_core_watcher", thought_core)
-        self.assertNotIn("dify_stack", thought_core)
-        self.assertNotIn("dify_watcher", thought_core)
         self.assertEqual(
             _resolve_profile_services("thought-core-experimental", profiles),
             thought_core,

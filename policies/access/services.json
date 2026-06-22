@@ -7,18 +7,6 @@
       "capabilities": ["state.read", "state.write.own", "events.append", "expression.emit", "runtime.status.write", "config.read"],
       "denied": ["home.execute.low_risk", "memory.write.confirmed", "secrets.use.adapter"]
     },
-    "dify_stack": {
-      "identity": "svc.dify",
-      "layer": "adapter",
-      "capabilities": ["events.append", "config.read", "secrets.use.adapter"],
-      "denied": ["memory.write.confirmed"]
-    },
-    "dify_watcher": {
-      "identity": "svc.dify-adapter",
-      "layer": "adapter",
-      "capabilities": ["state.read", "events.append", "environment.observe", "home.preview", "home.execute.low_risk", "expression.emit", "runtime.status.write", "config.read", "secrets.use.adapter"],
-      "denied": ["memory.write.confirmed"]
-    },
     "environment_state_server": {
       "identity": "svc.environment-server",
       "layer": "environment",

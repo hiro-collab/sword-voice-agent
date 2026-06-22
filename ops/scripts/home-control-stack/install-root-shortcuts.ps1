@@ -106,7 +106,6 @@ exit 0
 
 $requiredScripts = @(
     (Join-Path $opsScriptRoot "system.ps1"),
-    (Join-Path $managedScriptRoot "run-home-control-fault-e2e.ps1"),
     (Join-Path $managedScriptRoot "start-home-control-launcher.ps1"),
     (Join-Path $managedScriptRoot "stop-home-control-launcher.ps1")
 )
@@ -121,7 +120,6 @@ $rootPowerShellShortcuts = @(
     @{ Name = "start-home-control-stack.ps1"; Kind = "system"; Command = "start" },
     @{ Name = "status-home-control-stack.ps1"; Kind = "system"; Command = "status" },
     @{ Name = "stop-home-control-stack.ps1"; Kind = "system"; Command = "stop" },
-    @{ Name = "run-home-control-fault-e2e.ps1"; Kind = "ops"; ScriptName = "run-home-control-fault-e2e.ps1" },
     @{ Name = "start-home-control-launcher.ps1"; Kind = "ops"; ScriptName = "start-home-control-launcher.ps1" },
     @{ Name = "stop-home-control-launcher.ps1"; Kind = "ops"; ScriptName = "stop-home-control-launcher.ps1" }
 )

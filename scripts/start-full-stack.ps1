@@ -4,23 +4,19 @@ param(
     [switch]$SuppressProtobufWarnings,
     [switch]$SkipAiTalkCore,
     [switch]$SkipMediapipe,
-    [switch]$SkipDifyWatch,
+    [switch]$SkipThoughtCore,
+    [switch]$SkipThoughtCoreWatch,
     [switch]$SkipConsole,
     [switch]$EnableTts,
     [switch]$DisableTts,
     [switch]$EnableAvatar,
     [switch]$DisableAvatar,
-    [switch]$SkipDockerCheck,
-    [switch]$NoStartDockerDesktop,
-    [int]$DockerWaitSeconds = 120,
-    [int]$DifyWaitSeconds = 90,
     [switch]$NoAiTalkCoreIntegrationDefaults,
     [switch]$NoRecordGateAuto,
     [switch]$NoSaveHandoff,
-    [switch]$NoSkipShortAscii,
-    [int]$ShortAsciiMaxChars = 16,
-    [ValidateSet("blocking", "streaming")]
-    [string]$DifyResponseMode = "streaming",
+    [string]$ThoughtCoreHost = "127.0.0.1",
+    [int]$ThoughtCorePort = 18787,
+    [string]$ThoughtCoreBaseUrl = "",
     [string]$GestureMinConfidence = "",
     [string]$GestureActivationDelay = "",
     [string]$GestureReleaseDelay = "",
@@ -76,13 +72,16 @@ if ($ttsEnabled) {
 if ($avatarEnabled) {
     Assert-EnvPath -Name "AVATAR_SERVICE_ROOT" | Out-Null
 }
-$difyBaseUrl = ""
-if (-not $SkipDifyWatch) {
-    $difyBaseUrl = Assert-EnvValue -Name "DIFY_BASE_URL"
-    Assert-EnvValue -Name "DIFY_API_KEY" | Out-Null
-}
 
 $shell = (Get-Process -Id $PID).Path
+
+if ([string]::IsNullOrWhiteSpace($ThoughtCoreBaseUrl)) {
+    $ThoughtCoreBaseUrl = [Environment]::GetEnvironmentVariable("THOUGHT_CORE_BASE_URL", "Process")
+}
+if ([string]::IsNullOrWhiteSpace($ThoughtCoreBaseUrl)) {
+    $thoughtCoreClientHost = if ($ThoughtCoreHost -eq "0.0.0.0") { "127.0.0.1" } else { $ThoughtCoreHost }
+    $ThoughtCoreBaseUrl = "http://${thoughtCoreClientHost}:$ThoughtCorePort"
+}
 
 if ([string]::IsNullOrWhiteSpace($TtsVolumeUrl)) {
     $TtsVolumeUrl = [Environment]::GetEnvironmentVariable("TTS_VOLUME_URL", "Process")
@@ -128,6 +127,9 @@ if (-not $DryRun) {
     if (-not $SkipMediapipe) {
         $tcpPorts += [int]$MediapipeControlHttpPort
     }
+    if (-not $SkipThoughtCore) {
+        $tcpPorts += [int]$ThoughtCorePort
+    }
     if (-not $SkipConsole) {
         $tcpPorts += 8790
     }
@@ -142,28 +144,6 @@ if (-not $DryRun) {
 if ($DryRun) {
     Write-Host "[dry-run] no PowerShell windows will be opened"
     Write-Host "Run again without -DryRun to start the stack."
-    if (-not $SkipDifyWatch -and -not $SkipDockerCheck -and (Test-SwordLoopbackUrl -Url $difyBaseUrl)) {
-        Write-Host "[dry-run] Docker Desktop and Dify API will be checked before starting Dify watcher."
-    }
-}
-elseif (-not $SkipDifyWatch -and -not $SkipDockerCheck -and (Test-SwordLoopbackUrl -Url $difyBaseUrl)) {
-    if (-not (Test-SwordHttpReachable -Url $difyBaseUrl)) {
-        Ensure-SwordDockerDesktop `
-            -WaitSeconds $DockerWaitSeconds `
-            -NoStart:$NoStartDockerDesktop
-        if (-not (Wait-SwordHttpReachable `
-            -Url $difyBaseUrl `
-            -WaitSeconds $DifyWaitSeconds `
-            -Label "Dify API")) {
-            throw (
-                "Dify API is not reachable at $difyBaseUrl. " +
-                "Docker Desktop may be running, but Dify containers are not ready."
-            )
-        }
-    }
-    else {
-        Write-Host "Dify API is reachable: $difyBaseUrl"
-    }
 }
 
 function Start-SwordWindow {
@@ -334,27 +314,33 @@ if ($ttsEnabled -and $TtsSource -eq "http") {
     Start-TtsServiceWindow
 }
 
-if (-not $SkipDifyWatch) {
-    $difyWatchArgs = @("-ResponseMode", $DifyResponseMode)
+if (-not $SkipThoughtCore) {
+    Start-SwordWindow `
+        -Title "thought_core_api" `
+        -ScriptName "start-thought-core.ps1" `
+        -ExtraArgs @(
+            "-HostName",
+            $ThoughtCoreHost,
+            "-Port",
+            [string]$ThoughtCorePort
+        )
+}
+
+if (-not $SkipThoughtCoreWatch) {
+    $thoughtCoreWatchArgs = @("-ThoughtCoreBaseUrl", $ThoughtCoreBaseUrl)
     if ($ttsEnabled -and $TtsSource -eq "http") {
         $ttsChunkUrl = "http://${TtsHttpHost}:$TtsHttpPort/api/tts/chunk"
-        $difyWatchArgs += @(
+        $thoughtCoreWatchArgs += @(
             "-TtsChunkUrl",
             $ttsChunkUrl,
             "-TtsHttpTimeout",
             $TtsHttpTimeout
         )
     }
-    if ($NoSkipShortAscii) {
-        $difyWatchArgs += "-NoSkipShortAscii"
-    }
-    else {
-        $difyWatchArgs += @("-ShortAsciiMaxChars", [string]$ShortAsciiMaxChars)
-    }
     Start-SwordWindow `
-        -Title "dify_watch" `
-        -ScriptName "start-dify-watch.ps1" `
-        -ExtraArgs $difyWatchArgs
+        -Title "thought_core_watcher" `
+        -ScriptName "start-thought-core-watch.ps1" `
+        -ExtraArgs $thoughtCoreWatchArgs
 }
 
 if ($ttsEnabled -and $TtsSource -ne "http") {
@@ -384,6 +370,9 @@ if (-not $SkipConsole) {
     }
     if ($ttsEnabled -and -not [string]::IsNullOrWhiteSpace($TtsVolumePreviewUrl)) {
         $consoleArgs += @("-TtsVolumePreviewUrl", $TtsVolumePreviewUrl)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ThoughtCoreBaseUrl)) {
+        $consoleArgs += @("-ThoughtCoreBaseUrl", $ThoughtCoreBaseUrl)
     }
     Start-SwordWindow `
         -Title "console" `

@@ -23,9 +23,7 @@ EXPECTED_MODULES = (
     ("ai_talk_core", "ai_talk_core Web UI"),
     ("gesture_udp_receiver", "Gesture UDP receiver"),
     ("mediapipe_udp_publisher", "MediaPipe UDP publisher"),
-    ("dify_api", "Legacy compatibility API"),
     ("thought_core_api", "thought-core API"),
-    ("dify_watcher", "Legacy compatibility watcher"),
     ("thought_core_watcher", "thought-core watcher"),
     ("tts_service", "TTS service"),
     ("avatar_service", "Avatar service"),
@@ -47,8 +45,6 @@ class ConsoleStatusConfig:
     input_gate_url: str | None = None
     input_gate_token: str | None = None
     input_gate_timeout_s: float = 1.5
-    dify_base_url: str | None = None
-    dify_timeout_s: float = 1.5
     thought_core_base_url: str | None = None
     thought_core_timeout_s: float = 1.5
     avatar_url: str | None = None
@@ -64,12 +60,6 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
     status_store = StatusStore(config.status_dir) if config.status_dir else None
     handoff_json = read_json_file(get_handoff_json_path(config.ai_talk_core_root, config.source))
     handoff_text = read_text_file(get_handoff_text_path(config.ai_talk_core_root, config.source))
-    dify_json = read_json_file(cache_dir / f"{config.source}_dify_latest.json")
-    store_dify_json = (
-        read_json_file(status_store.latest_dify_response_path)
-        if status_store is not None
-        else empty_file_state()
-    )
     store_thought_core_json = (
         read_json_file(status_store.latest_thought_core_response_path)
         if status_store is not None
@@ -80,20 +70,13 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
         if status_store is not None
         else empty_file_state()
     )
-    if store_dify_json["exists"] and not store_dify_json.get("error"):
-        dify_json = store_dify_json
-    dify_text = read_text_file(cache_dir / f"{config.source}_dify_latest.txt")
     tts_json = (
         read_json_file(config.tts_status_dir / "latest_tts_state.json")
         if config.tts_status_dir is not None
         else empty_file_state()
     )
     tts_volume_json = read_tts_volume_state(config)
-    conversation_id = read_text_file(
-        cache_dir / f"{config.source}_dify_conversation_id.txt"
-    )
     input_gate = fetch_input_gate(config)
-    dify_api = fetch_dify_api(config)
     thought_core_api = fetch_thought_core_api(config)
     avatar = fetch_avatar_service(config)
     store_gesture = (
@@ -140,12 +123,10 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
         },
         "health": {
             "handoff": handoff_json["exists"] and not handoff_json.get("error"),
-            "dify": dify_json["exists"] and not dify_json.get("error"),
             "thought_core": (
                 store_thought_core_json["exists"]
                 and not store_thought_core_json.get("error")
             ),
-            "dify_api": dify_api["available"],
             "thought_core_api": thought_core_api["available"],
             "gesture": gesture["exists"] and not gesture.get("error"),
             "input_gate": None if not config.input_gate_url else input_gate["available"],
@@ -159,7 +140,6 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
             handoff_text,
             store_voice_turn_json,
         ),
-        "dify": normalize_dify_status(dify_json, dify_text, conversation_id),
         "thought_core": normalize_thought_core_status(store_thought_core_json),
         "tts": normalize_tts_status(
             tts_json,
@@ -169,13 +149,11 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
             volume_preview_url=config.tts_volume_preview_url,
         ),
         "avatar": avatar,
-        "dify_api": dify_api,
         "thought_core_api": thought_core_api,
         "input_gate": input_gate,
         "modules": normalize_module_statuses(
             module_statuses,
             input_gate=input_gate,
-            dify_api=dify_api,
             thought_core_api=thought_core_api,
             avatar=avatar,
             timestamp=timestamp,
@@ -186,13 +164,9 @@ def build_console_status(config: ConsoleStatusConfig) -> dict[str, Any]:
         "files": {
             "handoff_json": strip_payload(handoff_json),
             "handoff_text": strip_payload(handoff_text),
-            "dify_json": strip_payload(dify_json),
-            "dify_text": strip_payload(dify_text),
-            "conversation_id": strip_payload(conversation_id),
             "tts_json": strip_payload(tts_json),
             "tts_volume_json": strip_payload(tts_volume_json),
             "gesture_json": strip_payload(gesture),
-            "status_dify_json": strip_payload(store_dify_json),
             "status_thought_core_json": strip_payload(store_thought_core_json),
             "status_gesture_json": strip_payload(store_gesture),
             "status_gesture_diagnostic_json": strip_payload(store_gesture_diagnostic),
@@ -217,10 +191,6 @@ def redact_console_status(status: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("transcript", "command", "turn_id", "prompt_text"):
         voice[key] = _redact_scalar(voice.get(key))
 
-    dify = _mapping_mutable(redacted.get("dify"))
-    for key in ("request_text", "turn_id", "answer", "conversation_id", "message_id"):
-        dify[key] = _redact_scalar(dify.get(key))
-
     thought_core = _mapping_mutable(redacted.get("thought_core"))
     for key in ("request_text", "turn_id", "answer"):
         thought_core[key] = _redact_scalar(thought_core.get(key))
@@ -241,9 +211,6 @@ def redact_console_status(status: Mapping[str, Any]) -> dict[str, Any]:
 
     input_gate = _mapping_mutable(redacted.get("input_gate"))
     input_gate["url"] = _redact_scalar(input_gate.get("url"))
-
-    dify_api = _mapping_mutable(redacted.get("dify_api"))
-    dify_api["url"] = _redact_scalar(dify_api.get("url"))
 
     thought_core_api = _mapping_mutable(redacted.get("thought_core_api"))
     thought_core_api["url"] = _redact_scalar(thought_core_api.get("url"))
@@ -345,19 +312,7 @@ def redact_event(event: Mapping[str, Any]) -> dict[str, Any]:
     item["turn_id"] = _redact_scalar(item.get("turn_id"))
     data = mapping(item.get("payload") or item.get("data"))
     redacted_payload: dict[str, Any] = {"redacted": True}
-    if item.get("type") == "dify.response":
-        redacted_payload.update(
-            {
-                "request_text": _redact_scalar(data.get("request_text")),
-                "response_text": _redact_scalar(data.get("response_text")),
-                "conversation_id": _redact_scalar(data.get("conversation_id")),
-                "conversation_id_present": data.get("conversation_id_present"),
-                "message_id": _redact_scalar(data.get("message_id")),
-                "skipped": data.get("skipped", False),
-                "skip_reason": data.get("skip_reason"),
-            }
-        )
-    elif item.get("type") == "thought_core.response":
+    if item.get("type") == "thought_core.response":
         redacted_payload.update(
             {
                 "request_text": _redact_scalar(data.get("request_text")),
@@ -429,7 +384,6 @@ def normalize_module_statuses(
     statuses: Mapping[str, Mapping[str, Any]],
     *,
     input_gate: Mapping[str, Any],
-    dify_api: Mapping[str, Any] | None = None,
     thought_core_api: Mapping[str, Any] | None = None,
     avatar: Mapping[str, Any] | None = None,
     timestamp: float,
@@ -449,18 +403,6 @@ def normalize_module_statuses(
             updated_at = timestamp
             age = 0.0
             detail = detail or "input gate API reachable"
-        elif name == "dify_api" and dify_api is not None:
-            if dify_api.get("available"):
-                state = "running"
-                updated_at = timestamp
-                age = 0.0
-                detail = str(dify_api.get("url") or detail or "reachable")
-            elif dify_api.get("url"):
-                state = "error"
-                updated_at = timestamp
-                age = 0.0
-                error_text = str(dify_api.get("error") or "not reachable")
-                detail = f"{dify_api.get('url')} / {error_text}"
         elif name == "thought_core_api" and thought_core_api is not None:
             if thought_core_api.get("available"):
                 state = "running"
@@ -667,43 +609,6 @@ def normalize_voice_status(
     }
 
 
-def normalize_dify_status(
-    dify_json: Mapping[str, Any],
-    dify_text: Mapping[str, Any],
-    conversation_id: Mapping[str, Any],
-) -> dict[str, Any]:
-    payload = mapping(dify_json.get("payload"))
-    request_payload = mapping(payload.get("request"))
-    request_context = mapping(request_payload.get("context"))
-    response = mapping(payload.get("response"))
-    raw = mapping(response.get("raw"))
-    metadata = mapping(raw.get("metadata"))
-    usage = mapping(metadata.get("usage"))
-    streaming = mapping(raw.get("_streaming"))
-    return {
-        "available": bool(dify_json.get("exists")) and not dify_json.get("error"),
-        "updated_at": dify_json.get("mtime"),
-        "skipped": bool(payload.get("skipped", False)),
-        "skip_reason": payload.get("skip_reason"),
-        "request_text": str(request_payload.get("text", "")),
-        "turn_id": str(payload.get("turn_id") or request_context.get("turn_id") or ""),
-        "answer": str(response.get("text") or dify_text.get("text") or ""),
-        "conversation_id": str(
-            response.get("conversation_id") or conversation_id.get("text") or ""
-        ).strip(),
-        "message_id": str(response.get("message_id", "")),
-        "usage": {
-            "prompt_tokens": usage.get("prompt_tokens"),
-            "completion_tokens": usage.get("completion_tokens"),
-            "total_tokens": usage.get("total_tokens"),
-            "total_price": usage.get("total_price"),
-            "currency": usage.get("currency"),
-            "latency": usage.get("latency") or streaming.get("completed_elapsed_s"),
-            "first_token_latency": streaming.get("first_token_elapsed_s"),
-        },
-    }
-
-
 def normalize_thought_core_status(
     thought_core_json: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -907,14 +812,6 @@ def fetch_input_gate(config: ConsoleStatusConfig) -> dict[str, Any]:
         "error": None,
         "payload": payload if isinstance(payload, Mapping) else None,
     }
-
-
-def fetch_dify_api(config: ConsoleStatusConfig) -> dict[str, Any]:
-    return fetch_http_reachability(
-        config.dify_base_url,
-        timeout_s=config.dify_timeout_s,
-        label="DIFY_BASE_URL",
-    )
 
 
 def fetch_thought_core_api(config: ConsoleStatusConfig) -> dict[str, Any]:

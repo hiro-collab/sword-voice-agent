@@ -775,6 +775,14 @@ def _looks_like_action_only_request(normalized: str) -> bool:
             "閉めて",
             "止めて",
             "戻して",
+            "動かして",
+            "動かす",
+            "始めて",
+            "始める",
+            "スタートして",
+            "スタート",
+            "起動して",
+            "起動する",
         )
     )
 
@@ -785,7 +793,14 @@ def _has_question_or_check_cue(normalized: str) -> bool:
         for marker in (
             "?",
             "？",
-            "か",
+            "ですか",
+            "ますか",
+            "かな",
+            "か確認",
+            "か見て",
+            "か教えて",
+            "か分か",
+            "かどう",
             "確認",
             "状態",
             "どう",
@@ -795,6 +810,11 @@ def _has_question_or_check_cue(normalized: str) -> bool:
             "消えている",
             "入ってる",
             "入っている",
+            "オンか",
+            "オフか",
+            "動いてる",
+            "動いている",
+            "止まって",
         )
     )
 

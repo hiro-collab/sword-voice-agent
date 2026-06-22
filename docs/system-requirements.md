@@ -4,7 +4,7 @@
 
 Sword Agent System は、ジェスチャー、音声入力、環境認識、家電操作、読み上げ、アバター表示、TouchDesigner投影をローカル環境でつなぐ AI身体OS です。
 
-現在の主経路は `thought-core-v0` です。Dify は過去ワークフローとの互換・比較検証用として残します。
+現在の主経路は `thought-core-v0` です。
 
 ## 成功条件
 
@@ -47,7 +47,7 @@ Sword Agent System は、ジェスチャー、音声入力、環境認識、家�
 - MediaPipe sword sign model。
 - Chrome のマイク権限。
 - Webカメラとマイク。
-- 必要に応じて TouchDesigner、VOICEVOX、Dify。
+- 必要に応じて TouchDesigner、VOICEVOX。
 
 ## 基本ユーザーフロー
 

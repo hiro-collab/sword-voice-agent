@@ -34,35 +34,6 @@ class StatusStoreTest(TestCase):
 
             self.assertEqual(len(store.read_events()), 1)
 
-    def test_writes_dify_response_event(self) -> None:
-        with workspace_tempdir() as tmp:
-            store = StatusStore(tmp)
-            store.write_latest_dify_response(
-                {
-                    "request": {
-                        "text": "今日はいい天気ですね",
-                        "context": {"turn_id": "turn-1"},
-                    },
-                    "response": {
-                        "text": "はい、いい天気ですね。",
-                        "conversation_id": "conv-1",
-                        "message_id": "msg-1",
-                    },
-                    "skipped": False,
-                }
-            )
-
-            events = store.read_events()
-            self.assertEqual(events[0]["type"], "dify.response")
-            self.assertEqual(events[0]["turn_id"], "turn-1")
-            self.assertTrue(events[0]["event_id"])
-            self.assertEqual(events[0]["payload"]["request_text"], "[redacted]")
-            self.assertEqual(events[0]["payload"]["response_text"], "[redacted]")
-            self.assertEqual(events[0]["payload"]["conversation_id"], "[redacted]")
-            self.assertTrue(events[0]["payload"]["conversation_id_present"])
-            self.assertEqual(events[0]["payload"]["message_id"], "[redacted]")
-            self.assertTrue(events[0]["payload"]["message_id_present"])
-
     def test_writes_gesture_diagnostic_event(self) -> None:
         with workspace_tempdir() as tmp:
             store = StatusStore(tmp)
@@ -91,25 +62,6 @@ class StatusStoreTest(TestCase):
             self.assertEqual(events[0]["type"], "gesture.diagnostic")
             self.assertEqual(events[0]["payload"]["diagnostic_type"], "gesture_status")
             self.assertEqual(events[0]["payload"]["fps"], 30.0)
-
-    def test_writes_dify_response_event_with_explicit_turn_id(self) -> None:
-        with workspace_tempdir() as tmp:
-            store = StatusStore(tmp)
-            store.write_latest_dify_response(
-                {
-                    "request": {"text": "今日はいい天気ですね", "context": {}},
-                    "response": {"text": "はい。"},
-                    "skipped": False,
-                },
-                turn_id="turn-from-latest-file",
-            )
-
-            latest = json.loads(
-                store.latest_dify_response_path.read_text(encoding="utf-8")
-            )
-            events = store.read_events()
-            self.assertEqual(latest["turn_id"], "turn-from-latest-file")
-            self.assertEqual(events[0]["turn_id"], "turn-from-latest-file")
 
     def test_writes_thought_core_response_event(self) -> None:
         with workspace_tempdir() as tmp:
@@ -185,9 +137,10 @@ class StatusStoreTest(TestCase):
         with workspace_tempdir() as tmp:
             store = StatusStore(tmp)
             store.write_latest_gesture(gesture_payload("start_recording"))
-            store.write_latest_dify_response(
+            store.write_latest_thought_core_response(
                 {
                     "request": {"text": "request"},
+                    "turn_payload": {"text": "request", "turn_id": "turn-1"},
                     "response": {"text": "response"},
                     "skipped": False,
                 }
@@ -204,7 +157,6 @@ class StatusStoreTest(TestCase):
             self.assertFalse(store.latest_gesture_path.exists())
             self.assertFalse(store.latest_gesture_diagnostic_path.exists())
             self.assertFalse(store.latest_voice_turn_path.exists())
-            self.assertFalse(store.latest_dify_response_path.exists())
             self.assertFalse(store.latest_thought_core_response_path.exists())
             self.assertFalse(store.events_path.exists())
             self.assertFalse(store.conversation_log_path.exists())
@@ -227,18 +179,18 @@ class StatusStoreTest(TestCase):
             store = StatusStore(tmp)
 
             store.write_module_status(
-                "dify_watcher",
+                "thought_core_watcher",
                 "running",
-                label="Dify watcher",
+                label="thought-core watcher",
                 detail="source=web",
                 timestamp=10.0,
             )
 
             statuses = store.read_module_statuses()
-            self.assertEqual(statuses["dify_watcher"]["state"], "running")
-            self.assertEqual(statuses["dify_watcher"]["label"], "Dify watcher")
-            self.assertEqual(statuses["dify_watcher"]["detail"], "source=web")
-            self.assertEqual(statuses["dify_watcher"]["timestamp"], 10.0)
+            self.assertEqual(statuses["thought_core_watcher"]["state"], "running")
+            self.assertEqual(statuses["thought_core_watcher"]["label"], "thought-core watcher")
+            self.assertEqual(statuses["thought_core_watcher"]["detail"], "source=web")
+            self.assertEqual(statuses["thought_core_watcher"]["timestamp"], 10.0)
 
 
 def gesture_payload(

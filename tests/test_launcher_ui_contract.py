@@ -105,23 +105,13 @@ class LauncherUiContractTest(TestCase):
         self.assertNotIn("Disable expression UI", app)
         self.assertNotIn("Disable action bridge", app)
 
-    def test_launcher_review_ui_hides_dify_compatibility_controls(self) -> None:
+    def test_launcher_review_ui_has_no_legacy_compatibility_controls(self) -> None:
         html = read_public("index.html")
         app = read_public("app.js")
 
-        self.assertNotIn("Dify compatibility runtime", html)
-        self.assertNotIn("Dify compatibility port", html)
-        self.assertNotIn("Dify compatibility runtime root", html)
         self.assertNotIn("compatibility-switch-grid", html)
         self.assertNotIn("runtime-drawer-summary", html)
-        self.assertNotIn('id="DifyPort"', html)
-        self.assertNotIn('id="DifyDockerRoot"', html)
-        self.assertNotIn("Start local Dify compatibility runtime", app)
-        self.assertNotIn("Run Dify compatibility watcher", app)
-        self.assertNotIn("Dify compatibility skipped", app)
         self.assertNotIn("renderSwitchGroup('compatibility-switch-grid'", app)
-        self.assertNotIn("'DifyPort',", app)
-        self.assertNotIn("'DifyDockerRoot',", app)
         self.assertNotIn("Legacy paths active", app)
         self.assertNotIn("Legacy paths off", app)
 
@@ -154,7 +144,7 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("'command.title': '起動コマンド確認'", app)
         self.assertIn("'log.title': 'ランチャー記録'", app)
 
-    def test_launcher_language_mode_preserves_technical_values_and_dify_cleanup(self) -> None:
+    def test_launcher_language_mode_preserves_technical_values(self) -> None:
         html = read_public("index.html")
         app = read_public("app.js")
 
@@ -163,10 +153,6 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("<span>VOICEVOX URL</span>", html)
         self.assertIn('id="HomeControlConfigPath"', html)
         self.assertIn("$('command-preview').textContent = formatReviewCommandPreview(commandLine)", app)
-        self.assertIn(r".replace(/\s+-SkipDifyWatch\b/g, '')", app)
-        self.assertNotIn("Dify compatibility runtime", html)
-        self.assertNotIn("Dify compatibility port", html)
-        self.assertNotIn("Dify compatibility runtime root", html)
 
     def test_launcher_japanese_copy_uses_meaning_first_labels(self) -> None:
         app = read_public("app.js")
@@ -205,25 +191,17 @@ class LauncherUiContractTest(TestCase):
             self.assertNotIn("フォールバック", japanese_block)
             self.assertNotIn("プロバイダー", japanese_block)
 
-    def test_launcher_command_preview_hides_backend_dify_compatibility_flags(self) -> None:
+    def test_launcher_command_preview_uses_review_formatter(self) -> None:
         app = read_public("app.js")
 
         self.assertIn("const formatReviewCommandPreview", app)
         self.assertIn("const setCommandPreview", app)
-        self.assertIn("-SkipDifyWatch", app)
-        self.assertIn("-SkipDify", app)
-        self.assertIn("-DifyPort", app)
-        self.assertIn("-DifyDockerRoot", app)
         self.assertIn("setCommandPreview(preview.commandLine)", app)
         self.assertIn("setCommandPreview(payload.preview?.commandLine || '')", app)
         self.assertIn(
             "$('command-preview').textContent = formatReviewCommandPreview(commandLine)",
             app,
         )
-        self.assertIn(r".replace(/\s+-SkipDifyWatch\b/g, '')", app)
-        self.assertIn(r".replace(/\s+-SkipDify\b/g, '')", app)
-        self.assertIn(r".replace(/\s+-DifyPort\s+", app)
-        self.assertIn(r".replace(/\s+-DifyDockerRoot\s+", app)
         self.assertNotIn("$('command-preview').textContent = commandLine", app)
 
     def test_operation_banner_exposes_startup_progress_bar(self) -> None:
@@ -417,8 +395,6 @@ class LauncherUiContractTest(TestCase):
         profiles = {profile["id"]: profile for profile in read_launcher_profiles()}
 
         thought_core = profiles["thought-core-v0"]["options"]
-        self.assertTrue(thought_core["SkipDify"])
-        self.assertTrue(thought_core["SkipDifyWatch"])
         self.assertTrue(thought_core["EnableThoughtCore"])
         self.assertTrue(thought_core["EnableThoughtCoreWatch"])
 

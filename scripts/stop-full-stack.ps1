@@ -7,7 +7,6 @@ param(
     [string]$TtsHttpPort = "",
     [string]$MediapipeControlHttpPort = "",
     [string]$StatusDir = ".cache\sword_voice_agent",
-    [switch]$IncludeDify,
     [switch]$Force,
     [switch]$DryRun
 )
@@ -363,20 +362,6 @@ $tcpPorts = @($AiTalkCorePort, [int]$TtsHttpPort, $ConsolePort, $AvatarPort)
 if (-not [string]::IsNullOrWhiteSpace($MediapipeControlHttpPort)) {
     $tcpPorts += [int]$MediapipeControlHttpPort
 }
-if ($IncludeDify) {
-    $difyBaseUrl = [Environment]::GetEnvironmentVariable("DIFY_BASE_URL", "Process")
-    if (-not [string]::IsNullOrWhiteSpace($difyBaseUrl)) {
-        try {
-            $uri = [System.Uri]$difyBaseUrl
-            if ($uri.Port -gt 0) {
-                $tcpPorts += $uri.Port
-            }
-        }
-        catch {
-        }
-    }
-}
-
 $portUsers = @()
 $portUsers += Get-SwordPortUsers -Protocol TCP -Ports ($tcpPorts | Select-Object -Unique)
 $portUsers += Get-SwordPortUsers -Protocol UDP -Ports @($GesturePort)
@@ -386,13 +371,15 @@ $needles = @(
     "start-ai-talk-core.ps1",
     "start-gesture-udp.ps1",
     "start-mediapipe-udp.ps1",
-    "start-dify-watch.ps1",
+    "start-thought-core.ps1",
+    "start-thought-core-watch.ps1",
     "start-tts-service.ps1",
     "start-avatar-service.ps1",
     "start-console.ps1",
     "sword_voice_agent.apps.ai_talk_core_web",
     "sword_voice_agent.apps.gesture_udp_receiver",
-    "sword_voice_agent.apps.watch_handoff_to_dify",
+    "sword_voice_agent.apps.watch_handoff_to_thought_core",
+    "thought_core",
     "sword_voice_agent.apps.console_server",
     "tts_service.apps.watch_sword_response",
     "apps/publish_udp.py",
@@ -401,9 +388,6 @@ $needles = @(
     "node_modules\vite",
     "node_modules/vite"
 )
-if ($IncludeDify) {
-    $needles += @("docker compose", "docker-compose")
-}
 
 $matchedPids = @()
 $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)

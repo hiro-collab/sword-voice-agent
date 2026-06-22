@@ -1,8 +1,9 @@
 """Turn responder boundary and initial adapters.
 
 The thought-core loop depends on the TurnResponder boundary, not on a
-particular LLM framework. LangChain, the OpenAI SDK, Dify, or a local engine can
-all be added as adapters that implement this small port.
+particular LLM framework. LangChain, the OpenAI SDK, Dify as an internal
+implementation candidate, or a local engine can all be added as adapters that
+implement this small port.
 """
 
 from __future__ import annotations

@@ -3594,9 +3594,11 @@ class ThoughtLoop:
     ) -> bool:
         if input_frame and input_frame.is_command:
             return True
-        return detect_home_action_intent(turn_input.text) is not None and (
-            self._looks_like_home_action_command(turn_input.text)
-        )
+        if not self._looks_like_home_action_command(turn_input.text):
+            return False
+        if detect_home_action_intent(turn_input.text) is not None:
+            return True
+        return detect_home_action_ambiguity(turn_input.text) is not None
 
     def _input_requests_pending_action_review(
         self,
@@ -4762,7 +4764,7 @@ class ThoughtLoop:
                 "microphone_quality_proven",
                 "speaker_output_heard",
                 "ordinary_conversation_quality",
-                "direct_dify_route_used",
+                "external_provider_route_used",
             ],
         )
         self._emit_message(
@@ -5317,7 +5319,7 @@ class ThoughtLoop:
                 "microphone_quality_proven",
                 "speaker_output_heard",
                 "device_action_proven",
-                "direct_dify_route_used",
+                "external_provider_route_used",
             ],
         )
         self._emit_message(
@@ -5370,7 +5372,6 @@ class ThoughtLoop:
                     "fallback_used": fallback_used,
                     "provider_route": provider_route,
                     "used_llm": used_llm,
-                    "direct_dify_used": False,
                     "non_claims": list(non_claims),
                 },
             )

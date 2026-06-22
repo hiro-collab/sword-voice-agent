@@ -52,7 +52,6 @@ C:\Users\kawai\works\sword-agent-system\
 | Home Assistant | 家電操作 | Raspberry Pi 4B上で稼働していることが前提 |
 | TouchDesigner | プロジェクター投影 | 投影演出に必要 |
 | LLM API key | Thought Coreの自然文応答 | 通常運用では必要 |
-| Dify | 旧workflow互換・比較確認 | 現在の主経路では任意 |
 
 ### 動作確認時のバージョン
 
@@ -321,7 +320,6 @@ C:\Users\kawai\works\sword-agent-system\organs\action\home-assistant-server\.env
 | `thought-core-experimental` | 旧名の互換エイリアス。新しい手順では `thought-core-v0` を使う |
 | `camera-debug` | Camera Hub と Vision Snapshot Processor だけを見る |
 | `aituber-only` | AITuber Kit 表示だけを見る |
-| `full-local` | Dify互換を含む旧寄りの構成。通常は使わない |
 
 ## 重要な文書
 
@@ -397,12 +395,6 @@ turn input
 ```
 
 `home.execute` の中に意味レベルのretryは隠しません。再観測、成功判定、再試行、ユーザー確認は Thought Core が turn の中で扱います。
-
-## Difyについて
-
-Dify は現在の主経路ではありません。過去ワークフローとの比較、外部互換、検証用として残っています。
-
-関連ファイルは `dify-apps/` と一部の互換manifestにあります。通常の起動確認では、まず `thought-core-v0` を使ってください。
 
 ## TouchDesigner投影
 

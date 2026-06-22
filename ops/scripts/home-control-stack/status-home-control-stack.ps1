@@ -7,7 +7,6 @@ param(
     [int]$VisionSnapshotProcessorPort = 8776,
     [int]$AituberPort = 3000,
     [int]$TouchDesignerGuiPort = 8788,
-    [int]$DifyPort = 8080,
     [int]$ThoughtCorePort = 18787,
     [string]$VoicevoxUrl = "",
     [switch]$EnableThoughtCore,
@@ -387,15 +386,6 @@ function Get-StatusText {
         -PortListening (Test-TcpListen -Port $TouchDesignerGuiPort) `
         -HttpOk $tdGuiHealth.Ok `
         -Detail $tdGuiHealth.Detail `
-        -RequireHttp $true
-
-    $difyHealth = Invoke-HttpCheck -Url "http://127.0.0.1:$DifyPort"
-    $rows += New-StatusRow `
-        -Name "dify" `
-        -ProcessAlive $false `
-        -PortListening (Test-TcpListen -Port $DifyPort) `
-        -HttpOk $difyHealth.Ok `
-        -Detail $difyHealth.Detail `
         -RequireHttp $true
 
     $thoughtCoreEntry = $pidState["thought_core_api"]

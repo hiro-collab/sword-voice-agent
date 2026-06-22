@@ -9,7 +9,6 @@ from uuid import uuid4
 from sword_voice_agent.adapters.console_status import (
     ConsoleStatusConfig,
     build_console_status,
-    fetch_dify_api,
     fetch_input_gate,
     fetch_thought_core_api,
     normalize_module_statuses,
@@ -18,11 +17,13 @@ from sword_voice_agent.adapters.console_status import (
 
 
 class ConsoleStatusTest(TestCase):
-    def test_builds_status_from_ai_talk_core_and_dify_cache(self) -> None:
+    def test_builds_status_from_ai_talk_core_and_thought_core_status(self) -> None:
         with workspace_tempdir() as tmp:
             root = Path(tmp)
             cache_dir = root / ".cache" / "codex"
             cache_dir.mkdir(parents=True)
+            status_dir = root / ".cache" / "sword_voice_agent"
+            status_dir.mkdir(parents=True)
             (cache_dir / "web_latest.json").write_text(
                 json.dumps(
                     {
@@ -34,26 +35,24 @@ class ConsoleStatusTest(TestCase):
                 ),
                 encoding="utf-8",
             )
-            (cache_dir / "web_dify_latest.json").write_text(
+            (status_dir / "latest_thought_core_response.json").write_text(
                 json.dumps(
                     {
                         "request": {
                             "text": "今日はいい天気ですね",
                             "context": {"turn_id": "turn-1"},
                         },
+                        "turn_payload": {
+                            "text": "今日はいい天気ですね",
+                            "turn_id": "turn-1",
+                            "session_id": "local",
+                        },
                         "response": {
                             "text": "はい、いい天気ですね。",
                             "conversation_id": "conv-1",
-                            "message_id": "msg-1",
                             "raw": {
-                                "metadata": {
-                                    "usage": {
-                                        "total_tokens": 42,
-                                        "total_price": "0.0001",
-                                        "currency": "USD",
-                                        "latency": 1.2,
-                                    }
-                                }
+                                "data": {"status": "success"},
+                                "_streaming": {"event_count": 8},
                             },
                         },
                     },
@@ -93,17 +92,17 @@ class ConsoleStatusTest(TestCase):
                 ConsoleStatusConfig(
                     ai_talk_core_root=root,
                     gesture_status_json=gesture_path,
-                    status_dir=None,
+                    status_dir=status_dir,
                 )
             )
 
             self.assertTrue(status["health"]["handoff"])
-            self.assertTrue(status["health"]["dify"])
+            self.assertTrue(status["health"]["thought_core"])
             self.assertTrue(status["health"]["gesture"])
             self.assertEqual(status["voice"]["command"], "今日はいい天気ですね")
-            self.assertEqual(status["dify"]["answer"], "はい、いい天気ですね。")
-            self.assertEqual(status["dify"]["usage"]["total_tokens"], 42)
-            self.assertEqual(status["dify"]["turn_id"], "turn-1")
+            self.assertEqual(status["thought_core"]["answer"], "はい、いい天気ですね。")
+            self.assertEqual(status["thought_core"]["event_count"], 8)
+            self.assertEqual(status["thought_core"]["turn_id"], "turn-1")
             self.assertTrue(status["gesture"]["raw_active"])
             self.assertEqual(status["gesture"]["confidence"], 0.93)
             self.assertEqual(status["gesture"]["turn_id"], "turn-1")
@@ -203,12 +202,12 @@ class ConsoleStatusTest(TestCase):
             )
             (status_dir / "events.jsonl").write_text(
                 json.dumps(
-                    {
-                        "type": "dify.response",
-                        "timestamp": 1.0,
-                        "source": "test",
-                        "turn_id": "turn-1",
-                        "data": {"response_text": "応答"},
+                        {
+                            "type": "thought_core.response",
+                            "timestamp": 1.0,
+                            "source": "test",
+                            "turn_id": "turn-1",
+                            "data": {"response_text": "応答"},
                     },
                     ensure_ascii=False,
                 )
@@ -330,7 +329,6 @@ class ConsoleStatusTest(TestCase):
             modules = {item["name"]: item for item in status["modules"]}
             self.assertEqual(modules["gesture_udp_receiver"]["state"], "stale")
             self.assertEqual(modules["gesture_udp_receiver"]["detail"], "127.0.0.1:8765")
-            self.assertEqual(modules["dify_api"]["state"], "missing")
             self.assertEqual(modules["thought_core_api"]["state"], "missing")
             self.assertEqual(modules["tts_service"]["state"], "missing")
             self.assertEqual(modules["avatar_service"]["state"], "missing")
@@ -383,7 +381,7 @@ class ConsoleStatusTest(TestCase):
                         "message_id": "msg-1",
                         "conversation_id": "conv-1",
                         "source": "sword_status_store",
-                        "watching": str(root / ".cache" / "sword_voice_agent" / "latest_dify_response.json"),
+                        "watching": str(root / ".cache" / "sword_voice_agent" / "latest_thought_core_response.json"),
                         "service": "running",
                         "engine": "noop",
                         "player": "noop",
@@ -520,24 +518,6 @@ class ConsoleStatusTest(TestCase):
             self.assertEqual(events[0]["payload"]["volume"], 70)
             self.assertEqual(events[0]["payload"]["app_volume"], 0.35)
 
-    def test_dify_api_module_uses_reachability(self) -> None:
-        modules = normalize_module_statuses(
-            {},
-            input_gate={"available": False},
-            dify_api={
-                "available": True,
-                "url": "http://localhost:8080/v1",
-                "status": 404,
-                "error": None,
-            },
-            timestamp=10.0,
-            stale_after_s=6.0,
-        )
-
-        by_name = {item["name"]: item for item in modules}
-        self.assertEqual(by_name["dify_api"]["state"], "running")
-        self.assertEqual(by_name["dify_api"]["detail"], "http://localhost:8080/v1")
-
     def test_thought_core_api_module_uses_reachability(self) -> None:
         modules = normalize_module_statuses(
             {},
@@ -597,24 +577,6 @@ class ConsoleStatusTest(TestCase):
 
         self.assertTrue(status["avatar"]["available"])
         self.assertEqual(status["avatar"]["model_url"], "/models/default.vrm")
-
-    def test_dify_api_module_reports_unreachable_endpoint(self) -> None:
-        modules = normalize_module_statuses(
-            {},
-            input_gate={"available": False},
-            dify_api={
-                "available": False,
-                "url": "http://localhost:8080/v1",
-                "status": None,
-                "error": "connection refused",
-            },
-            timestamp=10.0,
-            stale_after_s=6.0,
-        )
-
-        by_name = {item["name"]: item for item in modules}
-        self.assertEqual(by_name["dify_api"]["state"], "error")
-        self.assertIn("connection refused", by_name["dify_api"]["detail"])
 
     def test_thought_core_api_module_reports_unreachable_endpoint(self) -> None:
         modules = normalize_module_statuses(
@@ -687,17 +649,6 @@ class ConsoleStatusTest(TestCase):
         headers = {key.lower(): value for key, value in request_arg.header_items()}
         self.assertEqual(headers["x-ai-core-token"], "local-token")
 
-    def test_dify_status_rejects_plain_http_remote_url(self) -> None:
-        result = fetch_dify_api(
-            ConsoleStatusConfig(
-                ai_talk_core_root=Path("."),
-                dify_base_url="http://dify.example.test/v1",
-            )
-        )
-
-        self.assertFalse(result["available"])
-        self.assertIn("http only for loopback", result["error"])
-
     def test_redacts_sensitive_console_status(self) -> None:
         with workspace_tempdir() as tmp:
             root = Path(tmp)
@@ -714,23 +665,6 @@ class ConsoleStatusTest(TestCase):
                 ),
                 encoding="utf-8",
             )
-            (cache_dir / "web_dify_latest.json").write_text(
-                json.dumps(
-                    {
-                        "request": {
-                            "text": "コマンド",
-                            "context": {"turn_id": "turn-1"},
-                        },
-                        "response": {
-                            "text": "回答",
-                            "conversation_id": "conv-1",
-                            "message_id": "msg-1",
-                        },
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
             status_dir = root / ".cache" / "sword_voice_agent"
             status_dir.mkdir(parents=True)
             tts_status_dir = root / ".cache" / "tts_service"
@@ -742,7 +676,7 @@ class ConsoleStatusTest(TestCase):
                         "request_id": "req-1",
                         "message_id": "msg-1",
                         "conversation_id": "conv-1",
-                        "watching": str(root / ".cache" / "sword_voice_agent" / "latest_dify_response.json"),
+                        "watching": str(root / ".cache" / "sword_voice_agent" / "latest_thought_core_response.json"),
                         "text_hash": "hash-1",
                     },
                     ensure_ascii=False,
@@ -750,39 +684,20 @@ class ConsoleStatusTest(TestCase):
                 encoding="utf-8",
             )
             (status_dir / "events.jsonl").write_text(
-                "\n".join(
-                    [
-                        json.dumps(
-                            {
-                                "type": "dify.response",
-                                "timestamp": 1.0,
-                                "source": "test",
-                                "turn_id": "turn-1",
-                                "payload": {
-                                    "request_text": "コマンド",
-                                    "response_text": "回答",
-                                    "conversation_id": "conv-1",
-                                    "message_id": "msg-1",
-                                },
-                            },
-                            ensure_ascii=False,
-                        ),
-                        json.dumps(
-                            {
-                                "type": "thought_core.response",
-                                "timestamp": 2.0,
-                                "source": "test",
-                                "turn_id": "turn-1",
-                                "payload": {
-                                    "request_text": "コマンド",
-                                    "turn_text": "コマンド",
-                                    "response_text": "回答",
-                                    "event_count": 16,
-                                },
-                            },
-                            ensure_ascii=False,
-                        ),
-                    ]
+                json.dumps(
+                    {
+                        "type": "thought_core.response",
+                        "timestamp": 2.0,
+                        "source": "test",
+                        "turn_id": "turn-1",
+                        "payload": {
+                            "request_text": "コマンド",
+                            "turn_text": "コマンド",
+                            "response_text": "回答",
+                            "event_count": 16,
+                        },
+                    },
+                    ensure_ascii=False,
                 )
                 + "\n",
                 encoding="utf-8",
@@ -816,8 +731,6 @@ class ConsoleStatusTest(TestCase):
             self.assertEqual(status["paths"]["ai_talk_core_root"], "[redacted]")
             self.assertEqual(status["voice"]["transcript"], "[redacted]")
             self.assertEqual(status["voice"]["command"], "[redacted]")
-            self.assertEqual(status["dify"]["answer"], "[redacted]")
-            self.assertEqual(status["dify"]["conversation_id"], "[redacted]")
             self.assertEqual(status["thought_core"]["answer"], "[redacted]")
             self.assertEqual(status["thought_core"]["turn_id"], "[redacted]")
             self.assertEqual(status["tts"]["request_id"], "[redacted]")

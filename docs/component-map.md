@@ -12,7 +12,7 @@ current physical map after the system-cell rename.
 | `<cell>/services/thought-core/` | Retired local placeholder, if present | none until a split repo is created | Do not add a second implementation here. |
 | `<cell>/organs/voice/ai-talk-core/` | Microphone/browser recording, STT, transcript, handoff | `adapters/stt` or `apps/voice-input` | Existing module owns STT and browser recording. |
 | `<cell>/organs/reflex/mediapipe-sword-sign/` | Camera Hub, gesture inference, fast gesture state | `services/reflex-core` and `adapters/mediapipe` | Camera capture authority remains here for now. |
-| `<cell>/organs/environment/vision-snapshot-processor/` | Low-frequency vision snapshots such as room light | environment input source | Feeds environment state; does not aggregate Dify state. |
+| `<cell>/organs/environment/vision-snapshot-processor/` | Low-frequency vision snapshots such as room light | environment input source | Feeds environment state; does not aggregate Thought Core state. |
 | `<cell>/organs/environment/environment-state-server/` | Environment snapshot and indicators API | `services/environment-server` | Current environment-server v0. |
 | `<cell>/organs/action/home-assistant-server/` | Safe Home Assistant action bridge | `services/home-control-server` and `adapters/home-assistant` | Current home-control-server v0. |
 | `<cell>/organs/expression/tts-service/` | Text-to-speech synthesis, playback, status | `services/expression-core` speech component | Does not generate assistant answers. |
@@ -47,7 +47,7 @@ Future:
 Current:
 
 - `sword-control-plane/services/thought-core/`
-- Dify workflow and Dify watcher inside `sword-control-plane/`
+- Thought Core API and Thought Core watcher inside `sword-control-plane/`
 - handoff from `ai-talk-core/`
 
 Future:
@@ -75,7 +75,7 @@ Future:
 Current:
 
 - `home-assistant-server/`
-- Dify HTTP nodes calling the bridge
+- Thought Core tool client calling the bridge
 
 Future:
 

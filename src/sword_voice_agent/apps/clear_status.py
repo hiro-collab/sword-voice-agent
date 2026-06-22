@@ -27,7 +27,7 @@ def run(args: argparse.Namespace) -> int:
     targets = [
         store.latest_gesture_path,
         store.latest_voice_turn_path,
-        store.latest_dify_response_path,
+        store.latest_thought_core_response_path,
         store.events_path,
     ]
     if not args.yes:

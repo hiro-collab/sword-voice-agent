@@ -36,10 +36,6 @@ class StatusStore:
         return self.root / "latest_voice_turn.json"
 
     @property
-    def latest_dify_response_path(self) -> Path:
-        return self.root / "latest_dify_response.json"
-
-    @property
     def latest_thought_core_response_path(self) -> Path:
         return self.root / "latest_thought_core_response.json"
 
@@ -106,37 +102,6 @@ class StatusStore:
                 turn_id=_optional_text(command.get("turn_id")),
                 payload=payload,
             )
-
-    def write_latest_dify_response(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        turn_id: str | None = None,
-    ) -> None:
-        stored_payload = dict(payload)
-        event_turn_id = turn_id
-        if event_turn_id:
-            stored_payload["turn_id"] = event_turn_id
-        self.write_json(self.latest_dify_response_path, stored_payload)
-        request_payload = _mapping(payload.get("request"))
-        response_payload = _mapping(payload.get("response"))
-        self.append_event(
-            "dify.response",
-            source="watch_handoff_to_dify",
-            turn_id=event_turn_id or _turn_id_from_request(request_payload),
-            payload={
-                "request_text": redacted_text(request_payload.get("text", "")),
-                "response_text": redacted_text(response_payload.get("text", "")),
-                "conversation_id": redacted_text(
-                    response_payload.get("conversation_id", "")
-                ),
-                "conversation_id_present": bool(response_payload.get("conversation_id")),
-                "message_id": redacted_text(response_payload.get("message_id", "")),
-                "message_id_present": bool(response_payload.get("message_id")),
-                "skipped": payload.get("skipped", False),
-                "skip_reason": payload.get("skip_reason"),
-            },
-        )
 
     def write_latest_thought_core_response(
         self,
@@ -300,7 +265,6 @@ class StatusStore:
             self.latest_gesture_path,
             self.latest_gesture_diagnostic_path,
             self.latest_voice_turn_path,
-            self.latest_dify_response_path,
             self.latest_thought_core_response_path,
             self.events_path,
             self.conversation_log_path,

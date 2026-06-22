@@ -13,7 +13,7 @@ consumers.
 | `events/` | Common thought-core event envelope. |
 | `tools/` | Tool started/result data payloads carried by thought-core events. |
 | `reflex/` | Fast gesture/camera input state and local reflex status events. |
-| `environment/` | Environment snapshots and feedback surfaces consumed by Dify/thought-core. |
+| `environment/` | Environment snapshots and feedback surfaces consumed by Thought Core. |
 | `home-control/` | Safe home action preview/execute boundary. |
 | `expression/` | Current TTS and AITuberKit presentation payloads. |
 | `memory/` | M4 retrieval, candidate, and commit protocol shapes. |

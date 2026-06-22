@@ -38,7 +38,6 @@ ops/
       minimal.json
       thought-core.json
       home-control.json
-      full-local.json
     services/
       thought-core.json
       environment-state-server.json
@@ -61,9 +60,9 @@ runtime/
 `ops/scripts/system.ps1` is a thin facade:
 
 ```powershell
-.\ops\scripts\system.ps1 start  -Profile full-local
-.\ops\scripts\system.ps1 status -Profile full-local
-.\ops\scripts\system.ps1 stop   -Profile full-local
+.\ops\scripts\system.ps1 start  -Profile thought-core-v0
+.\ops\scripts\system.ps1 status -Profile thought-core-v0
+.\ops\scripts\system.ps1 stop   -Profile thought-core-v0
 ```
 
 The launcher calls the same control surface instead of having separate

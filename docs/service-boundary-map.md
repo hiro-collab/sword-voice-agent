@@ -18,7 +18,7 @@ docs      = ADRs and design intent
 |---|---|---|---|---|
 | `sword-voice-agent` | `app` | `sword-voice-agent/` | `turn`, `events`, `expression`, `reflex`, `memory`, `access-control` | `ai-talk-core`, `aituber-kit`, `tts-service`, `thought-core` client |
 | `reflex-core` | `reflex` | `mediapipe-sword-sign/` plus gesture gate policy in this repo | `reflex`, `access-control` | MediaPipe, camera, MediaMTX, Camera Hub topics |
-| `thought-core` | `turn` | `sword-control-plane/services/thought-core/` | `turn`, `events`, `tools`, `memory`, `access-control` | OpenAI-compatible LLM, Dify compatibility, environment/home-control clients |
+| `thought-core` | `turn` | `sword-control-plane/services/thought-core/` | `turn`, `events`, `tools`, `memory`, `access-control` | OpenAI-compatible LLM, internal provider candidates, environment/home-control clients |
 | `environment-server` | `environment` | `environment-state-server/` | `environment` | MediaPipe status, vision snapshot, Home Assistant state, module status |
 | `home-control-server` | `action` | `home-assistant-server/` | `home-control` | Home Assistant scripts and allowlist |
 | `expression-core` | `expression` | `tts-service/`, `aituber-kit/`, `touchdesigner-ai-controller/`, avatar modules | `expression` | VOICEVOX/TTS, AITuberKit, TouchDesigner |

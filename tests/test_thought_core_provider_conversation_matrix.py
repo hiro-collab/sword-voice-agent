@@ -131,7 +131,6 @@ class ThoughtCoreProviderConversationMatrixTest(TestCase):
                 self.assertTrue(completed["data"]["used_llm"])
                 self.assertEqual(route["data"]["response_route"], "ordinary_conversation")
                 self.assertFalse(route["data"]["fallback_used"])
-                self.assertFalse(route["data"]["direct_dify_used"])
                 self.assertGreaterEqual(len(speech.strip()), 4)
                 for term in internal_terms:
                     self.assertNotIn(term, visible)

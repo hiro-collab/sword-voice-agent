@@ -17,7 +17,7 @@
   ],
   "adapters": [
     "openai-compatible",
-    "dify"
+    "thought-core-internal-provider-candidate"
   ],
   "memory": {
     "reads": [

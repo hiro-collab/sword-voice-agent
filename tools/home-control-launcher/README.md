@@ -10,9 +10,8 @@ It serves a browser UI for:
 - starting and stopping through the ops lifecycle facade
 - keeping reference URLs visible after logs scroll
 
-The primary profile is `System Cell (Thought Core)`. Older Dify-based flows are
-kept as `Legacy / compatibility` profiles so existing workflows remain
-recoverable, but normal operation should use the Thought Core profile.
+The primary profile is `System Cell (Thought Core)`. Normal operation should
+use the Thought Core profile.
 
 The launcher calls the ops facade, which then delegates to the inherited
 supervisor implementation:

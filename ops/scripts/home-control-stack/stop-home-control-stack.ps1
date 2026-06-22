@@ -1,8 +1,6 @@
 param(
     [string]$WorkspaceRoot = "",
     [string]$StackStateDir = "",
-    [string]$DifyDockerRoot = "",
-    [switch]$StopDify,
     [switch]$Force,
     [switch]$DryRun
 )
@@ -30,10 +28,6 @@ function Resolve-StackStateDir {
 . (Join-Path $PSScriptRoot "resolve-home-control-workspace.ps1")
 $WorkspaceRoot = Resolve-HomeControlWorkspaceRoot -WorkspaceRoot $WorkspaceRoot -ScriptRoot $PSScriptRoot
 $StackStateDir = Resolve-StackStateDir -WorkspaceRoot $WorkspaceRoot -StackStateDir $StackStateDir
-
-if ([string]::IsNullOrWhiteSpace($DifyDockerRoot)) {
-    $DifyDockerRoot = [Environment]::GetEnvironmentVariable("DIFY_DOCKER_ROOT")
-}
 
 $StateDir = $StackStateDir
 $PidFile = Join-Path $StateDir "pids.json"
@@ -295,29 +289,4 @@ else {
 
 if (-not $DryRun -and (Test-Path -LiteralPath $PidFile -PathType Leaf)) {
     Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
-}
-
-if ($StopDify) {
-    if ([string]::IsNullOrWhiteSpace($DifyDockerRoot)) {
-        Write-Warning "Dify docker directory is not configured. Pass -DifyDockerRoot or set DIFY_DOCKER_ROOT."
-        return
-    }
-    if (-not (Test-Path -LiteralPath $DifyDockerRoot -PathType Container)) {
-        Write-Warning "Dify docker directory not found: $DifyDockerRoot"
-        return
-    }
-    $docker = Get-Command docker -ErrorAction Stop
-    Write-Host "[dify] docker compose stop"
-    if (-not $DryRun) {
-        $process = Start-Process `
-            -FilePath $docker.Source `
-            -ArgumentList @("compose", "stop") `
-            -WorkingDirectory $DifyDockerRoot `
-            -NoNewWindow `
-            -Wait `
-            -PassThru
-        if ($process.ExitCode -ne 0) {
-            throw "docker compose stop exited with code $($process.ExitCode)"
-        }
-    }
 }

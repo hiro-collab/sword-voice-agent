@@ -43,21 +43,21 @@ Camera Hub owns physical camera capture, frame reading, landmark inference, and 
 
 | Endpoint | Consumer | Notes |
 |---|---|---|
-| `GET /environment/current` | Dify | Requires Bearer token |
-| `GET /environment/current?wait_for=room_light&after=<iso>&timeout_ms=1500` | Dify | Short wait for a room-light snapshot newer than `after`; returns 200 even on timeout |
-| `GET /environment/relations` | Dify | Related metadata only |
-| `POST /feedback/state-query` | Dify | User correction for the immediately preceding state query; non-authoritative learning data |
-| `GET /feedback/state-query/recent` | Dify / debug | Recent feedback records; Requires Bearer token |
-| `GET /feedback/state-query/summary` | Dify / debug | Feedback label/status counts; Requires Bearer token |
+| `GET /environment/current` | Thought Core | Requires Bearer token |
+| `GET /environment/current?wait_for=room_light&after=<iso>&timeout_ms=1500` | Thought Core | Short wait for a room-light snapshot newer than `after`; returns 200 even on timeout |
+| `GET /environment/relations` | Thought Core | Related metadata only |
+| `POST /feedback/state-query` | Thought Core | User correction for the immediately preceding state query; non-authoritative learning data |
+| `GET /feedback/state-query/recent` | Thought Core / debug | Recent feedback records; Requires Bearer token |
+| `GET /feedback/state-query/summary` | Thought Core / debug | Feedback label/status counts; Requires Bearer token |
 | `GET /indicators/current` | HUD / Cube / display-runtime | Loopback display-safe API |
 | `GET /health` | launcher / checks | Diagnostics |
 | `GET /ready` | launcher / checks | Fails when required state is stale |
 
 Environment State Server subscribes to Camera Hub topics, Vision Snapshot Processor topics, and Home Assistant bridge events. It does not open the camera.
 
-For room-light state queries, Dify reads `state_queries.room_light` from `/environment/current`. `vision_snapshot_processor` remains the authority for image-derived `on/off/unknown`, `lighting_type`, and probability values; `environment_state_server` only projects them into `available`, `stale`, `stale_reason`, `confidence_label`, `answer_hint`, `authority`, `projected_by`, `observed_at`, `updated_at`, `source_snapshot_id`, normalized `evidence`, and the non-authoritative `learning` summary.
+For room-light state queries, Thought Core reads `state_queries.room_light` from `/environment/current`. `vision_snapshot_processor` remains the authority for image-derived `on/off/unknown`, `lighting_type`, and probability values; `environment_state_server` only projects them into `available`, `stale`, `stale_reason`, `confidence_label`, `answer_hint`, `authority`, `projected_by`, `observed_at`, `updated_at`, `source_snapshot_id`, normalized `evidence`, and the non-authoritative `learning` summary.
 
-When Dify needs a post-action room-light snapshot, it calls:
+When Thought Core needs a post-action room-light snapshot, it calls:
 
 ```text
 GET /environment/current?wait_for=room_light&after=<action_time>&timeout_ms=1500
@@ -79,9 +79,9 @@ GET /environment/current?wait_for=room_light&after=<action_time>&timeout_ms=1500
 }
 ```
 
-`wait_result.matched=true` means `state_queries.room_light.observed_at` is newer than `after` and `state_queries.room_light.source_snapshot_id` is present. Only then should Dify treat `state_queries.room_light` as post-action evidence. If no newer room-light snapshot arrives in time, the response is still HTTP 200 with `wait_result.matched=false` and `wait_result.reason="timeout"`. Dify should then avoid treating the room-light snapshot as post-action evidence.
+`wait_result.matched=true` means `state_queries.room_light.observed_at` is newer than `after` and `state_queries.room_light.source_snapshot_id` is present. Only then should Thought Core treat `state_queries.room_light` as post-action evidence. If no newer room-light snapshot arrives in time, the response is still HTTP 200 with `wait_result.matched=false` and `wait_result.reason="timeout"`. Thought Core should then avoid treating the room-light snapshot as post-action evidence.
 
-When Dify asks a follow-up such as "実際はついてる?", the user's next short correction is sent to `POST /feedback/state-query`. The payload includes `target=room_light`, `snapshot_id`, `current_snapshot_id`, `predicted_state`, `predicted_confidence_label`, `user_label`, `user_text`, `workflow_version`, `feedback_reason`, `idempotency_key`, and the original projected evidence. Environment should store this as `authority=user_feedback` training material without rewriting the authoritative vision state for that snapshot. Dify only sends feedback while the pending state query is fresh, currently within 120 seconds; stale corrections ask the user to re-check state instead.
+When Thought Core asks a follow-up such as "実際はついてる?", the user's next short correction is sent to `POST /feedback/state-query`. The payload includes `target=room_light`, `snapshot_id`, `current_snapshot_id`, `predicted_state`, `predicted_confidence_label`, `user_label`, `user_text`, `workflow_version`, `feedback_reason`, `idempotency_key`, and the original projected evidence. Environment should store this as `authority=user_feedback` training material without rewriting the authoritative vision state for that snapshot. Thought Core only sends feedback while the pending state query is fresh, currently within 120 seconds; stale corrections ask the user to re-check state instead.
 
 Example:
 
@@ -98,7 +98,7 @@ Example:
   "user_label": "on",
   "user_text": "ついてるよ",
   "authority": "user_feedback",
-  "source": "dify",
+  "source": "thought_core",
   "workflow_version": "hca-issue-iteration-state-feedback-...",
   "feedback_reason": "user_correction_after_state_query",
   "pending": {
@@ -117,9 +117,9 @@ Accepted `user_label` values are `on`, `off`, `daylight`, and `unknown`. Environ
 
 Known feedback warning values are `pending_stale`, `snapshot_mismatch`, `wait_timeout`, `duplicate`, and `invalid_context`. The initial Environment implementation emits `pending_stale`; the others are reserved contract values for later validation layers.
 
-Dify can also request room-light feedback after a successful `light_on` or `light_off` action when `wait_result.matched=true` and the fresh post-action Environment snapshot is unknown, low confidence, or disagrees with the expected state. In that case it keeps the same `POST /feedback/state-query` endpoint and sends `feedback_reason=user_correction_after_light_action`, `source_context=post_light_action`, `action_id`, `issue_id`, `expected_state`, and the matching `wait_result`. This remains user_feedback training material; it does not change Home Assistant action authority or vision authority immediately. If `wait_result.matched=false`, Dify should not create this post-action feedback pending item from the stale snapshot; it may only tell the user that the vision update has not arrived yet.
+Thought Core can also request room-light feedback after a successful `light_on` or `light_off` action when `wait_result.matched=true` and the fresh post-action Environment snapshot is unknown, low confidence, or disagrees with the expected state. In that case it keeps the same `POST /feedback/state-query` endpoint and sends `feedback_reason=user_correction_after_light_action`, `source_context=post_light_action`, `action_id`, `issue_id`, `expected_state`, and the matching `wait_result`. This remains user_feedback training material; it does not change Home Assistant action authority or vision authority immediately. If `wait_result.matched=false`, Thought Core should not create this post-action feedback pending item from the stale snapshot; it may only tell the user that the vision update has not arrived yet.
 
-The Dify diagnostic query (`__HCA_DIAGNOSTIC__`) includes `feedback_contract.state_query_feedback=true`, `feedback_contract.post_action_light_feedback=true`, `feedback_contract.wait_for_room_light`, `ttl_seconds`, `idempotency_key_format`, and `feedback_reasons` so launcher-side checks can confirm the published YAML matches this contract.
+Thought Core diagnostics include `feedback_contract.state_query_feedback=true`, `feedback_contract.post_action_light_feedback=true`, `feedback_contract.wait_for_room_light`, `ttl_seconds`, `idempotency_key_format`, and `feedback_reasons` so launcher-side checks can confirm the runtime matches this contract.
 
 Successful response:
 
@@ -134,23 +134,18 @@ Successful response:
 }
 ```
 
-If persistence is unavailable, return a non-2xx status with a short `error`; Dify treats this endpoint as best-effort and continues the conversation. Debug endpoints accept `target=room_light`; `recent` also accepts `limit`. `summary` returns `label_counts`, `status_counts`, `reason_counts`, `source_context_counts`, `action_counts`, `expected_state_counts`, and `learning`. `learning.level` is one of `none`, `collecting`, `seeded`, `usable`, or `reinforced`; `learning.problems[]` carries machine-readable `code`, `severity`, and `message` for cases such as missing labels, no post-action feedback, stale feedback, duplicates, or rejected payloads. `status_counts` has fixed keys for `accepted`, `accepted_with_warning`, `duplicate`, and `rejected`; duplicate/rejected counts are runtime diagnostics and may reset when Environment State Server restarts.
+If persistence is unavailable, return a non-2xx status with a short `error`; Thought Core treats this endpoint as best-effort and continues the conversation. Debug endpoints accept `target=room_light`; `recent` also accepts `limit`. `summary` returns `label_counts`, `status_counts`, `reason_counts`, `source_context_counts`, `action_counts`, `expected_state_counts`, and `learning`. `learning.level` is one of `none`, `collecting`, `seeded`, `usable`, or `reinforced`; `learning.problems[]` carries machine-readable `code`, `severity`, and `message` for cases such as missing labels, no post-action feedback, stale feedback, duplicates, or rejected payloads. `status_counts` has fixed keys for `accepted`, `accepted_with_warning`, `duplicate`, and `rejected`; duplicate/rejected counts are runtime diagnostics and may reset when Environment State Server restarts.
 
-## Dify
+## Thought Core
 
 | Env | Meaning |
 |---|---|
-| `DIFY_BASE_URL` | Dify API base URL, for example `http://localhost:8080/v1` |
-| `DIFY_API_KEY` | Dify app API key |
-| `DIFY_USER` | conversation user |
-| `DIFY_RESPONSE_MODE` | `streaming` or `blocking` |
-| `ENVIRONMENT_STATE_URL` | Dify-side URL for `/environment/current` |
-| `ENVIRONMENT_RELATIONS_URL` | Dify-side URL for `/environment/relations` |
-| `ENVIRONMENT_FEEDBACK_URL` | Dify-side URL for `/feedback/state-query` |
+| `THOUGHT_CORE_BASE_URL` | Thought Core API base URL, for example `http://127.0.0.1:18787` |
+| `ENVIRONMENT_STATE_URL` | URL for `/environment/current` |
+| `ENVIRONMENT_RELATIONS_URL` | URL for `/environment/relations` |
+| `ENVIRONMENT_FEEDBACK_URL` | URL for `/feedback/state-query` |
 
-When Dify runs in Docker on the same machine, use `host.docker.internal` for host services.
-
-State lookups such as "電気ついてる?" must not execute Home Assistant actions. Dify should set `action_id` to `none` and answer from `state_queries.room_light`; `available=false` or `stale=true` means the current sensor state cannot be confirmed.
+State lookups such as "電気ついてる?" must not execute Home Assistant actions. Thought Core should set `action_id` to `none` and answer from `state_queries.room_light`; `available=false` or `stale=true` means the current sensor state cannot be confirmed.
 
 ## AITuberKit
 
@@ -161,7 +156,7 @@ State lookups such as "電気ついてる?" must not execute Home Assistant acti
 | Env from sword side | `AITUBER_MESSAGE_URL` |
 | Message Receiver | Enable in AITuberKit with matching client ID |
 
-Dify streaming responses are sent to AITuberKit through `direct_send`. AITuberKit external WebSocket mode is not part of the standard integration path.
+Thought Core streaming responses are sent to AITuberKit through `direct_send`. AITuberKit external WebSocket mode is not part of the standard integration path.
 
 ## TTS Service
 
@@ -175,7 +170,7 @@ Dify streaming responses are sent to AITuberKit through `direct_send`. AITuberKi
 | Volume | `GET/POST /api/volume` |
 | Status file | `latest_tts_state.json` under output status dir |
 
-Dify watcher sends response chunks to `TTS_HTTP_CHUNK_URL` when TTS is enabled.
+Thought Core watcher sends response chunks to `TTS_HTTP_CHUNK_URL` when TTS is enabled.
 
 ## Home Assistant Bridge
 
@@ -197,7 +192,7 @@ Home Assistant bridge owns action safety, action tracking, and Home Assistant ex
 | Payload | JSON with source, phase, action/result metadata |
 | Display input | Projection Visual or Cube background URL |
 
-TouchDesigner owns visual effect state. It does not decide Dify or Home Assistant state.
+TouchDesigner owns visual effect state. It does not decide Thought Core or Home Assistant state.
 
 ## Runtime Status
 
@@ -211,4 +206,4 @@ state, per-module status directories, feedback JSONL, and service logs.
 - URLs with embedded credentials are rejected.
 - Loopback is the default bind policy.
 - Remote use requires explicit opt-in and token/origin controls.
-- Runtime logs, cache files, generated audio, and Dify payloads may contain local-sensitive data.
+- Runtime logs, cache files, generated audio, and provider payloads may contain local-sensitive data.

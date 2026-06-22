@@ -33,7 +33,6 @@ policies/
 
 | Current path | Target category | Future path |
 |---|---|---|
-| `.cache/home-control-stack/dify-chat-events.jsonl` | event log | `runtime/logs/events/dify-chat-events.jsonl` |
 | `.cache/home-control-stack/thought-core-chat-events.jsonl` | event log | `runtime/logs/events/thought-core-chat-events.jsonl` |
 | `.cache/home-control-stack/logs/` | service logs | `runtime/logs/services/` |
 | `.cache/home-control-stack/launcher-state.json` | launcher state | `runtime/state/launcher-state.json` |
@@ -74,7 +73,7 @@ change.
 - Add runtime-root options to scripts before changing defaults.
 - Keep `.cache/home-control-stack` readable for at least one migration phase
   after a default path change.
-- Treat generated audio, Dify payloads, screenshots, event logs, and local paths
+- Treat generated audio, provider payloads, screenshots, event logs, and local paths
   as local-sensitive data.
 - Treat M4 memory files as local-sensitive by default. Commit only fixtures or
   examples that have been scrubbed.

@@ -50,12 +50,10 @@ SELECTED_PORT_CLASSES = {
     "aituber_projection_visual": 3000,
     "touchdesigner_gui": 8788,
     "thought_core_api": 18787,
-    "dify_compatibility": 8080,
 }
 
 LAUNCHER_PROFILE_TO_OPS_PROFILE = {
-    "full-stack": "full-local",
-    "dify-external": "full-local",
+    "full-stack": "thought-core-v0",
     "no-touchdesigner": "thought-core-v0",
     "thought-core-v0": "thought-core-v0",
     "thought-core-experimental": "thought-core-experimental",
@@ -143,7 +141,7 @@ def build_no_provider_child_provenance_diagnostics(
         key: classify_env_value(final_env[key].value) for key in PROVIDER_CONFIG_KEYS
     }
     provider_presence = provider_presence_class(provider_classes)
-    direct_dify = direct_dify_exclusion_class(services)
+    external_provider_route = external_provider_route_class(services)
     listener_summary = classify_listener_state(listener_classes)
     input_hash = source_hash_class(
         thought_core_root / "src" / "thought_core" / "input_understanding.py"
@@ -175,7 +173,7 @@ def build_no_provider_child_provenance_diagnostics(
         ),
         "provider_config_presence_class": provider_presence,
         "provider_config_key_classes": provider_classes,
-        "direct_dify_exclusion_class": direct_dify,
+        "external_provider_route_class": external_provider_route,
         "stale_or_reused_process_class": listener_summary["stale_or_reused_process_class"],
         "selected_port_listener_classes": listener_summary["selected_port_listener_classes"],
         "imported_input_understanding_hash_class": input_hash,
@@ -327,10 +325,10 @@ def action_llm_effective_class(*, action_llm_class: str, llm_class: str) -> str:
     return "action_llm_not_enabled_by_class"
 
 
-def direct_dify_exclusion_class(services: tuple[str, ...]) -> str:
-    if "dify_stack" in services or "dify_watcher" in services:
-        return "dify_stack_or_watcher_selected_not_excluded"
-    return "profile_delegate_excludes_dify_stack_and_watcher"
+def external_provider_route_class(services: tuple[str, ...]) -> str:
+    if "thought_core_api" in services or "thought_core_watcher" in services:
+        return "thought_core_route_selected"
+    return "no_external_provider_route_selected"
 
 
 def classify_listener_state(

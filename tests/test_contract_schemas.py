@@ -63,7 +63,7 @@ STATE_QUERY_FEEDBACK_REQUEST = {
     "user_label": "on",
     "user_text": "ついてるよ",
     "authority": "user_feedback",
-    "source": "dify",
+    "source": "thought_core",
     "feedback_reason": "user_correction_after_state_query",
 }
 
@@ -77,7 +77,7 @@ STATE_QUERY_FEEDBACK_RESPONSE = {
 }
 
 HOME_CONTROL_REQUEST = {
-    "source": "dify",
+    "source": "thought_core",
     "request_id": "req-001",
     "user_text": "照明をつけて",
 }

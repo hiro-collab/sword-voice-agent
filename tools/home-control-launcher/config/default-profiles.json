@@ -6,8 +6,6 @@
     "description": "Start the current system cell with Thought Core, expression, reflex, environment, action bridge, and display services.",
     "options": {
       "StopExisting": true,
-      "SkipDify": true,
-      "SkipDifyWatch": true,
       "EnableThoughtCore": true,
       "EnableThoughtCoreWatch": true,
       "MediapipeMode": "mediamtx",
@@ -18,14 +16,12 @@
     "id": "camera-debug",
     "name": "Reflex camera debug",
     "group": "Diagnostics",
-    "description": "Start MediaPipe and vision-state pieces without expression, compatibility runtime, or action services.",
+    "description": "Start MediaPipe and vision-state pieces without expression or action services.",
     "options": {
       "StopExisting": true,
-      "SkipDify": true,
       "SkipVoicevoxCheck": true,
       "SkipHomeAssistantBridge": true,
       "SkipAituber": true,
-      "SkipDifyWatch": true,
       "SkipTouchDesignerGui": true,
       "MediapipeMode": "mediamtx",
       "MediapipeOpenBrowser": true,
@@ -39,13 +35,11 @@
     "description": "Start only the expression runtime for UI and voice-output checks.",
     "options": {
       "StopExisting": true,
-      "SkipDify": true,
       "SkipVoicevoxCheck": true,
       "SkipHomeAssistantBridge": true,
       "SkipEnvironmentState": true,
       "SkipMediapipe": true,
       "SkipVisionSnapshotProcessor": true,
-      "SkipDifyWatch": true,
       "SkipTouchDesignerGui": true
     }
   },
@@ -56,36 +50,9 @@
     "description": "Start the current Thought Core stack without the display runtime GUI.",
     "options": {
       "StopExisting": true,
-      "SkipDify": true,
-      "SkipDifyWatch": true,
       "EnableThoughtCore": true,
       "EnableThoughtCoreWatch": true,
       "SkipTouchDesignerGui": true,
-      "MediapipeMode": "mediamtx",
-      "MediapipeNoBrowser": true
-    }
-  },
-  {
-    "id": "full-stack",
-    "name": "Compatibility managed stack",
-    "group": "Compatibility / older watcher flows",
-    "description": "Compatibility profile for the older watcher flow. Prefer System Cell (Thought Core) for normal use.",
-    "hidden": true,
-    "options": {
-      "StopExisting": true,
-      "MediapipeMode": "mediamtx",
-      "MediapipeNoBrowser": true
-    }
-  },
-  {
-    "id": "dify-external",
-    "name": "External compatibility runtime",
-    "group": "Compatibility / older watcher flows",
-    "description": "Compatibility profile for using an already-running external compatibility runtime with the older watcher flow.",
-    "hidden": true,
-    "options": {
-      "StopExisting": true,
-      "SkipDify": true,
       "MediapipeMode": "mediamtx",
       "MediapipeNoBrowser": true
     }

@@ -111,7 +111,7 @@ class ConsoleServerTest(TestCase):
             status_dir.mkdir(parents=True)
             event = {
                 "event_id": "evt-1",
-                "type": "dify.first_token",
+                "type": "thought_core.first_message",
                 "timestamp": 1.0,
                 "source": "test",
                 "turn_id": "turn-1",
@@ -147,7 +147,7 @@ class ConsoleServerTest(TestCase):
                 self.assertIn("text/event-stream", content_type)
                 self.assertEqual(cors_origin, "*")
                 self.assertIn("id: evt-1", body)
-                self.assertIn("event: dify.first_token", body)
+                self.assertIn("event: thought_core.first_message", body)
                 self.assertIn('"turn_id":"turn-1"', body)
             finally:
                 server.shutdown()

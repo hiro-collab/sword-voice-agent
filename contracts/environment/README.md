@@ -30,7 +30,7 @@ GET  /health
 GET  /ready
 ```
 
-Dify-facing endpoints require bearer auth. Display-safe indicator endpoints are
+Thought Core-facing endpoints require bearer auth. Display-safe indicator endpoints are
 loopback-only.
 
 ## Current Schemas

@@ -7,7 +7,7 @@ param(
     [string]$TtsAppVolumeFile = "",
     [string]$TtsVolumeUrl = "",
     [string]$InputGateUrl = "",
-    [string]$DifyBaseUrl = "",
+    [string]$ThoughtCoreBaseUrl = "",
     [string]$AvatarUrl = "",
     [string]$AvatarModelUrl = "",
     [string]$TtsVolumePreviewUrl = "",
@@ -30,8 +30,8 @@ if ([string]::IsNullOrWhiteSpace($InputGateUrl)) {
         "Process"
     )
 }
-if ([string]::IsNullOrWhiteSpace($DifyBaseUrl)) {
-    $DifyBaseUrl = [Environment]::GetEnvironmentVariable("DIFY_BASE_URL", "Process")
+if ([string]::IsNullOrWhiteSpace($ThoughtCoreBaseUrl)) {
+    $ThoughtCoreBaseUrl = [Environment]::GetEnvironmentVariable("THOUGHT_CORE_BASE_URL", "Process")
 }
 if ([string]::IsNullOrWhiteSpace($AvatarUrl)) {
     $AvatarUrl = [Environment]::GetEnvironmentVariable("AVATAR_SERVICE_URL", "Process")
@@ -95,8 +95,8 @@ $command = @(
 if (-not [string]::IsNullOrWhiteSpace($InputGateUrl)) {
     $command += @("--input-gate-url", $InputGateUrl)
 }
-if (-not [string]::IsNullOrWhiteSpace($DifyBaseUrl)) {
-    $command += @("--dify-base-url", $DifyBaseUrl)
+if (-not [string]::IsNullOrWhiteSpace($ThoughtCoreBaseUrl)) {
+    $command += @("--thought-core-base-url", $ThoughtCoreBaseUrl)
 }
 if (-not [string]::IsNullOrWhiteSpace($TtsVolumeUrl)) {
     $command += @("--tts-volume-url", $TtsVolumeUrl)

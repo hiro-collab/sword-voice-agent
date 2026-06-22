@@ -59,8 +59,6 @@ def run_stack_dry_run(workspace: Path) -> subprocess.CompletedProcess[str]:
             str(workspace),
             "-StackStateDir",
             str(workspace / ".cache/home-control-stack"),
-            "-SkipDify",
-            "-SkipDifyWatch",
             "-SkipVoicevoxCheck",
             "-EnableThoughtCore",
             "-EnableThoughtCoreWatch",

@@ -16,7 +16,6 @@
     "provider_or_fallback",
     "provider_called",
     "used_llm",
-    "direct_dify_used",
     "trace_ref",
     "event_refs",
     "completion_status",
@@ -77,9 +76,6 @@
       "type": "boolean"
     },
     "used_llm": {
-      "type": "boolean"
-    },
-    "direct_dify_used": {
       "type": "boolean"
     },
     "fallback_reason": {

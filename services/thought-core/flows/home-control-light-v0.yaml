@@ -2,13 +2,13 @@
   "schema_version": "thought-core.flow.v0",
   "id": "home-control-light-v0",
   "name": "Home Control Thought Core v0",
-  "description": "Visual draft of the current ThoughtLoop home-control path, including Dify-derived environment state queries and action registry behavior. This file is JSON-compatible YAML so the exporter can run with Python standard library only.",
+  "description": "Visual draft of the current ThoughtLoop home-control path, including environment state queries and action registry behavior. This file is JSON-compatible YAML for lightweight inspection.",
   "source": {
     "implementation": "services/thought-core/src/thought_core/loop.py",
     "class": "ThoughtLoop",
     "contract": "services/thought-core/README.md"
   },
-  "dify": {
+  "visualization": {
     "app_name": "Thought Core Home Control Visual Draft",
     "app_description": "Non-executable visual projection of Thought Core nodes. [TC] nodes are no-op placeholders for discussion and YAML round-tripping."
   },
@@ -17,7 +17,7 @@
       "id": "turn_input",
       "kind": "turn.input",
       "label": "ユーザー入力",
-      "dify_type": "start",
+      "visual_node_type": "start",
       "description": "Thought Core turn input. Carries text, turn_id, session_id, locale, and context_refs.",
       "column": 0,
       "lane": 1,

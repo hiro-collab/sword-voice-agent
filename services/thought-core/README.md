@@ -1,10 +1,10 @@
 # thought-core turn service v0
 
 このディレクトリは、現行 workspace での `thought-core` 正規 service root です。
-現在は v0 実装として、Dify workflow と並走しながら turn 境界を固めています。
+現在は v0 実装として、Thought Core API と watcher の turn 境界を固めています。
 
-目的は、system cell の外側ランタイムから見える API 契約を小さく固定し、内部の実装を Dify、
-OpenAI Agents SDK、LangGraph、または将来の別基盤へ差し替えやすくすることです。
+目的は、system cell の外側ランタイムから見える API 契約を小さく固定し、内部の推論実装候補を
+OpenAI Agents SDK、LangGraph、Dify などへ差し替えやすくすることです。
 
 ## 境界仕様
 
@@ -14,7 +14,7 @@ OpenAI Agents SDK、LangGraph、または将来の別基盤へ差し替えやす
 - `TurnInput` を受け取る
 - `speech` / `display` / `status` を返す
 - tool 実行や Home Assistant の状態捏造はしない
-- 実装は `openai_compatible_chat` / LangGraph / OpenAI Agents SDK / Dify などの adapter に差し替える
+- 実装は `openai_compatible_chat` / LangGraph / OpenAI Agents SDK / Dify などの Thought Core 内部 adapter に差し替える
 
 最初の adapter は依存なしの OpenAI-compatible HTTP です。`.env` またはプロセス環境で
 `THOUGHT_CORE_LLM_BASE_URL`, `THOUGHT_CORE_LLM_API_KEY`, `THOUGHT_CORE_LLM_MODEL`
@@ -104,9 +104,9 @@ OpenAI-compatible adapter へ問い合わせます。
 LLM は言葉、理由、判定補助を柔軟にできますが、`home.preview` にない command や
 Home Assistant service/entity を勝手に生成することはできません。
 
-### Dify YAML から移植した環境認識
+### 旧 workflow から移植した環境認識
 
-元の Home Control Assistant YAML では、`state_queries.room_light` を Home Assistant の
+元の Home Control Assistant workflow では、`state_queries.room_light` を Home Assistant の
 スイッチ状態とは別の「映像由来の部屋の明るさ推定」として扱っていました。Thought Core でも
 この境界を維持します。
 
@@ -114,7 +114,7 @@ Home Assistant service/entity を勝手に生成することはできません�
   `environment.observe` による状態照会として扱う
 - `environment.actions` がある場合は aliases / target_label / verb / noop を見て分類し、
   noop の操作は `home.execute` に進めず `action.skipped` で完了する
-- Dify YAML と同じ action_id 群のうち、`light_*`, `fan_*`, `aircon_*`, `door_*`,
+- 旧 workflow と同じ action_id 群のうち、`light_*`, `fan_*`, `aircon_*`, `door_*`,
   `vacuum_*` は Thought Core 側でも bridge allowlist へ渡せる
 - `room_light.authority=vision_snapshot_processor` はカメラ推定として返し、HA の実スイッチ状態と混ぜない
 - `light_on` / `light_off` の実行後は `ENVIRONMENT_STATE_URL` に

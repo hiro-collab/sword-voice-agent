@@ -1111,7 +1111,7 @@ def _builtin_home_action_candidates(
         ),
         (
             ("掃除機", "ロボット掃除機", "ルンバ"),
-            ("かけ", "動か", "始め", "スタート"),
+            ("かけ", "動か", "動かし", "始め", "スタート"),
             HomeLightIntent(
                 action_id="vacuum_start",
                 expected_state="cleaning",

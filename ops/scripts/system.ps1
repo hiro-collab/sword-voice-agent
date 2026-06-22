@@ -2,11 +2,10 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet("status", "start", "stop")]
     [string]$Command = "status",
-    [string]$Profile = "full-local",
+    [string]$Profile = "thought-core-v0",
     [string]$WorkspaceRoot = "",
     [string]$StackStateDir = "",
     [string]$HomeControlConfigPath = "",
-    [string]$DifyDockerRoot = "",
     [int]$HomeAssistantBridgePort = 8787,
     [string]$HomeAssistantBridgeHost = "127.0.0.1",
     [int]$EnvironmentStatePort = 8790,
@@ -17,7 +16,6 @@ param(
     [string]$AituberHost = "127.0.0.1",
     [int]$TouchDesignerGuiPort = 8788,
     [string]$TouchDesignerGuiHost = "127.0.0.1",
-    [int]$DifyPort = 8080,
     [string]$ThoughtCoreHost = "127.0.0.1",
     [int]$ThoughtCorePort = 18787,
     [string]$ThoughtCoreWatchAituberHttpTimeout = "",
@@ -31,13 +29,11 @@ param(
     [switch]$MediapipeOpenBrowser,
     [switch]$MediapipeNoBrowser,
     [switch]$MediapipePythonGui,
-    [switch]$SkipDify,
     [switch]$SkipHomeAssistantBridge,
     [switch]$SkipEnvironmentState,
     [switch]$SkipMediapipe,
     [switch]$SkipVisionSnapshotProcessor,
     [switch]$SkipAituber,
-    [switch]$SkipDifyWatch,
     [switch]$SkipTouchDesignerGui,
     [switch]$EnableThoughtCore,
     [switch]$EnableThoughtCoreWatch,
@@ -45,7 +41,6 @@ param(
     [switch]$StopExisting,
     [switch]$SkipVoicevoxCheck,
     [switch]$EnableHomeControlFaultInjection,
-    [switch]$StopDify,
     [switch]$Force,
     [switch]$DryRun,
     [switch]$ManifestOnly,
@@ -276,13 +271,11 @@ function Resolve-EffectiveServices {
         $selected[$service] = $true
     }
 
-    if ($SkipDify) { $selected["dify_stack"] = $false }
     if ($SkipHomeAssistantBridge) { $selected["home_assistant_bridge"] = $false }
     if ($SkipEnvironmentState) { $selected["environment_state_server"] = $false }
     if ($SkipMediapipe) { $selected["mediapipe_camera_hub_stack"] = $false }
     if ($SkipVisionSnapshotProcessor) { $selected["vision_snapshot_processor"] = $false }
     if ($SkipAituber) { $selected["aituber_kit"] = $false }
-    if ($SkipDifyWatch) { $selected["dify_watcher"] = $false }
     if ($SkipTouchDesignerGui) { $selected["touchdesigner_control_gui"] = $false }
     if ($EnableThoughtCore) { $selected["thought_core_api"] = $true }
     if ($EnableThoughtCoreWatch) { $selected["thought_core_watcher"] = $true }
@@ -338,7 +331,6 @@ function Add-CommonPortArguments {
     Add-NamedArgument -Arguments $Arguments -Name "-VisionSnapshotProcessorPort" -Value $VisionSnapshotProcessorPort
     Add-NamedArgument -Arguments $Arguments -Name "-AituberPort" -Value $AituberPort
     Add-NamedArgument -Arguments $Arguments -Name "-TouchDesignerGuiPort" -Value $TouchDesignerGuiPort
-    Add-NamedArgument -Arguments $Arguments -Name "-DifyPort" -Value $DifyPort
     Add-NamedArgument -Arguments $Arguments -Name "-ThoughtCorePort" -Value $ThoughtCorePort
 }
 
@@ -363,8 +355,6 @@ function New-StackStartArguments {
     Add-NamedArgument -Arguments $arguments -Name "-AituberHost" -Value $AituberHost
     Add-NamedArgument -Arguments $arguments -Name "-TouchDesignerGuiPort" -Value $TouchDesignerGuiPort
     Add-NamedArgument -Arguments $arguments -Name "-TouchDesignerGuiHost" -Value $TouchDesignerGuiHost
-    Add-NamedArgument -Arguments $arguments -Name "-DifyPort" -Value $DifyPort
-    Add-NamedArgument -Arguments $arguments -Name "-DifyDockerRoot" -Value $DifyDockerRoot -SkipWhenBlank $true
     Add-NamedArgument -Arguments $arguments -Name "-ThoughtCoreHost" -Value $ThoughtCoreHost
     Add-NamedArgument -Arguments $arguments -Name "-ThoughtCorePort" -Value $ThoughtCorePort
     Add-NamedArgument -Arguments $arguments -Name "-ThoughtCoreWatchAituberHttpTimeout" -Value $ThoughtCoreWatchAituberHttpTimeout -SkipWhenBlank $true
@@ -374,13 +364,11 @@ function New-StackStartArguments {
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeReadyTimeoutSeconds" -Value $MediapipeReadyTimeoutSeconds
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeVideoSource" -Value $MediapipeVideoSource
 
-    Add-ArgumentIf -Arguments $arguments -Condition (-not (Test-ServiceSelected -Services $Services -ServiceId "dify_stack")) -Name "-SkipDify"
     Add-ArgumentIf -Arguments $arguments -Condition (-not (Test-ServiceSelected -Services $Services -ServiceId "home_assistant_bridge")) -Name "-SkipHomeAssistantBridge"
     Add-ArgumentIf -Arguments $arguments -Condition (-not (Test-ServiceSelected -Services $Services -ServiceId "environment_state_server")) -Name "-SkipEnvironmentState"
     Add-ArgumentIf -Arguments $arguments -Condition (-not (Test-ServiceSelected -Services $Services -ServiceId "mediapipe_camera_hub_stack")) -Name "-SkipMediapipe"
     Add-ArgumentIf -Arguments $arguments -Condition (-not (Test-ServiceSelected -Services $Services -ServiceId "vision_snapshot_processor")) -Name "-SkipVisionSnapshotProcessor"
     Add-ArgumentIf -Arguments $arguments -Condition (-not (Test-ServiceSelected -Services $Services -ServiceId "aituber_kit")) -Name "-SkipAituber"
-    Add-ArgumentIf -Arguments $arguments -Condition (-not (Test-ServiceSelected -Services $Services -ServiceId "dify_watcher")) -Name "-SkipDifyWatch"
     Add-ArgumentIf -Arguments $arguments -Condition (-not (Test-ServiceSelected -Services $Services -ServiceId "touchdesigner_control_gui")) -Name "-SkipTouchDesignerGui"
     Add-ArgumentIf -Arguments $arguments -Condition (Test-ServiceSelected -Services $Services -ServiceId "thought_core_api") -Name "-EnableThoughtCore"
     Add-ArgumentIf -Arguments $arguments -Condition (Test-ServiceSelected -Services $Services -ServiceId "thought_core_watcher") -Name "-EnableThoughtCoreWatch"
@@ -424,8 +412,6 @@ function New-StackStopArguments {
     foreach ($argument in (New-CommonStackArguments -WorkspaceRoot $WorkspaceRoot -StackStateDir $StackStateDir)) {
         $arguments.Add($argument)
     }
-    Add-NamedArgument -Arguments $arguments -Name "-DifyDockerRoot" -Value $DifyDockerRoot -SkipWhenBlank $true
-    Add-ArgumentIf -Arguments $arguments -Condition $StopDify.IsPresent -Name "-StopDify"
     Add-ArgumentIf -Arguments $arguments -Condition $Force.IsPresent -Name "-Force"
     Add-ArgumentIf -Arguments $arguments -Condition $DryRun.IsPresent -Name "-DryRun"
     return [string[]]$arguments.ToArray()

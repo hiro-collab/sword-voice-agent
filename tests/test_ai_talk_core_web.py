@@ -65,16 +65,16 @@ class AiTalkCoreWebDefaultsTest(TestCase):
 
             self.assertEqual(detect_native_startup_profile(tmp), "integration")
 
-    def test_detects_legacy_native_dify_profile(self) -> None:
+    def test_ignores_removed_native_profile_names(self) -> None:
         with workspace_tempdir() as tmp:
             app_js = tmp / "src" / "web" / "static" / "app.js"
             app_js.parent.mkdir(parents=True)
             app_js.write_text(
-                "const OPTION_PROFILES = { dify: { record_gate_auto: '1' } };",
+                "const OPTION_PROFILES = { legacy: { record_gate_auto: '1' } };",
                 encoding="utf-8",
             )
 
-            self.assertEqual(detect_native_startup_profile(tmp), "dify")
+            self.assertIsNone(detect_native_startup_profile(tmp))
 
     def test_builds_native_startup_query_with_overrides(self) -> None:
         result = build_native_startup_query(

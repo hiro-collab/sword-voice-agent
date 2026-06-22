@@ -104,7 +104,6 @@ def build_thought_core_conversation_runtime_summary(
         "provider_or_fallback": provider_or_fallback,
         "provider_called": provider_called,
         "used_llm": used_llm,
-        "direct_dify_used": bool(route_data.get("direct_dify_used")) is True,
         "fallback_reason": _fallback_reason(
             responder=responder,
             route_data=route_data,

@@ -41,7 +41,7 @@ class ThoughtCoreInputFuzzingTest(TestCase):
 
         self.assert_side_effect_free(tools)
 
-    def test_unicode_and_oversized_inputs_downgrade_without_provider(self) -> None:
+    def test_unicode_and_oversized_inputs_downgrade_without_llm(self) -> None:
         fuzz_texts = [
             "🙂\u200b\u2060\u3000",
             "あ" * 12000,
@@ -61,10 +61,10 @@ class ThoughtCoreInputFuzzingTest(TestCase):
 
                 understood = event_of_type(events, "input.understood")
                 self.assertIn(understood["data"]["kind"], {"general", "state_query"})
-                self.assert_no_provider_route(events)
+                self.assert_local_fallback_route(events)
                 self.assert_side_effect_free(tools)
 
-    def test_malformed_context_refs_are_ignored_without_provider_or_leak(self) -> None:
+    def test_malformed_context_refs_are_ignored_without_llm_or_leak(self) -> None:
         marker = "synthetic_context_marker_should_not_escape"
         tools = MockThoughtTools()
         events = ThoughtLoop(tools=tools).run_dicts(
@@ -84,17 +84,16 @@ class ThoughtCoreInputFuzzingTest(TestCase):
 
         understood = event_of_type(events, "input.understood")
         self.assertEqual(understood["data"]["kind"], "general")
-        self.assert_no_provider_route(events)
+        self.assert_local_fallback_route(events)
         self.assert_side_effect_free(tools)
         self.assertNotIn(marker, json.dumps(events, ensure_ascii=False))
 
-    def assert_no_provider_route(self, events: list[dict[str, object]]) -> None:
+    def assert_local_fallback_route(self, events: list[dict[str, object]]) -> None:
         route = event_of_type(events, "thought_core.response_route_classified")
         route_data = route["data"]
         self.assertTrue(route_data["fallback_used"])
         self.assertFalse(route_data["used_llm"])
-        self.assertFalse(route_data["direct_dify_used"])
-        self.assertNotEqual(route_data["provider_route"], "dify")
+        self.assertEqual(route_data["provider_route"], "thought-core")
 
         completed = events[-1]
         self.assertEqual(completed["type"], "turn.completed")

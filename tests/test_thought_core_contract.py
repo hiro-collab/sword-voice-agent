@@ -879,7 +879,7 @@ class ThoughtCoreContractTest(TestCase):
             proposed["live_test_readiness"],
         )
 
-    def test_vacuum_return_uses_dify_action_id_dictionary(self) -> None:
+    def test_vacuum_return_uses_canonical_action_id_dictionary(self) -> None:
         tools = MockThoughtTools()
         events = ThoughtLoop(tools=tools).run_dicts(
             {
@@ -2281,7 +2281,6 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(route["data"]["intent_kind"], "audio_check")
         self.assertEqual(route["data"]["responder_status"], "audio_status_check")
         self.assertFalse(route["data"]["fallback_used"])
-        self.assertFalse(route["data"]["direct_dify_used"])
         self.assertNotIn("raw_prompt", serialized_route)
         self.assertNotIn("raw_transcript", serialized_route)
         self.assertNotIn("provider_payload", serialized_route)
@@ -2504,7 +2503,6 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(route["data"]["intent_kind"], "general")
         self.assertEqual(route["data"]["responder_status"], "llm_response")
         self.assertFalse(route["data"]["fallback_used"])
-        self.assertFalse(route["data"]["direct_dify_used"])
         self.assertNotIn("raw_prompt", route["data"])
         self.assertNotIn("raw_transcript", route["data"])
         self.assertNotIn("provider_payload", route["data"])
@@ -2546,7 +2544,6 @@ class ThoughtCoreContractTest(TestCase):
         )
         self.assertTrue(route["data"]["fallback_used"])
         self.assertFalse(route["data"]["used_llm"])
-        self.assertFalse(route["data"]["direct_dify_used"])
         self.assertEqual(completed["data"]["adapter_kind"], "local_fallback")
         self.assertEqual(completed["data"]["provider"], "thought-core")
         self.assertEqual(completed["data"]["model"], "local-rule-v0")
@@ -2555,7 +2552,7 @@ class ThoughtCoreContractTest(TestCase):
         self.assertNotIn("raw_prompt", serialized_route)
         self.assertNotIn("raw_transcript", serialized_route)
         self.assertNotIn("provider_payload", serialized_route)
-        self.assertNotIn("raw Dify", serialized_route)
+        self.assertNotIn("raw provider", serialized_route)
         self.assertIn("入力は受け取りました", visible_text)
         self.assertIn("通常会話用LLMが未接続", visible_text)
         self.assertIn("簡易応答", visible_text)
@@ -2620,7 +2617,6 @@ class ThoughtCoreContractTest(TestCase):
                 self.assertEqual(route["data"]["response_route"], "ordinary_conversation")
                 self.assertTrue(route["data"]["fallback_used"])
                 self.assertFalse(route["data"]["used_llm"])
-                self.assertFalse(route["data"]["direct_dify_used"])
                 self.assertEqual(completed["data"]["adapter_kind"], "local_fallback")
                 self.assertEqual(completed["data"]["provider"], "thought-core")
                 self.assertEqual(completed["data"]["model"], "local-rule-v0")

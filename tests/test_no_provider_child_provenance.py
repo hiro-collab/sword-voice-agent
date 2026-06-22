@@ -88,8 +88,8 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
             "action_llm_disabled_literal",
         )
         self.assertEqual(
-            payload["direct_dify_exclusion_class"],
-            "profile_delegate_excludes_dify_stack_and_watcher",
+            payload["external_provider_route_class"],
+            "thought_core_route_selected",
         )
         self.assertEqual(payload["mapping_input_source"], "top_level_text")
         self.assertEqual(

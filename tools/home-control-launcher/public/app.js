@@ -451,7 +451,7 @@ const serviceLabelsJa = {
   thought_core_watcher: '思考中枢の監視',
   voicevox: 'VOICEVOX音声'
 }
-const hiddenServiceKeys = new Set(['dify'])
+const hiddenServiceKeys = new Set()
 const serviceRoles = {
   home_assistant_bridge: 'action boundary',
   environment_state_server: 'environment',
@@ -816,13 +816,7 @@ const currentOptions = () => ({
   ...state.options
 })
 
-const formatReviewCommandPreview = (commandLine) =>
-  String(commandLine || '')
-    .replace(/\s+-SkipDifyWatch\b/g, '')
-    .replace(/\s+-SkipDify\b/g, '')
-    .replace(/\s+-DifyPort\s+(?:"[^"]*"|'[^']*'|\S+)/g, '')
-    .replace(/\s+-DifyDockerRoot\s+(?:"[^"]*"|'[^']*'|\S+)/g, '')
-    .trim()
+const formatReviewCommandPreview = (commandLine) => String(commandLine || '').trim()
 
 const setCommandPreview = (commandLine) => {
   $('command-preview').textContent = formatReviewCommandPreview(commandLine)
@@ -1510,7 +1504,6 @@ const endpointGroupLabel = (group) => {
 const endpointKind = (endpoint) => {
   const name = String(endpoint.name || '').toLowerCase()
   const url = String(endpoint.url || '').toLowerCase()
-  if (name.includes('dify') || name.includes('compatibility')) return 'compatibility'
   if (url.startsWith('ws:') || name.includes('websocket')) return 'websocket'
   if (name.includes('passive projection') || url.includes('mode=passive')) return 'stage'
   if (name.includes('thought-core')) return 'thought'
@@ -1616,7 +1609,7 @@ const stopStack = async () => {
   try {
     const payload = await api('/api/stop', {
       method: 'POST',
-      body: JSON.stringify({ stopDify: false })
+      body: JSON.stringify({})
     })
     setOperation('stopped', formatStopVerificationDetail(payload.stopVerification))
     await refreshState()

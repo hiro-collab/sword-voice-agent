@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from sword_voice_agent.apps.send_handoff_to_dify import validate_path_argument
-
 
 @dataclass(frozen=True)
 class AiTalkCoreWebDefaults:
@@ -30,7 +28,7 @@ CHECKBOX_IDS = {
     "upload_save_handoff": "save_handoff",
 }
 AI_TALK_CORE_WEB_PRESET_ENV = "AI_TALK_CORE_WEB_PRESET"
-NATIVE_PROFILE_NAMES = ("integration", "dify")
+NATIVE_PROFILE_NAMES = ("integration",)
 
 
 def apply_ai_talk_core_web_defaults(
@@ -157,6 +155,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Leave handoff save options unchecked.",
     )
     return parser
+
+
+def validate_path_argument(value: str, label: str) -> None:
+    if "<" in value or ">" in value:
+        raise RuntimeError(
+            f"{label} still contains a placeholder: {value!r}. "
+            "Replace placeholders such as <ai_talk_core_root> with an actual local path."
+        )
 
 
 def load_ai_talk_core_module(ai_talk_core_root: Path) -> Any:

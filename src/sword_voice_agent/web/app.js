@@ -16,7 +16,6 @@ const state = {
   previous: {
     gestureKey: "",
     voiceKey: "",
-    difyKey: "",
     thoughtCoreKey: "",
     ttsKey: "",
   },
@@ -119,18 +118,6 @@ function formatStoredEvent(event) {
     const fps = data.fps === null || data.fps === undefined ? "" : ` fps=${Number(data.fps).toFixed(1)}`;
     return `gesture ${kind}: ${status}${fps}`;
   }
-  if (event.type === "dify.response") {
-    if (data.skipped) return `compat${turn}: skipped ${data.skip_reason || ""}`;
-    return `compat${turn}: ${short(data.response_text || "", 96)}`;
-  }
-  if (event.type === "dify.first_token") {
-    const elapsed = data.elapsed_s === null || data.elapsed_s === undefined ? "" : ` ${Number(data.elapsed_s).toFixed(2)}s`;
-    return `compat${turn}: first token${elapsed}`;
-  }
-  if (event.type === "dify.done") {
-    const elapsed = data.elapsed_s === null || data.elapsed_s === undefined ? "" : ` ${Number(data.elapsed_s).toFixed(2)}s`;
-    return `compat${turn}: done${elapsed}`;
-  }
   if (event.type === "thought_core.response") {
     if (data.skipped) return `thought-core${turn}: skipped ${data.skip_reason || ""}`;
     return `thought-core${turn}: ${short(data.response_text || "", 96)}`;
@@ -162,7 +149,6 @@ function renderStatus(payload) {
   const gesture = payload.gesture || {};
   const gestureDiagnostic = payload.gesture_diagnostic || {};
   const voice = payload.voice || {};
-  const dify = payload.dify || {};
   const thoughtCore = payload.thought_core || {};
   const tts = payload.tts || {};
   const avatar = payload.avatar || {};
@@ -214,26 +200,6 @@ function renderStatus(payload) {
   text("voiceCommand", voice.command);
   text("handoffPath", files.handoff_json?.path || "-");
 
-  const difyReady = Boolean(dify.available);
-  const difySkipped = Boolean(dify.skipped);
-  setPanel(
-    "difyPanel",
-    difyReady ? (difySkipped ? "warn" : "ok") : "bad",
-    "difyState",
-    difyReady ? (difySkipped ? "skipped" : "ready") : "missing"
-  );
-  const usage = dify.usage || {};
-  text("difyTokens", usage.total_tokens ?? "-");
-  text("difyCost", usage.total_price ? `$${usage.total_price}` : "-");
-  const firstTokenLatency = usage.first_token_latency ? `first ${Number(usage.first_token_latency).toFixed(2)}s` : "";
-  const totalLatency = usage.latency ? `total ${Number(usage.latency).toFixed(2)}s` : "";
-  text("difyLatency", [firstTokenLatency, totalLatency].filter(Boolean).join(" / ") || "-");
-  text("difyTurn", shortTurn(dify.turn_id));
-  text("difyAnswer", dify.answer);
-  text("conversationId", dify.conversation_id ? `conversation ${dify.conversation_id}` : "-");
-  text("messageId", dify.message_id ? `message ${dify.message_id}` : "message: -");
-  text("difyUpdated", `updated ${formatTime(dify.updated_at)}`);
-
   const thoughtCoreReady = Boolean(thoughtCore.available);
   const thoughtCoreSkipped = Boolean(thoughtCore.skipped);
   const thoughtCoreStatus = thoughtCore.status || (thoughtCoreSkipped ? "skipped" : thoughtCoreReady ? "ready" : "missing");
@@ -248,6 +214,7 @@ function renderStatus(payload) {
   text("thoughtCoreLatency", formatThoughtCoreLatency(thoughtCore));
   text("thoughtCoreTurn", shortTurn(thoughtCore.turn_id));
   text("thoughtCoreAnswer", thoughtCore.answer);
+  text("conversationId", thoughtCore.turn_id ? `turn ${thoughtCore.turn_id}` : "-");
   text("thoughtCoreConversationId", thoughtCore.turn_id ? `turn ${thoughtCore.turn_id}` : "-");
   text("thoughtCoreMessageId", thoughtCore.event_count ? `events ${thoughtCore.event_count}` : "events: -");
   text("thoughtCoreUpdated", `updated ${formatTime(thoughtCore.updated_at)}`);
@@ -271,10 +238,10 @@ function renderStatus(payload) {
   text("ttsError", short(tts.error || "", 72));
   updateTtsVolumeControl(tts);
 
-  const avatarEvent = buildAvatarState({ gesture, voice, dify, thoughtCore, tts, inputGate });
+  const avatarEvent = buildAvatarState({ gesture, voice, thoughtCore, tts, inputGate });
   updateAvatarBridge(avatar, avatarEvent);
 
-  collectEvents(gesture, voice, dify, thoughtCore, tts);
+  collectEvents(gesture, voice, thoughtCore, tts);
   renderEvents();
 }
 
@@ -392,10 +359,10 @@ function updateAvatarBridge(avatar, avatarEvent) {
   text("avatarLastTurn", shortTurn(avatarEvent.turn_id));
 }
 
-function buildAvatarState({ gesture, voice, dify, thoughtCore, tts, inputGate }) {
+function buildAvatarState({ gesture, voice, thoughtCore, tts, inputGate }) {
   const now = Date.now() / 1000;
   const ttsPhase = tts.phase || "";
-  const response = latestAssistantResponse(dify, thoughtCore);
+  const response = latestAssistantResponse(thoughtCore);
   const responseAge = response.updated_at ? now - Number(response.updated_at) : Number.POSITIVE_INFINITY;
   const voiceAge = voice.updated_at ? now - Number(voice.updated_at) : Number.POSITIVE_INFINITY;
   const inputGateState = inputGatePayload(inputGate);
@@ -433,22 +400,12 @@ function buildAvatarState({ gesture, voice, dify, thoughtCore, tts, inputGate })
   };
 }
 
-function latestAssistantResponse(dify, thoughtCore) {
-  const difyUpdated = Number(dify.updated_at || 0);
-  const thoughtUpdated = Number(thoughtCore.updated_at || 0);
-  if (thoughtCore.available && thoughtUpdated >= difyUpdated) {
-    return {
-      answer: thoughtCore.answer || "",
-      turn_id: thoughtCore.turn_id || "",
-      updated_at: thoughtCore.updated_at,
-      skipped: Boolean(thoughtCore.skipped),
-    };
-  }
+function latestAssistantResponse(thoughtCore) {
   return {
-    answer: dify.answer || "",
-    turn_id: dify.turn_id || "",
-    updated_at: dify.updated_at,
-    skipped: Boolean(dify.available && dify.skipped),
+    answer: thoughtCore.answer || "",
+    turn_id: thoughtCore.turn_id || "",
+    updated_at: thoughtCore.updated_at,
+    skipped: Boolean(thoughtCore.skipped),
   };
 }
 
@@ -689,7 +646,7 @@ function shortTurn(turnId) {
   return value ? value.slice(0, 8) : "-";
 }
 
-function collectEvents(gesture, voice, dify, thoughtCore, tts) {
+function collectEvents(gesture, voice, thoughtCore, tts) {
   const gestureKey = `${gesture.sequence || ""}:${gesture.updated_at || ""}:${gesture.action || ""}`;
   if (gestureKey && gestureKey !== state.previous.gestureKey && gesture.available) {
     state.previous.gestureKey = gestureKey;
@@ -700,13 +657,6 @@ function collectEvents(gesture, voice, dify, thoughtCore, tts) {
   if (voiceKey && voiceKey !== state.previous.voiceKey && voice.available) {
     state.previous.voiceKey = voiceKey;
     addEvent(voiceKey, `voice command: ${short(voice.command, 92)}`);
-  }
-
-  const difyKey = `${dify.updated_at || ""}:${dify.message_id || ""}:${dify.answer || ""}`;
-  if (difyKey && difyKey !== state.previous.difyKey && dify.available) {
-    state.previous.difyKey = difyKey;
-    const label = dify.skipped ? `dify skipped: ${dify.skip_reason || "unknown"}` : `dify response: ${short(dify.answer, 92)}`;
-    addEvent(difyKey, label);
   }
 
   const thoughtCoreKey = `${thoughtCore.updated_at || ""}:${thoughtCore.turn_id || ""}:${thoughtCore.answer || ""}:${thoughtCore.status || ""}`;
@@ -740,7 +690,6 @@ async function refresh() {
       setPanel("gesturePanel", "bad", "gestureState", "auth");
       setPanel("inputGatePanel", "bad", "inputGateState", "auth");
       setPanel("voicePanel", "bad", "voiceState", "auth");
-      setPanel("difyPanel", "bad", "difyState", "auth");
       setPanel("thoughtCorePanel", "bad", "thoughtCoreState", "auth");
       setPanel("ttsPanel", "bad", "ttsState", "auth");
       setPanel("avatarPanel", "bad", "avatarState", "auth");
@@ -753,7 +702,6 @@ async function refresh() {
     setPanel("gesturePanel", "bad", "gestureState", "error");
     setPanel("inputGatePanel", "bad", "inputGateState", "error");
     setPanel("voicePanel", "bad", "voiceState", "error");
-    setPanel("difyPanel", "bad", "difyState", "error");
     setPanel("thoughtCorePanel", "bad", "thoughtCoreState", "error");
     setPanel("ttsPanel", "bad", "ttsState", "error");
     setPanel("avatarPanel", "bad", "avatarState", "error");

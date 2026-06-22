@@ -106,7 +106,6 @@ class ThoughtCoreConversationRuntimeSummaryTest(TestCase):
         self.assertEqual(summary["provider_or_fallback"], "provider_backed")
         self.assertTrue(summary["provider_called"])
         self.assertTrue(summary["used_llm"])
-        self.assertFalse(summary["direct_dify_used"])
         self.assertEqual(summary["proof_ceiling"], "provider_backed_summary_only")
         self.assertEqual(summary["visible_response_summary_class"], "present_nonempty_short")
         self.assertNotIn("Synthetic provider response", serialized)
@@ -129,7 +128,6 @@ class ThoughtCoreConversationRuntimeSummaryTest(TestCase):
         self.assertEqual(summary["provider_or_fallback"], "local_fallback")
         self.assertFalse(summary["provider_called"])
         self.assertFalse(summary["used_llm"])
-        self.assertFalse(summary["direct_dify_used"])
         self.assertEqual(summary["fallback_reason"], "local_fallback")
         self.assertEqual(summary["proof_ceiling"], "local_fallback_runtime_support_only")
         self.assertIn("provider_backed_quality_from_fallback", summary["does_not_prove"])
@@ -162,7 +160,6 @@ class ThoughtCoreConversationRuntimeSummaryTest(TestCase):
                     "fallback_used": False,
                     "provider_route": "synthetic-provider",
                     "used_llm": True,
-                    "direct_dify_used": False,
                 },
             ),
             self._event("evt_message_001", "assistant.message", {"speech": "raw answer"}),

@@ -5,7 +5,6 @@ from sword_voice_agent.adapters.ai_talk_core import (
     AiTalkCoreInputGateError,
     voice_state_to_input_gate_payload,
 )
-from sword_voice_agent.adapters.dify import DifyClient, DifyClientError
 from sword_voice_agent.adapters.gesture_gateway import build_gesture_response
 from sword_voice_agent.adapters.gesture_udp import (
     GestureUdpReceiver,
@@ -20,8 +19,6 @@ from sword_voice_agent.adapters.thought_core import (
 __all__ = [
     "AiTalkCoreInputGateClient",
     "AiTalkCoreInputGateError",
-    "DifyClient",
-    "DifyClientError",
     "GestureUdpReceiver",
     "ThoughtCoreClient",
     "ThoughtCoreClientError",

@@ -7,17 +7,17 @@ inside each module's own docs.
 
 | Module | Owns | Does Not Own |
 |---|---|---|
-| `sword-voice-agent` | Integration runtime, gesture gate policy, Dify/thought-core watcher entrypoints, local status projection, launcher-facing scripts | Physical camera capture, STT implementation, Home Assistant device semantics, avatar rendering internals |
+| `sword-voice-agent` | Integration runtime, gesture gate policy, Thought Core watcher entrypoints, local status projection, launcher-facing scripts | Physical camera capture, STT implementation, Home Assistant device semantics, avatar rendering internals |
 | `sword-control-plane/services/thought-core` | Canonical turn service v0, turn event stream, tool orchestration loop, responder boundary; package code under `src/thought_core` | STT, camera capture, Home Assistant implementation, display rendering |
-| `ai-talk-core` | Browser/microphone recording, STT, transcript, handoff files | Dify request policy, home actions, gesture inference |
-| `mediapipe-sword-sign` | Camera Hub, gesture model inference, Camera Hub topics, MediaMTX helper stack | STT, Dify, TTS, Home Assistant action state |
+| `ai-talk-core` | Browser/microphone recording, STT, transcript, handoff files | Thought Core request policy, home actions, gesture inference |
+| `mediapipe-sword-sign` | Camera Hub, gesture model inference, Camera Hub topics, MediaMTX helper stack | STT, Thought Core, TTS, Home Assistant action state |
 | `vision-snapshot-processor` | Snapshot-style vision inference from MediaMTX streams | Camera ownership, gesture inference, environment aggregation |
 | `environment-state-server` | Environment snapshot cache, indicator projection, feedback capture, module health aggregation | Camera capture, gesture inference, authoritative home action execution |
 | `home-assistant-server` | Safe action allowlist, Home Assistant script execution, action tracking | STT, gesture inference, avatar rendering, turn reasoning |
 | `tts-service` | TTS synthesis, playback, status, volume control | Assistant answer generation, avatar rendering, home action decisions |
-| `aituber-kit` | Projection Visual, avatar speech queue, browser-facing AITuber UI | Dify watcher policy, Home Assistant safety, environment authority |
-| `avatar-service` | Standalone avatar runtime and avatar event integration | Dify, TTS playback, gesture inference |
-| `touchdesigner-ai-controller` | TouchDesigner control GUI, UDP visual trigger, display bridge | Dify, TTS synthesis, camera inference |
+| `aituber-kit` | Projection Visual, avatar speech queue, browser-facing AITuber UI | Thought Core watcher policy, Home Assistant safety, environment authority |
+| `avatar-service` | Standalone avatar runtime and avatar event integration | Thought Core, TTS playback, gesture inference |
+| `touchdesigner-ai-controller` | TouchDesigner control GUI, UDP visual trigger, display bridge | Thought Core, TTS synthesis, camera inference |
 | `system-house-renderer` | Topology and runtime trace visualization | Long-running service state, runtime control |
 
 ## Boundary Questions

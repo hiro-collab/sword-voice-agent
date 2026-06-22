@@ -6,10 +6,8 @@ param(
     [string]$VisionSnapshotProcessorRoot = "",
     [string]$AituberRoot = "",
     [string]$TouchDesignerGuiRoot = "",
-    [string]$DifyWatchRoot = "",
     [string]$ThoughtCoreRoot = "",
     [string]$EnvironmentStateServerRoot = "",
-    [string]$DifyDockerRoot = "",
     [int]$HomeAssistantBridgePort = 8787,
     [string]$HomeAssistantBridgeHost = "127.0.0.1",
     [string]$HomeControlConfigPath = "",
@@ -21,7 +19,6 @@ param(
     [string]$AituberHost = "127.0.0.1",
     [int]$TouchDesignerGuiPort = 8788,
     [string]$TouchDesignerGuiHost = "127.0.0.1",
-    [int]$DifyPort = 8080,
     [string]$ThoughtCoreHost = "127.0.0.1",
     [int]$ThoughtCorePort = 18787,
     [string]$ThoughtCoreWatchAituberHttpTimeout = "",
@@ -35,14 +32,12 @@ param(
     [switch]$MediapipeOpenBrowser,
     [switch]$MediapipeNoBrowser,
     [switch]$MediapipePythonGui,
-    [switch]$SkipDify,
     [switch]$SkipVoicevoxCheck,
     [switch]$SkipHomeAssistantBridge,
     [switch]$SkipEnvironmentState,
     [switch]$SkipMediapipe,
     [switch]$SkipVisionSnapshotProcessor,
     [switch]$SkipAituber,
-    [switch]$SkipDifyWatch,
     [switch]$SkipTouchDesignerGui,
     [switch]$EnableThoughtCore,
     [switch]$EnableThoughtCoreWatch,
@@ -99,10 +94,6 @@ function Resolve-WorkspaceDirectory {
     return Join-Path $WorkspaceRoot $FallbackRelativePath
 }
 
-if ([string]::IsNullOrWhiteSpace($DifyDockerRoot)) {
-    $DifyDockerRoot = [Environment]::GetEnvironmentVariable("DIFY_DOCKER_ROOT")
-}
-
 if ([string]::IsNullOrWhiteSpace($HomeAssistantServerRoot)) {
     $HomeAssistantServerRoot = Join-Path $WorkspaceRoot "organs\action\home-assistant-server"
 }
@@ -117,12 +108,6 @@ if ([string]::IsNullOrWhiteSpace($AituberRoot)) {
 }
 if ([string]::IsNullOrWhiteSpace($TouchDesignerGuiRoot)) {
     $TouchDesignerGuiRoot = Join-Path $WorkspaceRoot "organs\display\touchdesigner-ai-controller"
-}
-if ([string]::IsNullOrWhiteSpace($DifyWatchRoot)) {
-    $DifyWatchRoot = Resolve-WorkspaceDirectory `
-        -WorkspaceRoot $WorkspaceRoot `
-        -RelativePaths @("control-plane\sword-voice-agent", "sword-control-plane") `
-        -FallbackRelativePath "control-plane\sword-voice-agent"
 }
 if ([string]::IsNullOrWhiteSpace($ThoughtCoreRoot)) {
     $ThoughtCoreRoot = Resolve-WorkspaceDirectory `
@@ -199,8 +184,6 @@ if (-not $SkipHomeAssistantBridge) {
 }
 $HomeAssistantEnvPath = Join-Path $HomeAssistantServerRoot ".env"
 $TouchDesignerGuiToolsRoot = Join-Path $TouchDesignerGuiRoot "tools"
-$DifyWatchScript = Join-Path $DifyWatchRoot "scripts\start-dify-watch.ps1"
-$DifyWatchEnvPath = Join-Path $DifyWatchRoot ".env"
 $ThoughtCoreScript = Join-Path $ThoughtCoreRoot "scripts\start-thought-core.ps1"
 $ThoughtCoreWatchScript = Join-Path $ThoughtCoreRoot "scripts\start-thought-core-watch.ps1"
 $ThoughtCoreEnvPath = Join-Path $ThoughtCoreRoot ".env"
@@ -214,7 +197,6 @@ $StateDir = $StackStateDir
 $LogDir = Join-Path $StateDir "logs"
 $PidFile = Join-Path $StateDir "pids.json"
 $StopScript = Join-Path $PSScriptRoot "stop-home-control-stack.ps1"
-$DifyWatchStatusDir = Join-Path $StateDir "dify-watcher"
 $ThoughtCoreStatusDir = Join-Path $StateDir "thought-core-api"
 $ThoughtCoreWatchStatusDir = Join-Path $StateDir "thought-core-watcher"
 $ThoughtCoreClientHost = if ($ThoughtCoreHost -eq "0.0.0.0") { "127.0.0.1" } else { $ThoughtCoreHost }
@@ -314,60 +296,6 @@ function Get-DotEnvValue {
         }
     }
     return ""
-}
-
-function Test-DockerDaemon {
-    param([Parameter(Mandatory = $true)][string]$DockerPath)
-    try {
-        $output = & $DockerPath info --format "{{.ServerVersion}}" 2>&1
-        $exitCode = $LASTEXITCODE
-        return [pscustomobject]@{
-            Ok = ($exitCode -eq 0)
-            ExitCode = $exitCode
-            Detail = (($output | Out-String).Trim())
-        }
-    }
-    catch {
-        return [pscustomobject]@{
-            Ok = $false
-            ExitCode = -1
-            Detail = $_.Exception.Message
-        }
-    }
-}
-
-function Assert-DockerDesktopReady {
-    param([Parameter(Mandatory = $true)][string]$DockerPath)
-    if ($DryRun) {
-        Write-Host "[docker] dry-run: Docker Desktop readiness check skipped."
-        return
-    }
-
-    $result = Test-DockerDaemon -DockerPath $DockerPath
-    if ($result.Ok) {
-        Write-Host "[docker] Docker daemon reachable: server $($result.Detail)"
-        return
-    }
-
-    $dockerDesktopProcess = @(Get-Process -Name "Docker Desktop" -ErrorAction SilentlyContinue)
-    $linuxPipe = "\\.\pipe\dockerDesktopLinuxEngine"
-    $pipeExists = Test-Path -LiteralPath $linuxPipe
-    $processState = if ($dockerDesktopProcess.Count -gt 0) { "running" } else { "not running" }
-    $pipeState = if ($pipeExists) { "exists" } else { "missing" }
-
-    throw @"
-Docker Desktop is not ready, so Dify cannot be started.
-
-Start Docker Desktop and wait until it says "Docker Desktop is running", then rerun:
-  .\start-home-control-stack.bat -StopExisting
-
-Diagnostics:
-  docker info: $($result.Detail)
-  Docker Desktop process: $processState
-  Linux engine pipe: $pipeState ($linuxPipe)
-
-If you already run Dify another way, start this script with -SkipDify.
-"@
 }
 
 function Assert-VoicevoxReady {
@@ -489,10 +417,10 @@ HOME_CONTROL_API_TOKEN is missing for home_assistant_bridge.
 Set a random 32+ character token in:
   $EnvPath
 
-Then set the same value in the Dify app environment variable:
+Then set the same value wherever a local caller needs bridge access:
   HOME_CONTROL_API_TOKEN
 
-This token is for Dify workflow HTTP nodes calling the local Home Assistant bridge.
+This token is for local services that call the Home Assistant bridge.
 "@
     }
     if ($token.Trim().Length -lt 32) {
@@ -502,7 +430,7 @@ HOME_CONTROL_API_TOKEN is too short for home_assistant_bridge.
 Use a random 32+ character token in:
   $EnvPath
 
-Then set the same value in the Dify app environment variable:
+Then set the same value wherever a local caller needs bridge access:
   HOME_CONTROL_API_TOKEN
 "@
     }
@@ -533,7 +461,7 @@ ENVIRONMENT_API_TOKEN or HOME_CONTROL_API_TOKEN is missing for environment_state
 Set ENVIRONMENT_API_TOKEN or reuse HOME_CONTROL_API_TOKEN in:
   $EnvPath
 
-Dify should call GET /environment/current with:
+Local callers should call GET /environment/current with:
   Authorization: Bearer <token>
 "@
     }
@@ -616,186 +544,6 @@ Fault injection requires both config faults.enabled=true and HOME_CONTROL_FAULT_
 
     $source = if ($FaultModeOverride) { "process override" } else { "env file" }
     Write-Host "[home_assistant_bridge] fault injection enabled: rules=$($summary.RuleCount) ($source)"
-}
-
-function Assert-DifyWatcherApiKeyReady {
-    param([Parameter(Mandatory = $true)][string]$EnvPath)
-    if ($DryRun) {
-        Write-Host "[dify] dry-run: DIFY_API_KEY check skipped."
-        return
-    }
-
-    $baseUrl = (Get-DotEnvValue -Path $EnvPath -Name "DIFY_BASE_URL").Trim()
-    $apiKey = (Get-DotEnvValue -Path $EnvPath -Name "DIFY_API_KEY").Trim()
-    if ([string]::IsNullOrWhiteSpace($baseUrl)) {
-        throw @"
-DIFY_BASE_URL is missing for dify_watcher.
-
-Set it in:
-  $EnvPath
-
-Example:
-  DIFY_BASE_URL=http://127.0.0.1:8080/v1
-"@
-    }
-    if ([string]::IsNullOrWhiteSpace($apiKey)) {
-        throw @"
-DIFY_API_KEY is missing for dify_watcher.
-
-Set the Dify app API key in:
-  $EnvPath
-
-Open Dify, select the Home Control Assistant app, then copy the app API key from API Access.
-"@
-    }
-
-    $parametersUrl = "$($baseUrl.TrimEnd('/'))/parameters"
-    $lastError = $null
-    for ($attempt = 1; $attempt -le 12; $attempt++) {
-        try {
-            Invoke-WebRequest `
-                -Uri $parametersUrl `
-                -UseBasicParsing `
-                -TimeoutSec 5 `
-                -Headers @{ Authorization = "Bearer $apiKey" } | Out-Null
-            Write-Host "[dify] DIFY_API_KEY valid for $parametersUrl (value hidden)"
-            return
-        }
-        catch {
-            $lastError = $_
-            $statusCode = $null
-            if ($null -ne $_.Exception.Response) {
-                try {
-                    $statusCode = [int]$_.Exception.Response.StatusCode
-                }
-                catch {
-                    $statusCode = $null
-                }
-            }
-            if ($statusCode -eq 401 -or $statusCode -eq 403) {
-                throw @"
-DIFY_API_KEY is invalid for dify_watcher.
-
-Checked:
-  $parametersUrl
-
-Update DIFY_API_KEY in:
-  $EnvPath
-
-Open Dify, select the Home Control Assistant app, then copy the current app API key from API Access.
-This is different from HOME_CONTROL_API_TOKEN.
-"@
-            }
-            Start-Sleep -Seconds 1
-        }
-    }
-
-    throw @"
-Dify API key check could not reach Dify API.
-
-Checked:
-  $parametersUrl
-
-Last error:
-  $($lastError.Exception.Message)
-
-Check DIFY_BASE_URL in:
-  $EnvPath
-
-Expected format:
-  http://127.0.0.1:8080/v1
-"@
-}
-
-function Assert-AituberDifyApiKeyReady {
-    param([Parameter(Mandatory = $true)][string]$EnvPath)
-    if ($DryRun) {
-        Write-Host "[aituber_kit] dry-run: DIFY_API_KEY check skipped."
-        return
-    }
-
-    $selectedService = (Get-DotEnvValue -Path $EnvPath -Name "NEXT_PUBLIC_SELECT_AI_SERVICE").Trim().Trim('"')
-    $apiKey = (Get-DotEnvValue -Path $EnvPath -Name "DIFY_KEY").Trim()
-    if ([string]::IsNullOrWhiteSpace($apiKey)) {
-        $apiKey = (Get-DotEnvValue -Path $EnvPath -Name "DIFY_API_KEY").Trim()
-    }
-    $baseUrl = (Get-DotEnvValue -Path $EnvPath -Name "DIFY_API_URL").Trim()
-    if ([string]::IsNullOrWhiteSpace($baseUrl)) {
-        $baseUrl = (Get-DotEnvValue -Path $EnvPath -Name "DIFY_URL").Trim()
-    }
-
-    if ($selectedService -ne "dify" -and [string]::IsNullOrWhiteSpace($apiKey) -and [string]::IsNullOrWhiteSpace($baseUrl)) {
-        return
-    }
-    if ([string]::IsNullOrWhiteSpace($baseUrl)) {
-        throw @"
-AITuber Kit is configured for Dify, but DIFY_URL is missing.
-
-Set it in:
-  $EnvPath
-
-Example:
-  DIFY_URL=http://127.0.0.1:8080/v1
-"@
-    }
-    if ([string]::IsNullOrWhiteSpace($apiKey)) {
-        throw @"
-AITuber Kit is configured for Dify, but DIFY_API_KEY is missing.
-
-Set the Dify app API key in:
-  $EnvPath
-
-Open Dify, select the Home Control Assistant app, then copy the current app API key from API Access.
-This is different from HOME_CONTROL_API_TOKEN.
-"@
-    }
-
-    $parametersUrl = "$($baseUrl.TrimEnd('/'))/parameters"
-    try {
-        Invoke-WebRequest `
-            -Uri $parametersUrl `
-            -UseBasicParsing `
-            -TimeoutSec 5 `
-            -Headers @{ Authorization = "Bearer $apiKey" } | Out-Null
-        Write-Host "[aituber_kit] DIFY_API_KEY valid for $parametersUrl (value hidden)"
-    }
-    catch {
-        $statusCode = $null
-        if ($null -ne $_.Exception.Response) {
-            try {
-                $statusCode = [int]$_.Exception.Response.StatusCode
-            }
-            catch {
-                $statusCode = $null
-            }
-        }
-        if ($statusCode -eq 401 -or $statusCode -eq 403) {
-            throw @"
-AITuber Kit DIFY_API_KEY is invalid.
-
-Checked:
-  $parametersUrl
-
-Update DIFY_API_KEY in:
-  $EnvPath
-
-Open Dify, select the Home Control Assistant app, then copy the current app API key from API Access.
-This key is also used by /api/difyChat.
-"@
-        }
-        throw @"
-AITuber Kit Dify API key check could not reach Dify API.
-
-Checked:
-  $parametersUrl
-
-Last error:
-  $($_.Exception.Message)
-
-Check DIFY_URL in:
-  $EnvPath
-"@
-    }
 }
 
 function Get-ListeningPortOwner {
@@ -1253,12 +1001,6 @@ function Write-StackEndpointGuide {
             -Target "http://127.0.0.1:$AituberPort/cube-vault-background?fov=60&scale=1" `
             -Description "AITuber のキューブ背景確認用。必要なときだけ開く。"
     }
-    if (-not $SkipDify) {
-        Write-GuideItem `
-            -Name "Dify" `
-            -Target "http://127.0.0.1:$DifyPort" `
-            -Description "Dify のワークフロー編集・ログ確認画面。Dify 本体はこのスクリプトでは停止しない。"
-    }
     if ($EnableThoughtCore) {
         Write-GuideItem `
             -Name "thought-core API" `
@@ -1285,7 +1027,7 @@ function Write-StackEndpointGuide {
         Write-GuideItem `
             -Name "Environment current state" `
             -Target "http://127.0.0.1:$EnvironmentStatePort/environment/current" `
-            -Description "Dify が参照する現在状態 API。Bearer token が必要。"
+            -Description "現在状態 API。Bearer token が必要。"
         Write-GuideItem `
             -Name "Environment indicators" `
             -Target "http://127.0.0.1:$EnvironmentStatePort/indicators/current" `
@@ -1340,12 +1082,6 @@ function Write-StackEndpointGuide {
     Write-Host ""
     Write-Host "Background links"
     Write-Host "----------------"
-    if (-not $SkipDifyWatch) {
-        Write-GuideItem `
-            -Name "Dify watcher" `
-            -Target "no browser URL" `
-            -Description "Dify のストリームを AITuber の発話キューへ渡す常駐処理。"
-    }
     if ($EnableThoughtCoreWatch) {
         Write-GuideItem `
             -Name "thought-core watcher" `
@@ -1362,7 +1098,6 @@ function Write-StackEndpointGuide {
     Write-Host "--------"
     Write-Host "  Status : .\status-home-control-stack.bat"
     Write-Host "  Stop   : Ctrl+C in this terminal, or .\stop-home-control-stack.bat"
-    Write-Host "  Note   : Dify is external; use the stop script with -StopDify only when you intend to stop Dify too."
     Write-Host ""
 }
 
@@ -1536,12 +1271,6 @@ Assert-Directory -Path $AituberRoot -Label "aituber-kit"
 if (-not $SkipEnvironmentState) {
     Assert-Directory -Path $EnvironmentStateServerRoot -Label "environment-state-server"
 }
-if (-not $SkipDifyWatch) {
-    Assert-Directory -Path $DifyWatchRoot -Label "control-plane"
-    if (-not (Test-Path -LiteralPath $DifyWatchScript -PathType Leaf)) {
-        throw "Dify watcher script not found: $DifyWatchScript"
-    }
-}
 if ($EnableThoughtCore -or $EnableThoughtCoreWatch) {
     Assert-Directory -Path $ThoughtCoreRoot -Label "control-plane"
 }
@@ -1651,16 +1380,8 @@ if (-not $SkipTouchDesignerGui) {
     $node = Resolve-Tool -Name "node"
 }
 $powerShell = $null
-if ((-not $SkipDifyWatch) -or $EnableThoughtCore -or $EnableThoughtCoreWatch) {
+if ($EnableThoughtCore -or $EnableThoughtCoreWatch) {
     $powerShell = Resolve-CurrentPowerShell
-}
-$docker = $null
-if (-not $SkipDify) {
-    $docker = Resolve-Tool -Name "docker"
-}
-
-if (-not $SkipDify) {
-    Assert-DockerDesktopReady -DockerPath $docker
 }
 
 if (-not $SkipVoicevoxCheck -and -not $SkipAituber) {
@@ -1677,41 +1398,6 @@ if (-not $SkipHomeAssistantBridge) {
 
 if (-not $SkipEnvironmentState) {
     Assert-EnvironmentStateTokenConfigured -EnvPath $HomeAssistantEnvPath
-}
-
-if (-not $SkipDify) {
-    if ([string]::IsNullOrWhiteSpace($DifyDockerRoot)) {
-        throw "Dify docker directory is not configured. Pass -DifyDockerRoot, set DIFY_DOCKER_ROOT, or use -SkipDify."
-    }
-    if (-not (Test-Path -LiteralPath $DifyDockerRoot -PathType Container)) {
-        throw "Dify docker directory not found: $DifyDockerRoot. Use -SkipDify to skip the Dify check/start."
-    }
-    $difyUrl = "http://127.0.0.1:$DifyPort"
-    if (Test-HttpReachable -Url $difyUrl) {
-        Write-Host "[dify] reachable: $difyUrl"
-    }
-    else {
-        Invoke-External `
-            -FilePath $docker `
-            -Arguments @("compose", "up", "-d") `
-            -WorkingDirectory $DifyDockerRoot `
-            -Label "dify"
-        Write-Host "[dify] started with docker compose. UI: $difyUrl"
-    }
-}
-
-if (-not $SkipDifyWatch) {
-    Assert-DifyWatcherApiKeyReady -EnvPath $DifyWatchEnvPath
-    Write-Host "[dify] Dify app env HOME_CONTROL_API_TOKEN must match home-assistant-server\.env (not readable from dify_watcher .env)"
-}
-
-if (-not $SkipAituber) {
-    if ($EnableThoughtCore -and $SkipDify -and $SkipDifyWatch) {
-        Write-Host "[aituber_kit] DIFY_API_KEY check skipped; Projection Visual will use thought-core."
-    }
-    else {
-        Assert-AituberDifyApiKeyReady -EnvPath (Join-Path $AituberRoot ".env")
-    }
 }
 
 $EnvironmentVoicevoxUrl = $VoicevoxUrl
@@ -1777,8 +1463,6 @@ if (-not $SkipEnvironmentState) {
         "http://127.0.0.1:$HomeAssistantBridgePort/health",
         "--aituber-url",
         "http://127.0.0.1:$AituberPort",
-        "--dify-url",
-        "http://127.0.0.1:$DifyPort",
         "--voicevox-health-url",
         $EnvironmentVoicevoxHealthUrl
     )
@@ -2050,12 +1734,7 @@ if ($LaunchVisionSnapshotProcessor) {
 if (-not $SkipAituber) {
     $projectionVisualAIService = [Environment]::GetEnvironmentVariable("NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE", "Process")
     if ([string]::IsNullOrWhiteSpace($projectionVisualAIService)) {
-        if ($EnableThoughtCore) {
-            $projectionVisualAIService = "thought-core"
-        }
-        else {
-            $projectionVisualAIService = "dify"
-        }
+        $projectionVisualAIService = "thought-core"
     }
     $aituberAIService = [Environment]::GetEnvironmentVariable("NEXT_PUBLIC_SELECT_AI_SERVICE", "Process")
     if ([string]::IsNullOrWhiteSpace($aituberAIService)) {
@@ -2098,27 +1777,6 @@ if (-not $SkipAituber) {
         -Module "aituber-kit" `
         -Role "frontend" `
         -AllowedProcessNames @("cmd", "node", "npm")
-}
-if (-not $SkipDifyWatch) {
-    $specs += New-ServiceSpec `
-        -Name "dify_watcher" `
-        -FilePath $powerShell `
-        -Arguments @(
-            "-NoLogo",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            $DifyWatchScript,
-            "-EnvPath",
-            $DifyWatchEnvPath,
-            "-StatusDir",
-            $DifyWatchStatusDir
-        ) `
-        -WorkingDirectory $DifyWatchRoot `
-        -Module "sword-control-plane" `
-        -Role "dify_watcher" `
-        -AllowedProcessNames @("pwsh", "powershell", "python")
 }
 if ($EnableThoughtCoreWatch) {
     $thoughtCoreWatchArgs = @(

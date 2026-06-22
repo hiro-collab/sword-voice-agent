@@ -98,12 +98,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--input-gate-timeout", type=float, default=1.5)
     parser.add_argument(
-        "--dify-base-url",
-        default=os.environ.get("DIFY_BASE_URL", ""),
-        help="Optional Dify API base URL for readiness status.",
-    )
-    parser.add_argument("--dify-timeout", type=float, default=1.5)
-    parser.add_argument(
         "--thought-core-base-url",
         default=os.environ.get("THOUGHT_CORE_BASE_URL", "http://127.0.0.1:18787"),
         help="Optional thought-core API base URL for readiness status.",
@@ -135,7 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--redact-sensitive",
         action="store_true",
         default=env_flag("SWORD_VOICE_AGENT_REDACT_STATUS"),
-        help="Hide transcript, command, Dify answer, IDs, and local paths in /api/status.",
+        help="Hide transcript, command, Thought Core answer, IDs, and local paths in /api/status.",
     )
     return parser
 
@@ -510,8 +504,6 @@ def run_server(args: argparse.Namespace) -> ThreadingHTTPServer:
         input_gate_url=args.input_gate_url or None,
         input_gate_token=resolve_ai_talk_core_web_token(),
         input_gate_timeout_s=args.input_gate_timeout,
-        dify_base_url=args.dify_base_url or None,
-        dify_timeout_s=args.dify_timeout,
         thought_core_base_url=args.thought_core_base_url or None,
         thought_core_timeout_s=args.thought_core_timeout,
         avatar_url=args.avatar_url or None,

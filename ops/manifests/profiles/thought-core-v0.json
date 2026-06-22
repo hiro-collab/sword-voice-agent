@@ -1,7 +1,7 @@
 {
   "profile_id": "thought-core-v0",
   "layer": "ops",
-  "description": "Current Thought Core v0 local stack using thought-core API and watcher instead of Dify watcher.",
+  "description": "Current Thought Core v0 local stack using the Thought Core API and watcher.",
   "services": [
     "home_assistant_bridge",
     "environment_state_server",

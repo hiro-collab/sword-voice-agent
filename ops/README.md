@@ -46,7 +46,6 @@ cd C:\Users\kawai\works\sword-agent-system\sword-control-plane
 | `thought-core-experimental` | 旧名の互換エイリアス。新しい手順では `thought-core-v0` を使う。 |
 | `camera-debug` | Camera Hub と Vision Snapshot Processor だけを確認する。 |
 | `aituber-only` | AITuber Kit 表示だけを確認する。 |
-| `full-local` | Dify互換を含む旧寄りの構成。通常運用では優先しない。 |
 
 ## 別ポートでdry-runする例
 

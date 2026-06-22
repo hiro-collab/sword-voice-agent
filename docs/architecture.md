@@ -35,8 +35,8 @@ services/
   memory-core
 
 adapters/
-  dify
   openai-compatible
+  thought-core-internal-provider
   langgraph
   home-assistant
   mediapipe
