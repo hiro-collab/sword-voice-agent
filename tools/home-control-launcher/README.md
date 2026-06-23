@@ -37,7 +37,10 @@ summaries for later reviewed measurement routes:
 - `GET /api/demo-timed-action-readiness` returns the current `demo-fast-action`
   first-feedback/first-action readiness summary, including required local
   service IDs, target milliseconds, remaining milliseconds to the first-action
-  target, Projection Visual URL, and Action bridge operator URL.
+  target, Projection Visual URL, Action bridge operator URL, next operator steps,
+  and the reviewed `aircon_cool` / `aircon_hvac_off` action IDs for the
+  first-action route. These fields are route guidance only, not command
+  authority.
 
 For read-only timing collection during a reviewed runtime route, run:
 

@@ -2392,6 +2392,39 @@ const demoTimedActionReadiness = async () => {
       : null,
     projection_visual_url: `http://127.0.0.1:${options.AituberPort}/projection-visual/`,
     action_operator_url: `http://${actionBridgeHost}:${options.HomeAssistantBridgePort}/operator`,
+    reviewed_action_ids: ['aircon_cool', 'aircon_hvac_off'],
+    next_operator_steps: [
+      {
+        step_id: 'foreground_projection_visual',
+        target_surface: 'projection_visual_url',
+        expected_result_class: 'projection_visual_foreground_ready',
+        command_submission_authorized_by_this_summary: false
+      },
+      {
+        step_id: 'submit_non_appliance_preface',
+        target_surface: 'projection_visual_ui',
+        expected_result_class: 'display_feedback_result_class',
+        command_submission_authorized_by_this_summary: false
+      },
+      {
+        step_id: 'open_action_operator',
+        target_surface: 'action_operator_url',
+        expected_result_class: 'operator_surface_reachable',
+        command_submission_authorized_by_this_summary: false
+      },
+      {
+        step_id: 'select_reviewed_ac_action_or_hold',
+        target_surface: 'home_control_operator_route_shortcut',
+        expected_action_ids: ['aircon_cool', 'aircon_hvac_off'],
+        expected_result_class: 'first_action_result_class',
+        command_submission_authorized_by_this_summary: false
+      }
+    ],
+    latency_bottleneck_hints: [
+      'foreground_to_preface_input_delay',
+      'operator_action_id_visibility_without_catalog_load',
+      'local_tts_summary_availability'
+    ],
     startupTiming: timing,
     proof_ceiling: 'launcher_demo_timed_action_readiness_summary_only',
     command_submission_authorized_by_this_summary: false,
