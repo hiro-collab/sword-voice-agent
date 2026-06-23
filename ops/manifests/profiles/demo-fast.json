@@ -1,0 +1,9 @@
+{
+  "profile_id": "demo-fast",
+  "layer": "ops",
+  "description": "Minimal local visible demo stack: Projection Visual/AITuber plus no-provider Thought Core.",
+  "services": [
+    "thought_core_api",
+    "aituber_kit"
+  ]
+}

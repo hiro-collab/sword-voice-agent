@@ -453,6 +453,17 @@ class LauncherUiContractTest(TestCase):
         self.assertTrue(thought_core["EnableThoughtCore"])
         self.assertTrue(thought_core["EnableThoughtCoreWatch"])
 
+        demo_fast = profiles["demo-fast"]["options"]
+        self.assertFalse(demo_fast["StopExisting"])
+        self.assertTrue(demo_fast["EnableThoughtCore"])
+        self.assertFalse(demo_fast["EnableThoughtCoreWatch"])
+        self.assertTrue(demo_fast["ThoughtCoreNoProvider"])
+        self.assertTrue(demo_fast["SkipHomeAssistantBridge"])
+        self.assertTrue(demo_fast["SkipEnvironmentState"])
+        self.assertTrue(demo_fast["SkipMediapipe"])
+        self.assertTrue(demo_fast["SkipVisionSnapshotProcessor"])
+        self.assertTrue(demo_fast["SkipTouchDesignerGui"])
+
         camera_debug = profiles["camera-debug"]["options"]
         self.assertTrue(camera_debug["SkipHomeAssistantBridge"])
         self.assertTrue(camera_debug["SkipAituber"])

@@ -13,6 +13,25 @@
     }
   },
   {
+    "id": "demo-fast",
+    "name": "Fast visible demo",
+    "group": "Demo",
+    "description": "Start the minimal local display/audio demo path with Thought Core and Projection Visual only.",
+    "options": {
+      "StopExisting": false,
+      "EnableThoughtCore": true,
+      "EnableThoughtCoreWatch": false,
+      "ThoughtCoreNoProvider": true,
+      "SkipHomeAssistantBridge": true,
+      "SkipEnvironmentState": true,
+      "SkipMediapipe": true,
+      "SkipVisionSnapshotProcessor": true,
+      "SkipTouchDesignerGui": true,
+      "MediapipeMode": "mediamtx",
+      "MediapipeNoBrowser": true
+    }
+  },
+  {
     "id": "camera-debug",
     "name": "Reflex camera debug",
     "group": "Diagnostics",

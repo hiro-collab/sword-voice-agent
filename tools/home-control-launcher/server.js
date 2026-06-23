@@ -154,6 +154,7 @@ const DEFAULT_OPTIONS = {
 }
 
 const OPS_PROFILE_BY_LAUNCHER_PROFILE = {
+  'demo-fast': 'demo-fast',
   'no-touchdesigner': 'thought-core-v0',
   'thought-core-v0': 'thought-core-v0',
   'thought-core-experimental': 'thought-core-experimental',
@@ -1244,6 +1245,23 @@ const checkHttp = (targetUrl, timeoutMs = 1800) =>
     })
   })
 
+const skippedProbe = (detail = 'skipped') => ({ ok: false, detail })
+
+const checkTcpIf = (enabled, port, host = '127.0.0.1', timeoutMs = 1200) =>
+  enabled ? checkTcp(port, host, timeoutMs) : Promise.resolve(skippedProbe())
+
+const checkHttpIf = (enabled, targetUrl, timeoutMs = 1800) =>
+  enabled ? checkHttp(targetUrl, timeoutMs) : Promise.resolve(skippedProbe())
+
+const fetchJsonIf = (enabled, targetUrl, timeoutMs = 1800) =>
+  enabled
+    ? fetchJson(targetUrl, timeoutMs)
+    : Promise.resolve({
+        ok: false,
+        statusCode: 0,
+        detail: 'skipped'
+      })
+
 const fetchJson = (targetUrl, timeoutMs = 1800) =>
   new Promise((resolve) => {
     const client = targetUrl.startsWith('https:') ? https : http
@@ -1748,10 +1766,17 @@ const getStatus = async () => {
   } catch {
     voicevoxPort = 50021
   }
+  const homeAssistantBridgeEnabled = !options.SkipHomeAssistantBridge
+  const environmentStateEnabled = !options.SkipEnvironmentState
+  const aituberEnabled = !options.SkipAituber
+  const touchDesignerEnabled = !options.SkipTouchDesignerGui
+  const thoughtCoreEnabled = Boolean(options.EnableThoughtCore)
+  const voicevoxEnabled = !options.SkipVoicevoxCheck && aituberEnabled
+  const environmentIndicatorsEnabled =
+    exposeEnvironmentStatus && environmentStateEnabled
 
   const [
     homeTcp,
-    homeHttp,
     homeHealth,
     environmentTcp,
     environmentHttp,
@@ -1765,35 +1790,36 @@ const getStatus = async () => {
     voicevoxHttp,
     environmentIndicators
   ] = await Promise.all([
-    checkTcp(options.HomeAssistantBridgePort),
-    checkHttp(`http://127.0.0.1:${options.HomeAssistantBridgePort}/health`, 2500),
-    checkHttp(`http://127.0.0.1:${options.HomeAssistantBridgePort}/health`, 2500).then((result) =>
-      result.ok
-        ? fetchJson(`http://127.0.0.1:${options.HomeAssistantBridgePort}/health`, 2500)
-        : Promise.resolve({
-            ok: false,
-            statusCode: 0,
-            detail: result.detail || 'home-control bridge health unavailable'
-          })
+    checkTcpIf(homeAssistantBridgeEnabled, options.HomeAssistantBridgePort),
+    fetchJsonIf(
+      homeAssistantBridgeEnabled,
+      `http://127.0.0.1:${options.HomeAssistantBridgePort}/health`,
+      2500
     ),
-    checkTcp(options.EnvironmentStatePort),
-    checkHttp(`http://127.0.0.1:${options.EnvironmentStatePort}/health`),
-    checkTcp(options.AituberPort),
-    checkHttp(`http://127.0.0.1:${options.AituberPort}`),
-    checkTcp(options.TouchDesignerGuiPort),
-    checkHttp(`http://127.0.0.1:${options.TouchDesignerGuiPort}`),
-    checkTcp(options.ThoughtCorePort, thoughtCoreHost),
-    checkHttp(`${thoughtCoreUrl}/health`),
-    checkTcp(voicevoxPort),
-    checkHttp(`${voicevoxUrl}/version`),
-    exposeEnvironmentStatus
-      ? fetchJson(`http://127.0.0.1:${options.EnvironmentStatePort}/indicators/current`)
-      : Promise.resolve({
-          ok: false,
-          statusCode: 0,
-          detail: 'environment status hidden for remote launcher'
-        })
+    checkTcpIf(environmentStateEnabled, options.EnvironmentStatePort),
+    checkHttpIf(environmentStateEnabled, `http://127.0.0.1:${options.EnvironmentStatePort}/health`),
+    checkTcpIf(aituberEnabled, options.AituberPort),
+    checkHttpIf(aituberEnabled, `http://127.0.0.1:${options.AituberPort}`),
+    checkTcpIf(touchDesignerEnabled, options.TouchDesignerGuiPort),
+    checkHttpIf(touchDesignerEnabled, `http://127.0.0.1:${options.TouchDesignerGuiPort}`),
+    checkTcpIf(thoughtCoreEnabled, options.ThoughtCorePort, thoughtCoreHost),
+    checkHttpIf(thoughtCoreEnabled, `${thoughtCoreUrl}/health`),
+    checkTcpIf(voicevoxEnabled, voicevoxPort),
+    checkHttpIf(voicevoxEnabled, `${voicevoxUrl}/version`),
+    fetchJsonIf(
+      environmentIndicatorsEnabled,
+      `http://127.0.0.1:${options.EnvironmentStatePort}/indicators/current`
+    )
   ])
+  const homeHttp = homeHealth && homeHealth.statusCode
+    ? {
+        ok: homeHealth.statusCode >= 200 && homeHealth.statusCode < 500,
+        detail: homeHealth.detail || `HTTP ${homeHealth.statusCode}`
+      }
+    : {
+        ok: Boolean(homeHealth && homeHealth.ok),
+        detail: homeHealth && homeHealth.detail || 'home-control bridge health unavailable'
+      }
 
   return {
     ok: true,

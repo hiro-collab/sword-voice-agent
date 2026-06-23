@@ -12,6 +12,8 @@ It serves a browser UI for:
 
 The primary profile is `System Cell (Thought Core)`. Normal operation should
 use the Thought Core profile.
+For timed local demonstrations, `Fast visible demo` starts the minimal
+Projection Visual plus no-provider Thought Core path.
 
 The launcher calls the ops facade, which then delegates to the inherited
 supervisor implementation:
