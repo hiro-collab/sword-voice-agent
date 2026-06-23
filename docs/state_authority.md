@@ -54,6 +54,13 @@ store only normalized setting fields such as `enabled`, `restore_required`,
 Assistant values, raw transcripts, media, screenshots, provider payloads, or
 private paths.
 
+Tracked defaults may also expose read-only command-stimulus metadata such as
+`action_ids`, `feedback_stimulus_class`, `state_requirement_class`,
+`timing_estimate_sec`, and `measurement_required`. These fields help later
+routes plan all-appliance feedback-loop demos and timing estimates, but they are
+not local operator overrides and do not authorize command execution by
+themselves.
+
 `demo_readiness_status.v0` is a read-only Launcher status projection derived
 from local readiness/status checks. It carries classes such as `status_class`,
 `source_class`, `proof_ceiling`, `does_not_prove`, and `last_checked_class`.
@@ -66,6 +73,9 @@ Assistant or Home Control commands, do not execute proof routes, do not publish
 raw/private values, and do not create release/readiness/final-pass authority.
 Any demo action still needs the explicit route gate that owns command
 submission, restore/off behavior, cleanup, and proof wording.
+For command-stimulus rows, unknown current state is a proof limitation to feed
+back into the loop unless the route specifically requires current-state proof;
+it is not automatically a reason to skip command submission.
 
 ## Memory And Policy Authority
 

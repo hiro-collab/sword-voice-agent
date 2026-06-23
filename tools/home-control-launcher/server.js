@@ -385,6 +385,13 @@ const toBoundedInt = (value, fallback, min = 0, max = 3600) => {
   return Math.max(min, Math.min(max, numberValue))
 }
 
+const toStringList = (value, sanitizer = compactDemoSafeId) =>
+  Array.isArray(value)
+    ? value
+      .map((item) => sanitizer(item))
+      .filter((item) => item && item !== 'missing' && item !== 'invalid')
+    : []
+
 const readDemoSafeOverrideMap = () => {
   const payload = readJsonFile(DEMO_SAFE_SETTINGS_FILE, {})
   const rows = payload && payload.rows && typeof payload.rows === 'object'
@@ -417,6 +424,14 @@ const normalizeDemoSafeRow = (row, override = {}) => {
       0,
       3600
     ),
+    action_ids: toStringList(row.action_ids),
+    feedback_stimulus_class: compactDemoSafeId(row.feedback_stimulus_class || 'not_applicable'),
+    state_requirement_class: compactDemoSafeId(row.state_requirement_class || 'not_applicable'),
+    timing_estimate_sec: toBoundedInt(row.timing_estimate_sec, 0, 0, 3600),
+    timing_estimate_source_class: compactDemoSafeId(
+      row.timing_estimate_source_class || 'not_applicable'
+    ),
+    measurement_required: toBool(row.measurement_required, false),
     source_class: compactDemoSafeId(row.source_class || 'source_static'),
     proof_ceiling: compactDemoSafeId(row.proof_ceiling || 'source_static_readiness'),
     does_not_prove: Array.isArray(row.does_not_prove)
@@ -502,6 +517,9 @@ const readinessSourceForDemoSafeRow = (row, statusPayload) => {
   }
   if (row.id === 'display.projection_visual_mode') {
     return serviceState('touchdesigner_control_gui') || serviceState('aituber_kit')
+  }
+  if (row.area === 'appliance') {
+    return serviceState('home_assistant_bridge')
   }
   return ''
 }

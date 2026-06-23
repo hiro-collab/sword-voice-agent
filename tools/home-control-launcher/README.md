@@ -42,6 +42,13 @@ settings drawer. It is local state, not tracked source; fresh clones use the
 tracked defaults from `manifests/demo-safe-settings/defaults.json` and start
 with demo-safe candidates disabled.
 
+Tracked defaults may include all-appliance command-stimulus route metadata such
+as `action_ids`, proof ceiling, and configured wait estimates. The Launcher
+shows that metadata for planning only. Enabling a row does not call Home
+Assistant, submit a Home Control action, publish raw evidence, or upgrade proof
+claims; a later reviewed runtime route still owns command submission, timing
+measurement, feedback wording, and cleanup.
+
 To test an alternate compatible state directory, set
 `HOME_CONTROL_STACK_STATE_DIR` before starting the launcher or pass
 `-StackStateDir` to the ops lifecycle command. Relative paths are resolved from

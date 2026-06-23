@@ -1088,6 +1088,40 @@ button:focus-visible {
   border-color: rgba(255, 180, 84, 0.28);
 }
 
+.demo-safe-route {
+  background: rgba(3, 8, 13, 0.24);
+  border: 1px solid rgba(124, 255, 224, 0.1);
+  border-radius: 7px;
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 6px 7px;
+}
+
+.demo-safe-route div {
+  display: grid;
+  gap: 3px;
+  grid-template-columns: 58px minmax(0, 1fr);
+}
+
+.demo-safe-route dt,
+.demo-safe-route dd {
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.25;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.demo-safe-route dt {
+  color: rgba(214, 242, 238, 0.62);
+}
+
+.demo-safe-route dd {
+  color: #d7f2ee;
+}
+
 .service-list {
   display: block;
 }

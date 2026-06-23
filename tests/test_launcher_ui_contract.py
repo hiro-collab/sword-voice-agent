@@ -86,12 +86,16 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("demoReadinessStatus", app)
         self.assertIn("const renderDemoSafeSettings", app)
         self.assertIn("const currentDemoSafeSettings", app)
+        self.assertIn("action_ids", app)
+        self.assertIn("timing_estimate_sec", app)
         self.assertIn("max_duration_sec", app)
         self.assertIn("does_not_prove", app)
 
         self.assertIn("DEMO_SAFE_SETTINGS_FILE", server)
         self.assertIn("effectiveDemoSafeSettings", server)
         self.assertIn("demoReadinessStatus", server)
+        self.assertIn("feedback_stimulus_class", server)
+        self.assertIn("timing_estimate_source_class", server)
         self.assertIn("launcher_state_dir_gitignored_demo_settings_json", server)
 
     def test_demo_safe_defaults_start_disabled_and_separate_readiness(self) -> None:
@@ -105,6 +109,10 @@ class LauncherUiContractTest(TestCase):
         self.assertTrue(all(row["enabled"] is False for row in rows))
 
         self.assertIn("appliance.aircon_cool_restore", row_ids)
+        self.assertIn("appliance.light_command_stimulus", row_ids)
+        self.assertIn("appliance.fan_command_stimulus", row_ids)
+        self.assertIn("appliance.door_open_close", row_ids)
+        self.assertIn("appliance.vacuum_start_return", row_ids)
         self.assertIn("audio.voicevox_local_speech", row_ids)
         self.assertIn("audio.browser_or_pc_output_awareness", row_ids)
         self.assertIn("avatar.aituber_projection_surface", row_ids)
@@ -118,6 +126,32 @@ class LauncherUiContractTest(TestCase):
             self.assertIn("max_duration_sec", row)
             self.assertIn("proof_ceiling", row)
             self.assertIn("does_not_prove", row)
+
+    def test_demo_safe_defaults_include_all_appliance_command_stimuli(self) -> None:
+        defaults = read_demo_safe_defaults()
+        rows = {row["id"]: row for row in defaults["rows"]}
+
+        expected_sequences = {
+            "appliance.aircon_cool_restore": ["aircon_cool", "aircon_hvac_off"],
+            "appliance.light_command_stimulus": ["light_on"],
+            "appliance.fan_command_stimulus": ["fan_on"],
+            "appliance.door_open_close": ["door_open", "door_close"],
+            "appliance.vacuum_start_return": ["vacuum_start", "vacuum_return"],
+        }
+        for row_id, action_ids in expected_sequences.items():
+            with self.subTest(row_id=row_id):
+                row = rows[row_id]
+                self.assertEqual(row["area"], "appliance")
+                self.assertEqual(row["action_ids"], action_ids)
+                self.assertTrue(row["feedback_stimulus_class"].startswith("appliance_command_stimulus"))
+                self.assertIn("state_requirement_class", row)
+                self.assertGreater(row["timing_estimate_sec"], 0)
+                self.assertTrue(row["measurement_required"])
+
+        self.assertFalse(rows["appliance.light_command_stimulus"]["restore_required"])
+        self.assertFalse(rows["appliance.fan_command_stimulus"]["restore_required"])
+        self.assertTrue(rows["appliance.door_open_close"]["restore_required"])
+        self.assertTrue(rows["appliance.vacuum_start_return"]["restore_required"])
 
     def test_launcher_first_view_keeps_quick_links_and_density_hooks(self) -> None:
         html = read_public("index.html")

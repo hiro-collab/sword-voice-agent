@@ -100,6 +100,9 @@ const translations = {
     'demoSafe.restoreRequired': 'Restore',
     'demoSafe.maxActions': 'Max actions',
     'demoSafe.maxDuration': 'Max seconds',
+    'demoSafe.actions': 'Actions',
+    'demoSafe.timing': 'Timing',
+    'demoSafe.stimulus': 'Stimulus',
     'demoSafe.readiness': 'Readiness',
     'demoSafe.defaultOff': 'Default off',
     'demoSafe.noneEnabled': 'All off',
@@ -285,6 +288,9 @@ const translations = {
     'demoSafe.restoreRequired': '復元',
     'demoSafe.maxActions': '最大操作',
     'demoSafe.maxDuration': '最大秒数',
+    'demoSafe.actions': '操作',
+    'demoSafe.timing': '時間',
+    'demoSafe.stimulus': '刺激',
     'demoSafe.readiness': '準備',
     'demoSafe.defaultOff': '初期値はオフ',
     'demoSafe.noneEnabled': 'すべてオフ',
@@ -1106,6 +1112,8 @@ const renderDemoSafeSettings = () => {
     .map((row) => {
       const status = readiness.get(row.id) || {}
       const doesNotProve = (row.does_not_prove || []).join(', ')
+      const actionIds = (row.action_ids || []).join(' -> ')
+      const timingEstimate = Number(row.timing_estimate_sec) || 0
       const restoreDisabled = row.restore_supported ? '' : 'disabled'
       return `
         <section class="demo-safe-row" data-demo-safe-row="${escapeHtml(row.id)}">
@@ -1161,6 +1169,26 @@ const renderDemoSafeSettings = () => {
             <span>${escapeHtml(t('demoSafe.readiness'))}</span>
             <strong>${escapeHtml(status.status_class || 'not_checked_class')}</strong>
           </div>
+          ${actionIds || timingEstimate ? `
+            <dl class="demo-safe-route">
+              ${actionIds ? `
+                <div>
+                  <dt>${escapeHtml(t('demoSafe.actions'))}</dt>
+                  <dd>${escapeHtml(actionIds)}</dd>
+                </div>
+              ` : ''}
+              ${timingEstimate ? `
+                <div>
+                  <dt>${escapeHtml(t('demoSafe.timing'))}</dt>
+                  <dd>${escapeHtml(String(timingEstimate))}s</dd>
+                </div>
+              ` : ''}
+              <div>
+                <dt>${escapeHtml(t('demoSafe.stimulus'))}</dt>
+                <dd>${escapeHtml(row.feedback_stimulus_class || 'not_applicable')}</dd>
+              </div>
+            </dl>
+          ` : ''}
           <small class="demo-safe-proof">
             ${escapeHtml(row.proof_ceiling || 'source_static_readiness')}
             ${doesNotProve ? ` / ${escapeHtml(doesNotProve)}` : ''}

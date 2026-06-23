@@ -36,7 +36,7 @@ Control proof execution, and not release/readiness/final-pass approval.
 
 | Field | Meaning |
 |---|---|
-| `demoSafeSettings` | Effective `demo_safe_settings.v0` rows formed from tracked defaults plus local gitignored operator overrides. Rows carry setting fields such as `enabled`, `restore_required`, `max_action_count`, `max_duration_sec`, `proof_ceiling`, and `does_not_prove`. |
+| `demoSafeSettings` | Effective `demo_safe_settings.v0` rows formed from tracked defaults plus local gitignored operator overrides. Rows carry editable setting fields such as `enabled`, `restore_required`, `max_action_count`, and `max_duration_sec`, plus read-only route metadata such as `action_ids`, `feedback_stimulus_class`, `state_requirement_class`, `timing_estimate_sec`, `timing_estimate_source_class`, `measurement_required`, `proof_ceiling`, and `does_not_prove`. |
 | `demoReadinessStatus` | Read-only `demo_readiness_status.v0` rows derived from local service/status checks. Rows carry `status_class`, `source_class`, `proof_ceiling`, `does_not_prove`, and `last_checked_class`. |
 
 `POST /api/save-config` accepts the existing profile/options payload and may
@@ -51,7 +51,13 @@ also include:
         "enabled": false,
         "restore_required": true,
         "max_action_count": 1,
-        "max_duration_sec": 120
+        "max_duration_sec": 120,
+        "action_ids": ["aircon_cool", "aircon_hvac_off"],
+        "feedback_stimulus_class": "appliance_command_stimulus",
+        "state_requirement_class": "current_state_optional_for_command_stimulus",
+        "timing_estimate_sec": 70,
+        "timing_estimate_source_class": "configured_wait_window_before_live_measurement",
+        "measurement_required": true
       }
     ]
   }
@@ -64,6 +70,9 @@ against tracked defaults. API consumers must treat `demoSafeSettings` as local
 operator preference/config and `demoReadinessStatus` as read-only status. Neither
 payload authorizes preview, dry-run, live execute, Home Assistant service calls,
 Home Control `/actions` execution, raw/private publication, or proof upgrade.
+For appliance command-stimulus demos, unknown current state is reported as a
+proof limitation unless the reviewed route explicitly requires current-state
+proof before command submission.
 
 ## Camera Hub
 
