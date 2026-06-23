@@ -74,6 +74,21 @@ For appliance command-stimulus demos, unknown current state is reported as a
 proof limitation unless the reviewed route explicitly requires current-state
 proof before command submission.
 
+Launcher also exposes summary endpoints used by reviewed diagnostic and timing
+routes:
+
+| Endpoint | Contract | Does not prove |
+|---|---|---|
+| `GET /api/startup-timing` | `launcher_startup_timing.v0` class/count/timing summary for expected launcher services, readiness timeline, waiting elapsed milliseconds, and current critical-path service ID. | Chrome cold start, startup-speed pass, browser foreground proof, or user-visible feedback proof. |
+| `GET /api/diagnostic-surfaces` | Source/static diagnostic inventory for audio awareness, Self Mirror temporal motion, Projection Visual display/TTS, Projection Visual response binding, and OS display/window prompt. | Live capture, live bubble render, exact display/TTS parity, user-heard audio, browser-visible avatar motion, OS-screen proof, or raw media publication. |
+| `GET /api/demo-timed-action-readiness` | Read-only/non-command readiness summary for `demo-fast-action`, including route-local URLs, next operator steps, and reviewed action IDs for later bounded routes. | Home Control command authorization, `/actions` catalog proof, preview, dry-run, execute, CheckTracking, CheckState, HA-visible state, or physical device proof. |
+
+Diagnostic surface proof layers must remain separate: audio awareness is not
+Self Mirror motion, Self Mirror temporal metrics are not VRM telemetry or
+browser-visible avatar proof, Projection Visual display/TTS is not response
+receiver binding, and response binding is not exact display/TTS parity or
+user-heard audio.
+
 ## Camera Hub
 
 | Item | Contract |

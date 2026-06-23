@@ -77,6 +77,27 @@ For command-stimulus rows, unknown current state is a proof limitation to feed
 back into the loop unless the route specifically requires current-state proof;
 it is not automatically a reason to skip command submission.
 
+## Launcher Diagnostic And Timing Projections
+
+Launcher diagnostic and timing endpoints are projections for reviewed routes.
+They can summarize local classes, counts, route metadata, and timing buckets,
+but they do not own the underlying proof.
+
+| Projection | Authority for meaning | Boundary |
+|---|---|---|
+| `launcher_startup_timing.v0` | Launcher process supervisor and route-local checks | Timing summary only; not Chrome cold-start proof or startup-speed pass. |
+| `audio_awareness_summary_only` | Audio/STT/TTS owning services | Awareness summary only; not microphone capture, system-audio capture, user-heard audio, or exact TTS output proof. |
+| `self_mirror_metric_summary_only` | Self Mirror diagnostic route | Temporal metric summary only; not VRM telemetry, browser-visible avatar-motion proof, screenshot proof, or camera proof. |
+| `projection_visual_display_tts_summary_only` | Projection Visual and local speech/TTS surfaces | Display/TTS summary only; not exact same-text parity or user-heard audio. |
+| `projection_visual_receiver_binding_summary_only` | Projection Visual receiver-binding diagnostics | Response-binding discoverability only; not live bubble-render proof or receiver-runtime pass. |
+| `os_display_diagnostic_summary_only` | OS display/window diagnostic route | Prompt/window summary only; not full-desktop capture or raw screenshot publication. |
+| `demo_timed_action_readiness.v0` | Launcher route summary plus reviewed metadata | Read-only/non-command readiness only; not Home Control execute, `/actions` catalog proof, CheckTracking, CheckState, HA-visible state, or physical proof. |
+
+Any route that needs live browser, capture, Home Control operation, raw
+artifact retention, or proof upgrade must be separately scoped with exact
+surfaces, action IDs, counts or duration bounds, cleanup, and post-result
+review.
+
 ## Memory And Policy Authority
 
 | Area | Authority | Current / target storage | Rule |
