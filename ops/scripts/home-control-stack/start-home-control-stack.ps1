@@ -23,6 +23,7 @@ param(
     [int]$ThoughtCorePort = 18787,
     [string]$ThoughtCoreWatchAituberHttpTimeout = "",
     [string]$VoicevoxUrl = "",
+    [int]$VoicevoxReadyTimeoutSeconds = 45,
     [ValidateSet("gui", "headless", "camera-hub", "mediamtx")]
     [string]$MediapipeMode = "mediamtx",
     [string]$MediapipeCameraName = "HD Pro Webcam C920",
@@ -299,7 +300,10 @@ function Get-DotEnvValue {
 }
 
 function Assert-VoicevoxReady {
-    param([Parameter(Mandatory = $true)][string]$BaseUrl)
+    param(
+        [Parameter(Mandatory = $true)][string]$BaseUrl,
+        [int]$TimeoutSeconds = 45
+    )
     if ($DryRun) {
         Write-Host "[voicevox] dry-run: VOICEVOX readiness check skipped."
         return
@@ -313,8 +317,8 @@ function Assert-VoicevoxReady {
             $helperOutput = & $readinessHelper `
                 -EndpointUrl $versionUrl `
                 -StartIfNeeded `
-                -TimeoutSeconds 45 `
-                -PollSeconds 2 `
+                -TimeoutSeconds $TimeoutSeconds `
+                -PollSeconds 1 `
                 -Json
             $helperResult = $helperOutput | ConvertFrom-Json
             $classification = [string]$helperResult.classification
@@ -341,6 +345,7 @@ Next action:
 
 Diagnostics:
   checked URL: $versionUrl
+  readiness timeout seconds: $TimeoutSeconds
   endpoint before helper: $endpointInitial
   endpoint after helper: $endpointAfterStart
   start attempted: $startAttempted
@@ -364,6 +369,7 @@ Next action:
 Diagnostics:
   checked URL: $versionUrl
   helper: $readinessHelper
+  readiness timeout seconds: $TimeoutSeconds
   error: $($_.Exception.Message)
 
 If you intentionally do not use VOICEVOX, start this script with -SkipVoicevoxCheck.
@@ -1385,7 +1391,7 @@ if ($EnableThoughtCore -or $EnableThoughtCoreWatch) {
 }
 
 if (-not $SkipVoicevoxCheck -and -not $SkipAituber) {
-    Assert-VoicevoxReady -BaseUrl $VoicevoxUrl
+    Assert-VoicevoxReady -BaseUrl $VoicevoxUrl -TimeoutSeconds $VoicevoxReadyTimeoutSeconds
 }
 
 if (-not $SkipHomeAssistantBridge) {

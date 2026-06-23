@@ -225,6 +225,10 @@
               <input id="VoicevoxUrl" type="text" autocomplete="off" placeholder="http://127.0.0.1:50021" />
             </label>
             <label class="field">
+              <span data-i18n="advanced.voicevoxReadyTimeout">VOICEVOX ready timeout seconds</span>
+              <input id="VoicevoxReadyTimeoutSeconds" type="number" min="1" />
+            </label>
+            <label class="field">
               <span data-i18n="advanced.actionBridgeConfigPath">Action bridge config path</span>
               <input id="HomeControlConfigPath" type="text" autocomplete="off" />
             </label>
@@ -241,6 +245,28 @@
               </div>
             </div>
             <div id="service-list" class="service-list"></div>
+          </section>
+
+          <section class="panel read-surface diagnostics-panel">
+            <div class="panel-title">
+              <h2 data-i18n="startup.title">Startup timing</h2>
+              <div class="title-actions">
+                <span class="surface-tag read-tag" data-i18n="surface.read">READ</span>
+                <span data-i18n="startup.subtitle">Critical path</span>
+              </div>
+            </div>
+            <div id="startup-timing-list" class="diagnostic-list"></div>
+          </section>
+
+          <section class="panel read-surface diagnostics-panel">
+            <div class="panel-title">
+              <h2 data-i18n="diagnosticSurfaces.title">Diagnostic surfaces</h2>
+              <div class="title-actions">
+                <span class="surface-tag read-tag" data-i18n="surface.read">READ</span>
+                <span data-i18n="diagnosticSurfaces.subtitle">Source/static readiness</span>
+              </div>
+            </div>
+            <div id="diagnostic-surface-list" class="diagnostic-list"></div>
           </section>
 
           <section class="panel read-surface reference-panel">

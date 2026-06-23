@@ -1126,6 +1126,85 @@ button:focus-visible {
   display: block;
 }
 
+.diagnostic-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.diagnostic-summary-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.diagnostic-summary-grid > div {
+  background: rgba(3, 8, 13, 0.32);
+  border: 1px solid rgba(91, 183, 255, 0.16);
+  border-radius: 7px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px;
+}
+
+.diagnostic-summary-grid span,
+.diagnostic-subdetail {
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-summary-grid strong {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-row {
+  align-items: center;
+  background: rgba(3, 8, 13, 0.26);
+  border: 1px solid rgba(91, 183, 255, 0.14);
+  border-left: 3px solid var(--subtle);
+  border-radius: 7px;
+  display: grid;
+  gap: 5px 10px;
+  grid-template-columns: minmax(128px, 0.95fr) minmax(150px, 1.2fr);
+  min-width: 0;
+  padding: 8px 10px 8px 8px;
+}
+
+.diagnostic-row[data-state-group="ok"] {
+  border-left-color: var(--ok);
+}
+
+.diagnostic-row[data-state-group="warn"] {
+  border-left-color: var(--warn);
+}
+
+.diagnostic-name {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 900;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-detail {
+  color: #d7f2ee;
+  font-size: 11px;
+  font-weight: 800;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-subdetail {
+  grid-column: 1 / -1;
+}
+
 .service-rack {
   background: rgba(3, 8, 13, 0.32);
   border: 1px solid rgba(91, 183, 255, 0.18);
@@ -1709,6 +1788,8 @@ pre {
   }
 
   .mission-strip,
+  .diagnostic-summary-grid,
+  .diagnostic-row,
   .port-grid,
   .segmented {
     grid-template-columns: 1fr;

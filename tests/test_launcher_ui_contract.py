@@ -8,6 +8,7 @@ PRODUCT_ROOT = ROOT.parents[1]
 PUBLIC = ROOT / "tools" / "home-control-launcher" / "public"
 LAUNCHER_SERVER = ROOT / "tools" / "home-control-launcher" / "server.js"
 LAUNCHER_PROFILES = ROOT / "tools" / "home-control-launcher" / "config" / "default-profiles.json"
+TIMING_COLLECTOR = ROOT / "tools" / "home-control-launcher" / "scripts" / "collect-demo-timing.mjs"
 DEMO_SAFE_DEFAULTS = PRODUCT_ROOT / "manifests" / "demo-safe-settings" / "defaults.json"
 STACK_START_SCRIPT = ROOT / "ops" / "scripts" / "home-control-stack" / "start-home-control-stack.ps1"
 SYSTEM_SCRIPT = ROOT / "ops" / "scripts" / "system.ps1"
@@ -26,6 +27,10 @@ def read_launcher_profiles() -> list[dict]:
     payload = json.loads(LAUNCHER_PROFILES.read_text(encoding="utf-8"))
     assert isinstance(payload, list)
     return payload
+
+
+def read_timing_collector() -> str:
+    return TIMING_COLLECTOR.read_text(encoding="utf-8")
 
 
 def read_demo_safe_defaults() -> dict:
@@ -97,6 +102,90 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("feedback_stimulus_class", server)
         self.assertIn("timing_estimate_source_class", server)
         self.assertIn("launcher_state_dir_gitignored_demo_settings_json", server)
+
+    def test_launcher_exposes_no_live_diagnostic_surfaces_and_startup_timing(self) -> None:
+        html = read_public("index.html")
+        app = read_public("app.js")
+        server = read_launcher_server()
+
+        self.assertIn('id="startup-timing-list"', html)
+        self.assertIn('id="diagnostic-surface-list"', html)
+        self.assertIn("Startup timing", html)
+        self.assertIn("Diagnostic surfaces", html)
+
+        self.assertIn("startupTiming", app)
+        self.assertIn("diagnosticSurfaces", app)
+        self.assertIn("renderStartupTiming", app)
+        self.assertIn("renderDiagnosticSurfaces", app)
+        self.assertIn("VoicevoxReadyTimeoutSeconds", app)
+        self.assertIn("numericOptionFields", app)
+
+        self.assertIn("launcher_startup_timing.v0", server)
+        self.assertIn("timelineEvents", server)
+        self.assertIn("startupTimingEvents", server)
+        self.assertIn("launcher_start_accepted", server)
+        self.assertIn("service_first_ready", server)
+        self.assertIn("service_waiting", server)
+        self.assertIn("criticalPathServiceId", server)
+        self.assertIn("diagnosticSurfacesSummary", server)
+        self.assertIn("getStartupTimingPayload", server)
+        self.assertIn("getDiagnosticSurfacesPayload", server)
+        self.assertIn("demoTimedActionReadiness", server)
+        self.assertIn("/api/startup-timing", server)
+        self.assertIn("/api/diagnostic-surfaces", server)
+        self.assertIn("/api/demo-timed-action-readiness", server)
+        self.assertIn("launcher_demo_timed_action_readiness.v0", server)
+        self.assertIn("ready_for_reviewed_first_action_handoff", server)
+        self.assertIn("remaining_ms_to_first_action_target", server)
+        self.assertIn("command_submission_authorized_by_this_summary: false", server)
+        self.assertIn("Action bridge operator", server)
+        self.assertIn("/operator", server)
+        self.assertIn("Action bridge operator", app)
+        self.assertIn("家電操作面", app)
+        self.assertIn("source_static_diagnostic_surface_inventory.v0", server)
+        self.assertIn("audio_input_awareness", server)
+        self.assertIn("self_mirror_temporal_motion", server)
+        self.assertIn("os_display_window_prompt", server)
+        self.assertIn("live_capture_default_class: 'disabled'", server)
+        self.assertIn("raw_private_publication_flags: false", server)
+
+    def test_launcher_readme_documents_fast_timing_and_no_live_diagnostics(self) -> None:
+        readme = (ROOT / "tools" / "home-control-launcher" / "README.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("VoicevoxReadyTimeoutSeconds", readme)
+        self.assertIn("8-second wait", readme)
+        self.assertIn("GET /api/startup-timing", readme)
+        self.assertIn("launcher_startup_timing.v0", readme)
+        self.assertIn("timeline events", readme)
+        self.assertIn("GET /api/diagnostic-surfaces", readme)
+        self.assertIn("GET /api/demo-timed-action-readiness", readme)
+        self.assertIn("first-feedback/first-action readiness", readme)
+        self.assertIn("remaining milliseconds", readme)
+        self.assertIn("collect-demo-timing.mjs", readme)
+        self.assertIn("polls only the Launcher summary endpoints", readme)
+        self.assertIn("Self Mirror temporal motion", readme)
+        self.assertIn("Action bridge operator", readme)
+        self.assertIn("not command authority", readme)
+        self.assertIn("class/count/timing summaries only", readme)
+        self.assertIn("do not perform", readme)
+        self.assertIn("Home Control", readme)
+
+    def test_timing_collector_is_read_only_summary_collector(self) -> None:
+        collector = read_timing_collector()
+
+        self.assertIn("launcher_demo_timing_snapshot.v0", collector)
+        self.assertIn("/api/demo-timed-action-readiness", collector)
+        self.assertIn("/api/startup-timing", collector)
+        self.assertIn("/api/diagnostic-surfaces", collector)
+        self.assertIn("ready_for_reviewed_first_action_handoff", collector)
+        self.assertIn("command_submission_count: 0", collector)
+        self.assertIn("raw_private_publication_flags: false", collector)
+        self.assertIn("not_home_assistant_or_home_control_operation", collector)
+        self.assertNotIn("`${baseUrl}/api/start`", collector)
+        self.assertNotIn("`${baseUrl}/api/stop`", collector)
+        self.assertNotIn("/operator/execute", collector)
 
     def test_demo_safe_defaults_start_disabled_and_separate_readiness(self) -> None:
         defaults = read_demo_safe_defaults()
@@ -492,6 +581,7 @@ class LauncherUiContractTest(TestCase):
         self.assertTrue(demo_fast["EnableThoughtCore"])
         self.assertFalse(demo_fast["EnableThoughtCoreWatch"])
         self.assertTrue(demo_fast["ThoughtCoreNoProvider"])
+        self.assertEqual(demo_fast["VoicevoxReadyTimeoutSeconds"], 8)
         self.assertTrue(demo_fast["SkipHomeAssistantBridge"])
         self.assertTrue(demo_fast["SkipEnvironmentState"])
         self.assertTrue(demo_fast["SkipMediapipe"])
@@ -503,6 +593,7 @@ class LauncherUiContractTest(TestCase):
         self.assertTrue(demo_fast_action["EnableThoughtCore"])
         self.assertFalse(demo_fast_action["EnableThoughtCoreWatch"])
         self.assertTrue(demo_fast_action["ThoughtCoreNoProvider"])
+        self.assertEqual(demo_fast_action["VoicevoxReadyTimeoutSeconds"], 8)
         self.assertNotIn("SkipHomeAssistantBridge", demo_fast_action)
         self.assertTrue(demo_fast_action["SkipEnvironmentState"])
         self.assertTrue(demo_fast_action["SkipMediapipe"])
@@ -522,6 +613,24 @@ class LauncherUiContractTest(TestCase):
         self.assertTrue(aituber_only["SkipMediapipe"])
         self.assertTrue(aituber_only["SkipVisionSnapshotProcessor"])
         self.assertTrue(aituber_only["SkipTouchDesignerGui"])
+
+    def test_launcher_passes_voicevox_readiness_timeout_to_stack_scripts(self) -> None:
+        server = read_launcher_server()
+        app = read_public("app.js")
+        system = read_system_script()
+        stack_start = read_stack_start_script()
+
+        self.assertIn("VoicevoxReadyTimeoutSeconds: 45", server)
+        self.assertIn("'VoicevoxReadyTimeoutSeconds'", server)
+        self.assertIn("options.VoicevoxReadyTimeoutSeconds", server)
+        self.assertIn("addSupportedParam", server)
+        self.assertIn("VoicevoxReadyTimeoutSeconds", app)
+        self.assertIn("numericOptionFields", app)
+        self.assertIn("[int]$VoicevoxReadyTimeoutSeconds = 45", system)
+        self.assertIn("-VoicevoxReadyTimeoutSeconds", system)
+        self.assertIn("[int]$VoicevoxReadyTimeoutSeconds = 45", stack_start)
+        self.assertIn("Assert-VoicevoxReady", stack_start)
+        self.assertIn("-TimeoutSeconds $VoicevoxReadyTimeoutSeconds", stack_start)
 
     def test_launcher_config_status_uses_compact_redacted_classes(self) -> None:
         server = read_launcher_server()

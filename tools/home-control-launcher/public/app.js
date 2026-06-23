@@ -31,6 +31,8 @@ const state = {
   latestServices: {},
   latestEndpoints: [],
   latestStatusTimestamp: '',
+  startupTiming: null,
+  diagnosticSurfaces: null,
   demoSafeSettings: {
     rows: [],
     summary: { total: 0, enabled: 0, enabled_appliance: 0, enabled_readiness: 0 }
@@ -114,10 +116,24 @@ const translations = {
     'demoSafe.general': 'General',
     'advanced.title': 'Advanced overrides',
     'advanced.subtitle': 'Paths and external services',
+    'advanced.voicevoxReadyTimeout': 'VOICEVOX ready timeout seconds',
     'advanced.actionBridgeConfigPath': 'Action bridge config path',
     'surface.control': 'CONTROL',
     'surface.read': 'READ',
     'services.title': 'Services',
+    'startup.title': 'Startup timing',
+    'startup.subtitle': 'Critical path',
+    'startup.elapsed': 'Elapsed',
+    'startup.waiting': 'Waiting',
+    'startup.ready': 'Ready',
+    'startup.critical': 'Critical path',
+    'startup.noTiming': 'No startup timing yet',
+    'diagnosticSurfaces.title': 'Diagnostic surfaces',
+    'diagnosticSurfaces.subtitle': 'Source/static readiness',
+    'diagnosticSurfaces.ready': 'ready',
+    'diagnosticSurfaces.hold': 'hold',
+    'diagnosticSurfaces.noLive': 'No live capture by default',
+    'diagnosticSurfaces.nextRoute': 'Next route',
     'quickLinks.title': 'Quick Links',
     'quickLinks.subtitle': 'Local surfaces',
     'command.title': 'Command preview',
@@ -302,10 +318,24 @@ const translations = {
     'demoSafe.general': 'その他',
     'advanced.title': '詳細設定',
     'advanced.subtitle': 'パスと外部接続',
+    'advanced.voicevoxReadyTimeout': 'VOICEVOX準備待ち秒数',
     'advanced.actionBridgeConfigPath': '家電操作ブリッジ設定パス',
     'surface.control': '操作',
     'surface.read': '確認',
     'services.title': '機能の状態',
+    'startup.title': '起動タイミング',
+    'startup.subtitle': '時間がかかっている箇所',
+    'startup.elapsed': '経過',
+    'startup.waiting': '待機中',
+    'startup.ready': '準備済み',
+    'startup.critical': '律速箇所',
+    'startup.noTiming': '起動タイミングはまだありません',
+    'diagnosticSurfaces.title': '診断面',
+    'diagnosticSurfaces.subtitle': 'ソース静的準備',
+    'diagnosticSurfaces.ready': '準備済み',
+    'diagnosticSurfaces.hold': '保留',
+    'diagnosticSurfaces.noLive': '既定ではライブ取得しません',
+    'diagnosticSurfaces.nextRoute': '次ルート',
     'quickLinks.title': '確認リンク',
     'quickLinks.subtitle': 'このPC上の画面',
     'command.title': '起動コマンド確認',
@@ -456,6 +486,11 @@ const portFields = [
   'EnvironmentStatePort',
   'MediapipePort',
   'VisionSnapshotProcessorPort'
+]
+
+const numericOptionFields = [
+  ...portFields,
+  'VoicevoxReadyTimeoutSeconds'
 ]
 
 const corePortFields = [
@@ -718,6 +753,8 @@ const applyLanguage = () => {
   renderSystemSummary(state.latestServices || null, state.latestStatusTimestamp)
   renderServices(state.latestServices || {})
   renderEndpoints(state.latestEndpoints || [])
+  renderStartupTiming(state.startupTiming)
+  renderDiagnosticSurfaces(state.diagnosticSurfaces)
 }
 
 const api = async (path, options = {}) => {
@@ -1018,7 +1055,7 @@ const renderControls = () => {
     : t('metric.profilePending')
   renderLaunchSummary()
 
-  for (const field of portFields) {
+  for (const field of numericOptionFields) {
     const input = $(field)
     input.value = state.options[field] || ''
   }
@@ -1275,6 +1312,85 @@ const serviceStateShort = (serviceState) => {
   return value
 }
 
+const formatElapsed = (ms) => {
+  const value = Number(ms)
+  if (!Number.isFinite(value) || value < 0) {
+    return '-'
+  }
+  if (value < 1000) {
+    return `${Math.round(value)} ms`
+  }
+  return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)} s`
+}
+
+const renderStartupTiming = (timing) => {
+  const container = $('startup-timing-list')
+  if (!container) {
+    return
+  }
+  if (!timing || !Array.isArray(timing.expectedServiceIds)) {
+    container.innerHTML = `<div class="diagnostic-row"><strong>${escapeHtml(t('startup.noTiming'))}</strong></div>`
+    return
+  }
+  const waiting = timing.waitingServiceIds || []
+  const ready = timing.readyServiceIds || []
+  const critical = timing.criticalPathServiceId || '-'
+  const rows = timing.expectedServiceIds.map((serviceId) => {
+    const item = timing.serviceReadiness?.[serviceId] || {}
+    const isWaiting = waiting.includes(serviceId)
+    const detail = isWaiting
+      ? `${t('startup.waiting')} ${formatElapsed(item.waitingElapsedMs)}`
+      : `${t('startup.ready')} ${formatElapsed(item.firstReadyElapsedMs)}`
+    return `
+      <div class="diagnostic-row" data-state-group="${isWaiting ? 'warn' : 'ok'}">
+        <span class="diagnostic-name">${escapeHtml(serviceDisplayName(serviceId))}</span>
+        <span class="diagnostic-detail">${escapeHtml(detail)}</span>
+      </div>
+    `
+  }).join('')
+  container.innerHTML = `
+    <div class="diagnostic-summary-grid">
+      <div><span>${escapeHtml(t('startup.elapsed'))}</span><strong>${escapeHtml(formatElapsed(timing.elapsedMs))}</strong></div>
+      <div><span>${escapeHtml(t('startup.ready'))}</span><strong>${escapeHtml(String(ready.length))}/${escapeHtml(String(timing.expectedServiceIds.length))}</strong></div>
+      <div><span>${escapeHtml(t('startup.critical'))}</span><strong>${escapeHtml(serviceDisplayName(critical))}</strong></div>
+    </div>
+    ${rows}
+  `
+}
+
+const renderDiagnosticSurfaces = (summary) => {
+  const container = $('diagnostic-surface-list')
+  if (!container) {
+    return
+  }
+  const surfaces = Array.isArray(summary?.surfaces) ? summary.surfaces : []
+  if (!surfaces.length) {
+    container.innerHTML = `<div class="diagnostic-row"><strong>${escapeHtml(t('diagnosticSurfaces.noLive'))}</strong></div>`
+    return
+  }
+  const counts = summary.counts || {}
+  const rows = surfaces.map((surface) => {
+    const ready = surface.status_class === 'source_static_ready_class'
+    const stateGroup = ready ? 'ok' : 'warn'
+    const status = ready ? t('diagnosticSurfaces.ready') : t('diagnosticSurfaces.hold')
+    return `
+      <div class="diagnostic-row" data-state-group="${stateGroup}">
+        <span class="diagnostic-name">${escapeHtml(surface.label || surface.id)}</span>
+        <span class="diagnostic-detail">${escapeHtml(status)} · ${escapeHtml(surface.temporal_analysis_class || '-')}</span>
+        <span class="diagnostic-subdetail">${escapeHtml(t('diagnosticSurfaces.nextRoute'))}: ${escapeHtml(surface.next_route_class || '-')}</span>
+      </div>
+    `
+  }).join('')
+  container.innerHTML = `
+    <div class="diagnostic-summary-grid">
+      <div><span>${escapeHtml(t('diagnosticSurfaces.ready'))}</span><strong>${escapeHtml(String(counts.ready || 0))}/${escapeHtml(String(counts.total || surfaces.length))}</strong></div>
+      <div><span>${escapeHtml(t('diagnosticSurfaces.hold'))}</span><strong>${escapeHtml(String(counts.hold || 0))}</strong></div>
+      <div><span>${escapeHtml(t('diagnosticSurfaces.noLive'))}</span><strong>0</strong></div>
+    </div>
+    ${rows}
+  `
+}
+
 const endpointDisplayName = (name) => {
   const labels = {
     'AITuber Kit': 'Expression runtime',
@@ -1283,6 +1399,7 @@ const endpointDisplayName = (name) => {
     'Expression cube vault': 'Avatar vault',
     'Display control GUI/API': 'Display runtime GUI/API',
     'Display runtime GUI/API': 'Display',
+    'Action bridge operator': 'Action operator',
     'Home Assistant bridge health': 'Action bridge health',
     'Action bridge health': 'Action',
     'MediaPipe Browser Monitor': 'Reflex browser monitor',
@@ -1311,6 +1428,7 @@ const endpointDisplayName = (name) => {
     'Expression cube vault': 'アバター保管庫',
     'Display control GUI/API': '投影表示GUI/API',
     'Display runtime GUI/API': '表示',
+    'Action bridge operator': '家電操作面',
     'Home Assistant bridge health': '操作ブリッジ状態',
     'Action bridge health': '操作',
     'MediaPipe Browser Monitor': 'カメラ反射入力の確認画面',
@@ -1724,6 +1842,7 @@ const endpointKind = (endpoint) => {
   if (url.startsWith('ws:') || name.includes('websocket')) return 'websocket'
   if (name.includes('passive projection') || url.includes('mode=passive')) return 'stage'
   if (name.includes('thought-core')) return 'thought'
+  if (name.includes('operator') || url.includes('/operator')) return 'ui'
   if (name.includes('aituber') || name.includes('projection')) return 'ui'
   if (name.includes('display') || name.includes('td control') || name.includes('touchdesigner')) return 'display'
   if (name.includes('voicevox')) return 'speech'
@@ -1775,6 +1894,8 @@ const refreshState = async () => {
   $('status-time').textContent = payload.status?.timestamp || t('status.unknown')
   state.latestStatusTimestamp = payload.status?.timestamp || ''
   state.latestServices = payload.status?.services || {}
+  state.startupTiming = payload.startupTiming || payload.status?.startupTiming || null
+  state.diagnosticSurfaces = payload.diagnosticSurfaces || payload.status?.diagnosticSurfaces || null
   state.latestEndpoints = payload.endpoints || []
   state.demoSafeSettings = payload.demoSafeSettings || {
     rows: [],
@@ -1787,6 +1908,8 @@ const refreshState = async () => {
   applyServerOperation(payload.operation || payload.status?.operation)
   renderSystemSummary(state.latestServices, state.latestStatusTimestamp)
   renderServices(state.latestServices)
+  renderStartupTiming(state.startupTiming)
+  renderDiagnosticSurfaces(state.diagnosticSurfaces)
   renderEndpoints(state.latestEndpoints)
 }
 
@@ -1795,9 +1918,13 @@ const refreshStatusOnly = async () => {
   $('status-time').textContent = payload.timestamp || t('status.unknown')
   state.latestStatusTimestamp = payload.timestamp || ''
   state.latestServices = payload.services || {}
+  state.startupTiming = payload.startupTiming || null
+  state.diagnosticSurfaces = payload.diagnosticSurfaces || null
   applyServerOperation(payload.operation)
   renderSystemSummary(state.latestServices, state.latestStatusTimestamp)
   renderServices(state.latestServices)
+  renderStartupTiming(state.startupTiming)
+  renderDiagnosticSurfaces(state.diagnosticSurfaces)
   const logs = await api('/api/logs')
   $('log-output').textContent = logs.logTail || t('status.noLog')
 }
@@ -1893,7 +2020,7 @@ const bindControls = () => {
     state.selectedProfileId = event.target.value
     applyProfileDefaults().catch(showError)
   })
-  for (const field of portFields) {
+  for (const field of numericOptionFields) {
     $(field).addEventListener('change', (event) => {
       setOption(field, Number(event.target.value))
     })

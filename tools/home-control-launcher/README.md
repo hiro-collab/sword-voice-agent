@@ -19,6 +19,48 @@ For timed demonstrations that must reach one bounded appliance handoff,
 the Home Assistant bridge while still skipping environment state, camera,
 vision, and TouchDesigner services.
 
+The fast demo profiles lower the VOICEVOX readiness wait budget with
+`VoicevoxReadyTimeoutSeconds`. The Launcher keeps the default at 45 seconds for
+normal profiles, while `Fast visible demo` and `Fast action demo` use an
+8-second wait so missing speech readiness does not consume the entire
+first-response timing budget.
+
+The Launcher exposes source/static diagnostic readiness and startup timing
+summaries for later reviewed measurement routes:
+
+- `GET /api/startup-timing` returns `launcher_startup_timing.v0` with expected
+  service IDs, first-ready elapsed milliseconds, waiting elapsed milliseconds,
+  timeline events, and the current critical-path service ID.
+- `GET /api/diagnostic-surfaces` returns the no-live diagnostic surface map for
+  audio awareness, Self Mirror temporal motion, Projection Visual display/TTS,
+  and OS display/window prompt summaries.
+- `GET /api/demo-timed-action-readiness` returns the current `demo-fast-action`
+  first-feedback/first-action readiness summary, including required local
+  service IDs, target milliseconds, remaining milliseconds to the first-action
+  target, Projection Visual URL, and Action bridge operator URL.
+
+For read-only timing collection during a reviewed runtime route, run:
+
+```powershell
+node .\tools\home-control-launcher\scripts\collect-demo-timing.mjs --timeout-ms 30000
+```
+
+The collector polls only the Launcher summary endpoints above. It does not
+start Chrome, start services, send UI input, submit Home Control preview/dry-run
+or execute requests, or capture microphone/system/browser audio or screen
+content.
+
+When the Home Assistant bridge is enabled, Quick Links includes the local
+`/operator` console as `Action bridge operator`. This is a visible/selectable
+operator-surface shortcut only; opening the link is not command authority and
+does not submit preview, dry-run, execute, or confirm-execute requests.
+
+These endpoints publish class/count/timing summaries only. They do not perform
+microphone, system-audio, browser-audio, screen, camera, or Home Control
+capture/operation, and they do not publish raw screenshots, video, audio,
+transcripts, browser storage, Home Assistant payloads, tokens, or private
+paths.
+
 The launcher calls the ops facade, which then delegates to the inherited
 supervisor implementation:
 

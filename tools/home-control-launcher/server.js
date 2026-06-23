@@ -82,6 +82,10 @@ const DEMO_SAFE_DEFAULTS_CANDIDATES = [
   path.join(WORKSPACE_ROOT, 'manifests', 'demo-safe-settings', 'defaults.json'),
   path.join(PROJECT_ROOT, '..', '..', 'manifests', 'demo-safe-settings', 'defaults.json')
 ]
+const PRODUCT_ROOT_CANDIDATES = [
+  WORKSPACE_ROOT,
+  path.join(PROJECT_ROOT, '..', '..')
+]
 
 function resolveStackStateDir() {
   const configured = readArg(
@@ -131,6 +135,7 @@ const DEFAULT_OPTIONS = {
   TouchDesignerGuiPort: 8788,
   ThoughtCoreHost: '127.0.0.1',
   ThoughtCorePort: 18787,
+  VoicevoxReadyTimeoutSeconds: 45,
   VoicevoxUrl: '',
   HomeControlConfigPath: '',
   MediapipeMode: 'mediamtx',
@@ -174,7 +179,8 @@ const NUMBER_FIELDS = new Set([
   'VisionSnapshotProcessorPort',
   'AituberPort',
   'TouchDesignerGuiPort',
-  'ThoughtCorePort'
+  'ThoughtCorePort',
+  'VoicevoxReadyTimeoutSeconds'
 ])
 
 const STRING_FIELDS = new Set([
@@ -347,6 +353,158 @@ const readPidState = () => readJsonFile(PID_FILE, { processes: [] })
 
 const resolveDemoSafeDefaultsFile = () =>
   DEMO_SAFE_DEFAULTS_CANDIDATES.find((candidate) => fs.existsSync(candidate)) || null
+
+const resolveProductRoot = () =>
+  PRODUCT_ROOT_CANDIDATES
+    .map((candidate) => path.resolve(candidate))
+    .find((candidate) =>
+      fs.existsSync(path.join(candidate, 'contracts')) &&
+      fs.existsSync(path.join(candidate, 'runtime'))
+    ) || path.resolve(PROJECT_ROOT, '..', '..')
+
+const productRoot = () => resolveProductRoot()
+
+const productPathExists = (relativePath) =>
+  fs.existsSync(path.join(productRoot(), relativePath))
+
+const productJsonFile = (relativePath, fallback = null) => {
+  const filePath = path.join(productRoot(), relativePath)
+  return readJsonFile(filePath, fallback)
+}
+
+const compactPathRef = (relativePath) =>
+  String(relativePath || '')
+    .replace(/\\/g, '/')
+    .replace(/[^A-Za-z0-9_./:-]/g, '_')
+    .slice(0, 160)
+
+const diagnosticSurfaceRow = ({
+  id,
+  label,
+  proofLayer,
+  contractPath,
+  routePath,
+  implementationPath,
+  readinessScriptPath = '',
+  temporalClass,
+  nextRouteClass,
+  liveCaptureRequiredForRuntime = false
+}) => {
+  const expectedPaths = [
+    contractPath,
+    routePath,
+    implementationPath,
+    readinessScriptPath
+  ].filter(Boolean)
+  const missingPaths = expectedPaths.filter((item) => !productPathExists(item))
+  const routeMap = routePath ? productJsonFile(routePath, {}) : {}
+  const routeCount = Array.isArray(routeMap && routeMap.routes)
+    ? routeMap.routes.length
+    : 0
+  return {
+    id,
+    label,
+    status_class: missingPaths.length === 0
+      ? 'source_static_ready_class'
+      : 'source_static_hold_class',
+    proof_layer: proofLayer,
+    temporal_analysis_class: temporalClass,
+    route_count: routeCount,
+    missing_ref_classes: missingPaths.map(compactPathRef),
+    contract_ref_class: compactPathRef(contractPath),
+    route_ref_class: compactPathRef(routePath),
+    implementation_ref_class: compactPathRef(implementationPath),
+    readiness_ref_class: readinessScriptPath ? compactPathRef(readinessScriptPath) : '',
+    live_capture_authorized_by_default: false,
+    live_capture_required_for_runtime: Boolean(liveCaptureRequiredForRuntime),
+    raw_artifact_publication_class: 'raw_artifacts_not_included_by_launcher_summary',
+    next_route_class: nextRouteClass
+  }
+}
+
+const diagnosticSurfacesSummary = () => {
+  const surfaces = [
+    diagnosticSurfaceRow({
+      id: 'audio_input_awareness',
+      label: 'Audio input awareness',
+      proofLayer: 'audio_awareness_summary_only',
+      contractPath: 'contracts/audio_awareness_summary/audio_awareness_summary.v0.schema.json',
+      routePath: 'runtime/audio-awareness/audio-awareness-consumer-routes.json',
+      implementationPath: 'runtime/audio-awareness/audio-awareness.mjs',
+      readinessScriptPath: 'scripts/check-audio-awareness-readiness.ps1',
+      temporalClass: 'windowed_audio_energy_and_legacy_vad_summary',
+      nextRouteClass: 'reviewed_live_audio_summary_route_required_for_microphone_or_pc_output_capture',
+      liveCaptureRequiredForRuntime: true
+    }),
+    diagnosticSurfaceRow({
+      id: 'self_mirror_temporal_motion',
+      label: 'Self Mirror temporal motion',
+      proofLayer: 'self_mirror_metric_summary_only',
+      contractPath: 'contracts/self_mirror_metric_summary/self_mirror_metric_summary.v0.schema.json',
+      routePath: 'runtime/visual-motion-analyzer/self-mirror-consumer-routes.json',
+      implementationPath: 'runtime/visual-motion-analyzer/src/self_mirror_visual_analyzer/summary.py',
+      readinessScriptPath: 'scripts/run-self-mirror-proof.ps1',
+      temporalClass: 'roi_window_motion_timeseries_summary',
+      nextRouteClass: 'reviewed_browser_self_mirror_capture_route_required_for_runtime_motion_observation',
+      liveCaptureRequiredForRuntime: true
+    }),
+    diagnosticSurfaceRow({
+      id: 'projection_visual_display_audio',
+      label: 'Projection Visual display/audio',
+      proofLayer: 'projection_visual_display_tts_summary_only',
+      contractPath: 'contracts/projection_visual_display_audio_summary/projection_visual_display_audio_summary.v0.schema.json',
+      routePath: 'runtime/projection-visual-diagnostics/projection-visual-diagnostics-consumer-routes.json',
+      implementationPath: 'runtime/projection-visual-diagnostics/README.md',
+      temporalClass: 'bubble_tts_unit_status_and_safe_hash_summary',
+      nextRouteClass: 'reviewed_projection_visual_runtime_summary_route_required_for_live_bubble_or_tts_claim',
+      liveCaptureRequiredForRuntime: false
+    }),
+    diagnosticSurfaceRow({
+      id: 'os_display_window_prompt',
+      label: 'OS display/window prompt',
+      proofLayer: 'os_display_diagnostic_summary_only',
+      contractPath: 'contracts/os_display_diagnostic_summary/os_display_diagnostic_summary.v0.schema.json',
+      routePath: 'runtime/os-display-diagnostics/os-display-diagnostics-consumer-routes.json',
+      implementationPath: 'runtime/os-display-diagnostics/README.md',
+      temporalClass: 'window_foreground_prompt_and_warning_class_summary',
+      nextRouteClass: 'reviewed_os_display_capture_or_window_metadata_route_required_for_runtime_prompt_observation',
+      liveCaptureRequiredForRuntime: true
+    })
+  ]
+  const readyCount = surfaces.filter((row) => row.status_class === 'source_static_ready_class').length
+  return {
+    schema_version: 'launcher_diagnostic_surfaces.v0',
+    summary_class: 'source_static_diagnostic_surface_inventory.v0',
+    proof_ceiling: 'source_static_diagnostic_surface_readiness_only',
+    product_root_class: productPathExists('contracts/README.md')
+      ? 'product_root_resolved'
+      : 'product_root_unresolved',
+    counts: {
+      total: surfaces.length,
+      ready: readyCount,
+      hold: surfaces.length - readyCount
+    },
+    lanes: {
+      audio_input: 'source_static_field_map_ready_for_reviewed_live_audio_route',
+      self_mirror: 'source_static_temporal_motion_field_map_ready_for_reviewed_browser_capture_route',
+      startup_speed: 'launcher_startup_timing_summary_runtime_measurement_ready'
+    },
+    live_capture_default_class: 'disabled',
+    live_capture_authorized_by_default: false,
+    raw_private_publication_flags: false,
+    surfaces,
+    non_claims: [
+      'no_live_microphone_capture',
+      'no_system_audio_capture',
+      'no_screen_recording',
+      'no_raw_screenshot_or_video_publication',
+      'no_browser_visible_avatar_motion_proof',
+      'no_user_heard_audio_proof',
+      'no_home_assistant_or_home_control_operation',
+      'no_release_readiness_or_final_rr003_pass'
+    ]
+  }
+}
 
 const readDemoSafeDefaults = () => {
   const filePath = resolveDemoSafeDefaultsFile()
@@ -761,6 +919,12 @@ const buildSystemStartArgs = (profileId, options) => {
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'TouchDesignerGuiPort', options.TouchDesignerGuiPort)
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'ThoughtCoreHost', options.ThoughtCoreHost)
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'ThoughtCorePort', options.ThoughtCorePort)
+  addSupportedParam(
+    SYSTEM_SCRIPT,
+    stackArgs,
+    'VoicevoxReadyTimeoutSeconds',
+    options.VoicevoxReadyTimeoutSeconds
+  )
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeMode', options.MediapipeMode)
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeCameraName', options.MediapipeCameraName)
 
@@ -923,11 +1087,29 @@ const startStack = (profileId, optionOverrides = {}) => {
     throw error
   }
 
+  const acceptedAt = nowIso()
   const state = {
-    startedAt: nowIso(),
+    startedAt: acceptedAt,
     supervisorPid: child.pid,
     commandLine: preview.commandLine,
-    profileId
+    profileId,
+    startupTiming: {
+      schema_version: 'launcher_startup_timing.v0',
+      profileId,
+      acceptedAt,
+      supervisorPid: child.pid,
+      status_class: 'starting',
+      expectedServiceIds: expectedServicesForOptions(preview.options),
+      timelineEvents: [
+        {
+          event_class: 'launcher_start_accepted',
+          at: acceptedAt,
+          elapsedMs: 0
+        }
+      ],
+      serviceReadiness: {},
+      raw_private_publication_flags: false
+    }
   }
   writeJsonFile(LAUNCHER_STATE_FILE, state)
 
@@ -1626,6 +1808,180 @@ const serviceState = ({ entry, tcp, http, requireHttp = false, processOnly = fal
   }
 }
 
+const expectedServicesForOptions = (options) => {
+  const services = []
+  if (!options.SkipHomeAssistantBridge) services.push('home_assistant_bridge')
+  if (!options.SkipEnvironmentState) services.push('environment_state_server')
+  if (!options.SkipMediapipe) services.push('mediapipe')
+  if (!options.SkipVisionSnapshotProcessor && !options.SkipMediapipe) {
+    services.push('vision_snapshot_processor')
+  }
+  if (!options.SkipAituber) services.push('aituber_kit')
+  if (!options.SkipTouchDesignerGui) services.push('touchdesigner_control_gui')
+  if (options.EnableThoughtCore) services.push('thought_core_api')
+  if (options.EnableThoughtCoreWatch) services.push('thought_core_watcher')
+  if (!options.SkipVoicevoxCheck && !options.SkipAituber) services.push('voicevox')
+  return services
+}
+
+const serviceIsReady = (service) => {
+  const state = String(service && service.state || '').toUpperCase()
+  return state === 'OK' || state === 'OK_EXTERNAL'
+}
+
+const dateMs = (value) => {
+  const ms = Date.parse(value || '')
+  return Number.isFinite(ms) ? ms : null
+}
+
+const elapsedMs = (start, end = Date.now()) => {
+  const startMs = dateMs(start)
+  if (startMs === null) {
+    return null
+  }
+  return Math.max(0, end - startMs)
+}
+
+const startupTimingEvents = ({ acceptedAt, lastCheckedAt, serviceReadiness }) => {
+  const events = []
+  if (acceptedAt) {
+    events.push({
+      event_class: 'launcher_start_accepted',
+      at: acceptedAt,
+      elapsedMs: 0
+    })
+  }
+  for (const [serviceId, item] of Object.entries(serviceReadiness || {})) {
+    if (item.firstReadyAt) {
+      events.push({
+        event_class: 'service_first_ready',
+        serviceId,
+        at: item.firstReadyAt,
+        elapsedMs: item.firstReadyElapsedMs
+      })
+    } else {
+      events.push({
+        event_class: 'service_waiting',
+        serviceId,
+        at: lastCheckedAt,
+        elapsedMs: item.waitingElapsedMs
+      })
+    }
+  }
+  return events.sort((left, right) => {
+    const leftElapsed = Number.isFinite(Number(left.elapsedMs)) ? Number(left.elapsedMs) : Number.MAX_SAFE_INTEGER
+    const rightElapsed = Number.isFinite(Number(right.elapsedMs)) ? Number(right.elapsedMs) : Number.MAX_SAFE_INTEGER
+    if (leftElapsed !== rightElapsed) {
+      return leftElapsed - rightElapsed
+    }
+    return String(left.serviceId || '').localeCompare(String(right.serviceId || ''))
+  })
+}
+
+const updateStartupTimingSummary = ({ profileId, options, services }) => {
+  const launcherState = readLauncherState()
+  const startedAt = launcherState.startedAt || launcherState.startupTiming?.acceptedAt || null
+  const now = Date.now()
+  const nowText = nowIso()
+  const expectedServiceIds = expectedServicesForOptions(options)
+  const previous = launcherState.startupTiming && typeof launcherState.startupTiming === 'object'
+    ? launcherState.startupTiming
+    : {}
+  const previousReadiness = previous.serviceReadiness || {}
+  const serviceReadiness = {}
+  const waitingServiceIds = []
+  const readyServiceIds = []
+
+  for (const serviceId of expectedServiceIds) {
+    const service = services[serviceId] || {}
+    const prior = previousReadiness[serviceId] || {}
+    const ready = serviceIsReady(service)
+    const firstSeenAt = prior.firstSeenAt || startedAt || nowText
+    const firstReadyAt = ready
+      ? prior.firstReadyAt || nowText
+      : prior.firstReadyAt || null
+    const waitingElapsed = ready
+      ? null
+      : elapsedMs(firstSeenAt, now)
+    const firstReadyElapsed = firstReadyAt && startedAt
+      ? elapsedMs(startedAt, dateMs(firstReadyAt))
+      : null
+    if (ready) {
+      readyServiceIds.push(serviceId)
+    } else {
+      waitingServiceIds.push(serviceId)
+    }
+    serviceReadiness[serviceId] = {
+      state: service.state || 'DOWN',
+      firstSeenAt,
+      firstReadyAt,
+      firstReadyElapsedMs: firstReadyElapsed,
+      waitingElapsedMs: waitingElapsed,
+      pid_present_class: service.pid ? 'pid_present' : 'pid_missing',
+      tcp_detail_class: compactProfileId(service.tcp && service.tcp.detail || 'unknown'),
+      http_detail_class: compactProfileId(service.http && service.http.detail || 'unknown')
+    }
+  }
+
+  const criticalPathServiceId = waitingServiceIds
+    .slice()
+    .sort((a, b) => {
+      const left = serviceReadiness[b].waitingElapsedMs || 0
+      const right = serviceReadiness[a].waitingElapsedMs || 0
+      return left - right
+    })[0] || expectedServiceIds
+    .slice()
+    .sort((a, b) => {
+      const left = serviceReadiness[b].firstReadyElapsedMs || 0
+      const right = serviceReadiness[a].firstReadyElapsedMs || 0
+      return left - right
+    })[0] || ''
+
+  const summary = {
+    schema_version: 'launcher_startup_timing.v0',
+    profileId,
+    acceptedAt: startedAt,
+    lastCheckedAt: nowText,
+    elapsedMs: elapsedMs(startedAt, now),
+    status_class: expectedServiceIds.length === 0
+      ? 'startup_no_expected_services'
+      : waitingServiceIds.length === 0
+        ? 'startup_expected_services_ready'
+        : 'startup_waiting_for_expected_services',
+    expectedServiceIds,
+    readyServiceIds,
+    waitingServiceIds,
+    criticalPathServiceId,
+    criticalPathStateClass: criticalPathServiceId
+      ? serviceReadiness[criticalPathServiceId].state
+      : 'not_applicable',
+    serviceReadiness,
+    timelineEvents: startupTimingEvents({
+      acceptedAt: startedAt,
+      lastCheckedAt: nowText,
+      serviceReadiness
+    }),
+    proof_ceiling: 'launcher_startup_timing_summary_only',
+    raw_private_publication_flags: false,
+    non_claims: [
+      'not_runtime_success_by_itself',
+      'not_first_audio_proof',
+      'not_first_action_proof',
+      'not_home_assistant_action',
+      'not_browser_visible_avatar_motion',
+      'not_user_heard_audio'
+    ]
+  }
+
+  if (startedAt) {
+    writeJsonFile(LAUNCHER_STATE_FILE, {
+      ...launcherState,
+      startupTiming: summary
+    })
+  }
+  return summary
+}
+
 const pidMap = () => {
   const state = readPidState()
   const map = {}
@@ -1692,6 +2048,12 @@ const getEndpoints = (options) => {
       name: 'Display runtime GUI/API',
       url: `http://127.0.0.1:${options.TouchDesignerGuiPort}`,
       enabled: !options.SkipTouchDesignerGui
+    },
+    {
+      group: 'Open in browser',
+      name: 'Action bridge operator',
+      url: `http://127.0.0.1:${options.HomeAssistantBridgePort}/operator`,
+      enabled: !options.SkipHomeAssistantBridge
     },
     {
       group: 'Local APIs and feeds',
@@ -1839,6 +2201,61 @@ const getStatus = async () => {
         ok: Boolean(homeHealth && homeHealth.ok),
         detail: homeHealth && homeHealth.detail || 'home-control bridge health unavailable'
       }
+  const services = {
+    home_assistant_bridge: serviceState({
+      entry: pids.home_assistant_bridge,
+      tcp: homeTcp,
+      http: homeHttp,
+      requireHttp: true
+    }),
+    environment_state_server: serviceState({
+      entry: pids.environment_state_server,
+      tcp: environmentTcp,
+      http: environmentHttp,
+      requireHttp: true
+    }),
+    mediapipe: serviceState({
+      entry: mediapipeEntry,
+      processOnly: true
+    }),
+    vision_snapshot_processor: serviceState({
+      entry: pids.vision_snapshot_processor,
+      processOnly: true
+    }),
+    aituber_kit: serviceState({
+      entry: pids.aituber_kit,
+      tcp: aituberTcp,
+      http: aituberHttp,
+      requireHttp: true
+    }),
+    touchdesigner_control_gui: serviceState({
+      entry: pids.touchdesigner_control_gui,
+      tcp: tdTcp,
+      http: tdHttp,
+      requireHttp: true
+    }),
+    thought_core_api: serviceState({
+      entry: pids.thought_core_api,
+      tcp: thoughtCoreTcp,
+      http: thoughtCoreHttp,
+      requireHttp: true
+    }),
+    thought_core_watcher: serviceState({
+      entry: pids.thought_core_watcher,
+      processOnly: true
+    }),
+    voicevox: serviceState({
+      entry: null,
+      tcp: voicevoxTcp,
+      http: voicevoxHttp,
+      requireHttp: true
+    })
+  }
+  const startupTiming = updateStartupTimingSummary({
+    profileId: selectedProfileId,
+    options,
+    services
+  })
 
   return {
     ok: true,
@@ -1846,56 +2263,9 @@ const getStatus = async () => {
     workspaceRoot: WORKSPACE_ROOT,
     operation: operationState(),
     profileConfigState,
-    services: {
-      home_assistant_bridge: serviceState({
-        entry: pids.home_assistant_bridge,
-        tcp: homeTcp,
-        http: homeHttp,
-        requireHttp: true
-      }),
-      environment_state_server: serviceState({
-        entry: pids.environment_state_server,
-        tcp: environmentTcp,
-        http: environmentHttp,
-        requireHttp: true
-      }),
-      mediapipe: serviceState({
-        entry: mediapipeEntry,
-        processOnly: true
-      }),
-      vision_snapshot_processor: serviceState({
-        entry: pids.vision_snapshot_processor,
-        processOnly: true
-      }),
-      aituber_kit: serviceState({
-        entry: pids.aituber_kit,
-        tcp: aituberTcp,
-        http: aituberHttp,
-        requireHttp: true
-      }),
-      touchdesigner_control_gui: serviceState({
-        entry: pids.touchdesigner_control_gui,
-        tcp: tdTcp,
-        http: tdHttp,
-        requireHttp: true
-      }),
-      thought_core_api: serviceState({
-        entry: pids.thought_core_api,
-        tcp: thoughtCoreTcp,
-        http: thoughtCoreHttp,
-        requireHttp: true
-      }),
-      thought_core_watcher: serviceState({
-        entry: pids.thought_core_watcher,
-        processOnly: true
-      }),
-      voicevox: serviceState({
-        entry: null,
-        tcp: voicevoxTcp,
-        http: voicevoxHttp,
-        requireHttp: true
-      })
-    },
+    services,
+    startupTiming,
+    diagnosticSurfaces: diagnosticSurfacesSummary(),
     environment:
       exposeEnvironmentStatus && environmentIndicators.ok && environmentIndicators.payload
         ? compactEnvironmentForLauncherStatus(environmentIndicators.payload)
@@ -1962,6 +2332,8 @@ const getState = async () => {
     launcherState: readLauncherState(),
     operation: operationState(),
     status,
+    startupTiming: status.startupTiming,
+    diagnosticSurfaces: status.diagnosticSurfaces,
     demoSafeSettings,
     demoReadinessStatus: demoReadinessStatus(demoSafeSettings, status),
     endpoints: getEndpoints(options),
@@ -1969,6 +2341,78 @@ const getState = async () => {
     logTail: readTextTail(STACK_LOG_FILE)
   }
 }
+
+const getStartupTimingPayload = async () => {
+  const status = await getStatus()
+  return {
+    ok: true,
+    timestamp: status.timestamp,
+    startupTiming: status.startupTiming,
+    proof_ceiling: 'launcher_startup_timing_summary_only',
+    raw_private_publication_flags: false
+  }
+}
+
+const demoTimedActionReadiness = async () => {
+  const status = await getStatus()
+  const config = readLauncherConfig()
+  const profileId = config.selectedProfileId || PRIMARY_PROFILE_ID
+  const options = effectiveStatusOptions()
+  const timing = status.startupTiming || {}
+  const elapsed = Number(timing.elapsedMs)
+  const firstResponseTargetMs = 30000
+  const firstActionTargetMs = 30000
+  const requiredServices = [
+    'thought_core_api',
+    'aituber_kit',
+    'home_assistant_bridge'
+  ]
+  const missingServices = requiredServices.filter(
+    (serviceId) => !serviceIsReady(status.services && status.services[serviceId])
+  )
+  const actionBridgeHost = options.HomeAssistantBridgeHost === '0.0.0.0'
+    ? '127.0.0.1'
+    : options.HomeAssistantBridgeHost
+  return {
+    schema_version: 'launcher_demo_timed_action_readiness.v0',
+    profileId,
+    route_class: 'demo_fast_action_first_feedback_and_first_action_readiness',
+    readiness_class: missingServices.length === 0
+      ? 'ready_for_reviewed_first_action_handoff'
+      : 'waiting_for_required_services',
+    requiredServiceIds: requiredServices,
+    missingServiceIds: missingServices,
+    target_ms: {
+      first_response: firstResponseTargetMs,
+      first_action: firstActionTargetMs
+    },
+    elapsedMs: Number.isFinite(elapsed) ? elapsed : null,
+    remaining_ms_to_first_action_target: Number.isFinite(elapsed)
+      ? firstActionTargetMs - elapsed
+      : null,
+    projection_visual_url: `http://127.0.0.1:${options.AituberPort}/projection-visual/`,
+    action_operator_url: `http://${actionBridgeHost}:${options.HomeAssistantBridgePort}/operator`,
+    startupTiming: timing,
+    proof_ceiling: 'launcher_demo_timed_action_readiness_summary_only',
+    command_submission_authorized_by_this_summary: false,
+    raw_private_publication_flags: false,
+    non_claims: [
+      'not_runtime_success_by_itself',
+      'not_first_audio_proof',
+      'not_first_action_proof',
+      'not_home_assistant_or_home_control_operation',
+      'not_physical_device_proof'
+    ]
+  }
+}
+
+const getDiagnosticSurfacesPayload = () => ({
+  ok: true,
+  timestamp: nowIso(),
+  diagnosticSurfaces: diagnosticSurfacesSummary(),
+  proof_ceiling: 'source_static_diagnostic_surface_readiness_only',
+  raw_private_publication_flags: false
+})
 
 const sendJson = (response, statusCode, payload, extraHeaders = {}) => {
   response.writeHead(statusCode, {
@@ -2023,6 +2467,18 @@ const handleApi = async (request, response, requestUrl) => {
   }
   if (request.method === 'GET' && requestUrl.pathname === '/api/status') {
     sendJson(response, 200, await getStatus(), launcherStatusCorsHeaders())
+    return
+  }
+  if (request.method === 'GET' && requestUrl.pathname === '/api/startup-timing') {
+    sendJson(response, 200, await getStartupTimingPayload())
+    return
+  }
+  if (request.method === 'GET' && requestUrl.pathname === '/api/diagnostic-surfaces') {
+    sendJson(response, 200, getDiagnosticSurfacesPayload())
+    return
+  }
+  if (request.method === 'GET' && requestUrl.pathname === '/api/demo-timed-action-readiness') {
+    sendJson(response, 200, await demoTimedActionReadiness())
     return
   }
   if (request.method === 'GET' && requestUrl.pathname === '/api/logs') {

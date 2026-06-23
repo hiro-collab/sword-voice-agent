@@ -20,6 +20,7 @@ param(
     [int]$ThoughtCorePort = 18787,
     [string]$ThoughtCoreWatchAituberHttpTimeout = "",
     [string]$VoicevoxUrl = "",
+    [int]$VoicevoxReadyTimeoutSeconds = 45,
     [ValidateSet("gui", "headless", "camera-hub", "mediamtx")]
     [string]$MediapipeMode = "mediamtx",
     [string]$MediapipeCameraName = "HD Pro Webcam C920",
@@ -359,6 +360,7 @@ function New-StackStartArguments {
     Add-NamedArgument -Arguments $arguments -Name "-ThoughtCorePort" -Value $ThoughtCorePort
     Add-NamedArgument -Arguments $arguments -Name "-ThoughtCoreWatchAituberHttpTimeout" -Value $ThoughtCoreWatchAituberHttpTimeout -SkipWhenBlank $true
     Add-NamedArgument -Arguments $arguments -Name "-VoicevoxUrl" -Value $VoicevoxUrl -SkipWhenBlank $true
+    Add-NamedArgument -Arguments $arguments -Name "-VoicevoxReadyTimeoutSeconds" -Value $VoicevoxReadyTimeoutSeconds
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeMode" -Value $MediapipeMode
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeCameraName" -Value $MediapipeCameraName
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeReadyTimeoutSeconds" -Value $MediapipeReadyTimeoutSeconds
