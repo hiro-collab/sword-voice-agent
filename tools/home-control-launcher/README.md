@@ -33,7 +33,7 @@ summaries for later reviewed measurement routes:
   timeline events, and the current critical-path service ID.
 - `GET /api/diagnostic-surfaces` returns the no-live diagnostic surface map for
   audio awareness, Self Mirror temporal motion, Projection Visual display/TTS,
-  and OS display/window prompt summaries.
+  Projection Visual response binding, and OS display/window prompt summaries.
 - `GET /api/demo-timed-action-readiness` returns the current `demo-fast-action`
   first-feedback/first-action readiness summary, including required local
   service IDs, target milliseconds, remaining milliseconds to the first-action

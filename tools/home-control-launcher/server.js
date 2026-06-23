@@ -460,6 +460,17 @@ const diagnosticSurfacesSummary = () => {
       liveCaptureRequiredForRuntime: false
     }),
     diagnosticSurfaceRow({
+      id: 'projection_visual_response_binding',
+      label: 'Projection Visual response binding',
+      proofLayer: 'projection_visual_receiver_binding_summary_only',
+      contractPath: 'contracts/projection_visual_display_audio_summary/projection_visual_display_audio_summary.v0.schema.json',
+      routePath: 'runtime/projection-visual-diagnostics/projection-visual-diagnostics-consumer-routes.json',
+      implementationPath: 'runtime/projection-visual-diagnostics/README.md',
+      temporalClass: 'message_receiver_client_binding_status_summary',
+      nextRouteClass: 'reviewed_projection_visual_receiver_binding_runtime_route_required_for_live_response_claim',
+      liveCaptureRequiredForRuntime: false
+    }),
+    diagnosticSurfaceRow({
       id: 'os_display_window_prompt',
       label: 'OS display/window prompt',
       proofLayer: 'os_display_diagnostic_summary_only',

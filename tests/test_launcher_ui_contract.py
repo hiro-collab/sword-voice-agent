@@ -152,6 +152,8 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("source_static_diagnostic_surface_inventory.v0", server)
         self.assertIn("audio_input_awareness", server)
         self.assertIn("self_mirror_temporal_motion", server)
+        self.assertIn("projection_visual_response_binding", server)
+        self.assertIn("message_receiver_client_binding_status_summary", server)
         self.assertIn("os_display_window_prompt", server)
         self.assertIn("live_capture_default_class: 'disabled'", server)
         self.assertIn("raw_private_publication_flags: false", server)
