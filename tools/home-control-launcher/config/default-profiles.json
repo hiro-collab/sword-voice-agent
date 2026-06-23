@@ -32,6 +32,24 @@
     }
   },
   {
+    "id": "demo-fast-action",
+    "name": "Fast action demo",
+    "group": "Demo",
+    "description": "Start the minimal local display/audio path plus the Home Assistant bridge for a bounded appliance handoff.",
+    "options": {
+      "StopExisting": false,
+      "EnableThoughtCore": true,
+      "EnableThoughtCoreWatch": false,
+      "ThoughtCoreNoProvider": true,
+      "SkipEnvironmentState": true,
+      "SkipMediapipe": true,
+      "SkipVisionSnapshotProcessor": true,
+      "SkipTouchDesignerGui": true,
+      "MediapipeMode": "mediamtx",
+      "MediapipeNoBrowser": true
+    }
+  },
+  {
     "id": "camera-debug",
     "name": "Reflex camera debug",
     "group": "Diagnostics",

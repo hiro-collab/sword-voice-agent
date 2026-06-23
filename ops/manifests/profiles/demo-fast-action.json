@@ -1,0 +1,10 @@
+{
+  "profile_id": "demo-fast-action",
+  "layer": "ops",
+  "description": "Minimal visible demo stack with Home Assistant bridge available for one bounded appliance handoff.",
+  "services": [
+    "home_assistant_bridge",
+    "thought_core_api",
+    "aituber_kit"
+  ]
+}

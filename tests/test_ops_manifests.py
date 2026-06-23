@@ -65,6 +65,12 @@ class OpsManifestTest(TestCase):
         demo_fast = set(profiles["demo-fast"]["services"])
         self.assertEqual(demo_fast, {"thought_core_api", "aituber_kit"})
 
+        demo_fast_action = set(profiles["demo-fast-action"]["services"])
+        self.assertEqual(
+            demo_fast_action,
+            {"home_assistant_bridge", "thought_core_api", "aituber_kit"},
+        )
+
         camera_debug = set(profiles["camera-debug"]["services"])
         self.assertEqual(
             camera_debug,

@@ -14,6 +14,10 @@ The primary profile is `System Cell (Thought Core)`. Normal operation should
 use the Thought Core profile.
 For timed local demonstrations, `Fast visible demo` starts the minimal
 Projection Visual plus no-provider Thought Core path.
+For timed demonstrations that must reach one bounded appliance handoff,
+`Fast action demo` keeps that minimal local display/audio path but also starts
+the Home Assistant bridge while still skipping environment state, camera,
+vision, and TouchDesigner services.
 
 The launcher calls the ops facade, which then delegates to the inherited
 supervisor implementation:
