@@ -1623,31 +1623,23 @@ class ThoughtCoreContractTest(TestCase):
             "target_state_unverified",
         )
 
-    def test_calibrated_room_light_review_succeeds_when_effective_state_matches(self) -> None:
-        class CalibratedRoomLightTools(MockThoughtTools):
+    def test_legacy_effective_room_light_fields_do_not_satisfy_review(self) -> None:
+        class LegacyEffectiveRoomLightTools(MockThoughtTools):
             def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
                 executed = bool(self.execute_calls)
                 raw_state = "unknown" if executed else "on"
-                effective_state = "off" if executed else "on"
-                confidence = "high" if executed else "medium"
                 room_light = {
                     "available": True,
                     "stale": False,
                     "state": raw_state,
                     "confidence_label": "low" if executed else "medium",
-                    "effective_state": effective_state,
-                    "effective_confidence_label": confidence,
+                    "effective_state": "off" if executed else "on",
+                    "effective_confidence_label": "high" if executed else "medium",
                     "effective_authority": "environment_state_server.calibration.home_assistant",
                     "effective_answer_hint": "学習済みの操作履歴と Home Assistant の直近状態で補正しています。",
                     "authority": "vision_snapshot_processor.mock",
                     "projected_by": "environment_state_server.mock",
                     "answer_hint": "映像推定では断定できない。",
-                    "calibration": {
-                        "applied": True,
-                        "state": effective_state,
-                        "confidence_label": confidence,
-                        "reason": "fresh_home_assistant_light_state",
-                    },
                 }
                 return {
                     "status": "ok",
@@ -1674,24 +1666,24 @@ class ThoughtCoreContractTest(TestCase):
                     "expected_state": action.get("expected_state"),
                 }
 
-        tools = CalibratedRoomLightTools(light_on=True)
+        tools = LegacyEffectiveRoomLightTools(light_on=True)
         events = ThoughtLoop(tools=tools).run_dicts(
             {
                 **TURN,
                 "text": "電気を消して",
-                "turn_id": "turn_light_off_calibrated_review",
+                "turn_id": "turn_light_off_legacy_effective_review",
             }
         )
         event_types = [event["type"] for event in events]
 
-        self.assertNotIn("feedback.requested", event_types)
+        self.assertIn("feedback.requested", event_types)
         self.assertNotIn("action.retrying", event_types)
         self.assertEqual(len(tools.execute_calls), 1)
         self.assertEqual(tools.execute_calls[0]["action_id"], "light_off")
-        self.assertEqual(events[-1]["data"]["status"], "success")
+        self.assertEqual(events[-1]["data"]["status"], "needs_feedback")
 
-    def test_home_assistant_calibrated_room_light_reply_names_authority(self) -> None:
-        class HomeAssistantCalibratedTools(MockThoughtTools):
+    def test_legacy_effective_room_light_fields_do_not_drive_state_query_reply(self) -> None:
+        class LegacyEffectiveRoomLightTools(MockThoughtTools):
             def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
                 room_light = {
                     "available": True,
@@ -1717,11 +1709,11 @@ class ThoughtCoreContractTest(TestCase):
                     },
                 }
 
-        events = ThoughtLoop(tools=HomeAssistantCalibratedTools()).run_dicts(
+        events = ThoughtLoop(tools=LegacyEffectiveRoomLightTools()).run_dicts(
             {
                 **TURN,
                 "text": "電気はついてる？",
-                "turn_id": "turn_home_assistant_calibrated_room_light_reply",
+                "turn_id": "turn_legacy_effective_room_light_reply",
             }
         )
         speeches = [
@@ -1730,7 +1722,9 @@ class ThoughtCoreContractTest(TestCase):
             if event["type"] == "assistant.message"
         ]
 
-        self.assertTrue(any("Home Assistant上では" in speech for speech in speeches))
+        self.assertTrue(any("判定がまだ弱い" in speech for speech in speeches))
+        self.assertFalse(any("Home Assistant上では" in speech for speech in speeches))
+        self.assertFalse(any("ついているように見えます" in speech for speech in speeches))
         self.assertFalse(any("補正込みでは" in speech for speech in speeches))
 
     def test_uncertain_target_state_review_does_not_retry_light_on(self) -> None:

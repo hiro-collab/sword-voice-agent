@@ -6408,37 +6408,13 @@ class ThoughtLoop:
         if isinstance(environment, dict):
             queries = environment.get("state_queries")
             if isinstance(queries, dict) and isinstance(queries.get("room_light"), dict):
-                return self._effective_room_light(queries["room_light"])
+                return dict(queries["room_light"])
         facts = observation.get("facts")
         if isinstance(facts, dict):
             queries = facts.get("state_queries")
             if isinstance(queries, dict) and isinstance(queries.get("room_light"), dict):
-                return self._effective_room_light(queries["room_light"])
+                return dict(queries["room_light"])
         return {}
-
-    def _effective_room_light(self, room_light: dict[str, Any]) -> dict[str, Any]:
-        projected = dict(room_light)
-        effective_state = str(projected.get("effective_state") or "").strip().lower()
-        effective_confidence = str(
-            projected.get("effective_confidence_label") or ""
-        ).strip().lower()
-        if effective_state not in {"on", "off"}:
-            return projected
-        if effective_confidence not in {"medium", "high"}:
-            return projected
-        projected.setdefault("raw_state", projected.get("state"))
-        projected.setdefault("raw_confidence_label", projected.get("confidence_label"))
-        projected["state"] = effective_state
-        projected["confidence_label"] = effective_confidence
-        projected["authority"] = (
-            projected.get("effective_authority")
-            or projected.get("authority")
-            or "environment_state_server.calibration"
-        )
-        if projected.get("effective_answer_hint"):
-            projected["answer_hint"] = projected.get("effective_answer_hint")
-        projected["effective_projection_applied"] = True
-        return projected
 
     def _room_light_state_reply(self, room_light: dict[str, Any]) -> dict[str, str]:
         if not room_light:
@@ -6453,18 +6429,10 @@ class ThoughtLoop:
             speech = "カメラ推定では明るさの判定がまだ弱いです。実際の状態を教えてもらえると助かります。"
             return {"speech": speech, "display": speech}
         if state == "on":
-            if self._room_light_authority_is_home_assistant(room_light):
-                speech = "Home Assistant上では、リビングの電気はついている扱いです。カメラ判定は補助情報として見ています。"
-                return {"speech": speech, "display": speech}
-            prefix = "学習補正込みでは" if room_light.get("effective_projection_applied") else "カメラ推定では"
-            speech = f"{prefix}、リビングの電気はついているように見えます。"
+            speech = "カメラ推定では、リビングの電気はついているように見えます。"
             return {"speech": speech, "display": speech}
         if state == "off":
-            if self._room_light_authority_is_home_assistant(room_light):
-                speech = "Home Assistant上では、リビングの電気は消えている扱いです。カメラ判定は補助情報として見ています。"
-                return {"speech": speech, "display": speech}
-            prefix = "学習補正込みでは" if room_light.get("effective_projection_applied") else "カメラ推定では"
-            speech = f"{prefix}、リビングの電気は消えているように見えます。"
+            speech = "カメラ推定では、リビングの電気は消えているように見えます。"
             return {"speech": speech, "display": speech}
         hint = str(room_light.get("answer_hint") or "").strip()
         speech = (
@@ -6473,12 +6441,6 @@ class ThoughtLoop:
             else "カメラ推定ではまだ判断できません。"
         )
         return {"speech": speech, "display": speech}
-
-    def _room_light_authority_is_home_assistant(self, room_light: dict[str, Any]) -> bool:
-        authority = str(
-            room_light.get("authority") or room_light.get("effective_authority") or ""
-        ).lower()
-        return "home_assistant" in authority
 
     def _as_bool(self, value: Any) -> bool | None:
         if isinstance(value, bool):
