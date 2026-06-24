@@ -1833,7 +1833,11 @@ if (-not $SkipTouchDesignerGui) {
             "--port",
             [string]$TouchDesignerGuiPort,
             "--host",
-            $TouchDesignerGuiHost
+            $TouchDesignerGuiHost,
+            "--thought-core-host",
+            $ThoughtCoreClientHost,
+            "--thought-core-port",
+            [string]$ThoughtCorePort
         ) `
         -WorkingDirectory $TouchDesignerGuiToolsRoot `
         -Environment $displayRuntimeEnvironment `
