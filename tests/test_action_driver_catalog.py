@@ -148,6 +148,24 @@ class ActionDriverCatalogTest(unittest.TestCase):
             self.assertEqual(catalog_action["expected_effect"], environment_action.expected_effect, action_id)
             self.assertEqual(catalog_action["aliases"], list(environment_action.aliases), action_id)
 
+    def test_open_loop_light_rows_use_room_light_estimate_query(self) -> None:
+        catalog_actions = load_catalog()["actions"]
+
+        for action_id in ("light_on", "light_off"):
+            action = catalog_actions[action_id]
+            expected_effect = action["expected_effect"]
+            observation = action["observation"]
+
+            self.assertEqual(expected_effect["state_authority"], "open_loop")
+            self.assertEqual(expected_effect["verification_mode"], "external_observation")
+            self.assertEqual(expected_effect["evidence_class"], "external_observation_required")
+            self.assertNotIn("state_path", observation)
+            self.assertEqual(observation["state_query_path"], "environment.state_queries.room_light")
+            self.assertEqual(
+                observation["observation_class"],
+                "room_light_estimate_only_not_appliance_state",
+            )
+
     def test_catalog_intent_examples_are_recognized_by_thought_core_fallback(self) -> None:
         thought_src = REPO_ROOT / "services" / "thought-core" / "src"
         sys.path.insert(0, str(thought_src))

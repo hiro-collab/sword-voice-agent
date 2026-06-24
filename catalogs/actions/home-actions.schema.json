@@ -102,11 +102,17 @@
         },
         "observation": {
           "type": "object",
-          "required": ["appliance_id", "state_path"],
+          "required": ["appliance_id"],
+          "anyOf": [
+            { "required": ["state_path"] },
+            { "required": ["state_query_path"] }
+          ],
           "additionalProperties": false,
           "properties": {
             "appliance_id": { "type": "string", "minLength": 1 },
-            "state_path": { "type": "string", "minLength": 1 }
+            "state_path": { "type": "string", "minLength": 1 },
+            "state_query_path": { "type": "string", "minLength": 1 },
+            "observation_class": { "type": "string", "minLength": 1 }
           }
         },
         "intent_examples": {

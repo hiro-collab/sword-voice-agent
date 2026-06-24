@@ -2,7 +2,7 @@
   "$schema": "./home-actions.schema.json",
   "schema_version": 1,
   "catalog_id": "sword.home-actions",
-  "catalog_version": "home-actions.v1",
+  "catalog_version": "home-actions.v2",
   "authority": "sword-control-plane",
   "update_flow": [
     "Propose catalog changes before service-specific edits.",
@@ -48,7 +48,8 @@
       },
       "observation": {
         "appliance_id": "light",
-        "state_path": "environment.appliances.light.state"
+        "state_query_path": "environment.state_queries.room_light",
+        "observation_class": "room_light_estimate_only_not_appliance_state"
       },
       "intent_examples": ["電気をつけて"]
     },
@@ -86,7 +87,8 @@
       },
       "observation": {
         "appliance_id": "light",
-        "state_path": "environment.appliances.light.state"
+        "state_query_path": "environment.state_queries.room_light",
+        "observation_class": "room_light_estimate_only_not_appliance_state"
       },
       "intent_examples": ["電気を消して"]
     },
