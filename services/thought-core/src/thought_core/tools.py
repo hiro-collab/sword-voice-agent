@@ -97,14 +97,7 @@ class MockThoughtTools:
             light_on = forced_state == "on"
             self.light_state_by_turn[turn.turn_id] = light_on
         state = "on" if light_on else "off"
-        devices = [
-            {
-                "id": "living_room_light",
-                "kind": "light",
-                "name": "リビングの電気",
-                "state": state,
-            }
-        ]
+        devices = []
         for appliance_id, appliance_state in sorted(self.appliance_states.items()):
             if appliance_id in {"light", "living_room_light"}:
                 continue
@@ -285,13 +278,7 @@ class MockThoughtTools:
         )
         environment: dict[str, Any] = {
             "snapshot_id": f"env_mock_{turn.turn_id}_{reason}",
-            "appliances": {
-                "light": {
-                    "state": light_state,
-                    "updated_at": "2026-05-08T00:00:00+00:00",
-                    "source": "home_assistant.mock",
-                }
-            },
+            "appliances": {},
             "last_home_assistant_events": [],
             "state_queries": {
                 "room_light": {

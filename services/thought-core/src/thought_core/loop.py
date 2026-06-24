@@ -2891,7 +2891,11 @@ class ThoughtLoop:
                     "operator": "eq",
                     "value": expected_state,
                     "scope": "required",
-                    "path_hint": f"environment.appliances.{target}.state",
+                    "path_hint": (
+                        "environment.state_queries.room_light.state"
+                        if target == "light"
+                        else f"environment.appliances.{target}.state"
+                    ),
                 }
             ],
             "wildcard_policy": "unspecified_values_are_any",

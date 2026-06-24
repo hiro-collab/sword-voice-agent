@@ -92,6 +92,36 @@ class EnvironmentStateGroundingTest(TestCase):
         self.assertNotIn("通常会話用LLM", message["speech"])
         self.assertEqual(events[-1]["data"]["status"], "environment_status_answer")
 
+    def test_mock_light_state_stays_room_light_query_not_appliance_device(self) -> None:
+        tools = MockThoughtTools(light_on=True)
+        observation = tools.environment_observe(
+            TurnInput.from_mapping(
+                {
+                    **TURN,
+                    "turn_id": "turn_mock_light_projection_boundary",
+                }
+            ),
+            reason="status_query",
+        )
+        facts = observation["facts"]
+        environment = observation["environment"]
+        assert isinstance(facts, dict)
+        assert isinstance(environment, dict)
+        room_light = environment["state_queries"]["room_light"]
+        serialized_observation = json.dumps(
+            observation,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+        self.assertEqual(facts["devices"], [])
+        self.assertEqual(environment["appliances"], {})
+        self.assertIn("room_light", facts["state_queries"])
+        self.assertEqual(room_light["state"], "on")
+        self.assertEqual(room_light["authority"], "vision_snapshot_processor.mock")
+        self.assertNotIn("living_room_light", serialized_observation)
+        self.assertNotIn("environment.appliances.light.state", serialized_observation)
+
     def test_home_control_availability_summarizes_safe_action_families(self) -> None:
         tools = CatalogStatusTools(light_on=False)
         events = ThoughtLoop(tools=tools).run_dicts(
@@ -133,14 +163,17 @@ class EnvironmentStateGroundingTest(TestCase):
 
         grounding = self._grounding(events)
         message = self._last_message(events)
+        serialized_grounding = json.dumps(grounding, ensure_ascii=False, sort_keys=True)
 
         self.assertEqual(grounding["query_class"], "appliance_state")
         self.assertEqual(grounding["proof_ceiling"], "HA_visible_state_only")
-        self.assertGreaterEqual(grounding["readable_device_count"], 3)
+        self.assertEqual(grounding["readable_device_count"], 2)
         self.assertIn("読める状態", message["speech"])
         self.assertIn("HAやEnvironment State上の要約", message["speech"])
         self.assertIn("物理状態", message["speech"])
         self.assertNotIn("物理的に確認済み", message["speech"])
+        self.assertNotIn('"kind": "light"', serialized_grounding)
+        self.assertNotIn("living_room_light", serialized_grounding)
         self.assertIn("current_physical_appliance_state", grounding["does_not_prove"])
 
     def test_memory_dependent_status_uses_memory_as_reference_only(self) -> None:

@@ -80,7 +80,7 @@ class LocalActionReasoner:
             "operator": "eq",
             "value": intent.expected_state,
             "scope": "required",
-            "path_hint": f"environment.appliances.{intent.target}.state",
+            "path_hint": _target_state_path_hint(intent.target),
         }
         return {
             "schema": ACTION_REASONER_BOUNDARY,
@@ -696,6 +696,12 @@ def _target_aliases(target: str, action_id: str) -> list[str]:
     if target == "light":
         aliases.append("living_room_light")
     return aliases
+
+
+def _target_state_path_hint(target: str) -> str:
+    if target == "light":
+        return "environment.state_queries.room_light.state"
+    return f"environment.appliances.{target}.state"
 
 
 def _first_expected_value(target_state: dict[str, Any]) -> str:

@@ -343,6 +343,10 @@ class ThoughtCoreContractTest(TestCase):
         )
         self.assertEqual(target_state["bindings"][0]["target"], "light")
         self.assertEqual(target_state["bindings"][0]["value"], "on")
+        self.assertEqual(
+            target_state["bindings"][0]["path_hint"],
+            "environment.state_queries.room_light.state",
+        )
         self.assertEqual(plan_event["data"]["target_state_diff"]["status"], "mismatch")
         self.assertEqual(review_event["data"]["target_state_diff"]["status"], "matched")
         self.assertEqual(review_event["data"]["review_basis"], "target_state")
@@ -703,7 +707,8 @@ class ThoughtCoreContractTest(TestCase):
             event for event in question_events if event["type"] == "input.understood"
         )
 
-        self.assertTrue(action_events[-1]["data"]["post_action_feedback_pending"])
+        self.assertEqual(action_events[-1]["data"]["status"], "needs_feedback")
+        self.assertEqual(action_events[-1]["data"]["review_status"], "mismatch")
         self.assertEqual(understood["data"]["kind"], "state_query")
         self.assertTrue(understood["data"]["is_question"])
         self.assertIn("environment.state_query_answer", question_event_types)
@@ -758,17 +763,18 @@ class ThoughtCoreContractTest(TestCase):
             for event in events
             if event["type"] == "assistant.message"
         ][-1]
-        pending = next(
-            event for event in events if event["type"] == "state_query.feedback_pending"
+        feedback = next(
+            event for event in events if event["type"] == "feedback.requested"
         )
 
-        self.assertIn("state_query.feedback_pending", event_types)
-        self.assertIn("映像", message)
-        self.assertEqual(pending["data"]["state_query_id"], "room_light")
-        self.assertEqual(pending["data"]["expected_state"], "on")
-        self.assertEqual(pending["data"]["predicted_state"], "off")
-        self.assertTrue(events[-1]["data"]["post_action_feedback_pending"])
-        self.assertEqual(events[-1]["data"]["room_light_wait_matched"], True)
+        self.assertIn("feedback.requested", event_types)
+        self.assertNotIn("state_query.feedback_pending", event_types)
+        self.assertIn("操作は送信しました", message)
+        self.assertIn("環境で結果を確認しきれていない", message)
+        self.assertEqual(feedback["data"]["last_review"]["status"], "mismatch")
+        self.assertEqual(feedback["data"]["last_review"]["expected_state"], "on")
+        self.assertEqual(events[-1]["data"]["status"], "needs_feedback")
+        self.assertEqual(events[-1]["data"]["review_status"], "mismatch")
 
     def test_environment_noop_action_skips_home_execute(self) -> None:
         class NoopLightTools(MockThoughtTools):
