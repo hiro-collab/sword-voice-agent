@@ -12,6 +12,7 @@ param(
     [string]$HomeAssistantBridgeHost = "127.0.0.1",
     [string]$HomeControlConfigPath = "",
     [int]$EnvironmentStatePort = 8790,
+    [string]$EnvironmentStateHost = "127.0.0.1",
     [int]$MediapipePort = 8765,
     [int]$MediapipeBrowserMonitorPort = 8770,
     [int]$VisionSnapshotProcessorPort = 8776,
@@ -19,6 +20,8 @@ param(
     [string]$AituberHost = "127.0.0.1",
     [int]$TouchDesignerGuiPort = 8788,
     [string]$TouchDesignerGuiHost = "127.0.0.1",
+    [string]$TouchDesignerUdpHost = "127.0.0.1",
+    [int]$TouchDesignerUdpPort = 9001,
     [string]$ThoughtCoreHost = "127.0.0.1",
     [int]$ThoughtCorePort = 18787,
     [string]$ThoughtCoreWatchAituberHttpTimeout = "",
@@ -200,8 +203,14 @@ $PidFile = Join-Path $StateDir "pids.json"
 $StopScript = Join-Path $PSScriptRoot "stop-home-control-stack.ps1"
 $ThoughtCoreStatusDir = Join-Path $StateDir "thought-core-api"
 $ThoughtCoreWatchStatusDir = Join-Path $StateDir "thought-core-watcher"
+$HomeAssistantBridgeClientHost = if ($HomeAssistantBridgeHost -eq "0.0.0.0") { "127.0.0.1" } else { $HomeAssistantBridgeHost }
+$EnvironmentStateClientHost = if ($EnvironmentStateHost -eq "0.0.0.0") { "127.0.0.1" } else { $EnvironmentStateHost }
+$AituberClientHost = if ($AituberHost -eq "0.0.0.0") { "127.0.0.1" } else { $AituberHost }
+$TouchDesignerGuiClientHost = if ($TouchDesignerGuiHost -eq "0.0.0.0") { "127.0.0.1" } else { $TouchDesignerGuiHost }
+$TouchDesignerUdpClientHost = if ($TouchDesignerUdpHost -eq "0.0.0.0") { "127.0.0.1" } else { $TouchDesignerUdpHost }
 $ThoughtCoreClientHost = if ($ThoughtCoreHost -eq "0.0.0.0") { "127.0.0.1" } else { $ThoughtCoreHost }
 $ThoughtCoreBaseUrl = "http://{0}:{1}" -f $ThoughtCoreClientHost, $ThoughtCorePort
+$AituberProjectionVisualUrl = "http://{0}:{1}/projection-visual?mode=passive&hud=0" -f $AituberClientHost, $AituberPort
 $MediapipeCameraHubChildProcessFile = Join-Path $StateDir "modules\mediapipe_camera_hub_stack\processes.json"
 $StateQueryFeedbackPath = Join-Path $StateDir "feedback\state-query.jsonl"
 
@@ -988,23 +997,23 @@ function Write-StackEndpointGuide {
     if (-not $SkipAituber) {
         Write-GuideItem `
             -Name "AITuber Kit" `
-            -Target "http://127.0.0.1:$AituberPort" `
+            -Target ("http://{0}:{1}" -f $AituberClientHost, $AituberPort) `
             -Description "会話入力、AITuber Kit の通常画面。"
         Write-GuideItem `
             -Name "Projection Visual" `
-            -Target "http://127.0.0.1:$AituberPort/projection-visual/" `
+            -Target ("http://{0}:{1}/projection-visual/" -f $AituberClientHost, $AituberPort) `
             -Description "投影・配信用のキャラクター表示画面。普段見るメインの表示はこちら。"
         Write-GuideItem `
             -Name "Projection Visual passive" `
-            -Target "http://127.0.0.1:$AituberPort/projection-visual/?mode=passive" `
+            -Target ("http://{0}:{1}/projection-visual/?mode=passive" -f $AituberClientHost, $AituberPort) `
             -Description "投影先・TouchDesigner プレビュー向けの passive 表示。操作 UI を前面に出さない。"
         Write-GuideItem `
             -Name "Projection Visual passive no HUD" `
-            -Target "http://127.0.0.1:$AituberPort/projection-visual/?mode=passive&hud=0" `
+            -Target $AituberProjectionVisualUrl `
             -Description "HUD なしの passive 表示。Display Runtime GUI の Stage preview 用。"
         Write-GuideItem `
             -Name "AITuber Cube Vault" `
-            -Target "http://127.0.0.1:$AituberPort/cube-vault-background?fov=60&scale=1" `
+            -Target ("http://{0}:{1}/cube-vault-background?fov=60&scale=1" -f $AituberClientHost, $AituberPort) `
             -Description "AITuber のキューブ背景確認用。必要なときだけ開く。"
     }
     if ($EnableThoughtCore) {
@@ -1016,7 +1025,7 @@ function Write-StackEndpointGuide {
     if (-not $SkipTouchDesignerGui) {
         Write-GuideItem `
             -Name "TD Control GUI/API" `
-            -Target "http://127.0.0.1:$TouchDesignerGuiPort" `
+            -Target ("http://{0}:{1}" -f $TouchDesignerGuiClientHost, $TouchDesignerGuiPort) `
             -Description "スタック状態、TouchDesigner UDP 連携、MediaPipe 状態の確認画面。TouchDesigner 本体ではない。"
     }
 
@@ -1026,17 +1035,17 @@ function Write-StackEndpointGuide {
     if (-not $SkipHomeAssistantBridge) {
         Write-GuideItem `
             -Name "Home Assistant bridge health" `
-            -Target "http://127.0.0.1:$HomeAssistantBridgePort/health" `
+            -Target ("http://{0}:{1}/health" -f $HomeAssistantBridgeClientHost, $HomeAssistantBridgePort) `
             -Description "家電操作ブリッジのヘルスチェック JSON。bind: $HomeAssistantBridgeHost"
     }
     if (-not $SkipEnvironmentState) {
         Write-GuideItem `
             -Name "Environment current state" `
-            -Target "http://127.0.0.1:$EnvironmentStatePort/environment/current" `
+            -Target ("http://{0}:{1}/environment/current" -f $EnvironmentStateClientHost, $EnvironmentStatePort) `
             -Description "現在状態 API。Bearer token が必要。"
         Write-GuideItem `
             -Name "Environment indicators" `
-            -Target "http://127.0.0.1:$EnvironmentStatePort/indicators/current" `
+            -Target ("http://{0}:{1}/indicators/current" -f $EnvironmentStateClientHost, $EnvironmentStatePort) `
             -Description "HUD/Cube 背景向けのローカル限定・表示用状態 API。"
     }
     if (-not $SkipMediapipe -and $mediapipeMediaMtxStackLaunched) {
@@ -1096,7 +1105,7 @@ function Write-StackEndpointGuide {
     }
     Write-GuideItem `
         -Name "TouchDesigner UDP receiver" `
-        -Target "127.0.0.1:9001" `
+        -Target ("{0}:{1}" -f $TouchDesignerUdpClientHost, $TouchDesignerUdpPort) `
         -Description "TouchDesigner 側が受け取る UDP 宛先。このスクリプトは TouchDesigner 本体を起動しない。"
 
     Write-Host ""
@@ -1188,10 +1197,16 @@ function Start-SupervisedProcess {
     $startInfo.Environment["HOME_CONTROL_WORKSPACE_ROOT"] = $WorkspaceRoot
     $startInfo.Environment["HOME_CONTROL_STACK_STATE_DIR"] = $StateDir
     $startInfo.Environment["MEDIAPIPE_PORT"] = [string]$MediapipePort
+    $startInfo.Environment["HOME_ASSISTANT_BRIDGE_HOST"] = $HomeAssistantBridgeClientHost
+    $startInfo.Environment["HOME_ASSISTANT_BRIDGE_PORT"] = [string]$HomeAssistantBridgePort
+    $startInfo.Environment["ENVIRONMENT_STATE_HOST"] = $EnvironmentStateClientHost
     $startInfo.Environment["ENVIRONMENT_STATE_PORT"] = [string]$EnvironmentStatePort
+    $startInfo.Environment["AITUBER_HOST"] = $AituberClientHost
+    $startInfo.Environment["AITUBER_PORT"] = [string]$AituberPort
+    $startInfo.Environment["AITUBER_URL"] = $AituberProjectionVisualUrl
     $startInfo.Environment["TOUCHDESIGNER_GUI_PORT"] = [string]$TouchDesignerGuiPort
-    $startInfo.Environment["TOUCHDESIGNER_UDP_HOST"] = "127.0.0.1"
-    $startInfo.Environment["TOUCHDESIGNER_UDP_PORT"] = "9001"
+    $startInfo.Environment["TOUCHDESIGNER_UDP_HOST"] = $TouchDesignerUdpClientHost
+    $startInfo.Environment["TOUCHDESIGNER_UDP_PORT"] = [string]$TouchDesignerUdpPort
     foreach ($key in $Spec.Environment.Keys) {
         $startInfo.Environment[$key] = [string]$Spec.Environment[$key]
     }
@@ -1456,7 +1471,7 @@ if (-not $SkipEnvironmentState) {
         "-m",
         "environment_state_server.main",
         "--host",
-        "127.0.0.1",
+        $EnvironmentStateHost,
         "--port",
         [string]$EnvironmentStatePort,
         "--ha-events-path",
@@ -1466,9 +1481,9 @@ if (-not $SkipEnvironmentState) {
         "--camera-hub-url",
         "ws://127.0.0.1:$MediapipePort",
         "--home-assistant-health-url",
-        "http://127.0.0.1:$HomeAssistantBridgePort/health",
+        ("http://{0}:{1}/health" -f $HomeAssistantBridgeClientHost, $HomeAssistantBridgePort),
         "--aituber-url",
-        "http://127.0.0.1:$AituberPort",
+        ("http://{0}:{1}" -f $AituberClientHost, $AituberPort),
         "--voicevox-health-url",
         $EnvironmentVoicevoxHealthUrl
     )
@@ -1544,8 +1559,8 @@ if ($EnableThoughtCore -and (-not $SkipHomeAssistantBridge)) {
     }
     if (-not [string]::IsNullOrWhiteSpace($homeControlToken)) {
         $thoughtCoreEnvironment["THOUGHT_CORE_TOOLS_ADAPTER"] = "home_control"
-        $thoughtCoreEnvironment["HOME_CONTROL_BRIDGE_URL"] = "http://127.0.0.1:$HomeAssistantBridgePort"
-        $thoughtCoreEnvironment["HOME_ASSISTANT_BRIDGE_URL"] = "http://127.0.0.1:$HomeAssistantBridgePort"
+        $thoughtCoreEnvironment["HOME_CONTROL_BRIDGE_URL"] = "http://{0}:{1}" -f $HomeAssistantBridgeClientHost, $HomeAssistantBridgePort
+        $thoughtCoreEnvironment["HOME_ASSISTANT_BRIDGE_URL"] = "http://{0}:{1}" -f $HomeAssistantBridgeClientHost, $HomeAssistantBridgePort
         $thoughtCoreEnvironment["HOME_CONTROL_API_TOKEN"] = $homeControlToken
     }
 }
@@ -1561,7 +1576,7 @@ if ($EnableThoughtCore -and (-not $SkipEnvironmentState)) {
         $environmentToken = Get-DotEnvValue -Path $HomeAssistantEnvPath -Name "HOME_CONTROL_API_TOKEN"
     }
     if (-not [string]::IsNullOrWhiteSpace($environmentToken)) {
-        $thoughtCoreEnvironment["ENVIRONMENT_STATE_URL"] = "http://127.0.0.1:$EnvironmentStatePort/environment/current"
+        $thoughtCoreEnvironment["ENVIRONMENT_STATE_URL"] = "http://{0}:{1}/environment/current" -f $EnvironmentStateClientHost, $EnvironmentStatePort
         $thoughtCoreEnvironment["ENVIRONMENT_API_TOKEN"] = $environmentToken
     }
 }
@@ -1759,9 +1774,9 @@ if (-not $SkipAituber) {
         NEXT_PUBLIC_SYSTEM_CELL_AI_SERVICE = $aituberAIService
         NEXT_PUBLIC_SELECT_AI_SERVICE = $aituberAIService
         NEXT_PUBLIC_PROJECTION_VISUAL_AI_SERVICE = $projectionVisualAIService
-        NEXT_PUBLIC_DISPLAY_RUNTIME_STATUS_URL = "http://127.0.0.1:$TouchDesignerGuiPort/api/status"
-        NEXT_PUBLIC_TD_CONTROL_GUI_STATUS_URL = "http://127.0.0.1:$TouchDesignerGuiPort/api/status"
-        NEXT_PUBLIC_ENVIRONMENT_INDICATORS_URL = "http://127.0.0.1:$EnvironmentStatePort/indicators/current"
+        NEXT_PUBLIC_DISPLAY_RUNTIME_STATUS_URL = "http://{0}:{1}/api/status" -f $TouchDesignerGuiClientHost, $TouchDesignerGuiPort
+        NEXT_PUBLIC_TD_CONTROL_GUI_STATUS_URL = "http://{0}:{1}/api/status" -f $TouchDesignerGuiClientHost, $TouchDesignerGuiPort
+        NEXT_PUBLIC_ENVIRONMENT_INDICATORS_URL = "http://{0}:{1}/indicators/current" -f $EnvironmentStateClientHost, $EnvironmentStatePort
         NEXT_PUBLIC_REFLEX_GESTURE_WS_URL = "ws://127.0.0.1:$MediapipePort"
         NEXT_PUBLIC_GESTURE_VOICE_WS_URL = "ws://127.0.0.1:$MediapipePort"
         NEXT_PUBLIC_GESTURE_VOICE_BRIDGE_ENABLED = $gestureVoiceBridgeEnabled
@@ -1806,7 +1821,7 @@ if ($EnableThoughtCoreWatch) {
             "-AituberPort",
             [string]$AituberPort,
             "-AituberMessageUrl",
-            "http://127.0.0.1:$AituberPort/api/messages/?clientId=thought-core&type=direct_send"
+            ("http://{0}:{1}/api/messages/?clientId=thought-core&type=direct_send" -f $AituberClientHost, $AituberPort)
         )
     }
     if (-not [string]::IsNullOrWhiteSpace($ThoughtCoreWatchAituberHttpTimeout)) {
@@ -1834,6 +1849,24 @@ if (-not $SkipTouchDesignerGui) {
             [string]$TouchDesignerGuiPort,
             "--host",
             $TouchDesignerGuiHost,
+            "--home-assistant-bridge-host",
+            $HomeAssistantBridgeClientHost,
+            "--home-assistant-bridge-port",
+            [string]$HomeAssistantBridgePort,
+            "--environment-state-host",
+            $EnvironmentStateClientHost,
+            "--environment-state-port",
+            [string]$EnvironmentStatePort,
+            "--aituber-host",
+            $AituberClientHost,
+            "--aituber-port",
+            [string]$AituberPort,
+            "--aituber-url",
+            $AituberProjectionVisualUrl,
+            "--touchdesigner-host",
+            $TouchDesignerUdpClientHost,
+            "--touchdesigner-port",
+            [string]$TouchDesignerUdpPort,
             "--thought-core-host",
             $ThoughtCoreClientHost,
             "--thought-core-port",
