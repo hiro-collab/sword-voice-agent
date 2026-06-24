@@ -2,7 +2,7 @@
   "$schema": "./home-actions.schema.json",
   "schema_version": 1,
   "catalog_id": "sword.home-actions",
-  "catalog_version": "home-actions.v2",
+  "catalog_version": "home-actions.v3",
   "authority": "sword-control-plane",
   "update_flow": [
     "Propose catalog changes before service-specific edits.",
@@ -44,7 +44,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.light_on",
-        "response_text": "ライトをつけました。"
+        "response_text": "ライトをつける操作を送信しました。外部観察で確認してください。"
       },
       "observation": {
         "appliance_id": "light",
@@ -83,7 +83,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.light_off",
-        "response_text": "ライトを消しました。"
+        "response_text": "ライトを消す操作を送信しました。外部観察で確認してください。"
       },
       "observation": {
         "appliance_id": "light",
@@ -120,7 +120,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.fan_on",
-        "response_text": "扇風機をつけました。"
+        "response_text": "扇風機をつける操作を送信しました。"
       },
       "observation": {
         "appliance_id": "fan",
@@ -157,7 +157,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.fan_off",
-        "response_text": "扇風機を消しました。"
+        "response_text": "扇風機を消す操作を送信しました。"
       },
       "observation": {
         "appliance_id": "fan",
@@ -196,7 +196,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.aircon_on",
-        "response_text": "エアコンをつけました。"
+        "response_text": "エアコンをつける操作を送信しました。"
       },
       "observation": {
         "appliance_id": "aircon",
@@ -240,7 +240,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.aircon_off",
-        "response_text": "エアコンを消しました。"
+        "response_text": "エアコンを消す操作を送信しました。"
       },
       "observation": {
         "appliance_id": "aircon",
@@ -278,7 +278,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.demo_aircon_cool",
-        "response_text": "エアコンを冷房にしました。"
+        "response_text": "エアコンを冷房にする操作を送信しました。HA状態で確認します。"
       },
       "observation": {
         "appliance_id": "aircon",
@@ -314,7 +314,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.demo_aircon_hvac_off",
-        "response_text": "エアコンを停止しました。"
+        "response_text": "エアコン停止要求を送信しました。HA状態で確認します。"
       },
       "observation": {
         "appliance_id": "aircon",
@@ -356,7 +356,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.door_open",
-        "response_text": "中扉を開けました。"
+        "response_text": "中扉を開ける操作を送信しました。HA状態で確認します。"
       },
       "observation": {
         "appliance_id": "door",
@@ -400,7 +400,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.door_close",
-        "response_text": "中扉を閉めました。"
+        "response_text": "中扉を閉める操作を送信しました。HA状態で確認します。"
       },
       "observation": {
         "appliance_id": "door",
@@ -438,7 +438,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.door_stop",
-        "response_text": "中扉を止めました。"
+        "response_text": "中扉を止める操作を送信しました。"
       },
       "observation": {
         "appliance_id": "door",
@@ -478,7 +478,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.vacuum_start",
-        "response_text": "掃除機を開始しました。"
+        "response_text": "掃除機を開始する操作を送信しました。HA状態で確認します。"
       },
       "observation": {
         "appliance_id": "vacuum",
@@ -518,7 +518,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.vacuum_return",
-        "response_text": "掃除機を充電台に戻しました。"
+        "response_text": "掃除機を充電台に戻す操作を送信しました。HA状態で確認します。"
       },
       "observation": {
         "appliance_id": "vacuum",
@@ -558,7 +558,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.vacuum_pause",
-        "response_text": "掃除機を一時停止しました。"
+        "response_text": "掃除機を一時停止する操作を送信しました。HA状態で確認します。"
       },
       "observation": {
         "appliance_id": "vacuum",
@@ -593,7 +593,7 @@
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.projection_mode",
-        "response_text": "プロジェクションモードにしました。"
+        "response_text": "プロジェクションモードへの切り替え要求を送信しました。"
       },
       "observation": {
         "appliance_id": "projection",

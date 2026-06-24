@@ -166,6 +166,28 @@ class ActionDriverCatalogTest(unittest.TestCase):
                 "room_light_estimate_only_not_appliance_state",
             )
 
+    def test_response_text_reports_submission_not_completed_state(self) -> None:
+        catalog_actions = load_catalog()["actions"]
+        stale_completion_phrases = (
+            "つけました",
+            "消しました",
+            "冷房にしました",
+            "停止しました",
+            "開けました",
+            "閉めました",
+            "止めました",
+            "開始しました",
+            "戻しました",
+            "一時停止しました",
+            "モードにしました",
+        )
+
+        for action_id, action in catalog_actions.items():
+            response_text = action["execution"]["response_text"]
+            self.assertIn("送信しました", response_text, action_id)
+            for phrase in stale_completion_phrases:
+                self.assertNotIn(phrase, response_text, action_id)
+
     def test_catalog_intent_examples_are_recognized_by_thought_core_fallback(self) -> None:
         thought_src = REPO_ROOT / "services" / "thought-core" / "src"
         sys.path.insert(0, str(thought_src))
