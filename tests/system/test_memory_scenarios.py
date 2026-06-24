@@ -20,7 +20,7 @@ class MemoryScenarioTest(TestCase):
         self.journal = EventJournal(root / "runtime" / "logs" / "events", policy=self.policy)
         self.memory = MemoryStore(root / "local" / "memory", policy=self.policy, journal=self.journal)
 
-    def test_light_on_retry_records_retry_in_thought_not_home(self) -> None:
+    def test_light_on_retry_records_retry_without_success_as_state(self) -> None:
         fake_home = FakeHomeControl()
         fake_environment = FakeEnvironment(states=["off", "off", "on"])
         trace_id = "trace_light_retry_001"
@@ -32,11 +32,19 @@ class MemoryScenarioTest(TestCase):
             trace_id=trace_id,
         )
 
-        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["status"], "command_accepted_observation_matched")
+        self.assertFalse(result["physical_light_proof_claimed"])
         self.assertEqual(result["retry_count"], 1)
         self.assertEqual(fake_home.execute_count, 2)
         events = self.journal.read_events()
         self.assertIn("thought.retry_planned", [event["event"] for event in events])
+        completed = next(event for event in events if event["event"] == "turn.completed")
+        self.assertEqual(
+            completed["payload"]["status"],
+            "command_accepted_observation_matched",
+        )
+        self.assertFalse(completed["payload"]["physical_light_proof_claimed"])
+        self.assertIn("physical_light_state", completed["payload"]["does_not_prove"])
         self.assertEqual(fake_home.internal_retry_count, 0)
 
     def test_user_preference_becomes_candidate_not_committed_memory(self) -> None:
@@ -122,7 +130,10 @@ def run_light_on_turn(
         event="observation.received",
         trace_id=trace_id,
         turn_id=turn_id,
-        payload={"light": before},
+        payload={
+            "room_light_estimate_state": before,
+            "physical_light_proof_claimed": False,
+        },
         layer="environment",
     )
 
@@ -134,7 +145,12 @@ def run_light_on_turn(
             event="action.sent",
             trace_id=trace_id,
             turn_id=turn_id,
-            payload={"action": "light_on", "attempt": attempt + 1},
+            payload={
+                "action": "light_on",
+                "attempt": attempt + 1,
+                "command_status": "accepted",
+                "physical_light_proof_claimed": False,
+            },
             layer="action",
         )
         observed = fake_environment.observe_light()
@@ -144,20 +160,34 @@ def run_light_on_turn(
             event="observation.received",
             trace_id=trace_id,
             turn_id=turn_id,
-            payload={"light": observed},
+            payload={
+                "room_light_estimate_state": observed,
+                "physical_light_proof_claimed": False,
+            },
             layer="environment",
         )
         if observed == "on":
+            status = "command_accepted_observation_matched"
             journal.append_event(
                 service_id="thought_core_api",
                 service="thought-core",
                 event="turn.completed",
                 trace_id=trace_id,
                 turn_id=turn_id,
-                payload={"status": "success", "retry_count": retry_count},
+                payload={
+                    "status": status,
+                    "retry_count": retry_count,
+                    "observation_class": "room_light_estimate_only_not_appliance_state",
+                    "physical_light_proof_claimed": False,
+                    "does_not_prove": ["physical_light_state", "ha_device_state"],
+                },
                 layer="turn",
             )
-            return {"status": "success", "retry_count": retry_count}
+            return {
+                "status": status,
+                "retry_count": retry_count,
+                "physical_light_proof_claimed": False,
+            }
         retry_count += 1
         journal.append_event(
             service_id="thought_core_api",
