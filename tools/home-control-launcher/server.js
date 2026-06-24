@@ -1604,62 +1604,6 @@ const compactApplianceSignal = (signal) => {
   ])
 }
 
-const compactActionReadiness = (action) => {
-  if (!isPlainObject(action)) {
-    return null
-  }
-  const compact = copyFields(action, [
-    'action_id',
-    'label',
-    'appliance_id',
-    'target_label',
-    'verb',
-    'expected_state',
-    'control_type',
-    'state_authority',
-    'verification_mode',
-    'state_tracking',
-    'proof_ceiling',
-    'live_test_candidate',
-    'live_test_readiness',
-    'live_test_blockers',
-    'restore_action_id',
-    'stop_action_id',
-    'terminal_action',
-    'safety_requirements',
-    'available',
-    'noop',
-    'reason'
-  ])
-  const recheck = copyFields(action.recheck_visibility, [
-    'status',
-    'evidence_class',
-    'physical_state_source',
-    'proof_ceiling',
-    'live_test_readiness',
-    'live_test_blockers'
-  ])
-  if (Object.keys(recheck).length > 0) {
-    compact.recheck_visibility = recheck
-  }
-  return compact
-}
-
-const compactActionReadinessSummary = (summary) => {
-  if (!isPlainObject(summary)) {
-    return null
-  }
-  return copyFields(summary, [
-    'schema_version',
-    'by_readiness',
-    'proof_ceilings',
-    'live_test_candidate_ids',
-    'blocked_live_test_candidate_ids',
-    'test_now_count',
-    'blocked_candidate_count'
-  ])
-}
-
 const compactEnvironmentForLauncherStatus = (indicatorPayload) => {
   if (!isPlainObject(indicatorPayload) || !isPlainObject(indicatorPayload.environment)) {
     return null
@@ -1668,30 +1612,16 @@ const compactEnvironmentForLauncherStatus = (indicatorPayload) => {
   const appliances = isPlainObject(environment.appliances)
     ? environment.appliances
     : {}
-  const actions = Array.isArray(environment.actions)
-    ? environment.actions
-    : []
   const stateQueries = isPlainObject(environment.state_queries)
     ? environment.state_queries
     : {}
   const sources = isPlainObject(environment.sources) ? environment.sources : {}
   const vision = isPlainObject(environment.vision) ? environment.vision : {}
-  const actionReadiness = compactActionReadinessSummary(environment.action_readiness)
   const compact = {
     state_queries: {},
     sources: {},
     vision: {},
-    appliances: {},
-    actions: [],
-    action_readiness: actionReadiness || {
-      schema_version: 'home_control_action_readiness.v0',
-      by_readiness: {},
-      proof_ceilings: {},
-      live_test_candidate_ids: [],
-      blocked_live_test_candidate_ids: [],
-      test_now_count: 0,
-      blocked_candidate_count: 0
-    }
+    appliances: {}
   }
 
   for (const applianceId of Object.keys(appliances).sort()) {
@@ -1700,10 +1630,6 @@ const compactEnvironmentForLauncherStatus = (indicatorPayload) => {
       compact.appliances[applianceId] = appliance
     }
   }
-
-  compact.actions = actions
-    .map(compactActionReadiness)
-    .filter(Boolean)
 
   const roomLight = compactRoomLightSignal(stateQueries.room_light)
   if (roomLight) {
