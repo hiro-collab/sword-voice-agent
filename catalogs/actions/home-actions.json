@@ -31,12 +31,12 @@
       "expected_state": "on",
       "expected_effect": {
         "expected_state": "on",
-        "control_type": "stateless_toggle",
-        "state_authority": "open_loop",
-        "verification_mode": "external_observation",
-        "evidence_class": "external_observation_required",
+        "control_type": "explicit_light_action",
+        "state_authority": "submitted_only",
+        "verification_mode": "command_ack_only",
+        "evidence_class": "command_submission_only",
         "physical_state_source": "not_supported",
-        "unverified_state_label": "open_loop_toggle_submitted"
+        "unverified_state_label": "explicit_light_action_submitted"
       },
       "risk_level": "low",
       "confirmation_required": false,
@@ -70,12 +70,12 @@
       "expected_state": "off",
       "expected_effect": {
         "expected_state": "off",
-        "control_type": "stateless_toggle",
-        "state_authority": "open_loop",
-        "verification_mode": "external_observation",
-        "evidence_class": "external_observation_required",
+        "control_type": "explicit_light_action",
+        "state_authority": "submitted_only",
+        "verification_mode": "command_ack_only",
+        "evidence_class": "command_submission_only",
         "physical_state_source": "not_supported",
-        "unverified_state_label": "open_loop_toggle_submitted"
+        "unverified_state_label": "explicit_light_action_submitted"
       },
       "risk_level": "low",
       "confirmation_required": false,

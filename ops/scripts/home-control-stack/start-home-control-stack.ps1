@@ -210,7 +210,7 @@ $TouchDesignerGuiClientHost = if ($TouchDesignerGuiHost -eq "0.0.0.0") { "127.0.
 $TouchDesignerUdpClientHost = if ($TouchDesignerUdpHost -eq "0.0.0.0") { "127.0.0.1" } else { $TouchDesignerUdpHost }
 $ThoughtCoreClientHost = if ($ThoughtCoreHost -eq "0.0.0.0") { "127.0.0.1" } else { $ThoughtCoreHost }
 $ThoughtCoreBaseUrl = "http://{0}:{1}" -f $ThoughtCoreClientHost, $ThoughtCorePort
-$AituberProjectionVisualUrl = "http://{0}:{1}/projection-visual?mode=passive&hud=0" -f $AituberClientHost, $AituberPort
+$AituberProjectionVisualUrl = "http://{0}:{1}/projection-visual/?mode=passive&hud=0" -f $AituberClientHost, $AituberPort
 $MediapipeCameraHubChildProcessFile = Join-Path $StateDir "modules\mediapipe_camera_hub_stack\processes.json"
 $StateQueryFeedbackPath = Join-Path $StateDir "feedback\state-query.jsonl"
 

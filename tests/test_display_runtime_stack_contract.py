@@ -43,6 +43,10 @@ class DisplayRuntimeStackContractTest(unittest.TestCase):
 
     def test_stack_uses_client_hosts_for_status_urls(self) -> None:
         stack_start = read_stack_start_script()
+        environment_state_spec = stack_start[
+            stack_start.index("$environmentStateArgs = @(") :
+            stack_start.index('$specs += New-ServiceSpec `', stack_start.index("$environmentStateArgs = @("))
+        ]
 
         self.assertIn("$HomeAssistantBridgeClientHost", stack_start)
         self.assertIn("$EnvironmentStateClientHost", stack_start)
@@ -50,6 +54,14 @@ class DisplayRuntimeStackContractTest(unittest.TestCase):
         self.assertIn("$TouchDesignerGuiClientHost", stack_start)
         self.assertIn("$TouchDesignerUdpClientHost", stack_start)
         self.assertIn("$AituberProjectionVisualUrl", stack_start)
+        self.assertIn(
+            '("http://{0}:{1}/operator" -f $HomeAssistantBridgeClientHost, $HomeAssistantBridgePort)',
+            environment_state_spec,
+        )
+        self.assertNotIn(
+            '("http://{0}:{1}/health" -f $HomeAssistantBridgeClientHost, $HomeAssistantBridgePort)',
+            environment_state_spec,
+        )
         self.assertNotIn('"http://127.0.0.1:$AituberPort"', stack_start)
         self.assertNotIn('"http://127.0.0.1:$TouchDesignerGuiPort', stack_start)
         self.assertNotIn('"http://127.0.0.1:$EnvironmentStatePort', stack_start)

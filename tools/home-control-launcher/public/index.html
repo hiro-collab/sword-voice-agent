@@ -29,6 +29,7 @@
             <button type="button" data-language="ja" aria-pressed="false">日本語</button>
           </div>
           <button id="refresh-button" class="secondary" type="button">Refresh</button>
+          <button id="reclaim-ports-button" class="secondary" type="button">Recover Ports</button>
           <button id="stop-launcher-button" class="secondary" type="button">Stop Launcher Only</button>
           <button id="stop-button" class="danger" type="button">Stop Stack</button>
           <button id="start-button" class="primary" type="button">Start Stack</button>
@@ -300,7 +301,15 @@
                 <button id="copy-log" class="secondary compact" type="button">Copy</button>
               </div>
             </div>
-            <pre id="log-output"></pre>
+            <div
+              class="log-meta-strip"
+              aria-label="Launcher log display mode"
+              data-i18n-aria-label="log.metaAria"
+            >
+              <span data-i18n="log.viewMode">Grouped by module</span>
+              <span data-i18n="log.copyMode">Copy keeps plain text</span>
+            </div>
+            <div id="log-output" class="log-output" aria-label="Launcher log lines" data-i18n-aria-label="log.outputAria"></div>
           </section>
         </section>
       </section>

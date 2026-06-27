@@ -39,7 +39,8 @@ const state = {
   },
   demoReadinessStatus: {
     rows: []
-  }
+  },
+  latestLogTailRaw: ''
 }
 
 const translations = {
@@ -139,6 +140,10 @@ const translations = {
     'command.title': 'Command preview',
     'log.title': 'Launcher log',
     'log.recentOutput': 'Recent output',
+    'log.metaAria': 'Launcher log display mode',
+    'log.outputAria': 'Launcher log lines',
+    'log.viewMode': 'Grouped by module',
+    'log.copyMode': 'Copy keeps plain text',
     'port.expression': 'Expression',
     'port.thoughtCore': 'Thought Core',
     'port.displayRuntime': 'Display runtime',
@@ -151,6 +156,8 @@ const translations = {
     'button.starting': 'Starting...',
     'button.stopStack': 'Stop Stack',
     'button.stopping': 'Stopping...',
+    'button.reclaimPorts': 'Recover Ports',
+    'button.reclaiming': 'Recovering...',
     'button.stopLauncher': 'Stop Launcher Only',
     'button.save': 'Save',
     'button.saving': 'Saving...',
@@ -169,6 +176,7 @@ const translations = {
     'operation.starting': 'Starting stack',
     'operation.started': 'Stack online',
     'operation.stopping': 'Stopping stack',
+    'operation.reclaim': 'Recovering managed ports',
     'operation.stopped': 'Stack stopped',
     'operation.saving': 'Saving config',
     'operation.blocked': 'Action blocked',
@@ -238,6 +246,9 @@ const translations = {
     'action.startSending': 'Start command is being sent. Waiting for the supervisor to spawn.',
     'action.startAcceptedWatching': 'Start command accepted. Watching services come online.',
     'action.stopRunning': 'Stop command is running. Waiting for the shutdown script.',
+    'action.reclaimPorts': 'Checking for route-owned managed port residue.',
+    'action.reclaimPortsRecovered': 'Managed port residue recovered.',
+    'action.reclaimPortsNone': 'No route-owned managed port residue found.',
     'action.stopLauncherConfirm': 'Stop Sword System Launcher only? System cell services are not stopped by this button.',
     'action.stopLauncherShuttingDown': 'Launcher server is shutting down. System cell services are unchanged.',
     'action.launcherStopped': 'Launcher stopped. Close this tab or start it again from the terminal.',
@@ -341,6 +352,10 @@ const translations = {
     'command.title': '起動コマンド確認',
     'log.title': 'ランチャー記録',
     'log.recentOutput': '直近の出力',
+    'log.metaAria': 'ランチャー記録の表示方式',
+    'log.outputAria': 'ランチャー記録の行',
+    'log.viewMode': '機能別に整理',
+    'log.copyMode': 'コピーは通常テキスト',
     'port.expression': '表情表示',
     'port.thoughtCore': '思考中枢',
     'port.displayRuntime': '投影表示',
@@ -353,6 +368,8 @@ const translations = {
     'button.starting': '起動中...',
     'button.stopStack': '全体を停止',
     'button.stopping': '停止中...',
+    'button.reclaimPorts': '管理ポートを回収',
+    'button.reclaiming': '回収中...',
     'button.stopLauncher': 'ランチャーだけ停止',
     'button.save': '保存',
     'button.saving': '保存中...',
@@ -371,6 +388,7 @@ const translations = {
     'operation.starting': '起動処理中',
     'operation.started': '稼働中',
     'operation.stopping': '停止処理中',
+    'operation.reclaim': '管理ポート回収中',
     'operation.stopped': '停止済み',
     'operation.saving': '設定保存中',
     'operation.blocked': '操作できません',
@@ -440,6 +458,9 @@ const translations = {
     'action.startSending': '起動コマンドを送信中です。管理プロセスの起動を待っています。',
     'action.startAcceptedWatching': '起動コマンドを受理しました。各機能が稼働するまで確認します。',
     'action.stopRunning': '停止コマンドを実行中です。シャットダウンスクリプトを待っています。',
+    'action.reclaimPorts': '管理対象ポートに残ったプロセスを確認しています。',
+    'action.reclaimPortsRecovered': '管理対象ポートの残存プロセスを回収しました。',
+    'action.reclaimPortsNone': '回収できる管理対象ポートの残存プロセスはありません。',
     'action.stopLauncherConfirm': 'Sword System Launcherだけを停止しますか？このボタンでは中核システムの各機能は停止しません。',
     'action.stopLauncherShuttingDown': 'ランチャーサーバーを停止中です。中核システムの各機能は変更されません。',
     'action.launcherStopped': 'ランチャーを停止しました。このタブを閉じるか、ターミナルから再起動してください。',
@@ -662,6 +683,7 @@ const operationLabels = {
   starting: 'Starting stack',
   started: 'Stack online',
   stopping: 'Stopping stack',
+  reclaim: 'Recovering display port',
   stopped: 'Stack stopped',
   saving: 'Saving config',
   blocked: 'Action blocked',
@@ -672,6 +694,7 @@ const operationLabelKeys = {
   starting: 'operation.starting',
   started: 'operation.started',
   stopping: 'operation.stopping',
+  reclaim: 'operation.reclaim',
   stopped: 'operation.stopped',
   saving: 'operation.saving',
   blocked: 'operation.blocked',
@@ -755,6 +778,7 @@ const applyLanguage = () => {
   renderEndpoints(state.latestEndpoints || [])
   renderStartupTiming(state.startupTiming)
   renderDiagnosticSurfaces(state.diagnosticSurfaces)
+  renderLauncherLog(state.latestLogTailRaw)
 }
 
 const api = async (path, options = {}) => {
@@ -788,13 +812,15 @@ const setBusy = (busy, label = '') => {
 
 const renderActionButtons = () => {
   const disabled = state.busy || state.remoteBusy
-  for (const id of ['start-button', 'stop-button', 'refresh-button', 'save-config', 'stop-launcher-button']) {
+  for (const id of ['start-button', 'stop-button', 'refresh-button', 'reclaim-ports-button', 'save-config', 'stop-launcher-button']) {
     $(id).disabled = disabled
   }
   $('start-button').textContent =
     state.busy && state.operation === 'starting' ? t('button.starting') : t('button.start')
   $('stop-button').textContent =
     state.busy && state.operation === 'stopping' ? t('button.stopping') : t('button.stopStack')
+  $('reclaim-ports-button').textContent =
+    state.busy && state.operation === 'reclaim' ? t('button.reclaiming') : t('button.reclaimPorts')
   $('stop-launcher-button').textContent =
     state.busy && state.operation === 'stopping' ? t('button.stopping') : t('button.stopLauncher')
   $('refresh-button').textContent = t('button.refresh')
@@ -839,6 +865,7 @@ const renderOperationReadiness = () => {
   const readinessStates = {
     starting: ['readiness.starting', 'warn'],
     stopping: ['readiness.stopping', 'warn'],
+    reclaim: ['readiness.checkStack', 'warn'],
     stopped: ['readiness.stopped', 'warn'],
     blocked: ['readiness.locked', 'warn'],
     error: ['readiness.error', 'down']
@@ -860,6 +887,9 @@ const operationUiType = (operationType) => {
   }
   if (operationType === 'stop') {
     return 'stopping'
+  }
+  if (operationType === 'reclaim') {
+    return 'reclaim'
   }
   if (operationType === 'save') {
     return 'saving'
@@ -902,6 +932,91 @@ const formatReviewCommandPreview = (commandLine) => String(commandLine || '').tr
 
 const setCommandPreview = (commandLine) => {
   $('command-preview').textContent = formatReviewCommandPreview(commandLine)
+}
+
+const plainLogText = (logText) => String(logText || '').trimEnd()
+
+const launcherLogLevel = (line) => {
+  const text = line.toLowerCase()
+  if (/\b(error|failed|failure|exception|fatal|denied|timeout)\b/.test(text)) return 'error'
+  if (/\b(warn|warning|degraded|retry|waiting|skipped|not running)\b/.test(text)) return 'warn'
+  if (/\b(ok|ready|online|started|finished|completed|listening|accepted)\b/.test(text)) return 'ok'
+  return 'info'
+}
+
+const launcherLogSourceFromText = (line) => {
+  const text = line.toLowerCase()
+  if (text.includes('voicevox')) return 'voicevox'
+  if (text.includes('thought core')) return 'thought-core'
+  if (text.includes('environment')) return 'environment'
+  if (text.includes('home assistant') || text.includes('action bridge')) return 'action-bridge'
+  if (text.includes('mediapipe') || text.includes('camera')) return 'camera'
+  if (text.includes('vision')) return 'vision'
+  if (text.includes('touchdesigner') || text.includes('display runtime')) return 'display'
+  if (text.includes('aituber') || text.includes('expression')) return 'expression'
+  return 'stack'
+}
+
+const parseLauncherLogLine = (line) => {
+  const raw = String(line || '')
+  const bracketMatch = raw.match(/^\[([^\]]+)]\s*(.*)$/)
+  const timestampMatch = raw.match(/^(\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\s+(.*)$/)
+  const separatorMatch = raw.match(/^=+\s*(.*?)\s*=+$/)
+  let source = ''
+  let message = raw
+  let time = ''
+
+  if (bracketMatch) {
+    source = bracketMatch[1]
+    message = bracketMatch[2] || raw
+  } else if (timestampMatch) {
+    time = timestampMatch[1]
+    message = timestampMatch[2] || raw
+  } else if (separatorMatch) {
+    source = 'launcher'
+    message = separatorMatch[1] || raw
+  }
+
+  const normalizedSource = String(source || '').trim()
+  const displaySource = normalizedSource
+    ? normalizedSource.split(/[:/\s]+/).filter(Boolean).slice(0, 2).join(':')
+    : launcherLogSourceFromText(raw)
+
+  return {
+    raw,
+    time: time ? formatTimestamp(time) : '',
+    source: displaySource || 'stack',
+    level: launcherLogLevel(raw),
+    message: message.trim() || raw
+  }
+}
+
+const renderLauncherLog = (logText) => {
+  const rawLog = plainLogText(logText)
+  const fallback = t('status.noLog')
+  state.latestLogTailRaw = rawLog
+  const lines = (rawLog || fallback).split(/\r?\n/)
+  $('log-output').innerHTML = lines
+    .map((line) => {
+      const entry = parseLauncherLogLine(line)
+      const time = entry.time ? `<span class="log-entry-time">${escapeHtml(entry.time)}</span>` : ''
+      return `
+        <div class="log-entry" data-log-level="${escapeHtml(entry.level)}">
+          <span class="log-entry-meta">
+            ${time}
+            <span class="log-entry-source">${escapeHtml(entry.source)}</span>
+            <span class="log-entry-level">${escapeHtml(entry.level)}</span>
+          </span>
+          <span class="log-entry-message">${escapeHtml(entry.message)}</span>
+        </div>
+      `
+    })
+    .join('')
+}
+
+const prependLauncherLog = (message) => {
+  const raw = plainLogText(state.latestLogTailRaw)
+  renderLauncherLog(`${message}${raw ? `\n\n${raw}` : ''}`)
 }
 
 const applyProfileDefaults = async () => {
@@ -1903,7 +2018,7 @@ const refreshState = async () => {
   }
   state.demoReadinessStatus = payload.demoReadinessStatus || { rows: [] }
   setCommandPreview(payload.preview?.commandLine || '')
-  $('log-output').textContent = payload.logTail || t('status.noLog')
+  renderLauncherLog(payload.logTail)
   renderControls()
   applyServerOperation(payload.operation || payload.status?.operation)
   renderSystemSummary(state.latestServices, state.latestStatusTimestamp)
@@ -1926,12 +2041,12 @@ const refreshStatusOnly = async () => {
   renderStartupTiming(state.startupTiming)
   renderDiagnosticSurfaces(state.diagnosticSurfaces)
   const logs = await api('/api/logs')
-  $('log-output').textContent = logs.logTail || t('status.noLog')
+  renderLauncherLog(logs.logTail)
 }
 
 const refreshLogsOnly = async () => {
   const logs = await api('/api/logs')
-  $('log-output').textContent = logs.logTail || t('status.noLog')
+  renderLauncherLog(logs.logTail)
 }
 
 const startStack = async () => {
@@ -1961,6 +2076,29 @@ const stopStack = async () => {
       body: JSON.stringify({})
     })
     setOperation('stopped', formatStopVerificationDetail(payload.stopVerification))
+    await refreshState()
+  } finally {
+    setBusy(false)
+  }
+}
+
+const reclaimManagedPorts = async () => {
+  setOperation('reclaim', t('action.reclaimPorts'))
+  setBusy(true, t('saveState.working'))
+  try {
+    const payload = await api('/api/reclaim-managed-ports', {
+      method: 'POST',
+      body: JSON.stringify({
+        profileId: state.selectedProfileId
+      })
+    })
+    const recovered = Number(payload.managedPortReclaim?.reclaimed?.length || 0)
+    setOperation(
+      recovered > 0 ? 'stopped' : 'idle',
+      recovered > 0
+        ? t('action.reclaimPortsRecovered')
+        : t('action.reclaimPortsNone')
+    )
     await refreshState()
   } finally {
     setBusy(false)
@@ -2039,6 +2177,7 @@ const bindControls = () => {
   $('save-config').addEventListener('click', () => saveConfig().catch(showError))
   $('start-button').addEventListener('click', () => startStack().catch(showError))
   $('stop-button').addEventListener('click', () => stopStack().catch(showError))
+  $('reclaim-ports-button').addEventListener('click', () => reclaimManagedPorts().catch(showError))
   $('stop-launcher-button').addEventListener('click', () => stopLauncher().catch(showError))
   $('copy-command').addEventListener('click', async () => {
     await navigator.clipboard.writeText($('command-preview').textContent)
@@ -2048,7 +2187,7 @@ const bindControls = () => {
     }, 1200)
   })
   $('copy-log').addEventListener('click', async () => {
-    await navigator.clipboard.writeText($('log-output').textContent)
+    await navigator.clipboard.writeText(state.latestLogTailRaw || $('log-output').textContent)
     setSaveState('saveState.logCopied')
     window.setTimeout(() => {
       setSaveState('saveState.ready')
@@ -2064,18 +2203,18 @@ const showError = (error) => {
     state.remoteOperation = state.remoteBusy ? operation : null
     setOperation('blocked', error.payload.message || t('error.operationInProgress'))
     $('save-state').textContent = state.remoteBusy ? t('saveState.locked') : t('saveState.ready')
-    $('log-output').textContent = `${error.message}\n\n${$('log-output').textContent}`
+    prependLauncherLog(error.message)
     return
   }
   if (error.payload?.stopVerification) {
     setOperation('error', formatStopVerificationDetail(error.payload.stopVerification))
     setSaveState('saveState.error')
-    $('log-output').textContent = `${error.payload.message || error.message}\n\n${$('log-output').textContent}`
+    prependLauncherLog(error.payload.message || error.message)
     return
   }
   setOperation('error', error.message || t('error.checkLog'))
   setSaveState('saveState.error')
-  $('log-output').textContent = `${error.message}\n\n${$('log-output').textContent}`
+  prependLauncherLog(error.message)
 }
 
 applyStaticTranslations()

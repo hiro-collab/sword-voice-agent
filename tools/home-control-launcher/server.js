@@ -1209,6 +1209,274 @@ const runScriptAndCollect = (scriptPath, scriptArgs = [], timeoutMs = 30000) =>
     })
   })
 
+const runPowerShellInlineAndCollect = (script, timeoutMs = 6000) =>
+  new Promise((resolve) => {
+    const command = [
+      psExecutable(),
+      '-NoLogo',
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      script
+    ]
+    const child = childProcess.spawn(command[0], command.slice(1), {
+      cwd: PROJECT_ROOT,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        HOME_CONTROL_WORKSPACE_ROOT: WORKSPACE_ROOT,
+        HOME_CONTROL_STACK_STATE_DIR: STATE_DIR
+      }
+    })
+    let stdout = ''
+    let stderr = ''
+    const timer = setTimeout(() => {
+      child.kill()
+      resolve({
+        ok: false,
+        timedOut: true,
+        commandLine: formatCommand(command.slice(0, -1).concat('<inline>')),
+        stdout,
+        stderr
+      })
+    }, timeoutMs)
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString('utf8')
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8')
+    })
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      resolve({
+        ok: false,
+        commandLine: formatCommand(command.slice(0, -1).concat('<inline>')),
+        stdout,
+        stderr: `${stderr}${error.message}`
+      })
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      resolve({
+        ok: code === 0,
+        code,
+        commandLine: formatCommand(command.slice(0, -1).concat('<inline>')),
+        stdout,
+        stderr
+      })
+    })
+  })
+
+const parseJsonArray = (text) => {
+  const trimmed = String(text || '').trim()
+  if (!trimmed) return []
+  try {
+    const parsed = JSON.parse(trimmed)
+    return Array.isArray(parsed) ? parsed : [parsed]
+  } catch {
+    return []
+  }
+}
+
+const listeningPortProcessOwners = async (port) => {
+  const numericPort = Number(port)
+  if (!Number.isInteger(numericPort) || numericPort <= 0) {
+    return []
+  }
+  const script = `
+$items = @()
+$connections = @(Get-NetTCPConnection -LocalPort ${numericPort} -State Listen -ErrorAction SilentlyContinue)
+foreach ($processId in ($connections | Select-Object -ExpandProperty OwningProcess -Unique)) {
+  if ($processId -le 0) { continue }
+  $process = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+  $items += [pscustomobject]@{
+    pid = [int]$processId
+    processName = if ($null -ne $process) { [string]$process.Name } else { "" }
+    commandLine = if ($null -ne $process) { [string]$process.CommandLine } else { "" }
+  }
+}
+$items | ConvertTo-Json -Compress
+`
+  const result = await runPowerShellInlineAndCollect(script)
+  if (!result.ok) {
+    return []
+  }
+  return parseJsonArray(result.stdout)
+}
+
+const normalizedProcessName = (value) =>
+  String(value || '').toLowerCase().replace(/\.exe$/, '')
+
+const commandLineContainsPath = (commandLine, targetPath) => {
+  const text = String(commandLine || '').toLowerCase()
+  const normalizedTarget = path.resolve(targetPath).toLowerCase()
+  return text.includes(normalizedTarget) || text.includes(normalizedTarget.replace(/\\/g, '/'))
+}
+
+const commandLineContainsAll = (commandLine, fragments) => {
+  const text = String(commandLine || '').toLowerCase()
+  return fragments.every((fragment) => text.includes(String(fragment).toLowerCase()))
+}
+
+const EXTERNAL_PROCESS_DENY_LIST = new Set([
+  'chrome',
+  'msedge',
+  'firefox',
+  'brave',
+  'brave-browser',
+  'opera',
+  'vivaldi',
+  'updater',
+  'googleupdate',
+  'microsoftedgeupdate'
+])
+
+const MANAGED_PORT_RECLAIM_POLICIES = {
+  home_assistant_bridge: {
+    rootPath: () => path.join(WORKSPACE_ROOT, 'organs', 'action', 'home-assistant-server'),
+    allowedProcessNames: ['uv', 'uvicorn', 'python']
+  },
+  environment_state_server: {
+    rootPath: () => path.join(WORKSPACE_ROOT, 'organs', 'environment', 'environment-state-server'),
+    allowedProcessNames: ['uv', 'python']
+  },
+  mediapipe_camera_hub: {
+    rootPath: () => path.join(WORKSPACE_ROOT, 'organs', 'reflex', 'mediapipe-sword-sign'),
+    allowedProcessNames: ['uv', 'python', 'mediamtx', 'ffmpeg']
+  },
+  mediapipe_browser_monitor: {
+    rootPath: () => path.join(WORKSPACE_ROOT, 'organs', 'reflex', 'mediapipe-sword-sign'),
+    allowedProcessNames: ['uv', 'python', 'mediamtx', 'ffmpeg']
+  },
+  mediapipe_rtsp: {
+    rootPath: () => path.join(WORKSPACE_ROOT, 'organs', 'reflex', 'mediapipe-sword-sign'),
+    allowedProcessNames: ['uv', 'python', 'mediamtx', 'ffmpeg']
+  },
+  mediapipe_web_media: {
+    rootPath: () => path.join(WORKSPACE_ROOT, 'organs', 'reflex', 'mediapipe-sword-sign'),
+    allowedProcessNames: ['uv', 'python', 'mediamtx', 'ffmpeg']
+  },
+  vision_snapshot_processor: {
+    rootPath: () => path.join(WORKSPACE_ROOT, 'organs', 'environment', 'vision-snapshot-processor'),
+    allowedProcessNames: ['uv', 'python']
+  },
+  aituber_kit: {
+    rootPath: () => path.join(WORKSPACE_ROOT, 'organs', 'expression', 'aituber-kit'),
+    allowedProcessNames: ['cmd', 'node', 'npm']
+  },
+  touchdesigner_control_gui: {
+    rootPath: () => WORKSPACE_ROOT,
+    allowedProcessNames: ['node'],
+    commandFragments: ['server.js', '--workspace', '--port', '--touchdesigner-port', '--thought-core-port']
+  },
+  thought_core_api: {
+    rootPath: () => PROJECT_ROOT,
+    allowedProcessNames: ['pwsh', 'powershell', 'uv', 'python', 'node']
+  }
+}
+
+const reclaimPolicyForTarget = (target) => {
+  const policy = MANAGED_PORT_RECLAIM_POLICIES[target && target.key]
+  if (!policy) {
+    return null
+  }
+  return {
+    ...policy,
+    rootPath: policy.rootPath()
+  }
+}
+
+const isReclaimableManagedPortOwner = (owner, target) => {
+  const processName = normalizedProcessName(owner && owner.processName)
+  if (!processName || EXTERNAL_PROCESS_DENY_LIST.has(processName)) {
+    return false
+  }
+  const policy = reclaimPolicyForTarget(target)
+  if (!policy) {
+    return false
+  }
+  const allowed = new Set((policy.allowedProcessNames || []).map(normalizedProcessName))
+  if (allowed.size > 0 && !allowed.has(processName)) {
+    return false
+  }
+  const commandLine = String(owner && owner.commandLine || '')
+  return (
+    commandLineContainsPath(commandLine, policy.rootPath) &&
+    commandLineContainsAll(commandLine, policy.commandFragments || [])
+  )
+}
+
+const stopProcessById = async (pid) => {
+  const numericPid = Number(pid)
+  if (!Number.isInteger(numericPid) || numericPid <= 0 || numericPid === process.pid) {
+    return { ok: false, skipped: true }
+  }
+  return runPowerShellInlineAndCollect(
+    `Stop-Process -Id ${numericPid} -Force -ErrorAction Stop`,
+    6000
+  )
+}
+
+const reclaimManagedPortResidue = async (options) => {
+  const targets = managedStopPortTargets(options)
+  const enabled = process.env.HOME_CONTROL_LAUNCHER_MANAGED_PORT_RECLAIM !== 'false'
+  const summary = {
+    enabled,
+    scope: 'managed_stack_ports',
+    attempted: 0,
+    reclaimed: [],
+    skippedOwners: 0,
+    targets: []
+  }
+  if (!enabled) {
+    return summary
+  }
+  for (const target of targets) {
+    const owners = await listeningPortProcessOwners(target.port)
+    const reclaimable = owners.filter((owner) =>
+      isReclaimableManagedPortOwner(owner, target)
+    )
+    const targetSummary = {
+      key: target.key,
+      label: target.label,
+      port: Number(target.port),
+      ownerCount: owners.length,
+      attempted: 0,
+      reclaimed: [],
+      skippedOwners: Math.max(0, owners.length - reclaimable.length)
+    }
+    summary.skippedOwners += targetSummary.skippedOwners
+    for (const owner of reclaimable) {
+      summary.attempted += 1
+      targetSummary.attempted += 1
+      appendStackLog(
+        `[launcher] reclaiming route-owned managed port residue key=${target.key} port=${target.port} pid=${owner.pid}\n`
+      )
+      const result = await stopProcessById(owner.pid)
+      if (result.ok) {
+        const reclaimed = {
+          key: target.key,
+          label: target.label,
+          port: Number(target.port),
+          pid: Number(owner.pid),
+          processName: String(owner.processName || ''),
+          reason: 'route_owned_managed_port_residue'
+        }
+        targetSummary.reclaimed.push(reclaimed)
+        summary.reclaimed.push(reclaimed)
+      }
+    }
+    if (owners.length > 0 || targetSummary.reclaimed.length > 0) {
+      summary.targets.push(targetSummary)
+    }
+  }
+  if (summary.reclaimed.length > 0) {
+    await sleep(1000)
+  }
+  return summary
+}
+
 const stopStack = async (body) => {
   const config = readLauncherConfig()
   const profileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
@@ -1220,12 +1488,14 @@ const stopStack = async (body) => {
   const scriptArgs = ['stop', '-Profile', opsProfileFor(profileId), '-Force']
   const beforeStopVerification = await collectStackStopVerification(options)
   const result = await runScriptAndCollect(SYSTEM_SCRIPT, scriptArgs, 45000)
+  const managedPortReclaim = await reclaimManagedPortResidue(options)
   const stopVerification = await waitForStackStopVerification(options)
   const ok = Boolean(result.ok && stopVerification.ok)
   const payload = {
     ...result,
     ok,
     beforeStopVerification,
+    managedPortReclaim,
     stopVerification,
     message: ok
       ? 'Stop verified: all managed stack processes and ports are clear.'
@@ -1235,6 +1505,37 @@ const stopStack = async (body) => {
     ...readLauncherState(),
     stoppedAt: nowIso(),
     lastStop: payload
+  })
+  return payload
+}
+
+const reclaimManagedPortsFromLauncher = async (body) => {
+  const config = readLauncherConfig()
+  const profileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
+  const profileError = requireKnownProfile(profileId)
+  if (profileError) {
+    return profileError
+  }
+  const options = normalizeOptions(profileId, config.options || {})
+  const beforeStopVerification = await collectStackStopVerification(options)
+  const managedPortReclaim = await reclaimManagedPortResidue(options)
+  const stopVerification = await collectStackStopVerification(options)
+  const payload = {
+    ok: true,
+    profileId,
+    beforeStopVerification,
+    managedPortReclaim,
+    stopVerification,
+    message: managedPortReclaim.reclaimed.length > 0
+      ? 'Recovered route-owned managed port residue.'
+      : 'No route-owned managed port residue was recoverable.'
+  }
+  writeJsonFile(LAUNCHER_STATE_FILE, {
+    ...readLauncherState(),
+    lastManagedPortReclaim: {
+      ...payload,
+      checkedAt: nowIso()
+    }
   })
   return payload
 }
@@ -2106,10 +2407,9 @@ const getStatus = async () => {
     environmentIndicators
   ] = await Promise.all([
     checkTcpIf(homeAssistantBridgeEnabled, options.HomeAssistantBridgePort),
-    fetchJsonIf(
+    checkHttpIf(
       homeAssistantBridgeEnabled,
-      `http://127.0.0.1:${options.HomeAssistantBridgePort}/health`,
-      2500
+      `http://127.0.0.1:${options.HomeAssistantBridgePort}/operator`
     ),
     checkTcpIf(environmentStateEnabled, options.EnvironmentStatePort),
     checkHttpIf(environmentStateEnabled, `http://127.0.0.1:${options.EnvironmentStatePort}/health`),
@@ -2504,6 +2804,25 @@ const handleApi = async (request, response, requestUrl) => {
     const result = await runExclusiveStackOperation(
       'stop',
       async () => stopStack(body)
+    )
+    sendJson(response, result.statusCode, result.payload)
+    return
+  }
+  if (
+    request.method === 'POST' &&
+    requestUrl.pathname === '/api/reclaim-managed-ports'
+  ) {
+    const body = await readBody(request)
+    const config = readLauncherConfig()
+    const profileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
+    const profileError = requireKnownProfile(profileId)
+    if (profileError) {
+      sendJson(response, 400, profileError)
+      return
+    }
+    const result = await runExclusiveStackOperation(
+      'reclaim',
+      async () => reclaimManagedPortsFromLauncher(body)
     )
     sendJson(response, result.statusCode, result.payload)
     return

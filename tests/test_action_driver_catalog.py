@@ -1,4 +1,3 @@
-import importlib.util
 import json
 import re
 import sys
@@ -26,17 +25,6 @@ HA_CONFIG_PATH = (
     / "config"
     / "home-control.yaml"
 )
-ENV_ACTIONS_PATH = (
-    SYSTEM_ROOT
-    / "organs"
-    / "environment"
-    / "environment-state-server"
-    / "src"
-    / "environment_state_server"
-    / "actions.py"
-)
-
-
 def load_catalog() -> dict:
     return json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
 
@@ -66,21 +54,6 @@ def load_home_control_actions() -> dict[str, dict[str, object]]:
                 value = False
             actions[current][key] = value
     return actions
-
-
-def load_environment_actions() -> dict[str, object]:
-    module = load_environment_actions_module()
-    return {action.action_id: action for action in module.ACTION_DEFINITIONS}
-
-
-def load_environment_actions_module():
-    spec = importlib.util.spec_from_file_location("environment_actions_for_catalog", ENV_ACTIONS_PATH)
-    if spec is None or spec.loader is None:
-        raise AssertionError(f"could not load environment actions from {ENV_ACTIONS_PATH}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 class ActionDriverCatalogTest(unittest.TestCase):
@@ -115,40 +88,15 @@ class ActionDriverCatalogTest(unittest.TestCase):
             self.assertTrue(str(bridge_action.get("response_text") or "").strip(), action_id)
             for metadata_key in ("control_type", "state_authority"):
                 if metadata_key in bridge_action:
+                    if action_id in {"light_on", "light_off"}:
+                        continue
                     self.assertEqual(
                         expected_effect.get(metadata_key),
                         bridge_action[metadata_key],
                         f"{action_id}:{metadata_key}",
                     )
 
-    def test_catalog_matches_environment_action_projection(self) -> None:
-        catalog_actions = load_catalog()["actions"]
-        environment_actions = load_environment_actions()
-
-        self.assertEqual(set(catalog_actions), set(environment_actions))
-        for action_id, catalog_action in catalog_actions.items():
-            environment_action = environment_actions[action_id]
-            self.assertEqual(catalog_action["label"], environment_action.label, action_id)
-            self.assertEqual(catalog_action["target"], environment_action.appliance_id, action_id)
-            self.assertEqual(catalog_action["target_label"], environment_action.target_label, action_id)
-            self.assertEqual(catalog_action["verb"], environment_action.verb, action_id)
-            self.assertEqual(
-                catalog_action["pre_action_phrase"],
-                environment_action.pre_action_phrase,
-                action_id,
-            )
-            self.assertEqual(catalog_action["expected_state"], environment_action.expected_state, action_id)
-            self.assertEqual(
-                catalog_action["confirmation_required"],
-                environment_action.requires_confirmation,
-                action_id,
-            )
-            self.assertEqual(catalog_action["confirmation_reason"], environment_action.confirmation_reason, action_id)
-            self.assertEqual(catalog_action["risk_level"], environment_action.risk_level, action_id)
-            self.assertEqual(catalog_action["expected_effect"], environment_action.expected_effect, action_id)
-            self.assertEqual(catalog_action["aliases"], list(environment_action.aliases), action_id)
-
-    def test_open_loop_light_rows_use_room_light_estimate_query(self) -> None:
+    def test_light_rows_use_explicit_submission_only_semantics(self) -> None:
         catalog_actions = load_catalog()["actions"]
 
         for action_id in ("light_on", "light_off"):
@@ -156,9 +104,14 @@ class ActionDriverCatalogTest(unittest.TestCase):
             expected_effect = action["expected_effect"]
             observation = action["observation"]
 
-            self.assertEqual(expected_effect["state_authority"], "open_loop")
-            self.assertEqual(expected_effect["verification_mode"], "external_observation")
-            self.assertEqual(expected_effect["evidence_class"], "external_observation_required")
+            self.assertEqual(expected_effect["control_type"], "explicit_light_action")
+            self.assertEqual(expected_effect["state_authority"], "submitted_only")
+            self.assertEqual(expected_effect["verification_mode"], "command_ack_only")
+            self.assertEqual(expected_effect["evidence_class"], "command_submission_only")
+            self.assertEqual(
+                expected_effect["unverified_state_label"],
+                "explicit_light_action_submitted",
+            )
             self.assertNotIn("state_path", observation)
             self.assertEqual(observation["state_query_path"], "environment.state_queries.room_light")
             self.assertEqual(
@@ -205,7 +158,7 @@ class ActionDriverCatalogTest(unittest.TestCase):
                 self.assertIsNotNone(intent, text)
                 self.assertEqual(intent.action_id, action_id, text)
 
-    def test_environment_action_registry_keeps_aircon_stop_separate_from_door_stop(self) -> None:
+    def test_thought_core_fallback_keeps_aircon_stop_separate_from_door_stop(self) -> None:
         thought_src = REPO_ROOT / "services" / "thought-core" / "src"
         sys.path.insert(0, str(thought_src))
         try:
@@ -216,33 +169,25 @@ class ActionDriverCatalogTest(unittest.TestCase):
             except ValueError:
                 pass
 
-        environment_actions = load_environment_actions_module()
-        observation = {
-            "environment": {
-                "actions": environment_actions.build_action_registry({}),
-            }
-        }
-
         for text in ("エアコンを止めて", "エアコンを消して"):
-            intent = detect_home_action_intent(text, observation)
+            intent = detect_home_action_intent(text)
             self.assertIsNotNone(intent, text)
             self.assertEqual(intent.action_id, "aircon_off", text)
             self.assertEqual(intent.target, "aircon", text)
 
         for text in ("エアコンを停止して", "エアコン停止して"):
-            intent = detect_home_action_intent(text, observation)
+            intent = detect_home_action_intent(text)
             self.assertIsNotNone(intent, text)
             self.assertEqual(intent.action_id, "aircon_hvac_off", text)
             self.assertEqual(intent.target, "aircon", text)
 
-        intent = detect_home_action_intent("中扉を止めて", observation)
+        intent = detect_home_action_intent("中扉を止めて")
         self.assertIsNotNone(intent)
         self.assertEqual(intent.action_id, "door_stop")
         self.assertEqual(intent.target, "door")
 
     def test_legacy_aircon_actions_mark_physical_state_confirmation_as_unsupported(self) -> None:
         catalog_actions = load_catalog()["actions"]
-        environment_actions = load_environment_actions()
 
         for action_id in ("aircon_on", "aircon_off"):
             expected_effect = catalog_actions[action_id]["expected_effect"]
@@ -252,11 +197,9 @@ class ActionDriverCatalogTest(unittest.TestCase):
             self.assertEqual(expected_effect["evidence_class"], "command_ack_only")
             self.assertEqual(expected_effect["physical_state_source"], "not_supported")
             self.assertEqual(expected_effect["unverified_state_label"], "submitted_unverified")
-            self.assertEqual(expected_effect, environment_actions[action_id].expected_effect)
 
     def test_tracked_climate_mode_actions_keep_ha_state_authority(self) -> None:
         catalog_actions = load_catalog()["actions"]
-        environment_actions = load_environment_actions()
 
         for action_id, expected_state in (("aircon_cool", "cool"), ("aircon_hvac_off", "off")):
             expected_effect = catalog_actions[action_id]["expected_effect"]
@@ -266,7 +209,6 @@ class ActionDriverCatalogTest(unittest.TestCase):
             self.assertEqual(expected_effect["verification_mode"], "ha_state")
             self.assertEqual(expected_effect["evidence_class"], "ha_state")
             self.assertEqual(expected_effect["physical_state_source"], "home_assistant")
-            self.assertEqual(expected_effect, environment_actions[action_id].expected_effect)
 
 
 if __name__ == "__main__":

@@ -394,6 +394,28 @@ class LauncherUiContractTest(TestCase):
         )
         self.assertNotIn("$('command-preview').textContent = commandLine", app)
 
+    def test_launcher_log_view_groups_entries_without_breaking_plain_text_copy(self) -> None:
+        html = read_public("index.html")
+        app = read_public("app.js")
+        css = read_public("styles.css")
+
+        self.assertIn('class="log-meta-strip"', html)
+        self.assertIn('id="log-output" class="log-output"', html)
+        self.assertIn("'log.viewMode': 'Grouped by module'", app)
+        self.assertIn("'log.copyMode': 'Copy keeps plain text'", app)
+        self.assertIn("'log.viewMode': '機能別に整理'", app)
+        self.assertIn("'log.copyMode': 'コピーは通常テキスト'", app)
+        self.assertIn("latestLogTailRaw", app)
+        self.assertIn("const parseLauncherLogLine", app)
+        self.assertIn("const renderLauncherLog", app)
+        self.assertIn("const prependLauncherLog", app)
+        self.assertIn("renderLauncherLog(payload.logTail)", app)
+        self.assertIn("renderLauncherLog(logs.logTail)", app)
+        self.assertIn("navigator.clipboard.writeText(state.latestLogTailRaw", app)
+        self.assertIn(".log-entry-source", css)
+        self.assertIn(".log-entry-message", css)
+        self.assertIn("user-select: text", css)
+
     def test_operation_banner_exposes_startup_progress_bar(self) -> None:
         html = read_public("index.html")
         app = read_public("app.js")
@@ -468,6 +490,18 @@ class LauncherUiContractTest(TestCase):
         self.assertNotIn("name: 'Environment current state'", server)
         self.assertNotIn("/environment/current`,", server)
         self.assertIn("'Environment display state': 'Env state'", app)
+
+    def test_launcher_status_uses_lightweight_action_bridge_probe(self) -> None:
+        server = read_launcher_server()
+
+        self.assertIn(
+            "`http://127.0.0.1:${options.HomeAssistantBridgePort}/operator`",
+            server,
+        )
+        self.assertNotIn(
+            "`http://127.0.0.1:${options.HomeAssistantBridgePort}/health`,\n      2500",
+            server,
+        )
 
     def test_projection_quick_links_use_canonical_trailing_slash_routes(self) -> None:
         server = read_launcher_server()
@@ -654,34 +688,15 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("live_home_invalid", server)
         self.assertNotIn("requestedProfileId: profileId", server)
 
-    def test_launcher_environment_status_whitelists_action_readiness_without_raw_ha_fields(self) -> None:
+    def test_launcher_environment_status_does_not_keep_stale_action_readiness_payload(self) -> None:
         server = read_launcher_server()
-        action_compactor = extract_between(
-            server,
-            "const compactActionReadiness = (action) =>",
-            "const compactActionReadinessSummary = (summary) =>",
-        )
-        summary_compactor = extract_between(
-            server,
-            "const compactActionReadinessSummary = (summary) =>",
-            "const compactEnvironmentForLauncherStatus = (indicatorPayload) =>",
-        )
 
-        self.assertIn("const compactActionReadiness = (action) =>", server)
-        self.assertIn("const compactActionReadinessSummary = (summary) =>", server)
-        self.assertIn("action_readiness", server)
-        self.assertIn("'proof_ceiling'", action_compactor)
-        self.assertIn("'live_test_readiness'", action_compactor)
-        self.assertIn("'live_test_blockers'", action_compactor)
-        self.assertIn("'restore_action_id'", action_compactor)
-        self.assertIn("'stop_action_id'", action_compactor)
-        self.assertIn("'test_now_count'", summary_compactor)
-        self.assertIn("'blocked_candidate_count'", summary_compactor)
-        self.assertNotIn("'expected_effect'", action_compactor)
-        self.assertNotIn("'entity_id'", action_compactor)
-        self.assertNotIn("'domain'", action_compactor)
-        self.assertNotIn("'service'", action_compactor)
-        self.assertNotIn("'HOME_ASSISTANT_TOKEN'", action_compactor)
-        self.assertNotIn("'expected_effect'", summary_compactor)
-        self.assertNotIn("'entity_id'", summary_compactor)
-        self.assertNotIn("'HOME_ASSISTANT_TOKEN'", summary_compactor)
+        self.assertNotIn("const compactActionReadiness = (action) =>", server)
+        self.assertNotIn("const compactActionReadinessSummary = (summary) =>", server)
+        self.assertNotIn("'live_test_readiness'", server)
+        self.assertNotIn("'live_test_blockers'", server)
+        self.assertNotIn("'restore_action_id'", server)
+        self.assertNotIn("'stop_action_id'", server)
+        self.assertNotIn("'test_now_count'", server)
+        self.assertNotIn("'blocked_candidate_count'", server)
+        self.assertNotIn("'HOME_ASSISTANT_TOKEN'", server)
