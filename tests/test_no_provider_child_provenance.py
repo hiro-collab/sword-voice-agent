@@ -176,6 +176,96 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
             payload["provider_config_presence_class"],
             "provider_config_absent_or_empty",
         )
+        for key in (
+            "THOUGHT_CORE_CODEX_CLI_PATH",
+            "THOUGHT_CORE_CODEX_CLI_EXPECTED_VERSION",
+            "THOUGHT_CORE_CODEX_CLI_VERSION_POLICY",
+        ):
+            self.assertEqual(
+                payload["provider_config_key_classes"][key],
+                "empty",
+            )
+        self.assert_json_string_values_are_publication_safe(payload)
+
+    def test_launcher_helper_preserves_codex_cli_child_env_classes_without_raw_values(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            control_plane = root / "control-plane" / "sword-voice-agent"
+            profile_dir = control_plane / "ops" / "manifests" / "profiles"
+            profile_dir.mkdir(parents=True)
+            (profile_dir / "thought-core-v0.json").write_text(
+                json.dumps(
+                    {
+                        "profile": "thought-core-v0",
+                        "services": [
+                            "thought_core_api",
+                            "thought_core_watcher",
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            thought_core = control_plane / "services" / "thought-core"
+            thought_core.mkdir(parents=True)
+            (thought_core / ".env").write_text(
+                "\n".join(
+                    [
+                        "THOUGHT_CORE_LLM_ENABLED=1",
+                        "THOUGHT_CORE_LLM_PROVIDER=codex-cli",
+                        "THOUGHT_CORE_CODEX_CLI_MODE=operate",
+                        "THOUGHT_CORE_CODEX_CLI_EXPECTED_VERSION=0.142.0",
+                        "THOUGHT_CORE_CODEX_CLI_VERSION_POLICY=warn",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            source_root = thought_core / "src" / "thought_core"
+            source_root.mkdir(parents=True)
+            (source_root / "input_understanding.py").write_text(
+                "INPUT = 'source only'\n",
+                encoding="utf-8",
+            )
+            (source_root / "loop.py").write_text(
+                "LOOP = 'source only'\n",
+                encoding="utf-8",
+            )
+
+            payload = build_no_provider_child_provenance_diagnostics(
+                agent_os_root=root,
+                selected_profile="thought-core-v0",
+                process_env={
+                    "THOUGHT_CORE_CODEX_CLI_PATH": r"C:\private\codex.cmd",
+                    "THOUGHT_CORE_CODEX_CLI_WORKSPACE_ROOT": r"C:\private\sword-agent-os",
+                    "THOUGHT_CORE_CODEX_CLI_REASONING_EFFORT": "xhigh",
+                },
+            )
+
+        self.assertEqual(
+            payload["child_process_no_provider_binding_class"],
+            "provider_capable_enabled_after_env_import",
+        )
+        self.assertEqual(
+            payload["provider_config_presence_class"],
+            "provider_config_present_nonempty_redacted",
+        )
+        for key in (
+            "THOUGHT_CORE_LLM_PROVIDER",
+            "THOUGHT_CORE_CODEX_CLI_PATH",
+            "THOUGHT_CORE_CODEX_CLI_WORKSPACE_ROOT",
+            "THOUGHT_CORE_CODEX_CLI_REASONING_EFFORT",
+            "THOUGHT_CORE_CODEX_CLI_EXPECTED_VERSION",
+            "THOUGHT_CORE_CODEX_CLI_VERSION_POLICY",
+        ):
+            self.assertEqual(
+                payload["provider_config_key_classes"][key],
+                "present_nonempty_redacted",
+            )
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertNotIn(r"C:\private", serialized)
+        self.assertNotIn("0.142.0", serialized)
+        self.assertNotIn("xhigh", serialized)
         self.assert_json_string_values_are_publication_safe(payload)
 
     def test_thought_core_child_diagnostics_reports_running_import_hashes(self) -> None:

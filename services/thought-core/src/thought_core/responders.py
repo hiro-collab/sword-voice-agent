@@ -10,8 +10,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol
+from pathlib import Path
+from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib import error, request
 from urllib.parse import urlparse
 
@@ -207,6 +212,237 @@ class OpenAICompatibleChatResponder:
         )
 
 
+CommandRunner = Callable[[Sequence[str], float, str], subprocess.CompletedProcess[str]]
+_SAFE_CODEX_CONFIG_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_SAFE_CODEX_CONFIG_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:+/@-]+$")
+_CODEX_CONFIG_KEY_ALLOWLIST = {
+    "model_reasoning_effort",
+    "model_verbosity",
+}
+
+
+class CodexCliChatResponder:
+    provider = "codex-cli"
+
+    def __init__(
+        self,
+        *,
+        command: str,
+        model: str,
+        cwd: Path,
+        timeout_s: float = 60.0,
+        max_chars: int = 220,
+        profile: str = "",
+        mode: str = "operate",
+        sandbox: str = "",
+        approval: str = "never",
+        ephemeral: bool = True,
+        config_overrides: Sequence[str] = (),
+        expected_version: str = "",
+        version_policy: str = "warn",
+        version_timeout_s: float = 3.0,
+        runner: CommandRunner | None = None,
+    ) -> None:
+        self.mode = _normalize_codex_mode(mode)
+        self.adapter_kind = (
+            "codex_cli_operator" if self.mode == "operate" else "codex_cli_responder"
+        )
+        self.command = command
+        self.model = model
+        self.cwd = cwd
+        self.timeout_s = timeout_s
+        self.max_chars = max(40, max_chars)
+        self.profile = profile
+        self.sandbox = _normalize_codex_sandbox(
+            sandbox or ("workspace-write" if self.mode == "operate" else "read-only")
+        )
+        self.approval = _normalize_codex_approval(approval)
+        self.sandbox = _safe_codex_child_sandbox(self.sandbox)
+        self.approval = _safe_codex_child_approval(self.approval)
+        self.ephemeral = ephemeral
+        self.config_overrides = tuple(config_overrides)
+        self.expected_version = expected_version.strip()
+        self.version_policy = _normalize_codex_version_policy(version_policy)
+        self.version_timeout_s = max(0.5, version_timeout_s)
+        self.runner = runner or _run_codex_command
+
+    @classmethod
+    def from_env(cls) -> "CodexCliChatResponder | None":
+        if _env_disabled("THOUGHT_CORE_LLM_ENABLED"):
+            return None
+
+        mode = os.environ.get("THOUGHT_CORE_CODEX_CLI_MODE") or "operate"
+        normalized_mode = _normalize_codex_mode(mode)
+        command = (
+            os.environ.get("THOUGHT_CORE_CODEX_CLI_PATH")
+            or os.environ.get("CODEX_CLI_PATH")
+            or _default_codex_command()
+        )
+        cwd = Path(
+            os.environ.get("THOUGHT_CORE_CODEX_CLI_CWD")
+            or os.environ.get("THOUGHT_CORE_CODEX_CLI_WORKSPACE_ROOT")
+            or os.environ.get("THOUGHT_CORE_CODEX_CLI_PROJECT_ROOT")
+            or _default_codex_cwd()
+        )
+        model = (
+            os.environ.get("THOUGHT_CORE_CODEX_CLI_MODEL")
+            or os.environ.get("THOUGHT_CORE_LLM_MODEL")
+            or "codex-cli"
+        )
+        profile = os.environ.get("THOUGHT_CORE_CODEX_CLI_PROFILE", "")
+        timeout_s = _float_env("THOUGHT_CORE_CODEX_CLI_TIMEOUT_S", 60.0)
+        max_chars = _int_env(
+            "THOUGHT_CORE_CODEX_CLI_MAX_CHARS",
+            900 if normalized_mode == "operate" else 220,
+        )
+        if max_chars == (900 if normalized_mode == "operate" else 220):
+            max_chars = _int_env("THOUGHT_CORE_LLM_MAX_CHARS", max_chars)
+        sandbox = os.environ.get("THOUGHT_CORE_CODEX_CLI_SANDBOX", "")
+        approval = os.environ.get("THOUGHT_CORE_CODEX_CLI_APPROVAL", "never")
+        ephemeral = _env_bool("THOUGHT_CORE_CODEX_CLI_EPHEMERAL", True)
+        config_overrides = _codex_config_overrides_from_env()
+        expected_version = os.environ.get(
+            "THOUGHT_CORE_CODEX_CLI_EXPECTED_VERSION", ""
+        )
+        version_policy = os.environ.get("THOUGHT_CORE_CODEX_CLI_VERSION_POLICY", "warn")
+        version_timeout_s = _float_env("THOUGHT_CORE_CODEX_CLI_VERSION_TIMEOUT_S", 3.0)
+
+        return cls(
+            command=command,
+            model=model,
+            cwd=cwd,
+            timeout_s=timeout_s,
+            max_chars=max_chars,
+            profile=profile,
+            mode=normalized_mode,
+            sandbox=sandbox,
+            approval=approval,
+            ephemeral=ephemeral,
+            config_overrides=config_overrides,
+            expected_version=expected_version,
+            version_policy=version_policy,
+            version_timeout_s=version_timeout_s,
+        )
+
+    def respond(
+        self,
+        turn: TurnInput,
+        *,
+        response_context: Mapping[str, Any] | None = None,
+    ) -> ResponderResult:
+        version_metadata = self._codex_version_metadata()
+        if (
+            self.version_policy == "strict"
+            and version_metadata["codex_cli_version_class"]
+            != "observed_matching_expected"
+        ):
+            raise OSError(
+                "Codex CLI version policy strict check failed: "
+                f"{version_metadata['codex_cli_version_class']}"
+            )
+
+        with tempfile.TemporaryDirectory(prefix="thought-core-codex-") as tmp_dir:
+            output_path = Path(tmp_dir) / "last-message.txt"
+            args = [
+                *_codex_command_prefix(self.command),
+                "exec",
+                "--skip-git-repo-check",
+                "--sandbox",
+                self.sandbox,
+                "--cd",
+                str(self.cwd),
+                "--output-last-message",
+                str(output_path),
+            ]
+            if self.ephemeral:
+                args.insert(args.index("--skip-git-repo-check"), "--ephemeral")
+            for override in self.config_overrides:
+                args.extend(["-c", override])
+            args.extend(["-c", _codex_config_override("approval_policy", self.approval)])
+            if self.model and self.model != "codex-cli":
+                args.extend(["--model", self.model])
+            if self.profile:
+                args.extend(["--profile", self.profile])
+            prompt = _codex_cli_prompt(
+                turn,
+                response_context,
+                mode=self.mode,
+                sandbox=self.sandbox,
+                approval=self.approval,
+            )
+            args.append("-")
+
+            result = self.runner(args, self.timeout_s, prompt)
+            if result.returncode != 0:
+                raise OSError(
+                    "codex_cli_nonzero_exit:"
+                    f"returncode_{result.returncode}"
+                )
+
+            speech = ""
+            if output_path.exists():
+                speech = output_path.read_text(encoding="utf-8", errors="replace")
+            if not speech:
+                speech = result.stdout
+            speech = _truncate(speech.strip(), self.max_chars)
+            if not speech:
+                raise ValueError("Codex CLI response did not include message content")
+
+        return ResponderResult(
+            speech=speech,
+            display=speech,
+            status="llm_response",
+            adapter_kind=self.adapter_kind,
+            provider=self.provider,
+            model=self.model,
+            used_llm=True,
+            metadata={
+                "cli": "codex",
+                "codex_cli_mode": self.mode,
+                "sandbox": self.sandbox,
+                "approval": self.approval,
+                "ephemeral": self.ephemeral,
+                "workspace_class": _codex_workspace_class(self.cwd),
+                **version_metadata,
+                **_response_context_metadata(response_context),
+            },
+        )
+
+    def _codex_version_metadata(self) -> dict[str, str]:
+        expected = _normalize_codex_cli_version(self.expected_version)
+        metadata = {
+            "codex_cli_version": "",
+            "codex_cli_expected_version": expected,
+            "codex_cli_version_class": "unavailable",
+            "codex_cli_version_policy": self.version_policy,
+        }
+        try:
+            args = [*_codex_command_prefix(self.command), "--version"]
+            result = self.runner(args, self.version_timeout_s, "")
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return metadata
+
+        if result.returncode != 0:
+            return metadata
+
+        observed = _normalize_codex_cli_version(
+            (result.stdout or result.stderr or "").strip()
+        )
+        if not observed:
+            return metadata
+
+        metadata["codex_cli_version"] = observed
+        if expected:
+            metadata["codex_cli_version_class"] = (
+                "observed_matching_expected"
+                if observed == expected
+                else "observed_mismatch_expected"
+            )
+        else:
+            metadata["codex_cli_version_class"] = "observed_no_expected"
+        return metadata
+
+
 class EnvironmentTurnResponder:
     adapter_kind = "environment"
     provider = "thought-core"
@@ -222,7 +458,20 @@ class EnvironmentTurnResponder:
 
     @classmethod
     def from_env(cls) -> "EnvironmentTurnResponder":
-        return cls(primary=OpenAICompatibleChatResponder.from_env())
+        if _env_disabled("THOUGHT_CORE_LLM_ENABLED"):
+            return cls(primary=None)
+        provider = _selected_llm_provider()
+        if provider in {"codex", "codex-cli", "codex_cli"}:
+            return cls(primary=CodexCliChatResponder.from_env())
+        if provider in {
+            "",
+            "openai",
+            "openai-compatible",
+            "openai_compatible",
+            "openai_compatible_chat",
+        }:
+            return cls(primary=OpenAICompatibleChatResponder.from_env())
+        return cls(primary=None)
 
     def respond(
         self,
@@ -239,11 +488,22 @@ class EnvironmentTurnResponder:
             )
         try:
             return self.primary.respond(turn, response_context=response_context)
-        except (OSError, ValueError, json.JSONDecodeError, error.URLError) as exc:
+        except (
+            OSError,
+            ValueError,
+            json.JSONDecodeError,
+            error.URLError,
+            subprocess.SubprocessError,
+        ) as exc:
+            detail = (
+                _codex_cli_safe_exception_detail(exc)
+                if isinstance(self.primary, CodexCliChatResponder)
+                else _truncate(str(exc), 240)
+            )
             return self.fallback.respond(
                 turn,
                 status="local_fallback_after_llm_error",
-                detail=_truncate(str(exc), 240),
+                detail=detail,
                 response_context=response_context,
             )
 
@@ -274,6 +534,253 @@ def _extract_chat_completion_text(payload: dict[str, Any]) -> str:
 def _env_disabled(name: str) -> bool:
     value = os.environ.get(name, "")
     return value.strip().lower() in {"0", "false", "off", "no"}
+
+
+def _selected_llm_provider() -> str:
+    return (
+        os.environ.get("THOUGHT_CORE_LLM_PROVIDER")
+        or os.environ.get("THOUGHT_CORE_LLM_ADAPTER")
+        or ""
+    ).strip().lower()
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "on", "yes"}:
+        return True
+    if lowered in {"0", "false", "off", "no"}:
+        return False
+    return default
+
+
+def _normalize_codex_mode(value: str) -> str:
+    text = value.strip().lower().replace("_", "-")
+    if text in {"respond", "response", "chat", "speech"}:
+        return "respond"
+    return "operate"
+
+
+def _normalize_codex_sandbox(value: str) -> str:
+    text = value.strip().lower()
+    if text in {"read-only", "workspace-write", "danger-full-access"}:
+        return text
+    return "workspace-write"
+
+
+def _normalize_codex_approval(value: str) -> str:
+    text = value.strip().lower()
+    if text in {"never", "on-request", "untrusted"}:
+        return text
+    return "never"
+
+
+def _safe_codex_child_sandbox(value: str) -> str:
+    if value == "danger-full-access":
+        return "workspace-write"
+    return value
+
+
+def _safe_codex_child_approval(value: str) -> str:
+    return "never"
+
+
+def _codex_cli_safe_exception_detail(exc: BaseException) -> str:
+    text = str(exc).lower()
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "codex_cli_failure_class:timeout"
+    if isinstance(exc, FileNotFoundError):
+        return "codex_cli_failure_class:unavailable"
+    if isinstance(exc, PermissionError) or "permission" in text or "access is denied" in text:
+        return "codex_cli_failure_class:permission_denied"
+    if "codex_cli_nonzero_exit" in text:
+        return "codex_cli_failure_class:nonzero_returncode"
+    if isinstance(exc, ValueError):
+        return "codex_cli_failure_class:invalid_response"
+    if isinstance(exc, subprocess.SubprocessError):
+        return "codex_cli_failure_class:subprocess_error"
+    if isinstance(exc, OSError):
+        return "codex_cli_failure_class:unavailable"
+    return "codex_cli_failure_class:unknown"
+
+
+def _normalize_codex_version_policy(value: str) -> str:
+    text = value.strip().lower()
+    if text in {"strict", "fail", "enforce"}:
+        return "strict"
+    return "warn"
+
+
+def _normalize_codex_cli_version(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    first_line = text.splitlines()[0].strip()
+    match = re.search(r"\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9_.-]+)?", first_line)
+    if match:
+        return match.group(0)
+    safe = re.sub(r"[^A-Za-z0-9_.:+/@ -]+", "", first_line)
+    return _truncate(safe.strip(), 80)
+
+
+def _codex_config_overrides_from_env() -> list[str]:
+    overrides: list[str] = []
+    reasoning_effort = (
+        os.environ.get("THOUGHT_CORE_CODEX_CLI_REASONING_EFFORT")
+        or os.environ.get("THOUGHT_CORE_CODEX_CLI_MODEL_REASONING_EFFORT")
+        or ""
+    ).strip()
+    if reasoning_effort:
+        overrides.append(_codex_config_override("model_reasoning_effort", reasoning_effort))
+
+    verbosity = os.environ.get("THOUGHT_CORE_CODEX_CLI_VERBOSITY", "").strip()
+    if verbosity:
+        overrides.append(_codex_config_override("model_verbosity", verbosity))
+
+    for raw_item in _split_codex_config_overrides(
+        os.environ.get("THOUGHT_CORE_CODEX_CLI_CONFIG_OVERRIDES", "")
+    ):
+        key, value = raw_item
+        if key not in _CODEX_CONFIG_KEY_ALLOWLIST:
+            continue
+        overrides.append(_codex_config_override(key, value))
+    return overrides
+
+
+def _split_codex_config_overrides(value: str) -> list[tuple[str, str]]:
+    result: list[tuple[str, str]] = []
+    for raw_item in re.split(r"[;\n]", value or ""):
+        item = raw_item.strip()
+        if not item or "=" not in item:
+            continue
+        key, raw_value = item.split("=", 1)
+        key = key.strip()
+        raw_value = raw_value.strip().strip('"').strip("'")
+        if key and raw_value:
+            result.append((key, raw_value))
+    return result
+
+
+def _codex_config_override(key: str, value: str) -> str:
+    if not _SAFE_CODEX_CONFIG_KEY_RE.fullmatch(key):
+        raise ValueError("Codex CLI config key is not safe")
+    if not _SAFE_CODEX_CONFIG_VALUE_RE.fullmatch(value):
+        raise ValueError("Codex CLI config value is not safe")
+    return f'{key}="{value}"'
+
+
+def _default_codex_command() -> str:
+    npm_bin = Path(os.environ.get("APPDATA", "")) / "npm"
+    for candidate in (
+        shutil.which("codex.cmd"),
+        shutil.which("codex.exe"),
+        shutil.which("codex"),
+        str(npm_bin / "codex.cmd"),
+        str(npm_bin / "codex.exe"),
+        str(npm_bin / "codex.ps1"),
+    ):
+        if candidate and Path(candidate).exists():
+            return candidate
+    return "codex"
+
+
+def _default_codex_cwd() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "AGENTS.md").is_file() and (parent / "control-plane").is_dir():
+            return parent
+    return Path(os.getcwd())
+
+
+def _codex_workspace_class(path: Path) -> str:
+    if (path / "AGENTS.md").is_file() and (path / "control-plane").is_dir():
+        return "sword_agent_os_system_root"
+    if (path / "pyproject.toml").is_file() or (path / "package.json").is_file():
+        return "project_root"
+    return "configured_workspace"
+
+
+def _codex_command_prefix(command: str) -> list[str]:
+    if command.lower().endswith(".ps1"):
+        powershell = shutil.which("pwsh") or shutil.which("powershell") or "powershell"
+        return [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            command,
+        ]
+    return [command]
+
+
+def _run_codex_command(
+    args: Sequence[str],
+    timeout_s: float,
+    prompt: str,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(args),
+        check=False,
+        capture_output=True,
+        input=prompt,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout_s,
+    )
+
+
+def _codex_cli_prompt(
+    turn: TurnInput,
+    response_context: Mapping[str, Any] | None,
+    *,
+    mode: str,
+    sandbox: str,
+    approval: str,
+) -> str:
+    persona_prompt = persona_system_prompt_from_env()
+    context_text = _response_context_prompt(response_context)
+    parts = [
+        "You are Codex CLI embedded inside Thought Core, not a parallel "
+        "AITuberKit provider. AITuberKit, VOICEVOX, memory, Environment State, "
+        "and Home Control remain behind the existing Thought Core boundaries.",
+        "Your working directory is the SWORD Agent OS system workspace. Read "
+        "and obey AGENTS.md and narrower project rules before changing files.",
+        f"Execution mode: {mode}. Sandbox: {sandbox}. Approval: {approval}.",
+    ]
+    if mode == "operate":
+        parts.extend(
+            [
+                "Act as a self-operating development agent when the user asks "
+                "for system work: inspect files, make tightly scoped edits, "
+                "and run deterministic validation when useful.",
+                "Do not revert unrelated user or route-owned changes. Do not "
+                "modify persistent machine settings. Keep Home Assistant and "
+                "appliance operations inside the existing Home Control action "
+                "boundary; do not bypass it through shell or direct APIs.",
+                "Return a Japanese avatar-facing final message. For ordinary "
+                "conversation keep it natural; for development work include "
+                "the concrete change/result/test status and any blocker.",
+            ]
+        )
+    else:
+        parts.extend(
+            [
+                "Operate as a response-only adapter for this turn. Do not edit "
+                "files, run commands, or claim device actions.",
+                "Return only the final short Japanese assistant utterance for "
+                "speech and display. Do not include analysis, logs, markdown "
+                "fences, or tool call descriptions.",
+            ]
+        )
+    if persona_prompt:
+        parts.append(f"Persona and expression guidance: {persona_prompt}")
+    if context_text:
+        parts.append(context_text)
+    parts.append(f"User turn:\n{turn.text}")
+    return "\n\n".join(parts)
 
 
 def _float_env(name: str, default: float) -> float:

@@ -20,6 +20,54 @@ OpenAI Agents SDK、LangGraph、Dify などへ差し替えやすくすること�
 `THOUGHT_CORE_LLM_BASE_URL`, `THOUGHT_CORE_LLM_API_KEY`, `THOUGHT_CORE_LLM_MODEL`
 を指定できます。未設定時は local fallback が短い応答を返します。
 
+Codex CLI を Thought Core 内部の応答 adapter として使う場合は、外側ランタイムや
+AITuberKit の provider を増やさず、同じ `thought-core.turn_responder.v0` を次のように
+切り替えます。
+
+```powershell
+$env:THOUGHT_CORE_LLM_ENABLED="1"
+$env:THOUGHT_CORE_LLM_PROVIDER="codex-cli"
+```
+
+元の OpenAI-compatible adapter に戻す場合は `THOUGHT_CORE_LLM_PROVIDER` を外すか
+`openai-compatible` に戻します。Codex CLI adapter は既定で `operate` mode になり、
+`codex exec --ephemeral --sandbox workspace-write -c approval_policy="never"` を
+system root で呼びます。Codex CLI は AGENTS.md と narrower project rules を読める位置で
+自己操作できますが、Home Control tool 境界、Environment State、memory、
+AITuberKit/VOICEVOX 経路は Thought Core 側の既存構成のまま扱います。発話だけに戻す場合は
+`THOUGHT_CORE_CODEX_CLI_MODE=respond` を指定します。必要な場合だけ
+`THOUGHT_CORE_CODEX_CLI_PATH`, `THOUGHT_CORE_CODEX_CLI_WORKSPACE_ROOT`,
+`THOUGHT_CORE_CODEX_CLI_MODEL`, `THOUGHT_CORE_CODEX_CLI_REASONING_EFFORT`,
+`THOUGHT_CORE_CODEX_CLI_PROFILE`, `THOUGHT_CORE_CODEX_CLI_EXPECTED_VERSION`,
+`THOUGHT_CORE_CODEX_CLI_SANDBOX`, `THOUGHT_CORE_CODEX_CLI_APPROVAL`,
+`THOUGHT_CORE_CODEX_CLI_EPHEMERAL`, `THOUGHT_CORE_CODEX_CLI_TIMEOUT_S` で CLI の場所や
+実行条件を指定します。
+
+`.env` で model / reasoning depth を切り替える最小例:
+
+```dotenv
+THOUGHT_CORE_LLM_ENABLED=1
+THOUGHT_CORE_LLM_PROVIDER=codex-cli
+THOUGHT_CORE_CODEX_CLI_MODE=operate
+THOUGHT_CORE_CODEX_CLI_MODEL=gpt-5.5
+THOUGHT_CORE_CODEX_CLI_REASONING_EFFORT=xhigh
+THOUGHT_CORE_CODEX_CLI_EXPECTED_VERSION=0.142.0
+```
+
+`THOUGHT_CORE_CODEX_CLI_REASONING_EFFORT` は `codex exec -c model_reasoning_effort="<value>"`
+へ変換します。より細かい Codex CLI config override が必要な場合は、
+`THOUGHT_CORE_CODEX_CLI_CONFIG_OVERRIDES` に `model_reasoning_effort=xhigh;model_verbosity=low`
+のように書けます。通す config key は model/reasoning/verbosity 系の allowlist に限定します。
+これらは Thought Core 子プロセスから起動する Codex CLI にだけ渡す route-local override です。
+通常の Codex CLI / Codex Desktop の global config は変更しません。
+
+Codex CLI の対応バージョンは `THOUGHT_CORE_CODEX_CLI_EXPECTED_VERSION` に
+`codex --version` のバージョン番号を入れて管理します。Thought Core は turn ごとに
+`codex --version` を短時間 probe し、`responder.completed` event の metadata に
+`codex_cli_version`, `codex_cli_expected_version`, `codex_cli_version_class` を出します。
+既定は `warn` 扱いで不一致でも会話を止めません。止めたい場合だけ
+`THOUGHT_CORE_CODEX_CLI_VERSION_POLICY=strict` を指定します。
+
 応答口調は `THOUGHT_CORE_PERSONA` で切り替えます。通常の home-control stack 起動では
 `cheerful_ossan` が入り、感情タグ `[happy]` などと必要な `[motion:...]` を付けた
 砕けたホームアシスト口調に整形します。未設定または `plain` の場合は、本文を変えずに返します。
