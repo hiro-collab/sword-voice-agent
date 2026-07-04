@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
@@ -12,6 +12,7 @@ from sword_voice_agent.protocol.messages import AgentRequest, VoiceState
 
 AI_TALK_CORE_WEB_TOKEN_ENV = "AI_TALK_CORE_WEB_TOKEN"
 LOCAL_API_TOKEN_HEADER = "X-AI-Core-Token"
+ACCEPTED_USER_SPEECH_CANDIDATE_SCHEMA_VERSION = "accepted_user_speech_candidate.v0"
 
 
 class AiTalkCoreInputGateError(RuntimeError):
@@ -19,6 +20,10 @@ class AiTalkCoreInputGateError(RuntimeError):
 
 
 class AiTalkCoreHandoffError(RuntimeError):
+    pass
+
+
+class AiTalkCoreAcceptedSpeechCandidateError(RuntimeError):
     pass
 
 
@@ -71,6 +76,93 @@ class AiTalkCoreHandoff:
 
         return AgentRequest(
             text=text,
+            user=user,
+            context=request_context,
+            conversation_id=conversation_id,
+        )
+
+
+@dataclass(frozen=True)
+class AcceptedUserSpeechCandidate:
+    accepted_text: str
+    turn_id: str
+    session_id: str
+    candidate_id: str
+    locale: str = "ja-JP"
+    source: str = "ai_talk_core"
+    context_refs: Mapping[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any]) -> "AcceptedUserSpeechCandidate":
+        if payload.get("schema_version") != ACCEPTED_USER_SPEECH_CANDIDATE_SCHEMA_VERSION:
+            raise AiTalkCoreAcceptedSpeechCandidateError(
+                "accepted speech candidate requires accepted_user_speech_candidate.v0"
+            )
+        _raise_if_non_materializing_audio(payload)
+        if payload.get("acceptance_status") != "accepted":
+            raise AiTalkCoreAcceptedSpeechCandidateError(
+                "accepted speech candidate requires acceptance_status=accepted"
+            )
+        if payload.get("may_start_user_turn") is not True:
+            raise AiTalkCoreAcceptedSpeechCandidateError(
+                "accepted speech candidate requires may_start_user_turn=true"
+            )
+        if payload.get("turn_adoption_authority") is not True:
+            raise AiTalkCoreAcceptedSpeechCandidateError(
+                "accepted speech candidate requires turn_adoption_authority=true"
+            )
+        if payload.get("raw_private_publication_flags") is not False:
+            raise AiTalkCoreAcceptedSpeechCandidateError(
+                "accepted speech candidate requires raw_private_publication_flags=false"
+            )
+
+        context_refs = payload.get("context_refs") or {}
+        if not isinstance(context_refs, Mapping):
+            raise AiTalkCoreAcceptedSpeechCandidateError("context_refs must be an object")
+
+        return cls(
+            accepted_text=_expect_non_empty_text(payload, "accepted_text"),
+            turn_id=_expect_non_empty_text(payload, "turn_id"),
+            session_id=_expect_non_empty_text(payload, "session_id"),
+            candidate_id=_expect_non_empty_text(payload, "candidate_id"),
+            locale=str(payload.get("locale") or "ja-JP"),
+            source=str(payload.get("source") or "ai_talk_core"),
+            context_refs=dict(context_refs),
+        )
+
+    def to_agent_request(
+        self,
+        *,
+        user: str = "local-user",
+        conversation_id: str | None = None,
+        context: Mapping[str, Any] | None = None,
+    ) -> AgentRequest:
+        context_refs = dict(self.context_refs)
+        context_refs.setdefault("accepted_user_speech_candidate_ref", self.candidate_id)
+        request_context: dict[str, Any] = {
+            "source": "ai_talk_core",
+            "handoff_source": self.source,
+            "handoff_field": "accepted_user_speech_candidate",
+            "trigger": "accepted_user_speech_candidate",
+            "turn_id": self.turn_id,
+            "session_id": self.session_id,
+            "locale": self.locale,
+            "context_refs": context_refs,
+        }
+        if context:
+            request_context.update(dict(context))
+            if "context_refs" in context:
+                extra_refs = context["context_refs"]
+                if not isinstance(extra_refs, Mapping):
+                    raise AiTalkCoreAcceptedSpeechCandidateError(
+                        "context context_refs must be an object"
+                    )
+                merged_refs = dict(context_refs)
+                merged_refs.update(dict(extra_refs))
+                request_context["context_refs"] = merged_refs
+
+        return AgentRequest(
+            text=self.accepted_text,
             user=user,
             context=request_context,
             conversation_id=conversation_id,
@@ -236,6 +328,76 @@ def _expect_text(payload: Mapping[str, Any], key: str) -> str:
     if not isinstance(value, str):
         raise AiTalkCoreHandoffError(f"handoff JSON requires string {key!r}")
     return value
+
+
+def _expect_non_empty_text(payload: Mapping[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise AiTalkCoreAcceptedSpeechCandidateError(
+            f"accepted speech candidate requires non-empty {key}"
+        )
+    return value.strip()
+
+
+_BLOCKED_ACCEPTED_SPEECH_CLASSIFICATIONS = {
+    "blocked_self_output",
+    "blocked_cooldown",
+    "blocked_ambiguous",
+    "blocked_missing_session_join",
+    "blocked_low_confidence",
+    "blocked_capture_not_ready",
+    "system_self_output_candidate",
+    "mixed_or_ambiguous_audio",
+}
+
+_NON_MATERIALIZING_AUDIO_GATE_DECISIONS = _BLOCKED_ACCEPTED_SPEECH_CLASSIFICATIONS | {
+    "candidate_user_turn_needs_ai_talk_core_acceptance",
+    "recognition_low_confidence",
+    "recognition_failed",
+    "recognition_not_authorized",
+}
+
+
+def _raise_if_non_materializing_audio(payload: Mapping[str, Any]) -> None:
+    if payload.get("speaker_role") == "system_self_output":
+        raise AiTalkCoreAcceptedSpeechCandidateError("system self-output is not a user turn")
+    if payload.get("route") == "self_output_observation":
+        raise AiTalkCoreAcceptedSpeechCandidateError(
+            "self-output observation cannot become a user turn"
+        )
+
+    pre_turn_result = payload.get("pre_turn_result")
+    if isinstance(pre_turn_result, Mapping) and (
+        pre_turn_result.get("turn_input_materialized") is False
+        or pre_turn_result.get("normal_turn_adoption_blocked") is True
+    ):
+        raise AiTalkCoreAcceptedSpeechCandidateError(
+            "blocked pre-turn result cannot become a user turn"
+        )
+
+    status = payload.get("turn_adoption_status")
+    if isinstance(status, str) and status in _BLOCKED_ACCEPTED_SPEECH_CLASSIFICATIONS:
+        raise AiTalkCoreAcceptedSpeechCandidateError(
+            "blocked turn adoption status cannot become a user turn"
+        )
+
+    classification = payload.get("classification")
+    if (
+        isinstance(classification, str)
+        and classification in _BLOCKED_ACCEPTED_SPEECH_CLASSIFICATIONS
+    ):
+        raise AiTalkCoreAcceptedSpeechCandidateError(
+            "blocked audio classification cannot become a user turn"
+        )
+
+    gate_decision = payload.get("self_output_gate_decision")
+    if (
+        isinstance(gate_decision, str)
+        and gate_decision in _NON_MATERIALIZING_AUDIO_GATE_DECISIONS
+    ):
+        raise AiTalkCoreAcceptedSpeechCandidateError(
+            "non-materializing audio gate decision cannot become a user turn"
+        )
 
 
 def _normalize_handoff_source(source: str) -> str:
