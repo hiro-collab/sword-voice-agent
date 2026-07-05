@@ -7,10 +7,10 @@ current physical map after the system-cell rename.
 
 | Current path | Logical role | Future candidate | Notes |
 |---|---|---|---|
-| `<cell>/sword-control-plane/` | Integration app, gesture input policy, watchers, console, launcher scripts | `apps/sword-voice-agent` plus `ops/scripts` | Keep current path while launch scripts depend on it. |
-| `<cell>/sword-control-plane/services/thought-core/` | Canonical turn API v0 and event stream | `services/thought-core` | Current canonical service root; implementation package lives under `src/thought_core`. |
+| `<cell>/control-plane/core/` | Integration app, gesture input policy, watchers, console, launcher scripts | `apps/sword-voice-agent` plus `ops/scripts` | Current canonical control-plane implementation path. |
+| `<cell>/control-plane/core/services/thought-core/` | Canonical turn API v0 and event stream | `services/thought-core` | Current canonical service root; implementation package lives under `src/thought_core`. |
 | `<cell>/services/thought-core/` | Retired local placeholder, if present | none until a split repo is created | Do not add a second implementation here. |
-| `<cell>/organs/voice/ai-talk-core/` | Microphone/browser recording, STT, transcript, handoff | `adapters/stt` or `apps/voice-input` | Existing module owns STT and browser recording. |
+| `<cell>/organs/speech-input/ai-talk-core/` | Microphone/browser recording, STT, transcript, handoff | `adapters/stt` or `apps/voice-input` | Existing module owns STT and browser recording. |
 | `<cell>/organs/reflex/mediapipe-sword-sign/` | Camera Hub, gesture inference, fast gesture state | `services/reflex-core` and `adapters/mediapipe` | Camera capture authority remains here for now. |
 | `<cell>/organs/environment/vision-snapshot-processor/` | Low-frequency vision snapshots such as room light | environment input source | Feeds environment state; does not aggregate Thought Core state. |
 | `<cell>/organs/environment/environment-state-server/` | Environment snapshot and indicators API | `services/environment-server` | Current environment-server v0. |
@@ -34,7 +34,7 @@ Current:
 
 - `mediapipe-sword-sign/`
 - Camera Hub topics such as `/vision/sword_sign/state`
-- gesture input gate code inside `sword-control-plane/`
+- gesture input gate code inside `control-plane/core/`
 
 Future:
 
@@ -46,8 +46,8 @@ Future:
 
 Current:
 
-- `sword-control-plane/services/thought-core/`
-- Thought Core API and Thought Core watcher inside `sword-control-plane/`
+- `control-plane/core/services/thought-core/`
+- Thought Core API and Thought Core watcher inside `control-plane/core/`
 - handoff from `ai-talk-core/`
 
 Future:
@@ -104,8 +104,8 @@ Future:
 Current:
 
 - `start-home-control-stack.bat`
-- `sword-control-plane/ops/scripts/home-control-stack/`
-- `sword-control-plane/scripts/home-control-stack/` compatibility wrappers
+- `control-plane/core/ops/scripts/home-control-stack/`
+- `control-plane/core/scripts/home-control-stack/` compatibility wrappers
 - `.cache/home-control-stack/`
 - launcher process registry and status files
 
@@ -121,7 +121,7 @@ Future:
 
 ## Canonical Path Notes
 
-For now, `<cell>/sword-control-plane/services/thought-core/` is the canonical
+For now, `<cell>/control-plane/core/services/thought-core/` is the canonical
 service root for thought-core v0, with package code under
 `src/thought_core/`. The root
 `<cell>/services/thought-core/` path should not receive a second

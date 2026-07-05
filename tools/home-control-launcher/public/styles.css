@@ -39,6 +39,16 @@
   box-sizing: border-box;
 }
 
+.sr-only {
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
 html {
   background: var(--bg-deep);
 }
@@ -1164,6 +1174,91 @@ button:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.startup-timing-table {
+  background: rgba(3, 8, 13, 0.2);
+  border: 1px solid rgba(91, 183, 255, 0.14);
+  border-radius: 7px;
+  display: grid;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.startup-timing-header,
+.startup-timing-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(126px, 1.2fr) minmax(62px, 0.65fr) minmax(70px, 0.65fr) minmax(86px, 0.7fr);
+  min-width: 0;
+}
+
+.startup-timing-header {
+  background: rgba(91, 183, 255, 0.08);
+  color: #b7dcff;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0;
+  padding: 6px 10px;
+  text-transform: uppercase;
+}
+
+.startup-timing-row {
+  border-left: 3px solid var(--subtle);
+  border-top: 1px solid rgba(91, 183, 255, 0.12);
+  min-height: 42px;
+  padding: 5px 10px 5px 8px;
+}
+
+.startup-timing-row[data-state-group="ok"] {
+  border-left-color: var(--ok);
+}
+
+.startup-timing-row[data-state-group="warn"] {
+  border-left-color: var(--warn);
+}
+
+.startup-service {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 900;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.startup-state,
+.startup-elapsed,
+.startup-timeout-static {
+  color: #d7f2ee;
+  font-size: 11px;
+  font-weight: 800;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.startup-timeout-input-shell {
+  align-items: center;
+  display: grid;
+  gap: 5px;
+  grid-template-columns: minmax(42px, 1fr) auto;
+  margin: 0;
+  max-width: 98px;
+}
+
+.startup-timeout-input-shell span:last-child {
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.startup-timeout-input {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 11px;
+  min-height: 28px;
+  padding: 4px 6px;
+  text-align: right;
+}
+
 .diagnostic-row {
   align-items: center;
   background: rgba(3, 8, 13, 0.26);
@@ -1923,10 +2018,23 @@ pre {
 
   .mission-strip,
   .diagnostic-summary-grid,
-  .diagnostic-row,
   .port-grid,
   .segmented {
     grid-template-columns: 1fr;
+  }
+
+  .diagnostic-row {
+    grid-template-columns: 1fr;
+  }
+
+  .startup-timing-table {
+    overflow-x: auto;
+  }
+
+  .startup-timing-header,
+  .startup-timing-row {
+    grid-template-columns: minmax(118px, 1.2fr) minmax(62px, 0.65fr) minmax(68px, 0.65fr) minmax(82px, 0.7fr);
+    min-width: 430px;
   }
 
   .endpoint-links {

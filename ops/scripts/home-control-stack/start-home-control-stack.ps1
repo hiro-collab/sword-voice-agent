@@ -30,7 +30,7 @@ param(
     [ValidateSet("gui", "headless", "camera-hub", "mediamtx")]
     [string]$MediapipeMode = "mediamtx",
     [string]$MediapipeCameraName = "HD Pro Webcam C920",
-    [int]$MediapipeReadyTimeoutSeconds = 35,
+    [int]$MediapipeReadyTimeoutSeconds = 90,
     [ValidateSet("dshow", "testsrc")]
     [string]$MediapipeVideoSource = "dshow",
     [switch]$MediapipeOpenBrowser,
@@ -116,8 +116,8 @@ if ([string]::IsNullOrWhiteSpace($TouchDesignerGuiRoot)) {
 if ([string]::IsNullOrWhiteSpace($ThoughtCoreRoot)) {
     $ThoughtCoreRoot = Resolve-WorkspaceDirectory `
         -WorkspaceRoot $WorkspaceRoot `
-        -RelativePaths @("control-plane\sword-voice-agent", "sword-control-plane") `
-        -FallbackRelativePath "control-plane\sword-voice-agent"
+        -RelativePaths @("control-plane\core") `
+        -FallbackRelativePath "control-plane\core"
 }
 if ([string]::IsNullOrWhiteSpace($EnvironmentStateServerRoot)) {
     $EnvironmentStateServerRoot = Join-Path $WorkspaceRoot "organs\environment\environment-state-server"
@@ -193,7 +193,7 @@ $ThoughtCoreWatchScript = Join-Path $ThoughtCoreRoot "scripts\start-thought-core
 $ThoughtCoreEnvPath = Join-Path $ThoughtCoreRoot ".env"
 $AiTalkCoreRoot = Resolve-WorkspaceDirectory `
     -WorkspaceRoot $WorkspaceRoot `
-    -RelativePaths @("organs\speech-input\ai-talk-core", "organs\voice\ai-talk-core") `
+    -RelativePaths @("organs\speech-input\ai-talk-core") `
     -FallbackRelativePath "organs\speech-input\ai-talk-core"
 $LaunchVisionSnapshotProcessor = ((-not $SkipVisionSnapshotProcessor) -and (-not $SkipMediapipe) -and ($MediapipeMode -eq "mediamtx"))
 
@@ -1648,7 +1648,7 @@ if ($StartThoughtCoreService) {
         ) `
         -WorkingDirectory $ThoughtCoreRoot `
         -Environment $thoughtCoreEnvironment `
-        -Module "sword-control-plane" `
+        -Module "control-plane-core" `
         -Role "thought_core_api" `
         -AllowedProcessNames @("pwsh", "powershell", "uv", "python")
 }
@@ -1877,7 +1877,7 @@ if ($EnableThoughtCoreWatch) {
         -FilePath $powerShell `
         -Arguments $thoughtCoreWatchArgs `
         -WorkingDirectory $ThoughtCoreRoot `
-        -Module "sword-control-plane" `
+        -Module "control-plane-core" `
         -Role "thought_core_watcher" `
         -AllowedProcessNames @("pwsh", "powershell", "uv", "python")
 }

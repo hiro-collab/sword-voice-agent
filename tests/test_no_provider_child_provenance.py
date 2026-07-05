@@ -28,7 +28,7 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
     def test_launcher_helper_reports_env_import_override_without_raw_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            control_plane = root / "control-plane" / "sword-voice-agent"
+            control_plane = root / "control-plane" / "core"
             profile_dir = control_plane / "ops" / "manifests" / "profiles"
             profile_dir.mkdir(parents=True)
             (profile_dir / "thought-core-v0.json").write_text(
@@ -113,7 +113,7 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
     def test_launcher_helper_force_no_provider_wins_after_env_import(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            control_plane = root / "control-plane" / "sword-voice-agent"
+            control_plane = root / "control-plane" / "core"
             profile_dir = control_plane / "ops" / "manifests" / "profiles"
             profile_dir.mkdir(parents=True)
             (profile_dir / "thought-core-v0.json").write_text(
@@ -192,7 +192,7 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            control_plane = root / "control-plane" / "sword-voice-agent"
+            control_plane = root / "control-plane" / "core"
             profile_dir = control_plane / "ops" / "manifests" / "profiles"
             profile_dir.mkdir(parents=True)
             (profile_dir / "thought-core-v0.json").write_text(

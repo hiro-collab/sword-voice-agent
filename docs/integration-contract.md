@@ -16,9 +16,9 @@ map across modules.
 .\stop-home-control-stack.bat
 ```
 
-起動入口は `sword-control-plane\ops\scripts\system.ps1`。supervisor 実体は
-`sword-control-plane\ops\scripts\home-control-stack\` にある。root の `.bat` と
-`sword-voice-agent\scripts\home-control-stack\*.ps1` は互換ショートカット。
+起動入口は `control-plane\core\ops\scripts\system.ps1`。supervisor 実体は
+`control-plane\core\ops\scripts\home-control-stack\` にある。root の `.bat` は
+canonical control plane への薄いショートカットとして維持する。
 
 Runtime state defaults to `.cache\home-control-stack`. Advanced runs can point
 start/status/stop scripts at another compatible state directory with

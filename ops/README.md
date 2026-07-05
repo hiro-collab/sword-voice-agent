@@ -23,7 +23,7 @@ system cell 直下の `.bat` は押しやすい入口です。実際の起動定
 system cell 直下から使う場合です。
 
 ```powershell
-cd C:\Users\kawai\works\sword-agent-system
+cd <workspace>\sword-agent-os
 .\start-home-control-stack.bat -Profile thought-core-v0
 .\status-home-control-stack.bat -Profile thought-core-v0
 .\stop-home-control-stack.bat -Profile thought-core-v0 -Force
@@ -32,7 +32,7 @@ cd C:\Users\kawai\works\sword-agent-system
 control plane repo から詳細を見る場合です。
 
 ```powershell
-cd C:\Users\kawai\works\sword-agent-system\sword-control-plane
+cd <workspace>\sword-agent-os\control-plane\core
 .\ops\scripts\system.ps1 start  -Profile thought-core-v0 -DryRun
 .\ops\scripts\system.ps1 status -Profile thought-core-v0 -ManifestOnly
 .\ops\scripts\system.ps1 stop   -Profile thought-core-v0 -DryRun

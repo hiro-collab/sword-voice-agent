@@ -9,7 +9,7 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "resolve-home-control-workspace.ps1")
 $WorkspaceRoot = Resolve-HomeControlWorkspaceRoot -WorkspaceRoot $WorkspaceRoot -ScriptRoot $PSScriptRoot
 
-$opsScriptRoot = Join-Path $WorkspaceRoot "sword-control-plane\ops\scripts"
+$opsScriptRoot = Join-Path $WorkspaceRoot "control-plane\core\ops\scripts"
 $managedScriptRoot = Join-Path $opsScriptRoot "home-control-stack"
 $rootScriptDir = Join-Path $WorkspaceRoot "scripts"
 
@@ -40,7 +40,7 @@ function New-SystemBatchShortcut {
 @echo off
 setlocal
 for %%I in ("%~dp0.") do set "WORKSPACE_ROOT=%%~fI"
-set "TARGET=%WORKSPACE_ROOT%\sword-control-plane\ops\scripts\system.ps1"
+set "TARGET=%WORKSPACE_ROOT%\control-plane\core\ops\scripts\system.ps1"
 where pwsh >nul 2>nul
 if %ERRORLEVEL%==0 (
   pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%TARGET%" $Command -WorkspaceRoot "%WORKSPACE_ROOT%" $ExtraArgs %*
@@ -61,7 +61,7 @@ function New-OpsBatchShortcut {
 @echo off
 setlocal
 for %%I in ("%~dp0.") do set "WORKSPACE_ROOT=%%~fI"
-set "TARGET=%WORKSPACE_ROOT%\sword-control-plane\ops\scripts\home-control-stack\$ScriptName"
+set "TARGET=%WORKSPACE_ROOT%\control-plane\core\ops\scripts\home-control-stack\$ScriptName"
 where pwsh >nul 2>nul
 if %ERRORLEVEL%==0 (
   pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%TARGET%" -WorkspaceRoot "%WORKSPACE_ROOT%" $ExtraArgs %*
@@ -78,7 +78,7 @@ function New-SystemPowerShellShortcut {
     return @"
 `$ErrorActionPreference = "Stop"
 `$WorkspaceRoot = (Resolve-Path -LiteralPath (Join-Path `$PSScriptRoot "..")).Path
-`$Target = Join-Path `$WorkspaceRoot "sword-control-plane\ops\scripts\system.ps1"
+`$Target = Join-Path `$WorkspaceRoot "control-plane\core\ops\scripts\system.ps1"
 
 & `$Target $Command -WorkspaceRoot `$WorkspaceRoot @args
 if (`$LASTEXITCODE -is [int]) {
@@ -94,7 +94,7 @@ function New-OpsPowerShellShortcut {
     return @"
 `$ErrorActionPreference = "Stop"
 `$WorkspaceRoot = (Resolve-Path -LiteralPath (Join-Path `$PSScriptRoot "..")).Path
-`$Target = Join-Path `$WorkspaceRoot "sword-control-plane\ops\scripts\home-control-stack\$ScriptName"
+`$Target = Join-Path `$WorkspaceRoot "control-plane\core\ops\scripts\home-control-stack\$ScriptName"
 
 & `$Target -WorkspaceRoot `$WorkspaceRoot @args
 if (`$LASTEXITCODE -is [int]) {

@@ -60,8 +60,8 @@ change.
 
 | Current path | Notes |
 |---|---|
-| `sword-voice-agent/.cache/sword_voice_agent/` | Status projection and event log used by sword-voice-agent and thought-core watcher flows. |
-| `sword-voice-agent/.cache/codex/web_latest.json` | ai-talk-core handoff/watch compatibility path used by the thought-core experiment. |
+| `.cache/sword_voice_agent/` | Control-plane status projection and event log used by the packaged `sword_voice_agent` modules and thought-core watcher flows. |
+| `organs/speech-input/ai-talk-core/.cache/codex/web_latest.json` | ai-talk-core handoff/watch compatibility path used by the thought-core experiment. |
 | `tts-service/.cache/tts_service/` | TTS status, runtime status, event logs, and generated audio outputs. |
 | `environment-state-server/.cache/environment_state_server/` | State-query feedback path used by the environment server examples. |
 | `home-assistant-server/.cache/home_control/` | Home-control bridge event/audit style runtime output used by integration scripts. |

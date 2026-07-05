@@ -76,12 +76,12 @@ Each service manifest should describe process ownership, not business behavior.
 {
   "service_id": "thought-core",
   "layer": "turn",
-  "repo_path": "sword-control-plane",
-  "cwd": "sword-control-plane",
+  "repo_path": "control-plane/core",
+  "cwd": "control-plane/core",
   "start": {
     "command": "uv",
     "args": ["run", "python", "-m", "thought_core"],
-    "python_path": "sword-control-plane/services/thought-core/src"
+    "python_path": "control-plane/core/services/thought-core/src"
   },
   "health": {
     "type": "http",

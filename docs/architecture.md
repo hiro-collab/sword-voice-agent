@@ -10,7 +10,7 @@
 場合でも、root 自体が Git 管理されるまでは、この repository 側を canonical とします。
 
 既存の標準起動は引き続き workspace 直下の `start-home-control-stack.bat` から行えます。
-構成整理用の入口として、`sword-control-plane/ops/scripts/system.ps1` も
+構成整理用の入口として、`control-plane/core/ops/scripts/system.ps1` も
 `start/status/stop -Profile <profile>` を受け付けます。supervisor 実体は
 `ops/scripts/home-control-stack/` に集約し、旧 `scripts/home-control-stack/` は
 互換 wrapper として残します。
@@ -122,7 +122,7 @@ selected M4 facts or summaries, not scan raw M0 signals or full M3 journals.
 | Logical service | Purpose | Current implementation |
 |---|---|---|
 | `reflex-core` | Fast reactions that do not wait for an LLM | `mediapipe-sword-sign` plus gesture gate policy in this repo. |
-| `thought-core` | One-turn reasoning, tool choice, response shaping | `sword-control-plane/services/thought-core/src/thought_core`. |
+| `thought-core` | One-turn reasoning, tool choice, response shaping | `control-plane/core/services/thought-core/src/thought_core`. |
 | `deep-core` | Long-running analysis, research, review, planning | Future boundary only. |
 | `environment-server` | Observes world and module state | `environment-state-server`. |
 | `home-control-server` | Executes approved actions | `home-assistant-server`. |

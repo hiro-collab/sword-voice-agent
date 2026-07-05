@@ -136,6 +136,7 @@ const DEFAULT_OPTIONS = {
   ThoughtCoreHost: '127.0.0.1',
   ThoughtCorePort: 18787,
   VoicevoxReadyTimeoutSeconds: 45,
+  MediapipeReadyTimeoutSeconds: 90,
   VoicevoxUrl: '',
   HomeControlConfigPath: '',
   MediapipeMode: 'mediamtx',
@@ -180,7 +181,8 @@ const NUMBER_FIELDS = new Set([
   'AituberPort',
   'TouchDesignerGuiPort',
   'ThoughtCorePort',
-  'VoicevoxReadyTimeoutSeconds'
+  'VoicevoxReadyTimeoutSeconds',
+  'MediapipeReadyTimeoutSeconds'
 ])
 
 const STRING_FIELDS = new Set([
@@ -282,18 +284,18 @@ const rotateStackLogIfNeeded = (incomingBytes = 0) => {
   }
 }
 
+const stripAnsiControlSequences = (content) =>
+  String(content).replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '')
+
 const appendStackLog = (content) => {
   ensureRuntimeDirs()
-  const incomingBytes = Buffer.isBuffer(content)
-    ? content.length
-    : Buffer.byteLength(String(content), 'utf8')
+  const sanitizedContent = stripAnsiControlSequences(
+    Buffer.isBuffer(content) ? content.toString('utf8') : content
+  )
+  const incomingBytes = Buffer.byteLength(sanitizedContent, 'utf8')
   rotateStackLogIfNeeded(incomingBytes)
 
-  if (Buffer.isBuffer(content)) {
-    fs.appendFileSync(STACK_LOG_FILE, content)
-  } else {
-    fs.appendFileSync(STACK_LOG_FILE, content, 'utf8')
-  }
+  fs.appendFileSync(STACK_LOG_FILE, sanitizedContent, 'utf8')
 }
 
 const readJsonFile = (filePath, fallback = null) => {
@@ -936,6 +938,12 @@ const buildSystemStartArgs = (profileId, options) => {
     'VoicevoxReadyTimeoutSeconds',
     options.VoicevoxReadyTimeoutSeconds
   )
+  addSupportedParam(
+    SYSTEM_SCRIPT,
+    stackArgs,
+    'MediapipeReadyTimeoutSeconds',
+    options.MediapipeReadyTimeoutSeconds
+  )
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeMode', options.MediapipeMode)
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeCameraName', options.MediapipeCameraName)
 
@@ -1091,7 +1099,10 @@ const startStack = (profileId, optionOverrides = {}) => {
       env: {
         ...process.env,
         HOME_CONTROL_WORKSPACE_ROOT: WORKSPACE_ROOT,
-        HOME_CONTROL_STACK_STATE_DIR: STATE_DIR
+        HOME_CONTROL_STACK_STATE_DIR: STATE_DIR,
+        NO_COLOR: '1',
+        FORCE_COLOR: '0',
+        TERM: 'dumb'
       }
     })
   } catch (error) {
@@ -1226,7 +1237,10 @@ const runPowerShellInlineAndCollect = (script, timeoutMs = 6000) =>
       env: {
         ...process.env,
         HOME_CONTROL_WORKSPACE_ROOT: WORKSPACE_ROOT,
-        HOME_CONTROL_STACK_STATE_DIR: STATE_DIR
+        HOME_CONTROL_STACK_STATE_DIR: STATE_DIR,
+        NO_COLOR: '1',
+        FORCE_COLOR: '0',
+        TERM: 'dumb'
       }
     })
     let stdout = ''
@@ -2059,6 +2073,16 @@ const expectedServicesForOptions = (options) => {
   return services
 }
 
+const startupReadyTimeoutMsForService = (serviceId, options) => {
+  if (serviceId === 'mediapipe') {
+    return Number(options.MediapipeReadyTimeoutSeconds || 0) * 1000
+  }
+  if (serviceId === 'voicevox') {
+    return Number(options.VoicevoxReadyTimeoutSeconds || 0) * 1000
+  }
+  return null
+}
+
 const serviceIsReady = (service) => {
   const state = String(service && service.state || '').toUpperCase()
   return state === 'OK' || state === 'OK_EXTERNAL'
@@ -2141,6 +2165,7 @@ const updateStartupTimingSummary = ({ profileId, options, services }) => {
     const firstReadyElapsed = firstReadyAt && startedAt
       ? elapsedMs(startedAt, dateMs(firstReadyAt))
       : null
+    const readyTimeoutMs = startupReadyTimeoutMsForService(serviceId, options)
     if (ready) {
       readyServiceIds.push(serviceId)
     } else {
@@ -2152,6 +2177,10 @@ const updateStartupTimingSummary = ({ profileId, options, services }) => {
       firstReadyAt,
       firstReadyElapsedMs: firstReadyElapsed,
       waitingElapsedMs: waitingElapsed,
+      readyTimeoutMs,
+      readyTimeoutClass: Number.isFinite(readyTimeoutMs) && readyTimeoutMs > 0
+        ? 'explicit_service_ready_timeout'
+        : 'no_explicit_service_ready_timeout',
       pid_present_class: service.pid ? 'pid_present' : 'pid_missing',
       tcp_detail_class: compactProfileId(service.tcp && service.tcp.detail || 'unknown'),
       http_detail_class: compactProfileId(service.http && service.http.detail || 'unknown')
@@ -2539,7 +2568,7 @@ const readTextTail = (filePath, maxBytes = 128 * 1024) => {
     const buffer = Buffer.alloc(size)
     fs.readSync(fd, buffer, 0, size, stat.size - size)
     fs.closeSync(fd)
-    return buffer.toString('utf8')
+    return stripAnsiControlSequences(buffer.toString('utf8'))
   } catch {
     return ''
   }

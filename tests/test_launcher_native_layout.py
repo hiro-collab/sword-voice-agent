@@ -29,14 +29,14 @@ def make_native_workspace(root: Path) -> None:
     make_file(root / "organs/display/touchdesigner-ai-controller/tools/server.js", "")
     make_dir(root / "organs/speech-input/ai-talk-core")
 
-    control_plane = root / "control-plane/sword-voice-agent"
+    control_plane = root / "control-plane/core"
     make_file(control_plane / ".env", "THOUGHT_CORE_LLM_MODE=off\n")
     make_file(control_plane / "scripts/start-thought-core.ps1", "")
     make_file(control_plane / "scripts/start-thought-core-watch.ps1", "")
     make_dir(control_plane / "services/thought-core")
 
 
-def make_legacy_aliases(root: Path) -> None:
+def make_legacy_residue(root: Path) -> None:
     legacy_control = root / "sword-control-plane"
     make_file(legacy_control / ".env", "THOUGHT_CORE_LLM_MODE=off\n")
     make_file(legacy_control / "scripts/start-thought-core.ps1", "")
@@ -89,8 +89,8 @@ class LauncherNativeLayoutTest(TestCase):
             self.assertEqual(result.returncode, 0, output)
             self.assertNotIn("sword-control-plane directory not found", output)
             self.assertNotIn("ai-talk-core directory not found", output)
-            self.assertIn(r"control-plane\sword-voice-agent\scripts\start-thought-core.ps1", output)
-            self.assertIn(r"control-plane\sword-voice-agent\scripts\start-thought-core-watch.ps1", output)
+            self.assertIn(r"control-plane\core\scripts\start-thought-core.ps1", output)
+            self.assertIn(r"control-plane\core\scripts\start-thought-core-watch.ps1", output)
             self.assertIn(r"organs\speech-input\ai-talk-core", output)
             self.assertNotIn(r"organs\voice\ai-talk-core", output)
 
@@ -100,30 +100,31 @@ class LauncherNativeLayoutTest(TestCase):
         with tempfile.TemporaryDirectory(prefix="sword-launch-native-preferred-") as temp_dir:
             workspace = Path(temp_dir) / "sword-agent-os"
             make_native_workspace(workspace)
-            make_legacy_aliases(workspace)
+            make_legacy_residue(workspace)
 
             result = run_stack_dry_run(workspace)
             output = f"{result.stdout}\n{result.stderr}"
             self.assertEqual(result.returncode, 0, output)
-            self.assertIn(r"control-plane\sword-voice-agent\scripts\start-thought-core.ps1", output)
-            self.assertIn(r"control-plane\sword-voice-agent\scripts\start-thought-core-watch.ps1", output)
+            self.assertIn(r"control-plane\core\scripts\start-thought-core.ps1", output)
+            self.assertIn(r"control-plane\core\scripts\start-thought-core-watch.ps1", output)
             self.assertIn(r"organs\speech-input\ai-talk-core", output)
             self.assertNotIn(r"sword-control-plane\scripts", output)
             self.assertNotIn(r"organs\voice\ai-talk-core", output)
 
-    def test_stack_dry_run_uses_legacy_ai_talk_alias_when_native_speech_input_is_missing(self) -> None:
+    def test_stack_dry_run_rejects_missing_canonical_speech_input_even_if_legacy_residue_exists(self) -> None:
         import tempfile
 
         with tempfile.TemporaryDirectory(prefix="sword-launch-partial-ai-talk-") as temp_dir:
             workspace = Path(temp_dir) / "sword-agent-os"
             make_native_workspace(workspace)
-            make_legacy_aliases(workspace)
+            make_legacy_residue(workspace)
             speech_input = workspace / "organs/speech-input"
             self.assertTrue(str(speech_input.resolve()).startswith(str(workspace.resolve())))
             shutil.rmtree(speech_input)
 
             result = run_stack_dry_run(workspace)
             output = f"{result.stdout}\n{result.stderr}"
-            self.assertEqual(result.returncode, 0, output)
-            self.assertIn(r"organs\voice\ai-talk-core", output)
-            self.assertNotIn("ai-talk-core directory not found", output)
+            self.assertNotEqual(result.returncode, 0, output)
+            self.assertIn("ai-talk-core directory not found", output)
+            self.assertIn(r"organs\speech-input\ai-talk-core", output)
+            self.assertNotIn(r"organs\voice\ai-talk-core", output)

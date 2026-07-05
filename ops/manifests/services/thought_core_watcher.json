@@ -1,9 +1,9 @@
 {
   "service_id": "thought_core_watcher",
   "layer": "app",
-  "logical_service": "sword-control-plane",
+  "logical_service": "control-plane-core",
   "current_owner": "scripts/start-thought-core-watch.ps1",
-  "repo_path": "sword-control-plane",
+  "repo_path": "control-plane/core",
   "contracts": [
     "turn",
     "events",

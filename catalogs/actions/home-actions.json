@@ -3,7 +3,7 @@
   "schema_version": 1,
   "catalog_id": "sword.home-actions",
   "catalog_version": "home-actions.v3",
-  "authority": "sword-control-plane",
+  "authority": "control-plane-core",
   "update_flow": [
     "Propose catalog changes before service-specific edits.",
     "Home-control reviews execution, confirmation, and risk fields.",

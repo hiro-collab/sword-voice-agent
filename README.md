@@ -1,6 +1,6 @@
-# sword-control-plane
+# Control Plane Core
 
-`sword-control-plane` は、Sword Agent System の制御盤です。
+`control-plane/core` は、Sword Agent OS の制御盤です。
 
 ここには、AI身体OSを安全に動かすための設計、契約、権限、起動定義、テスト、小さな共有部品を置きます。  
 音声、MediaPipe、AITuber Kit、Home Assistant、TouchDesigner などの大きな実体は、このrepoへ吸収せず、system cell の `organs/` に置きます。
@@ -10,8 +10,8 @@
 この画面は、control plane が束ねている system cell の状態を人間に見せる代表的な表示です。中央のアバターが会話し、HUDが器官、反射、状態推定、家電操作、表示連携を示します。
 
 ```text
-C:\Users\kawai\works\sword-agent-system\
-  sword-control-plane\   # このrepo。制御盤
+<workspace>\sword-agent-os\
+  control-plane\core\    # このrepo。制御盤
   organs\                # 実体repo。声、反射、認識、手足、表現、表示
 ```
 
@@ -21,8 +21,8 @@ C:\Users\kawai\works\sword-agent-system\
 
 実際に動かすには、次の3つをそろえます。
 
-1. Windows PC上に `sword-agent-system` という system cell root を作る。
-2. このrepoを `sword-agent-system\sword-control-plane` に置く。
+1. Windows PC上に `sword-agent-os` という system cell root を作る。
+2. このrepoを `sword-agent-os\control-plane\core` に置く。
 3. `organs/` 配下に、AITuber Kit、MediaPipe、Home Assistant bridge などの外部organ repoとローカル資材を配置する。
 
 ### 必要なハードウェア
@@ -71,7 +71,7 @@ C:\Users\kawai\works\sword-agent-system\
 | VOICEVOX | 0.25.2 | 直近の起動ログで確認。起動中は `http://127.0.0.1:50021/version` でも確認 |
 | AITuber Kit | 0.1.0 | `organs/expression/aituber-kit/package.json` |
 | Next.js | 15.5.12 | AITuber Kit起動ログで確認 |
-| control plane package | 0.1.0 | `sword-control-plane/pyproject.toml` |
+| control plane package | 0.1.0 | `control-plane/core/pyproject.toml` |
 | home-control-bridge | 0.1.0 | `organs/action/home-assistant-server/pyproject.toml` |
 | environment-state-server | 0.1.0 | `organs/environment/environment-state-server/pyproject.toml` |
 | Home Assistant Core | 2026.4.4 | Raspberry Pi 4B上の `http://homeassistant.local:8123/api/config` で確認 |
@@ -109,7 +109,7 @@ FFPROBE_PATH=C:\tools\ffmpeg\bin\ffprobe.exe
 推奨する配置は次です。
 
 ```text
-C:\Users\kawai\works\sword-agent-system\
+<workspace>\sword-agent-os\
   README.md                                    # system cellの入口説明
   CELL.md                                      # このPC上のcell定義
   cell.yaml                                    # 配置台帳。control planeとorgan repoの対応
@@ -117,9 +117,9 @@ C:\Users\kawai\works\sword-agent-system\
   status-home-control-stack.bat                # 状態確認ショートカット
   stop-home-control-stack.bat                  # 停止ショートカット
   scripts\                                     # system cell直下の補助スクリプト
-  sword-control-plane\                         # このrepo
+  control-plane\core\                          # このrepo
   organs\
-    voice\ai-talk-core\                       # STT / handoff
+    speech-input\ai-talk-core\                # STT / handoff
     reflex\mediapipe-sword-sign\              # MediaPipe / Camera Hub
     environment\environment-state-server\      # Environment API
     environment\vision-snapshot-processor\     # 画像スナップショット推定
@@ -139,7 +139,7 @@ C:\Users\kawai\works\sword-agent-system\
 `organs/` 配下のrepoは、次のスクリプトでcloneまたは更新できます。
 
 ```powershell
-cd C:\Users\kawai\works\sword-agent-system\sword-control-plane
+cd <workspace>\sword-agent-os\control-plane\core
 .\scripts\setup-validation-modules.ps1 -DryRun
 .\scripts\setup-validation-modules.ps1 -UpdateEnv
 ```
@@ -150,9 +150,9 @@ cd C:\Users\kawai\works\sword-agent-system\sword-control-plane
 
 上の配置と `cell.yaml`、`scripts/setup-validation-modules.ps1` を使えば、Gitで取得できるorgan repoの骨格は再現できます。手順は次の流れです。
 
-1. `C:\Users\kawai\works\sword-agent-system` を作る。
-2. このrepoを `C:\Users\kawai\works\sword-agent-system\sword-control-plane` にcloneする。
-3. `sword-control-plane\scripts\setup-validation-modules.ps1 -DryRun` でclone先を確認する。
+1. `<workspace>\sword-agent-os` を作る。
+2. このrepoを `<workspace>\sword-agent-os\control-plane\core` にcloneする。
+3. `control-plane\core\scripts\setup-validation-modules.ps1 -DryRun` でclone先を確認する。
 4. 問題なければ `-UpdateEnv` 付きで実行し、`organs/` 配下をそろえる。
 5. 後述の `.env`、Home Assistant設定、VRM、Cubism SDK、TouchDesignerプロジェクトなど、Gitに入らないローカル資材を配置する。
 6. Raspberry Pi 4B側でHome Assistantを起動し、Windows PCからHome Assistant APIへ到達できることを確認する。
@@ -166,7 +166,7 @@ cloneやsetup scriptだけでは、秘密情報や再配布できないモデル
 
 | パス | 用途 |
 |---|---|
-| `sword-control-plane\.env` | Thought Core、LLM、連携URL |
+| `control-plane\core\.env` | Thought Core、LLM、連携URL |
 | `organs\action\home-assistant-server\.env` | Raspberry Pi 4B上のHome Assistant URL/token、local API token |
 | `organs\action\home-assistant-server\config\home-control.yaml` | Home Assistant上の実デバイス、script、entityとの対応 |
 | `organs\expression\aituber-kit\.env` | Projection Visual、VOICEVOX、Thought Core接続 |
@@ -231,7 +231,7 @@ ops
 GUIの Launcher も同じ起動系を使います。CLIとGUIで別々の起動ルールを持たないよう、起動定義は `ops/manifests/` に集約します。
 
 ```powershell
-cd C:\Users\kawai\works\sword-agent-system
+cd <workspace>\sword-agent-os
 .\start-home-control-stack.bat -Profile thought-core-v0
 .\status-home-control-stack.bat -Profile thought-core-v0
 .\stop-home-control-stack.bat -Profile thought-core-v0 -Force
@@ -268,7 +268,7 @@ MediaPipe Camera Hub は、刀印とカメラ状態を reflex layer の入力と
 実際に起動せず、どのサービスがどの引数で起動されるか確認できます。
 
 ```powershell
-cd C:\Users\kawai\works\sword-agent-system\sword-control-plane
+cd <workspace>\sword-agent-os\control-plane\core
 .\ops\scripts\system.ps1 start -Profile thought-core-v0 -DryRun
 .\ops\scripts\system.ps1 status -Profile thought-core-v0 -ManifestOnly
 ```
@@ -276,7 +276,7 @@ cd C:\Users\kawai\works\sword-agent-system\sword-control-plane
 ### テストする
 
 ```powershell
-cd C:\Users\kawai\works\sword-agent-system\sword-control-plane
+cd <workspace>\sword-agent-os\control-plane\core
 uv run python -m unittest discover -s tests
 ```
 
@@ -289,7 +289,7 @@ uv run python -m unittest tests.test_contract_schemas tests.test_ops_manifests
 ## 初回セットアップ
 
 ```powershell
-cd C:\Users\kawai\works\sword-agent-system\sword-control-plane
+cd <workspace>\sword-agent-os\control-plane\core
 uv sync
 if (!(Test-Path .env)) { Copy-Item .env.example .env }
 notepad .env
@@ -309,7 +309,7 @@ notepad .env
 Home Assistant や Environment State Server の秘密情報は、基本的に organ 側の `.env` に置きます。
 
 ```text
-C:\Users\kawai\works\sword-agent-system\organs\action\home-assistant-server\.env
+<workspace>\sword-agent-os\organs\action\home-assistant-server\.env
 ```
 
 ## 起動profile
@@ -401,14 +401,14 @@ turn input
 TouchDesigner本体のプロジェクトは system cell 側にあります。
 
 ```text
-C:\Users\kawai\works\sword-agent-system\organs\display\touchdesigner-ai-controller\touchdesigner\20260501AITuber.toe
+<workspace>\sword-agent-os\organs\display\touchdesigner-ai-controller\touchdesigner\20260501AITuber.toe
 ```
 
 control plane の起動スクリプトは、TouchDesigner制御GUIとUDP送信側を起動します。TouchDesigner本体やプロジェクター出力設定は、実機側で手動確認します。
 
 ## 変更するときの考え方
 
-- 大きなorgan repoを `sword-control-plane` に吸収しない。
+- 大きなorgan repoを `control-plane/core` に吸収しない。
 - 新しい境界は、まず `contracts/` と `docs/` に書く。
 - 起動対象を増やすときは `ops/manifests/` を更新する。
 - 権限や家電操作の意味を変えるときは `policies/` と `catalogs/` を更新する。

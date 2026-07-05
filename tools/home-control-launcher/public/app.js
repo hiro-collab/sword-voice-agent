@@ -117,7 +117,6 @@ const translations = {
     'demoSafe.general': 'General',
     'advanced.title': 'Advanced overrides',
     'advanced.subtitle': 'Paths and external services',
-    'advanced.voicevoxReadyTimeout': 'VOICEVOX ready timeout seconds',
     'advanced.actionBridgeConfigPath': 'Action bridge config path',
     'surface.control': 'CONTROL',
     'surface.read': 'READ',
@@ -127,6 +126,13 @@ const translations = {
     'startup.elapsed': 'Elapsed',
     'startup.waiting': 'Waiting',
     'startup.ready': 'Ready',
+    'startup.maxWait': 'max wait',
+    'startup.maxWaitUnset': 'not set',
+    'startup.service': 'Service',
+    'startup.state': 'State',
+    'startup.actual': 'Actual',
+    'startup.secondsUnit': 's',
+    'startup.editMaxWait': 'Edit max wait for {name}',
     'startup.critical': 'Critical path',
     'startup.noTiming': 'No startup timing yet',
     'diagnosticSurfaces.title': 'Diagnostic surfaces',
@@ -329,7 +335,6 @@ const translations = {
     'demoSafe.general': 'その他',
     'advanced.title': '詳細設定',
     'advanced.subtitle': 'パスと外部接続',
-    'advanced.voicevoxReadyTimeout': 'VOICEVOX準備待ち秒数',
     'advanced.actionBridgeConfigPath': '家電操作ブリッジ設定パス',
     'surface.control': '操作',
     'surface.read': '確認',
@@ -339,6 +344,13 @@ const translations = {
     'startup.elapsed': '経過',
     'startup.waiting': '待機中',
     'startup.ready': '準備済み',
+    'startup.maxWait': '最大待ち',
+    'startup.maxWaitUnset': '設定なし',
+    'startup.service': '機能',
+    'startup.state': '状態',
+    'startup.actual': '実測',
+    'startup.secondsUnit': '秒',
+    'startup.editMaxWait': '{name} の最大待ち秒数を編集',
     'startup.critical': '律速箇所',
     'startup.noTiming': '起動タイミングはまだありません',
     'diagnosticSurfaces.title': '診断面',
@@ -509,10 +521,18 @@ const portFields = [
   'VisionSnapshotProcessorPort'
 ]
 
-const numericOptionFields = [
-  ...portFields,
-  'VoicevoxReadyTimeoutSeconds'
+const numericOptionFields = [...portFields]
+
+const readyTimeoutOptionFields = [
+  'VoicevoxReadyTimeoutSeconds',
+  'MediapipeReadyTimeoutSeconds'
 ]
+
+const readyTimeoutFieldForService = (serviceId) => {
+  if (serviceId === 'voicevox') return 'VoicevoxReadyTimeoutSeconds'
+  if (serviceId === 'mediapipe') return 'MediapipeReadyTimeoutSeconds'
+  return null
+}
 
 const corePortFields = [
   'AituberPort',
@@ -1045,6 +1065,16 @@ const setOption = (key, value) => {
   refreshPreview()
 }
 
+const setReadyTimeoutOption = (field, value) => {
+  if (!readyTimeoutOptionFields.includes(field)) {
+    return
+  }
+  const normalized = Math.max(1, Math.round(Number(value) || 0))
+  state.options[field] = normalized
+  refreshPreview()
+  renderStartupTiming(state.startupTiming)
+}
+
 const isLaunchServiceEnabled = (field) => {
   if (field === 'StopExisting') {
     return null
@@ -1438,9 +1468,62 @@ const formatElapsed = (ms) => {
   return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)} s`
 }
 
+const formatReadyTimeout = (item) => {
+  const value = Number(item?.readyTimeoutMs)
+  if (Number.isFinite(value) && value > 0) {
+    return formatElapsed(value)
+  }
+  return t('startup.maxWaitUnset')
+}
+
+const startupTimingTimeoutEditIsActive = () => {
+  const active = document.activeElement
+  return Boolean(active && active.dataset && active.dataset.readyTimeoutField)
+}
+
+const readyTimeoutInputValue = (serviceId, item) => {
+  const field = readyTimeoutFieldForService(serviceId)
+  const optionValue = Number(state.options[field])
+  if (field && Number.isFinite(optionValue) && optionValue > 0) {
+    return String(optionValue)
+  }
+  const msValue = Number(item?.readyTimeoutMs)
+  if (Number.isFinite(msValue) && msValue > 0) {
+    return String(Math.round(msValue / 1000))
+  }
+  return ''
+}
+
+const renderReadyTimeoutCell = (serviceId, item) => {
+  const field = readyTimeoutFieldForService(serviceId)
+  if (!field) {
+    return `<span class="startup-timeout-static">${escapeHtml(formatReadyTimeout(item))}</span>`
+  }
+  const serviceName = serviceDisplayName(serviceId)
+  return `
+    <label class="startup-timeout-input-shell">
+      <span class="sr-only">${escapeHtml(t('startup.editMaxWait', { name: serviceName }))}</span>
+      <input
+        class="startup-timeout-input"
+        data-ready-timeout-field="${escapeHtml(field)}"
+        type="number"
+        min="1"
+        step="1"
+        inputmode="numeric"
+        value="${escapeHtml(readyTimeoutInputValue(serviceId, item))}"
+        aria-label="${escapeHtml(t('startup.editMaxWait', { name: serviceName }))}"
+      />
+      <span>${escapeHtml(t('startup.secondsUnit'))}</span>
+    </label>
+  `
+}
+
 const renderStartupTiming = (timing) => {
   const container = $('startup-timing-list')
   if (!container) {
+    return
+  }
+  if (startupTimingTimeoutEditIsActive()) {
     return
   }
   if (!timing || !Array.isArray(timing.expectedServiceIds)) {
@@ -1453,13 +1536,16 @@ const renderStartupTiming = (timing) => {
   const rows = timing.expectedServiceIds.map((serviceId) => {
     const item = timing.serviceReadiness?.[serviceId] || {}
     const isWaiting = waiting.includes(serviceId)
-    const detail = isWaiting
-      ? `${t('startup.waiting')} ${formatElapsed(item.waitingElapsedMs)}`
-      : `${t('startup.ready')} ${formatElapsed(item.firstReadyElapsedMs)}`
+    const stateLabel = isWaiting ? t('startup.waiting') : t('startup.ready')
+    const actualElapsed = isWaiting
+      ? formatElapsed(item.waitingElapsedMs)
+      : formatElapsed(item.firstReadyElapsedMs)
     return `
-      <div class="diagnostic-row" data-state-group="${isWaiting ? 'warn' : 'ok'}">
-        <span class="diagnostic-name">${escapeHtml(serviceDisplayName(serviceId))}</span>
-        <span class="diagnostic-detail">${escapeHtml(detail)}</span>
+      <div class="startup-timing-row" data-state-group="${isWaiting ? 'warn' : 'ok'}">
+        <span class="startup-service">${escapeHtml(serviceDisplayName(serviceId))}</span>
+        <span class="startup-state">${escapeHtml(stateLabel)}</span>
+        <span class="startup-elapsed">${escapeHtml(actualElapsed)}</span>
+        <span class="startup-timeout">${renderReadyTimeoutCell(serviceId, item)}</span>
       </div>
     `
   }).join('')
@@ -1469,7 +1555,15 @@ const renderStartupTiming = (timing) => {
       <div><span>${escapeHtml(t('startup.ready'))}</span><strong>${escapeHtml(String(ready.length))}/${escapeHtml(String(timing.expectedServiceIds.length))}</strong></div>
       <div><span>${escapeHtml(t('startup.critical'))}</span><strong>${escapeHtml(serviceDisplayName(critical))}</strong></div>
     </div>
-    ${rows}
+    <div class="startup-timing-table" role="table" aria-label="${escapeHtml(t('startup.title'))}">
+      <div class="startup-timing-header" role="row">
+        <span>${escapeHtml(t('startup.service'))}</span>
+        <span>${escapeHtml(t('startup.state'))}</span>
+        <span>${escapeHtml(t('startup.actual'))}</span>
+        <span>${escapeHtml(t('startup.maxWait'))}</span>
+      </div>
+      ${rows}
+    </div>
   `
 }
 
@@ -2163,6 +2257,18 @@ const bindControls = () => {
       setOption(field, Number(event.target.value))
     })
   }
+  $('startup-timing-list').addEventListener('change', (event) => {
+    const field = event.target?.dataset?.readyTimeoutField
+    if (!field) {
+      return
+    }
+    setReadyTimeoutOption(field, event.target.value)
+  })
+  $('startup-timing-list').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && event.target?.dataset?.readyTimeoutField) {
+      event.target.blur()
+    }
+  })
   for (const field of textFields) {
     $(field).addEventListener('change', (event) => {
       setOption(field, event.target.value)

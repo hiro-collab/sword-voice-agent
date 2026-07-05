@@ -24,7 +24,7 @@ param(
     [ValidateSet("gui", "headless", "camera-hub", "mediamtx")]
     [string]$MediapipeMode = "mediamtx",
     [string]$MediapipeCameraName = "HD Pro Webcam C920",
-    [int]$MediapipeReadyTimeoutSeconds = 35,
+    [int]$MediapipeReadyTimeoutSeconds = 90,
     [ValidateSet("dshow", "testsrc")]
     [string]$MediapipeVideoSource = "dshow",
     [switch]$MediapipeOpenBrowser,

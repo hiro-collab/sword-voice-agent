@@ -25,6 +25,15 @@ normal profiles, while `Fast visible demo` and `Fast action demo` use an
 8-second wait so missing speech readiness does not consume the entire
 first-response timing budget.
 
+Normal profiles keep a longer `MediapipeReadyTimeoutSeconds` budget. Camera Hub
+startup can be close to 35 seconds on the local webcam path, so the Launcher
+passes a 90-second default to avoid treating a nearly-ready MediaPipe stack as a
+failed startup.
+The Startup timing panel shows each service's measured startup time next to its
+maximum ready wait. Services with an explicit wait budget, such as VOICEVOX and
+MediaPipe, can be edited in that panel and saved with the normal Launcher
+configuration.
+
 The Launcher exposes source/static diagnostic readiness and startup timing
 summaries for later reviewed measurement routes:
 

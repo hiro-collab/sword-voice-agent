@@ -40,7 +40,7 @@ if ([string]::IsNullOrWhiteSpace($AiTalkCoreRoot)) {
     $AiTalkCoreRoot = [Environment]::GetEnvironmentVariable("AI_TALK_CORE_ROOT", "Process")
 }
 if ([string]::IsNullOrWhiteSpace($AiTalkCoreRoot)) {
-    $AiTalkCoreRoot = Join-Path $workspaceRoot "organs\voice\ai-talk-core"
+    $AiTalkCoreRoot = Join-Path $workspaceRoot "organs\speech-input\ai-talk-core"
 }
 $AiTalkCoreRoot = Resolve-SwordPath -Path $AiTalkCoreRoot -BasePath $repoRoot
 if (-not (Test-Path -LiteralPath $AiTalkCoreRoot -PathType Container)) {

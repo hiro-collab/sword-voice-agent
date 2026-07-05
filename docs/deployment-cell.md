@@ -9,7 +9,7 @@ It may also be called a deployment cell. The inner repository is the
 | Area | Responsibility |
 |---|---|
 | system cell root | Start/stop shortcuts, organ repo placement, runtime/cache/local folders |
-| `sword-control-plane/` | docs, contracts, policies, ops manifests, tests, shared kernel parts |
+| `control-plane/core/` | docs, contracts, policies, ops manifests, tests, shared kernel parts |
 | `organs/` | Large independently managed modules: voice, reflex, environment, action, expression |
 | `external/` | Third-party SDKs and redistribution-sensitive assets only |
 | `.cache/` | Current compatibility runtime path |
@@ -36,7 +36,7 @@ health results.
 ## Final Layout
 
 ```text
-sword-agent-system/
+sword-agent-os/
   README.md
   CELL.md
   cell.yaml
@@ -51,9 +51,9 @@ sword-agent-system/
   external/
   archives/
 
-  sword-control-plane/
+  control-plane/core/
   organs/
-    voice/ai-talk-core/
+    speech-input/ai-talk-core/
     reflex/mediapipe-sword-sign/
     environment/environment-state-server/
     environment/vision-snapshot-processor/

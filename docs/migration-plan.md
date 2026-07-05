@@ -79,7 +79,7 @@ Exit criteria:
 Scope:
 
 - Keep the current implementation at
-  `<cell>/sword-control-plane/services/thought-core` until a split is chosen.
+  `<cell>/control-plane/core/services/thought-core` until a split is chosen.
 - Keep package code under `src/thought_core` inside that service root.
 - Do not create a second implementation under `<cell>/services/thought-core`.
 - If a split repo is needed later, update tests, launcher scripts, and docs in

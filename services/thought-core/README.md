@@ -291,7 +291,7 @@ uv run sword-thought-core-handoff --handoff-json tests/fixtures/handoff.json --p
 実際の ai_talk_core キャッシュを読む場合は、`AI_TALK_CORE_ROOT` を設定してから実行します。
 
 ```powershell
-$env:AI_TALK_CORE_ROOT="..\organs\voice\ai-talk-core"
+$env:AI_TALK_CORE_ROOT="..\organs\speech-input\ai-talk-core"
 $env:THOUGHT_CORE_BASE_URL="http://127.0.0.1:18787"
 uv run sword-thought-core-handoff --field command --print-events
 ```
@@ -326,7 +326,7 @@ uv run sword-thought-core-handoff --text "電気つけて" --session-id living_r
 ai_talk_core の handoff 更新を監視して thought-core に流す場合:
 
 ```powershell
-$env:AI_TALK_CORE_ROOT="..\organs\voice\ai-talk-core"
+$env:AI_TALK_CORE_ROOT="..\organs\speech-input\ai-talk-core"
 $env:THOUGHT_CORE_BASE_URL="http://127.0.0.1:18787"
 uv run sword-thought-core-watch --skip-existing --print-events
 ```
@@ -338,7 +338,7 @@ thought-core の応答を外側ランタイムへ流す場合は、必要な出�
 `assistant.speech_delta` は TTS chunk API へ、`assistant.message` は AITuberKit direct_send へ送ります。
 
 ```powershell
-uv run sword-thought-core-watch --ai-talk-core-root ..\organs\voice\ai-talk-core --skip-existing --print-events --tts-chunk-url http://127.0.0.1:8765/api/tts/chunk --aituber-message-url "http://127.0.0.1:3000/api/messages?clientId=sword&type=direct_send"
+uv run sword-thought-core-watch --ai-talk-core-root ..\organs\speech-input\ai-talk-core --skip-existing --print-events --tts-chunk-url http://127.0.0.1:8765/api/tts/chunk --aituber-message-url "http://127.0.0.1:3000/api/messages?clientId=sword&type=direct_send"
 ```
 
 AITuberKit への短い先行相づちを止める場合は `--local-ack-mode off` を指定します。
@@ -346,7 +346,7 @@ AITuberKit への短い先行相づちを止める場合は `--local-ack-mode of
 現在の handoff を1回だけ処理する場合:
 
 ```powershell
-uv run sword-thought-core-watch --ai-talk-core-root ..\organs\voice\ai-talk-core --once --print-events
+uv run sword-thought-core-watch --ai-talk-core-root ..\organs\speech-input\ai-talk-core --once --print-events
 ```
 
 watcher は既定で `.cache/sword_voice_agent/latest_thought_core_response.json` と

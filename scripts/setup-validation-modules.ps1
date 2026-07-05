@@ -132,7 +132,7 @@ function Update-ValidationEnv {
     else {
         Get-Content -LiteralPath (Join-Path (Get-SwordRepoRoot) ".env.example")
     })
-    $lines = Set-EnvLine -Lines $lines -Name "AI_TALK_CORE_ROOT" -Value "..\organs\voice\ai-talk-core"
+    $lines = Set-EnvLine -Lines $lines -Name "AI_TALK_CORE_ROOT" -Value "..\organs\speech-input\ai-talk-core"
     $lines = Set-EnvLine -Lines $lines -Name "MEDIAPIPE_SWORD_SIGN_ROOT" -Value "..\organs\reflex\mediapipe-sword-sign"
     $lines = Set-EnvLine -Lines $lines -Name "TTS_SERVICE_ROOT" -Value "..\organs\expression\tts-service"
     $lines = Set-EnvLine -Lines $lines -Name "AVATAR_SERVICE_ROOT" -Value "..\organs\expression\avatar-service"
@@ -158,7 +158,7 @@ function Update-ValidationEnv {
 }
 
 New-Item -ItemType Directory -Force -Path $WorkspaceRoot | Out-Null
-Ensure-ValidationClone -Name "organs\voice\ai-talk-core" -RepoUrl $AiTalkCoreRepoUrl
+Ensure-ValidationClone -Name "organs\speech-input\ai-talk-core" -RepoUrl $AiTalkCoreRepoUrl
 Ensure-ValidationClone -Name "organs\reflex\mediapipe-sword-sign" -RepoUrl $MediapipeSwordSignRepoUrl
 Ensure-ValidationClone -Name "organs\expression\tts-service" -RepoUrl $TtsServiceRepoUrl
 Ensure-ValidationClone -Name "organs\expression\avatar-service" -RepoUrl $AvatarServiceRepoUrl
@@ -173,7 +173,7 @@ if ($UpdateEnv) {
 }
 
 Write-Host "validation module roots:"
-Write-Host "AI_TALK_CORE_ROOT=..\organs\voice\ai-talk-core"
+Write-Host "AI_TALK_CORE_ROOT=..\organs\speech-input\ai-talk-core"
 Write-Host "MEDIAPIPE_SWORD_SIGN_ROOT=..\organs\reflex\mediapipe-sword-sign"
 Write-Host "TTS_SERVICE_ROOT=..\organs\expression\tts-service"
 Write-Host "AVATAR_SERVICE_ROOT=..\organs\expression\avatar-service"

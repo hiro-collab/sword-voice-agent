@@ -33,8 +33,8 @@ Sword Agent System は、ジェスチャー、音声入力、環境認識、家�
 ## 前提
 
 - 主な開発環境は Windows と PowerShell 7。
-- system cell root は `C:\Users\kawai\works\sword-agent-system`。
-- control plane repo は `C:\Users\kawai\works\sword-agent-system\sword-control-plane`。
+- system cell root は `<workspace>\sword-agent-os`。
+- control plane repo は `<workspace>\sword-agent-os\control-plane\core`。
 - 大きな機能repoは `organs/` 配下に置く。
 - `.cache/home-control-stack` は現行互換runtimeとして残す。
 - `runtime/` と `local/` は将来の正規配置として段階的に使う。

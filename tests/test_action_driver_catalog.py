@@ -61,7 +61,7 @@ class ActionDriverCatalogTest(unittest.TestCase):
         catalog = load_catalog()
 
         self.assertEqual(catalog["schema_version"], 1)
-        self.assertEqual(catalog["authority"], "sword-control-plane")
+        self.assertEqual(catalog["authority"], "control-plane-core")
         self.assertTrue(catalog["catalog_version"])
         self.assertGreaterEqual(len(catalog["update_flow"]), 5)
         self.assertIn("actions", catalog)

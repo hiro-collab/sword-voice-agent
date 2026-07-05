@@ -7,7 +7,7 @@
 ## よく使うコマンド
 
 ```powershell
-cd C:\Users\kawai\works\sword-agent-system\sword-control-plane
+cd <workspace>\sword-agent-os\control-plane\core
 uv run python -m unittest discover -s tests
 ```
 

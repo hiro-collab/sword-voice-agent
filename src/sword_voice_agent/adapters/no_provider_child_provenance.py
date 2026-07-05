@@ -152,7 +152,7 @@ def build_no_provider_child_provenance_diagnostics(
     """
 
     agent_os_root = Path(agent_os_root)
-    control_plane_root = agent_os_root / "control-plane" / "sword-voice-agent"
+    control_plane_root = agent_os_root / "control-plane" / "core"
     thought_core_root = control_plane_root / "services" / "thought-core"
     thought_core_env = read_dotenv(thought_core_root / ".env")
     process_env = dict(process_env or {})

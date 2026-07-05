@@ -3,9 +3,9 @@
   "layer": "turn",
   "logical_service": "thought-core",
   "current_owner": "scripts/start-thought-core.ps1",
-  "repo_path": "sword-control-plane",
-  "service_root": "sword-control-plane/services/thought-core",
-  "python_path": "sword-control-plane/services/thought-core/src",
+  "repo_path": "control-plane/core",
+  "service_root": "control-plane/core/services/thought-core",
+  "python_path": "control-plane/core/services/thought-core/src",
   "contracts": [
     "turn",
     "events",
