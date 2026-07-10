@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import shutil
 from unittest import TestCase
@@ -29,6 +30,30 @@ from sword_voice_agent.apps.watch_handoff_to_thought_core import (
     write_watcher_module_status,
 )
 from sword_voice_agent.protocol.messages import AgentResponse
+
+
+SHARED_VECTOR_ENV = "SWORD_M4_SHARED_VECTOR_PATH"
+MAX_SHARED_VECTOR_BYTES = 128 * 1024
+
+
+def load_shared_attempt_vectors() -> dict[str, object] | None:
+    configured = os.environ.get(SHARED_VECTOR_ENV, "").strip()
+    if not configured:
+        return None
+    path = Path(configured).resolve(strict=True)
+    if len(str(path)) > 4096 or path.suffix != ".json" or not path.is_file():
+        raise AssertionError("shared vector path must be a bounded JSON file")
+    if not 0 < path.stat().st_size <= MAX_SHARED_VECTOR_BYTES:
+        raise AssertionError("shared vector file size is out of bounds")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise AssertionError("shared vector root must be an object")
+    if payload.get("schema_version") != "m4_cross_repo_attempt_vectors.v0":
+        raise AssertionError("shared vector schema_version is invalid")
+    required = {"accepted_user_speech_candidate", "private_turn"}
+    if not required.issubset(payload):
+        raise AssertionError("shared vector shape is incomplete")
+    return payload
 
 
 class FakeThoughtCoreClient:
@@ -170,6 +195,51 @@ class CandidateThoughtCoreClient:
 
 
 class WatchHandoffToThoughtCoreTest(TestCase):
+    def test_shared_vector_accepted_candidate_bypasses_placeholder_when_configured(
+        self,
+    ) -> None:
+        vectors = load_shared_attempt_vectors()
+        if vectors is None:
+            return
+        candidate = vectors["accepted_user_speech_candidate"]
+        private_turn = vectors["private_turn"]
+        self.assertIsInstance(candidate, dict)
+        self.assertIsInstance(private_turn, dict)
+        self.assertIsNone(private_turn.get("text"))
+        self.assertEqual(
+            private_turn.get("text_representation"),
+            "legacy_no_speech_placeholder_not_publicly_representable_in_parent_fixture",
+        )
+
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            candidate_path = root / "candidate.json"
+            private_turn_path = root / "private-turn.json"
+            candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+            private_payload = dict(private_turn)
+            private_payload["text"] = NO_SPEECH_PLACEHOLDER
+            private_turn_path.write_text(json.dumps(private_payload), encoding="utf-8")
+            client = CandidateThoughtCoreClient()
+            args = build_parser().parse_args(
+                [
+                    "--accepted-speech-candidate-json",
+                    str(candidate_path),
+                    "--private-turn-json",
+                    str(private_turn_path),
+                    "--status-dir",
+                    "",
+                ]
+            )
+
+            result = run_once(args, client=client)
+
+        self.assertFalse(result["skipped"])
+        self.assertEqual(len(client.turn_payloads), 1)
+        self.assertEqual(
+            client.turn_payloads[0]["private_turn"]["text"],
+            NO_SPEECH_PLACEHOLDER,
+        )
+
     def test_run_once_forwards_canonical_candidate_envelope(self) -> None:
         with workspace_tempdir() as tmp:
             root = Path(tmp)

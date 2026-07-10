@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -16,6 +17,8 @@ from sword_voice_agent.adapters.no_provider_child_provenance import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core" / "src"
+SHARED_VECTOR_ENV = "SWORD_M4_SHARED_VECTOR_PATH"
+MAX_SHARED_VECTOR_BYTES = 128 * 1024
 sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 
 from thought_core.provenance_diagnostics import (  # noqa: E402
@@ -29,7 +32,158 @@ from thought_core.server import (  # noqa: E402
 )
 
 
+def load_shared_attempt_vectors() -> dict[str, object] | None:
+    configured = os.environ.get(SHARED_VECTOR_ENV, "").strip()
+    if not configured:
+        return None
+    path = Path(configured).resolve(strict=True)
+    if len(str(path)) > 4096 or path.suffix != ".json" or not path.is_file():
+        raise AssertionError("shared vector path must be a bounded JSON file")
+    if not 0 < path.stat().st_size <= MAX_SHARED_VECTOR_BYTES:
+        raise AssertionError("shared vector file size is out of bounds")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise AssertionError("shared vector root must be an object")
+    if payload.get("schema_version") != "m4_cross_repo_attempt_vectors.v0":
+        raise AssertionError("shared vector schema_version is invalid")
+    required = {
+        "canonical_conversation_attempt_ref",
+        "invalid_conversation_attempt_refs",
+        "accepted_user_speech_candidate",
+        "private_turn",
+        "assistant_event",
+    }
+    if not required.issubset(payload):
+        raise AssertionError("shared vector shape is incomplete")
+    return payload
+
+
 class NoProviderChildProvenanceTests(unittest.TestCase):
+    def test_shared_vectors_decorate_only_the_canonical_ref_when_configured(self) -> None:
+        vectors = load_shared_attempt_vectors()
+        if vectors is None:
+            return
+        canonical_ref = vectors["canonical_conversation_attempt_ref"]
+        invalid_refs = vectors["invalid_conversation_attempt_refs"]
+        candidate = vectors["accepted_user_speech_candidate"]
+        private_turn = vectors["private_turn"]
+        assistant_event = vectors["assistant_event"]
+        self.assertIsInstance(canonical_ref, str)
+        self.assertIsInstance(invalid_refs, dict)
+        self.assertEqual(
+            set(invalid_refs),
+            {"colonless", "uppercase", "wrong_prefix", "short", "long", "unsafe", "whitespace"},
+        )
+        self.assertIsInstance(candidate, dict)
+        self.assertIsInstance(private_turn, dict)
+        self.assertIsNone(private_turn.get("text"))
+        self.assertEqual(
+            private_turn.get("text_representation"),
+            "legacy_no_speech_placeholder_not_publicly_representable_in_parent_fixture",
+        )
+        self.assertIsInstance(assistant_event, dict)
+        self.assertEqual(
+            assistant_event.get("expected_conversation_attempt_ref"), canonical_ref
+        )
+        candidate_for_core = dict(candidate)
+        candidate_for_core["redaction_guards"] = {
+            key: False
+            for key in (
+                "raw_audio_included",
+                "raw_media_included",
+                "raw_transcript_included",
+                "raw_recognized_text_included",
+                "private_path_included",
+                "provider_payload_included",
+                "browser_storage_included",
+                "token_or_secret_included",
+                "home_control_action_authority_included",
+            )
+        }
+
+        class VectorLoop:
+            def run_dicts(self, turn, *, event_sink=None):
+                injected = dict(assistant_event)
+                injected["event_id"] = "evt_shared_vector_message"
+                injected["data"] = dict(assistant_event["data"])
+                events = [
+                    {
+                        "event_id": "evt_shared_vector_delta",
+                        "type": "assistant.speech_delta",
+                        "data": {
+                            "delta": "synthetic delta",
+                            "conversation_attempt_ref": assistant_event["data"][
+                                "conversation_attempt_ref"
+                            ],
+                        },
+                    },
+                    injected,
+                    {
+                        "event_id": "evt_shared_vector_completed",
+                        "type": "turn.completed",
+                        "data": {"status": "success"},
+                    },
+                ]
+                if event_sink is not None:
+                    for event in events:
+                        event_sink(event)
+                return events
+
+        def request_events(port: int, ref: str, suffix: str) -> list[dict[str, object]]:
+            private_payload = dict(private_turn)
+            private_payload["text"] = "synthetic private test turn"
+            private_payload["context_refs"] = {"conversation_attempt_ref": ref}
+            body = json.dumps(
+                {
+                    "accepted_user_speech_candidate": candidate_for_core,
+                    "private_turn": private_payload,
+                }
+            ).encode("utf-8")
+            req = request.Request(
+                f"http://127.0.0.1:{port}{suffix}",
+                data=body,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with request.urlopen(req, timeout=5) as response:
+                body = response.read().decode("utf-8")
+            if suffix == "/turn":
+                return json.loads(body)["events"]
+            return [
+                json.loads(line[6:])
+                for line in body.splitlines()
+                if line.startswith("data: ")
+            ]
+
+        server = create_server("127.0.0.1", 0, thought_loop=VectorLoop())
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            for suffix in ("/turn", "/turn/stream"):
+                with self.subTest(case="canonical", path=suffix):
+                    events = request_events(port, canonical_ref, suffix)
+                    for event in events:
+                        if event["type"].startswith("assistant."):
+                            self.assertEqual(
+                                event["data"]["conversation_attempt_ref"], canonical_ref
+                            )
+                        else:
+                            self.assertNotIn("conversation_attempt_ref", event["data"])
+            for name, invalid_ref in invalid_refs.items():
+                for suffix in ("/turn", "/turn/stream"):
+                    with self.subTest(case=name, path=suffix):
+                        events = request_events(port, invalid_ref, suffix)
+                        for event in events:
+                            self.assertNotIn(
+                                "conversation_attempt_ref",
+                                event["data"],
+                            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_server_materializes_accepted_candidate_once_for_normal_and_stream_turns(
         self,
     ) -> None:
