@@ -109,7 +109,7 @@ Camera Hub owns physical camera capture, frame reading, landmark inference, and 
 |---|---|---|
 | `GET /environment/current` | Thought Core | Requires Bearer token |
 | `GET /environment/current?wait_for=room_light&after=<iso>&timeout_ms=1500` | Thought Core | Short wait for a room-light snapshot newer than `after`; returns 200 even on timeout |
-| `GET /environment/relations` | Thought Core | Related metadata only |
+| `POST /environment/relations` | Thought Core | Related metadata only |
 | `POST /feedback/state-query` | Thought Core | User correction for the immediately preceding state query; non-authoritative learning data |
 | `GET /feedback/state-query/recent` | Thought Core / debug | Recent feedback records; Requires Bearer token |
 | `GET /feedback/state-query/summary` | Thought Core / debug | Feedback label/status counts; Requires Bearer token |

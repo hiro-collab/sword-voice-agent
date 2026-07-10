@@ -21,7 +21,7 @@ Logical boundary:
 ```text
 GET  /environment/current
 GET  /environment/current?wait_for=room_light&after=<iso>&timeout_ms=1500
-GET  /environment/relations
+POST /environment/relations
 POST /feedback/state-query
 GET  /feedback/state-query/recent
 GET  /feedback/state-query/summary
