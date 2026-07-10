@@ -1345,6 +1345,10 @@ const EXTERNAL_PROCESS_DENY_LIST = new Set([
   'googleupdate',
   'microsoftedgeupdate'
 ])
+const STALE_RECORDED_CLASS = 'stale_or_unowned_registry_entry'
+const UNVERIFIED_RECORDED_CLASS = 'unverified_registry_entry'
+// The registry is written after Process.Start. Allow only clock/serialization jitter.
+const RECORDED_PROCESS_START_AFTER_TOLERANCE_MS = 2000
 
 const MANAGED_PORT_RECLAIM_POLICIES = {
   home_assistant_bridge: {
@@ -1500,10 +1504,16 @@ const stopStack = async (body) => {
   }
   const options = normalizeOptions(profileId, config.options || {})
   const scriptArgs = ['stop', '-Profile', opsProfileFor(profileId), '-Force']
-  const beforeStopVerification = await collectStackStopVerification(options)
+  const beforeStopCollection = await collectStackStopVerification(options)
+  const { carriedUnverifiedEntries, ...beforeStopVerification } = beforeStopCollection
   const result = await runScriptAndCollect(SYSTEM_SCRIPT, scriptArgs, 45000)
   const managedPortReclaim = await reclaimManagedPortResidue(options)
-  const stopVerification = await waitForStackStopVerification(options)
+  const stopCollection = await waitForStackStopVerification(
+    options,
+    carriedUnverifiedEntries,
+    beforeStopVerification.staleRecorded
+  )
+  const { carriedUnverifiedEntries: ignoredCarriedEntries, ...stopVerification } = stopCollection
   const ok = Boolean(result.ok && stopVerification.ok)
   const payload = {
     ...result,
@@ -1672,15 +1682,128 @@ const compactPidEntry = (entry) => ({
   pid: Number(entry.pid) || null
 })
 
-const collectStackStopVerification = async (options) => {
+const inspectRecordedProcesses = async (recordedProcesses) => {
+  if (
+    process.env.NODE_ENV === 'test' &&
+    process.env.HOME_CONTROL_LAUNCHER_TEST_INSPECTION_FAILURE === 'true'
+  ) {
+    return { ok: false, processes: new Map() }
+  }
+  const pids = [...new Set(
+    recordedProcesses
+      .map((entry) => Number(entry && entry.pid))
+      .filter((pid) => Number.isInteger(pid) && pid > 0)
+  )]
+  if (pids.length === 0) {
+    return { ok: true, processes: new Map() }
+  }
+  const result = await runPowerShellInlineAndCollect(`
+$items = @()
+foreach ($pidValue in @(${pids.join(',')})) {
+  $process = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
+  $items += [pscustomobject]@{
+    pid = [int]$pidValue
+    alive = ($null -ne $process)
+    processName = if ($null -ne $process) { [string]$process.ProcessName } else { '' }
+    startedAt = if ($null -ne $process) { ([DateTimeOffset]$process.StartTime).ToString('o') } else { '' }
+  }
+}
+$items | ConvertTo-Json -Compress
+`)
+  if (!result.ok) {
+    return { ok: false, processes: new Map() }
+  }
+  return {
+    ok: true,
+    processes: new Map(
+      parseJsonArray(result.stdout).map((entry) => [Number(entry.pid), entry])
+    )
+  }
+}
+
+const recordedProcessStartTimeMatches = (entry, process) => {
+  const recordedAt = String(entry && entry.started_at || '').trim()
+  if (!recordedAt) {
+    return false
+  }
+  const recordedMs = Date.parse(recordedAt)
+  const startedMs = Date.parse(String(process && process.startedAt || ''))
+  if (!Number.isFinite(recordedMs) || !Number.isFinite(startedMs)) {
+    return false
+  }
+  return startedMs >= recordedMs - 10000 &&
+    startedMs <= recordedMs + RECORDED_PROCESS_START_AFTER_TOLERANCE_MS
+}
+
+const recordedProcessIsOwned = (entry, process) => {
+  if (!process || !process.alive || !recordedProcessStartTimeMatches(entry, process)) {
+    return false
+  }
+  const processName = normalizedProcessName(process.processName)
+  if (!processName || EXTERNAL_PROCESS_DENY_LIST.has(processName)) {
+    return false
+  }
+  const allowedNames = Array.isArray(entry && entry.allowed_process_names)
+    ? entry.allowed_process_names
+    : []
+  const allowed = new Set(allowedNames.map(normalizedProcessName))
+  return allowed.size > 0 && allowed.has(processName)
+}
+
+const safeRecordedEntry = (pid, classification) => ({
+  name: classification,
+  module: '',
+  role: '',
+  pid: Number(pid) || null
+})
+
+const mergeRecordedEntries = (recordedProcesses, carriedUnverifiedEntries) => {
+  const merged = new Map()
+  for (const entry of [...recordedProcesses, ...carriedUnverifiedEntries]) {
+    const pid = Number(entry && entry.pid)
+    if (Number.isInteger(pid) && pid > 0) {
+      merged.set(pid, entry)
+    }
+  }
+  return [...merged.values()]
+}
+
+const collectStackStopVerification = async (
+  options,
+  carriedUnverifiedEntries = [],
+  carriedStaleRecorded = []
+) => {
   const pidFileExists = fs.existsSync(PID_FILE)
   const pidState = readPidState()
   const recordedProcesses = Array.isArray(pidState.processes)
     ? pidState.processes
     : []
-  const aliveRecorded = recordedProcesses
-    .filter((entry) => isProcessAlive(entry.pid))
-    .map(compactPidEntry)
+  const entriesToVerify = mergeRecordedEntries(recordedProcesses, carriedUnverifiedEntries)
+  const inspection = await inspectRecordedProcesses(entriesToVerify)
+  const aliveRecorded = []
+  const staleRecorded = new Set(carriedStaleRecorded)
+  const carriedEntries = []
+  for (const entry of entriesToVerify) {
+    if (!isProcessAlive(entry.pid)) {
+      continue
+    }
+    if (!inspection.ok) {
+      aliveRecorded.push(safeRecordedEntry(entry.pid, UNVERIFIED_RECORDED_CLASS))
+      carriedEntries.push(entry)
+      continue
+    }
+    const inspected = inspection.processes.get(Number(entry.pid))
+    if (!inspected || !inspected.alive) {
+      aliveRecorded.push(safeRecordedEntry(entry.pid, UNVERIFIED_RECORDED_CLASS))
+      carriedEntries.push(entry)
+      continue
+    }
+    if (!recordedProcessIsOwned(entry, inspected)) {
+      staleRecorded.add(STALE_RECORDED_CLASS)
+      continue
+    }
+    aliveRecorded.push(compactPidEntry(entry))
+  }
   const checkedPorts = await Promise.all(
     managedStopPortTargets(options).map(async (target) => ({
       key: target.key,
@@ -1705,17 +1828,31 @@ const collectStackStopVerification = async (options) => {
     pidFileExists,
     recordedProcessCount: recordedProcesses.length,
     aliveRecorded,
+    staleRecorded: [...staleRecorded].sort(),
+    carriedUnverifiedEntries: carriedEntries,
     checkedPortCount: checkedPorts.length,
     openPorts
   }
 }
 
-const waitForStackStopVerification = async (options) => {
+const waitForStackStopVerification = async (
+  options,
+  carriedUnverifiedEntries = [],
+  carriedStaleRecorded = []
+) => {
   const deadline = Date.now() + STOP_VERIFY_TIMEOUT_MS
-  let verification = await collectStackStopVerification(options)
+  let verification = await collectStackStopVerification(
+    options,
+    carriedUnverifiedEntries,
+    carriedStaleRecorded
+  )
   while (!verification.ok && Date.now() < deadline) {
     await sleep(STOP_VERIFY_INTERVAL_MS)
-    verification = await collectStackStopVerification(options)
+    verification = await collectStackStopVerification(
+      options,
+      carriedUnverifiedEntries,
+      carriedStaleRecorded
+    )
   }
   return {
     ...verification,

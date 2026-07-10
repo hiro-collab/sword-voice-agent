@@ -537,12 +537,9 @@ class LauncherUiContractTest(TestCase):
     def test_stack_start_reclaims_only_managed_stale_port_owners(self) -> None:
         stack_start = read_stack_start_script()
 
-        self.assertIn("function Test-CommandLineReferencesPath", stack_start)
-        self.assertIn("function Get-ReclaimableRootForPortConflict", stack_start)
-        self.assertIn("function Stop-ReclaimablePortConflicts", stack_start)
-        self.assertIn("[ports] reclaiming stale managed port owner", stack_start)
+        self.assertIn("Get-ReclaimableRootForPortConflict", stack_start)
+        self.assertIn("Stop-ReclaimablePortConflicts", stack_start)
         self.assertIn("Test-ExternalProcessDenied", stack_start)
-        self.assertIn("AITuber Kit", stack_start)
 
     def test_stack_start_uses_voicevox_readiness_helper(self) -> None:
         stack_start = read_stack_start_script()

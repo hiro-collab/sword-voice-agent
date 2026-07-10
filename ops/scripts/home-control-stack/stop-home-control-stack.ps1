@@ -121,17 +121,17 @@ function Test-ProcessStartTimeMatches {
     param(
         [Parameter(Mandatory = $true)][object]$Process,
         [string]$RecordedAt,
-        [int]$GraceSeconds = 60
+        [int]$StartAfterRecordedToleranceSeconds = 2
     )
     if ([string]::IsNullOrWhiteSpace($RecordedAt)) {
-        return $true
+        return $false
     }
     try {
         $recorded = [DateTimeOffset]::Parse($RecordedAt)
         $processStarted = [DateTimeOffset]$Process.StartTime
         return (
             $processStarted -ge $recorded.AddSeconds(-10) -and
-            $processStarted -le $recorded.AddSeconds($GraceSeconds)
+            $processStarted -le $recorded.AddSeconds($StartAfterRecordedToleranceSeconds)
         )
     }
     catch {
@@ -155,7 +155,7 @@ function Read-ChildProcessIds {
                     continue
                 }
                 $startedAt = [string](Get-ObjectProperty -Object $entry -Name "started_at" -Default "")
-                if (-not (Test-ProcessStartTimeMatches -Process $process -RecordedAt $startedAt -GraceSeconds 60)) {
+                if (-not (Test-ProcessStartTimeMatches -Process $process -RecordedAt $startedAt)) {
                     Write-Host "skipped PID $pidValue $($process.ProcessName) (stale child process manifest entry)"
                     continue
                 }
@@ -175,18 +175,20 @@ function Get-ManagedTargetPids {
     $targetIds = @()
     $rootPid = [int](Get-ObjectProperty -Object $Entry -Name "pid" -Default 0)
     $rootProcess = if ($rootPid -gt 0) { Get-Process -Id $rootPid -ErrorAction SilentlyContinue } else { $null }
-    if ($null -ne $rootProcess) {
-        $allowedNames = @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $Entry -Name "allowed_process_names" -Default @()))
-        $startedAt = [string](Get-ObjectProperty -Object $Entry -Name "started_at" -Default "")
-        if (
-            (Test-ProcessNameAllowed -ProcessName ([string]$rootProcess.ProcessName) -AllowedProcessNames $allowedNames) -and
-            (Test-ProcessStartTimeMatches -Process $rootProcess -RecordedAt $startedAt -GraceSeconds 60)
-        ) {
-            $targetIds += Get-DescendantProcessIds -RootProcessId $rootPid
-        }
-        else {
-            Write-Host "skipped root PID $rootPid $($rootProcess.ProcessName) (not an owned registry root)"
-        }
+    if ($null -eq $rootProcess) {
+        return @()
+    }
+    $allowedNames = @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $Entry -Name "allowed_process_names" -Default @()))
+    $startedAt = [string](Get-ObjectProperty -Object $Entry -Name "started_at" -Default "")
+    if (
+        (Test-ProcessNameAllowed -ProcessName ([string]$rootProcess.ProcessName) -AllowedProcessNames $allowedNames) -and
+        (Test-ProcessStartTimeMatches -Process $rootProcess -RecordedAt $startedAt)
+    ) {
+        $targetIds += Get-DescendantProcessIds -RootProcessId $rootPid
+    }
+    else {
+        Write-Host "skipped root PID $rootPid $($rootProcess.ProcessName) (not an owned registry root)"
+        return @()
     }
     $childProcessFile = [string](Get-ObjectProperty -Object $Entry -Name "child_process_file" -Default "")
     $targetIds += Read-ChildProcessIds -Path $childProcessFile
@@ -196,14 +198,14 @@ function Get-ManagedTargetPids {
 function Test-ProcessNameAllowed {
     param(
         [Parameter(Mandatory = $true)][string]$ProcessName,
-        [Parameter(Mandatory = $true)][string[]]$AllowedProcessNames
+        [string[]]$AllowedProcessNames = @()
     )
     $normalizedName = Normalize-ProcessName -Name $ProcessName
     if ($ExternalProcessDenyList -contains $normalizedName) {
         return $false
     }
     if ($AllowedProcessNames.Count -eq 0) {
-        return $true
+        return $false
     }
     $allowed = @($AllowedProcessNames | ForEach-Object { Normalize-ProcessName -Name $_ })
     return $allowed -contains $normalizedName
@@ -229,6 +231,27 @@ function Stop-ManagedProcessEntry {
 
     foreach ($pidValue in $targetIds) {
         if ($pidValue -eq $PID) {
+            continue
+        }
+        $rootPid = [int](Get-ObjectProperty -Object $Entry -Name "pid" -Default 0)
+        $rootProcess = if ($rootPid -gt 0) { Get-Process -Id $rootPid -ErrorAction SilentlyContinue } else { $null }
+        $startedAt = [string](Get-ObjectProperty -Object $Entry -Name "started_at" -Default "")
+        $testRevalidationFailure = (
+            $env:NODE_ENV -eq "test" -and
+            $env:HOME_CONTROL_STACK_STOP_TEST_REVALIDATE_FAILURE -eq "true"
+        )
+        if (
+            $testRevalidationFailure -or
+            $null -eq $rootProcess -or
+            -not (Test-ProcessNameAllowed -ProcessName ([string]$rootProcess.ProcessName) -AllowedProcessNames $allowedNames) -or
+            -not (Test-ProcessStartTimeMatches -Process $rootProcess -RecordedAt $startedAt)
+        ) {
+            Write-Host "skipped PID $pidValue (registry root identity changed before termination)"
+            continue
+        }
+        $currentTargets = @(Get-DescendantProcessIds -RootProcessId $rootPid)
+        if (($pidValue -ne $rootPid) -and ($currentTargets -notcontains $pidValue)) {
+            Write-Host "skipped PID $pidValue (no longer a current registry-root descendant)"
             continue
         }
         $process = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
@@ -261,11 +284,13 @@ function Stop-ManagedProcessEntry {
 
 $state = Read-PidState
 $managedEntries = @()
+$preStopTargetIds = @()
 if ($null -ne $state -and $null -ne $state.processes) {
     foreach ($entry in $state.processes) {
         $targets = @(Get-ManagedTargetPids -Entry $entry)
         if ($targets.Count -gt 0) {
             $managedEntries += $entry
+            $preStopTargetIds += $targets
         }
     }
 }
@@ -284,6 +309,17 @@ else {
     }
     for ($index = $managedEntries.Count - 1; $index -ge 0; $index--) {
         Stop-ManagedProcessEntry -Entry $managedEntries[$index]
+    }
+}
+
+if (-not $DryRun) {
+    $remainingTargetIds = @(
+        $preStopTargetIds |
+            Sort-Object -Unique |
+            Where-Object { $null -ne (Get-Process -Id $_ -ErrorAction SilentlyContinue) }
+    )
+    if ($remainingTargetIds.Count -gt 0) {
+        throw "Managed process stop incomplete; retained PID registry for verification: $($remainingTargetIds -join ', ')"
     }
 }
 
