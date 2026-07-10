@@ -14,6 +14,7 @@ from typing import Any, Callable
 from urllib import error, request
 
 from sword_voice_agent.adapters.ai_talk_core import (
+    ACCEPTED_USER_SPEECH_CANDIDATE_INPUT_GATE_SCHEMA,
     AiTalkCoreHandoffError,
     get_handoff_json_path,
 )
@@ -27,6 +28,7 @@ from sword_voice_agent.adapters.status_store import StatusStore, redacted_text
 from sword_voice_agent.apps.send_handoff_to_thought_core import (
     build_result,
     format_event_line,
+    output_safe_result,
     validate_path_argument,
 )
 from sword_voice_agent.apps.thought_core_status import build_thought_core_status_writer
@@ -66,6 +68,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--handoff-text",
         default=os.environ.get("AI_TALK_CORE_HANDOFF_TEXT", ""),
         help="Optional path to a saved ai_talk_core handoff prompt text file.",
+    )
+    parser.add_argument(
+        "--accepted-speech-candidate-json",
+        default=os.environ.get("ACCEPTED_USER_SPEECH_CANDIDATE_JSON", ""),
+        help="Path to a canonical accepted-user-speech candidate JSON file.",
+    )
+    parser.add_argument(
+        "--private-turn-json",
+        default=os.environ.get("THOUGHT_CORE_PRIVATE_TURN_JSON", ""),
+        help="Path to the separate private Thought Core turn JSON file.",
     )
     parser.add_argument("--source", default="web")
     parser.add_argument(
@@ -255,6 +267,12 @@ def handoff_signature(path: str | Path) -> HandoffSignature | None:
 
 
 def resolve_handoff_json_path(args: argparse.Namespace) -> Path:
+    if args.accepted_speech_candidate_json:
+        validate_path_argument(
+            args.accepted_speech_candidate_json,
+            "--accepted-speech-candidate-json",
+        )
+        return Path(args.accepted_speech_candidate_json)
     if args.handoff_json:
         validate_path_argument(args.handoff_json, "--handoff-json")
         return Path(args.handoff_json)
@@ -298,13 +316,15 @@ def run_once(
     if aituber_forwarder is not None:
         stream_handlers.append(aituber_forwarder)
 
-    text = str(result["turn_payload"].get("text") or "")
-    if should_skip_text(text, args):
+    text = turn_text_from_result(result)
+    if should_skip_text(text, args) and not is_accepted_speech_candidate_envelope(
+        result
+    ):
         result["skipped"] = True
         result["skip_reason"] = "no_speech_placeholder"
         save_result_outputs(args, result)
         if status_writer is not None:
-            status_writer.finish(result)
+            status_writer.finish(output_safe_result(result))
         close_stream_handlers(stream_handlers)
         return result
 
@@ -340,7 +360,7 @@ def run_once(
     for stream_handler in stream_handlers:
         finish = getattr(stream_handler, "finish", None)
         if callable(finish):
-            finish(result)
+            finish(output_safe_result(result) if stream_handler is status_writer else result)
     return result
 
 
@@ -348,8 +368,22 @@ def turn_id_from_result(result: dict[str, Any]) -> str | None:
     turn_payload = result.get("turn_payload")
     if not isinstance(turn_payload, dict):
         return None
-    turn_id = str(turn_payload.get("turn_id") or "").strip()
+    private_turn = turn_payload.get("private_turn")
+    if isinstance(private_turn, dict):
+        turn_id = str(private_turn.get("turn_id") or "").strip()
+    else:
+        turn_id = str(turn_payload.get("turn_id") or "").strip()
     return turn_id or None
+
+
+def turn_text_from_result(result: dict[str, Any]) -> str:
+    turn_payload = result.get("turn_payload")
+    if not isinstance(turn_payload, dict):
+        return ""
+    private_turn = turn_payload.get("private_turn")
+    if isinstance(private_turn, dict):
+        return str(private_turn.get("text") or "")
+    return str(turn_payload.get("text") or "")
 
 
 def close_stream_handlers(
@@ -372,6 +406,32 @@ def should_post_local_ack(
 
 def should_skip_text(text: str, args: argparse.Namespace) -> bool:
     return not args.send_no_speech and text.strip() == NO_SPEECH_PLACEHOLDER
+
+
+def is_accepted_speech_candidate_envelope(result: dict[str, Any]) -> bool:
+    turn_payload = result.get("turn_payload")
+    if not isinstance(turn_payload, dict):
+        return False
+    candidate = turn_payload.get("accepted_user_speech_candidate")
+    private_turn = turn_payload.get("private_turn")
+    if not isinstance(candidate, dict) or not isinstance(private_turn, dict):
+        return False
+    input_gate = candidate.get("input_gate")
+    decision = candidate.get("acceptance_decision")
+    return (
+        candidate.get("schema_version")
+        == ACCEPTED_USER_SPEECH_CANDIDATE_INPUT_GATE_SCHEMA
+        and candidate.get("speaker_role") == "user_candidate"
+        and isinstance(input_gate, dict)
+        and input_gate.get("input_gate_decision_owner") == "ai_talk_core_input_gate"
+        and input_gate.get("input_gate_decision_class")
+        == "accepted_user_speech_candidate"
+        and input_gate.get("normal_turn_block_reason") is None
+        and isinstance(decision, dict)
+        and decision.get("acceptance_status") == "accepted_user_speech_candidate"
+        and decision.get("may_materialize_thought_core_turninput") is True
+        and decision.get("private_text_handoff_required") is True
+    )
 
 
 def default_tts_http_timeout_s() -> float:
@@ -455,7 +515,7 @@ def save_result_outputs(
     if json_path is not None:
         json_path.parent.mkdir(parents=True, exist_ok=True)
         json_path.write_text(
-            json.dumps(result, ensure_ascii=False, indent=2),
+            json.dumps(output_safe_result(result), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
@@ -972,7 +1032,7 @@ def auto_review_turn_id(result: dict[str, Any], pending: dict[str, Any]) -> str:
 
 def print_result(args: argparse.Namespace, result: dict[str, Any]) -> None:
     if args.print_json:
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(output_safe_result(result), ensure_ascii=False, indent=2))
         return
     if result.get("skipped"):
         print(f"[thought-core-watch] skipped: {result.get('skip_reason', 'unknown')}")

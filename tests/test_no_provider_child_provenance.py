@@ -21,10 +21,237 @@ sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 from thought_core.provenance_diagnostics import (  # noqa: E402
     build_child_provenance_diagnostics,
 )
-from thought_core.server import create_server  # noqa: E402
+from thought_core.schema import TurnInput  # noqa: E402
+from thought_core.server import (  # noqa: E402
+    _decorate_assistant_event_with_conversation_attempt_ref,
+    _is_opaque_conversation_attempt_ref,
+    create_server,
+)
 
 
 class NoProviderChildProvenanceTests(unittest.TestCase):
+    def test_server_materializes_accepted_candidate_once_for_normal_and_stream_turns(
+        self,
+    ) -> None:
+        class RecordingLoop:
+            def __init__(self) -> None:
+                self.turns: list[TurnInput] = []
+
+            def run_dicts(self, turn, *, event_sink=None):
+                self.turns.append(turn)
+                events = [
+                    {
+                        "event_id": "evt_candidate_delta",
+                        "type": "assistant.speech_delta",
+                        "data": {
+                            "delta": "synthetic assistant delta",
+                            "conversation_attempt_ref": "injected:not_authoritative",
+                        },
+                    },
+                    {
+                        "event_id": "evt_candidate_message",
+                        "type": "assistant.message",
+                        "data": {
+                            "speech": "synthetic assistant response",
+                            "conversation_attempt_ref": "injected:not_authoritative",
+                        },
+                    },
+                    {
+                        "event_id": "evt_candidate_completed",
+                        "type": "turn.completed",
+                        "data": {"status": "success"},
+                    },
+                ]
+                if event_sink is not None:
+                    for event in events:
+                        event_sink(event)
+                return events
+
+        candidate = json.loads(
+            (
+                REPO_ROOT.parents[1]
+                / "contracts"
+                / "accepted_user_speech_candidate_input_gate"
+                / "examples"
+                / "source_static_accepted_private_user_speech_candidate.example.json"
+            ).read_text(encoding="utf-8")
+        )
+        payload = {
+            "accepted_user_speech_candidate": candidate,
+            "private_turn": {
+                "text": "synthetic private turn text",
+                "turn_id": "turn_candidate_server_001",
+                "session_id": "session_candidate_server_001",
+                "locale": "ja-JP",
+                "context_refs": {
+                    "conversation_attempt_ref": (
+                        "m4.prepared_sample_attempt:0123456789abcdef0123456789abcdef"
+                    ),
+                },
+            },
+        }
+        loop = RecordingLoop()
+        server = create_server("127.0.0.1", 0, thought_loop=loop)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            rendered_outputs = []
+            for suffix in ("/turn", "/turn/stream"):
+                with self.subTest(path=suffix):
+                    body = json.dumps(payload).encode("utf-8")
+                    req = request.Request(
+                        f"http://127.0.0.1:{port}{suffix}",
+                        data=body,
+                        method="POST",
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with request.urlopen(req, timeout=5) as response:
+                        self.assertEqual(response.status, 200)
+                        body = response.read().decode("utf-8")
+                    if suffix == "/turn":
+                        events = json.loads(body)["events"]
+                    else:
+                        events = [
+                            json.loads(line[6:])
+                            for line in body.splitlines()
+                            if line.startswith("data: ")
+                        ]
+                    rendered_outputs.append(json.dumps(events, ensure_ascii=False))
+                    for event in events:
+                        if event["type"].startswith("assistant."):
+                            self.assertEqual(
+                                event["data"]["conversation_attempt_ref"],
+                                "m4.prepared_sample_attempt:0123456789abcdef0123456789abcdef",
+                            )
+                        else:
+                            self.assertNotIn(
+                                "conversation_attempt_ref",
+                                event["data"],
+                            )
+
+            self.assertEqual(len(loop.turns), 2)
+            for turn in loop.turns:
+                self.assertIsInstance(turn, TurnInput)
+                self.assertEqual(turn.turn_id, "turn_candidate_server_001")
+                self.assertEqual(
+                    turn.context_refs["accepted_user_speech_candidate_ref"],
+                    candidate["candidate_id"],
+                )
+                self.assertEqual(
+                    turn.context_refs["conversation_attempt_ref"],
+                    "m4.prepared_sample_attempt:0123456789abcdef0123456789abcdef",
+                )
+            for output in rendered_outputs:
+                self.assertNotIn("synthetic private turn text", output)
+                self.assertNotIn("accepted_user_speech_candidate", output)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_conversation_attempt_ref_decorator_ignores_missing_invalid_and_plain_turns(
+        self,
+    ) -> None:
+        event = {"type": "assistant.message", "data": {"speech": "response"}}
+        non_assistant_event = {"type": "turn.completed", "data": {"status": "success"}}
+
+        missing = TurnInput(
+            text="private text",
+            turn_id="turn_missing_ref",
+            session_id="session_missing_ref",
+        )
+        invalid = TurnInput(
+            text="private text",
+            turn_id="turn_invalid_ref",
+            session_id="session_invalid_ref",
+            context_refs={"conversation_attempt_ref": "C:/private/path.wav"},
+        )
+
+        for turn in (missing, invalid, {"text": "ordinary turn"}):
+            with self.subTest(turn=type(turn).__name__):
+                injected_event = {
+                    "type": "assistant.message",
+                    "data": {
+                        "speech": "response",
+                        "conversation_attempt_ref": "injected:not_authoritative",
+                    },
+                }
+                self.assertNotIn(
+                    "conversation_attempt_ref",
+                    _decorate_assistant_event_with_conversation_attempt_ref(
+                        injected_event,
+                        turn,
+                    )[
+                        "data"
+                    ],
+                )
+        self.assertNotIn(
+            "conversation_attempt_ref",
+            _decorate_assistant_event_with_conversation_attempt_ref(
+                non_assistant_event,
+                TurnInput(
+                    text="private text",
+                    turn_id="turn_non_assistant",
+                    session_id="session_non_assistant",
+                    context_refs={
+                        "conversation_attempt_ref": (
+                            "m4.prepared_sample_attempt:0123456789abcdef0123456789abcdef"
+                        )
+                    },
+                ),
+            )["data"],
+        )
+
+    def test_conversation_attempt_ref_grammar_is_canonical_and_bounded(self) -> None:
+        valid = "m4.prepared_sample_attempt:0123456789abcdef0123456789abcdef"
+        invalid = (
+            "m4.prepared_sample_attempt0123456789abcdef0123456789abcdef",
+            "m4.prepared_sample_attempt:0123456789ABCDEF0123456789abcdef",
+            "m4.other_attempt:0123456789abcdef0123456789abcdef",
+            "m4.prepared_sample_attempt:0123456789abcdef0123456789abcde",
+            "m4.prepared_sample_attempt:0123456789abcdef0123456789abcdef/",
+        )
+
+        self.assertTrue(_is_opaque_conversation_attempt_ref(valid))
+        for value in invalid:
+            with self.subTest(value=value):
+                self.assertFalse(_is_opaque_conversation_attempt_ref(value))
+    def test_server_rejects_candidate_envelope_without_private_turn(self) -> None:
+        candidate = json.loads(
+            (
+                REPO_ROOT.parents[1]
+                / "contracts"
+                / "accepted_user_speech_candidate_input_gate"
+                / "examples"
+                / "source_static_accepted_private_user_speech_candidate.example.json"
+            ).read_text(encoding="utf-8")
+        )
+        server = create_server("127.0.0.1", 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            req = request.Request(
+                f"http://127.0.0.1:{port}/turn",
+                data=json.dumps({"accepted_user_speech_candidate": candidate}).encode(
+                    "utf-8"
+                ),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with self.assertRaises(request.HTTPError) as caught:
+                request.urlopen(req, timeout=5)
+            self.assertEqual(caught.exception.code, 400)
+            self.assertIn(
+                "private_turn must be an object",
+                caught.exception.read().decode("utf-8"),
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_launcher_helper_reports_env_import_override_without_raw_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

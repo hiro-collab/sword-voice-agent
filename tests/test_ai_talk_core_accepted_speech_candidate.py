@@ -1,116 +1,68 @@
-import sys
+from __future__ import annotations
+
+import json
+from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase
+
+from sword_voice_agent.adapters.ai_talk_core import (
+    ACCEPTED_USER_SPEECH_CANDIDATE_INPUT_GATE_SCHEMA,
+    AiTalkCoreHandoffError,
+    build_accepted_user_speech_turn_envelope,
+    load_accepted_user_speech_candidate_json,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core" / "src"
-sys.path.insert(0, str(THOUGHT_CORE_ROOT))
-
-from thought_core.schema import TurnInput  # noqa: E402
-
-from sword_voice_agent.adapters.ai_talk_core import (  # noqa: E402
-    ACCEPTED_USER_SPEECH_CANDIDATE_SCHEMA_VERSION,
-    AcceptedUserSpeechCandidate,
-    AiTalkCoreAcceptedSpeechCandidateError,
+CANONICAL_EXAMPLE = (
+    REPO_ROOT.parents[1]
+    / "contracts"
+    / "accepted_user_speech_candidate_input_gate"
+    / "examples"
+    / "source_static_accepted_private_user_speech_candidate.example.json"
 )
-from sword_voice_agent.adapters.thought_core import build_turn_payload  # noqa: E402
-
-
-ACCEPTED_CANDIDATE = {
-    "schema_version": ACCEPTED_USER_SPEECH_CANDIDATE_SCHEMA_VERSION,
-    "candidate_id": "speech_candidate_001",
-    "accepted_text": "電気をつけて",
-    "turn_id": "turn_audio_001",
-    "session_id": "living_room_main",
-    "locale": "ja-JP",
-    "source": "ai_talk_core",
-    "acceptance_status": "accepted",
-    "may_start_user_turn": True,
-    "turn_adoption_authority": True,
-    "raw_private_publication_flags": False,
-    "context_refs": {
-        "recognition_summary": "safe_ref_recognition_001",
-        "prepared_sample": "safe_ref_sample_001",
-    },
-}
 
 
 class AiTalkCoreAcceptedSpeechCandidateTest(TestCase):
-    def test_accepted_candidate_materializes_plain_thought_core_turn(self) -> None:
-        candidate = AcceptedUserSpeechCandidate.from_mapping(ACCEPTED_CANDIDATE)
-
-        request = candidate.to_agent_request(user="operator")
-        payload = build_turn_payload(request)
-        turn = TurnInput.from_mapping(payload)
-
-        self.assertEqual(turn.text, "電気をつけて")
-        self.assertEqual(turn.turn_id, "turn_audio_001")
-        self.assertEqual(turn.session_id, "living_room_main")
-        self.assertEqual(turn.locale, "ja-JP")
-        self.assertEqual(
-            turn.context_refs["accepted_user_speech_candidate_ref"],
-            "speech_candidate_001",
+    def test_builds_canonical_candidate_with_separate_private_turn(self) -> None:
+        candidate = json.loads(CANONICAL_EXAMPLE.read_text(encoding="utf-8"))
+        envelope = build_accepted_user_speech_turn_envelope(
+            candidate,
+            {
+                "text": "synthetic private user speech",
+                "turn_id": "turn_audio_001",
+                "session_id": "living_room_main",
+                "locale": "ja-JP",
+                "context_refs": {"conversation_attempt_ref": "attempt:opaque_001"},
+            },
         )
 
-    def test_redacted_summary_without_accepted_text_is_not_a_turn(self) -> None:
-        payload = {
-            "schema_version": ACCEPTED_USER_SPEECH_CANDIDATE_SCHEMA_VERSION,
-            "candidate_id": "speech_candidate_001",
-            "turn_id": "turn_audio_001",
-            "session_id": "living_room_main",
-            "acceptance_status": "accepted",
-            "may_start_user_turn": True,
-            "turn_adoption_authority": True,
-            "raw_private_publication_flags": False,
-            "recognition_summary_class": "stable_browser_stt_summary_only",
-        }
+        self.assertEqual(
+            envelope["accepted_user_speech_candidate"]["schema_version"],
+            ACCEPTED_USER_SPEECH_CANDIDATE_INPUT_GATE_SCHEMA,
+        )
+        self.assertNotIn("text", envelope["accepted_user_speech_candidate"])
+        self.assertEqual(envelope["private_turn"]["turn_id"], "turn_audio_001")
 
-        with self.assertRaises(AiTalkCoreAcceptedSpeechCandidateError):
-            AcceptedUserSpeechCandidate.from_mapping(payload)
+    def test_rejects_noncanonical_candidate_schema(self) -> None:
+        with self.assertRaises(AiTalkCoreHandoffError):
+            build_accepted_user_speech_turn_envelope(
+                {"schema_version": "unsupported_candidate_schema.v0"},
+                {"text": "synthetic private user speech"},
+            )
 
-    def test_pending_candidate_gate_cannot_materialize_turn(self) -> None:
-        payload = {
-            **ACCEPTED_CANDIDATE,
-            "self_output_gate_decision": "candidate_user_turn_needs_ai_talk_core_acceptance",
-        }
+    def test_loader_rejects_noncanonical_candidate_schema(self) -> None:
+        with temporary_json_file(
+            {"schema_version": "unsupported_candidate_schema.v0"}
+        ) as path:
+            with self.assertRaises(AiTalkCoreHandoffError):
+                load_accepted_user_speech_candidate_json(path)
 
-        with self.assertRaises(AiTalkCoreAcceptedSpeechCandidateError):
-            AcceptedUserSpeechCandidate.from_mapping(payload)
 
-    def test_missing_turn_authority_cannot_materialize_turn(self) -> None:
-        payload = {
-            **ACCEPTED_CANDIDATE,
-            "turn_adoption_authority": False,
-        }
-
-        with self.assertRaises(AiTalkCoreAcceptedSpeechCandidateError):
-            AcceptedUserSpeechCandidate.from_mapping(payload)
-
-    def test_raw_private_candidate_cannot_materialize_turn(self) -> None:
-        payload = {
-            **ACCEPTED_CANDIDATE,
-            "raw_private_publication_flags": True,
-        }
-
-        with self.assertRaises(AiTalkCoreAcceptedSpeechCandidateError):
-            AcceptedUserSpeechCandidate.from_mapping(payload)
-
-    def test_missing_raw_private_flag_cannot_materialize_turn(self) -> None:
-        payload = {
-            key: value
-            for key, value in ACCEPTED_CANDIDATE.items()
-            if key != "raw_private_publication_flags"
-        }
-
-        with self.assertRaises(AiTalkCoreAcceptedSpeechCandidateError):
-            AcceptedUserSpeechCandidate.from_mapping(payload)
-
-    def test_non_false_raw_private_flag_cannot_materialize_turn(self) -> None:
-        payload = {
-            **ACCEPTED_CANDIDATE,
-            "raw_private_publication_flags": "false",
-        }
-
-        with self.assertRaises(AiTalkCoreAcceptedSpeechCandidateError):
-            AcceptedUserSpeechCandidate.from_mapping(payload)
+@contextmanager
+def temporary_json_file(payload):
+    with TemporaryDirectory() as tmp:
+        path = Path(tmp) / "candidate.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        yield path

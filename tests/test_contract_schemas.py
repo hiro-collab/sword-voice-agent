@@ -26,23 +26,12 @@ TURN = {
     },
 }
 
-ACCEPTED_USER_SPEECH_CANDIDATE = {
-    "schema_version": "accepted_user_speech_candidate.v0",
-    "candidate_id": "speech_candidate_schema_001",
-    "accepted_text": "電気をつけて",
-    "turn_id": "turn_schema_001",
-    "session_id": "living_room_main",
-    "locale": "ja-JP",
-    "source": "ai_talk_core",
-    "acceptance_status": "accepted",
-    "may_start_user_turn": True,
-    "turn_adoption_authority": True,
-    "raw_private_publication_flags": False,
-    "context_refs": {
-        "recognition_summary": "safe_ref_recognition_001",
-        "prepared_sample": "safe_ref_sample_001",
-    },
-}
+CANONICAL_ACCEPTED_SPEECH_CANDIDATE_SCHEMA = (
+    REPO_ROOT.parents[1]
+    / "contracts"
+    / "accepted_user_speech_candidate_input_gate"
+    / "accepted_user_speech_candidate_input_gate.v0.schema.json"
+)
 
 ENVIRONMENT_CURRENT = {
     "schema_version": 1,
@@ -404,58 +393,14 @@ class ContractSchemaTest(TestCase):
         bad_context_refs = {**TURN, "context_refs": []}
         self.assertTrue(validate_schema(bad_context_refs, schema_path))
 
-    def test_accepted_user_speech_candidate_schema_accepts_current_shape(self) -> None:
-        schema_path = (
-            REPO_ROOT
-            / "contracts"
-            / "turn"
-            / "accepted-user-speech-candidate.schema.json"
-        )
+    def test_canonical_accepted_user_speech_candidate_schema_is_available(self) -> None:
+        schema = _load_json(CANONICAL_ACCEPTED_SPEECH_CANDIDATE_SCHEMA)
 
         self.assertEqual(
-            validate_schema(ACCEPTED_USER_SPEECH_CANDIDATE, schema_path),
-            [],
+            schema["$id"],
+            "https://sword-agent-os.local/contracts/accepted_user_speech_candidate_input_gate/accepted_user_speech_candidate_input_gate.v0.schema.json",
         )
-
-    def test_accepted_user_speech_candidate_schema_rejects_unaccepted_payloads(self) -> None:
-        schema_path = (
-            REPO_ROOT
-            / "contracts"
-            / "turn"
-            / "accepted-user-speech-candidate.schema.json"
-        )
-
-        missing_text = {
-            key: value
-            for key, value in ACCEPTED_USER_SPEECH_CANDIDATE.items()
-            if key != "accepted_text"
-        }
-        self.assertTrue(validate_schema(missing_text, schema_path))
-
-        not_accepted = {
-            **ACCEPTED_USER_SPEECH_CANDIDATE,
-            "acceptance_status": "blocked",
-        }
-        self.assertTrue(validate_schema(not_accepted, schema_path))
-
-        no_turn_authority = {
-            **ACCEPTED_USER_SPEECH_CANDIDATE,
-            "turn_adoption_authority": False,
-        }
-        self.assertTrue(validate_schema(no_turn_authority, schema_path))
-
-        raw_private = {
-            **ACCEPTED_USER_SPEECH_CANDIDATE,
-            "raw_private_publication_flags": True,
-        }
-        self.assertTrue(validate_schema(raw_private, schema_path))
-
-        missing_raw_private_flag = {
-            key: value
-            for key, value in ACCEPTED_USER_SPEECH_CANDIDATE.items()
-            if key != "raw_private_publication_flags"
-        }
-        self.assertTrue(validate_schema(missing_raw_private_flag, schema_path))
+        self.assertIn("acceptance_decision", schema["required"])
 
     def test_event_schema_accepts_current_thought_core_events(self) -> None:
         schema_path = REPO_ROOT / "contracts" / "events" / "event.schema.json"

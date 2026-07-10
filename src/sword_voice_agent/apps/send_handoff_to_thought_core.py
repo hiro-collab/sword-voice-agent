@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from typing import Any
+from typing import Any, Mapping
 
 from sword_voice_agent.adapters.ai_talk_core import (
     AiTalkCoreHandoffError,
+    build_accepted_user_speech_turn_envelope,
+    load_accepted_user_speech_candidate_json,
     load_handoff_from_root,
     load_handoff_json,
+    load_private_turn_json,
 )
 from sword_voice_agent.adapters.thought_core import (
     ThoughtCoreClient,
@@ -38,6 +41,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--handoff-text",
         default=os.environ.get("AI_TALK_CORE_HANDOFF_TEXT", ""),
         help="Optional path to a saved ai_talk_core handoff prompt text file.",
+    )
+    parser.add_argument(
+        "--accepted-speech-candidate-json",
+        default=os.environ.get("ACCEPTED_USER_SPEECH_CANDIDATE_JSON", ""),
+        help="Path to a canonical accepted-user-speech candidate JSON file.",
+    )
+    parser.add_argument(
+        "--private-turn-json",
+        default=os.environ.get("THOUGHT_CORE_PRIVATE_TURN_JSON", ""),
+        help="Path to the separate private Thought Core turn JSON file.",
     )
     parser.add_argument("--source", default="web")
     parser.add_argument(
@@ -159,6 +172,9 @@ def parse_key_value_pairs(pairs: list[str], *, label: str) -> dict[str, str]:
 
 
 def build_result(args: argparse.Namespace) -> dict[str, Any]:
+    if args.accepted_speech_candidate_json or args.private_turn_json:
+        return build_accepted_speech_candidate_result(args)
+
     context = parse_key_value_pairs(args.context, label="context")
     context_refs = parse_key_value_pairs(args.context_ref, label="context-ref")
     if context_refs:
@@ -205,6 +221,76 @@ def build_result(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def build_accepted_speech_candidate_result(args: argparse.Namespace) -> dict[str, Any]:
+    if not args.accepted_speech_candidate_json or not args.private_turn_json:
+        raise AiTalkCoreHandoffError(
+            "accepted speech candidate and private turn JSON are both required"
+        )
+    validate_path_argument(
+        args.accepted_speech_candidate_json,
+        "--accepted-speech-candidate-json",
+    )
+    validate_path_argument(args.private_turn_json, "--private-turn-json")
+    candidate = load_accepted_user_speech_candidate_json(
+        args.accepted_speech_candidate_json
+    )
+    private_turn = load_private_turn_json(args.private_turn_json)
+    return {
+        "request": accepted_speech_request_summary(candidate, private_turn),
+        "turn_payload": build_accepted_user_speech_turn_envelope(
+            candidate,
+            private_turn,
+        ),
+        **accepted_speech_source_static_rows(),
+        "events": [],
+        "response": None,
+    }
+
+
+def accepted_speech_request_summary(
+    candidate: Mapping[str, Any],
+    private_turn: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "source": "ai_talk_core",
+        "handoff_field": "accepted_user_speech_candidate_input_gate",
+        "candidate_id": candidate.get("candidate_id"),
+        "turn_id": private_turn.get("turn_id"),
+        "session_id": private_turn.get("session_id"),
+    }
+
+
+def accepted_speech_source_static_rows() -> dict[str, Any]:
+    return {
+        "input_gate_class": (
+            "contract_declared_accepted_user_speech_candidate_not_runtime_observed"
+        ),
+        "thought_core_turninput_count": None,
+        "turn_materialization_class": "not_observed_source_static",
+        "assistant_response_class": "not_observed_source_static",
+    }
+
+
+def output_safe_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Project accepted-speech envelopes without publishing their private payload."""
+    turn_payload = result.get("turn_payload")
+    if not isinstance(turn_payload, Mapping) or not {
+        "accepted_user_speech_candidate",
+        "private_turn",
+    }.issubset(turn_payload):
+        return dict(result)
+
+    projection: dict[str, Any] = {
+        "accepted_speech_candidate_present": True,
+        "private_turn_present": True,
+        **accepted_speech_source_static_rows(),
+    }
+    for key in ("skipped", "skip_reason"):
+        if key in result:
+            projection[key] = result[key]
+    return projection
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     result = build_result(args)
     if args.dry_run:
@@ -229,7 +315,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     result["events"] = events
     result["response"] = response.to_dict()
     if status_writer is not None:
-        status_writer.finish(result)
+        status_writer.finish(output_safe_result(result))
     return result
 
 
@@ -257,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.print_json or args.dry_run:
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(output_safe_result(result), ensure_ascii=False, indent=2))
         return 0
 
     response = result.get("response")

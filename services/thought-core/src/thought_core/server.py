@@ -7,21 +7,80 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 
 from .event_journal import journal_from_env
 from .loop import ThoughtLoop
 from .provenance_diagnostics import build_child_provenance_diagnostics
+from .schema import TurnInput
 
 DEFAULT_MAX_BODY_BYTES = 64 * 1024
+
+_ACCEPTED_SPEECH_ENVELOPE_KEYS = {
+    "accepted_user_speech_candidate",
+    "private_turn",
+}
+_OPAQUE_CONVERSATION_ATTEMPT_REF = re.compile(
+    r"^m4\.prepared_sample_attempt:[0-9a-f]{32}$"
+)
 
 
 class RequestBodyTooLarge(ValueError):
     pass
+
+
+def materialize_turn_input(payload: Mapping[str, Any]) -> TurnInput | Mapping[str, Any]:
+    """Materialize the one allowed accepted-speech envelope before the loop."""
+
+    candidate = payload.get("accepted_user_speech_candidate")
+    private_turn = payload.get("private_turn")
+    if candidate is None:
+        if private_turn is not None:
+            raise ValueError("private_turn requires accepted_user_speech_candidate")
+        return payload
+
+    unexpected = set(payload) - _ACCEPTED_SPEECH_ENVELOPE_KEYS
+    if unexpected:
+        raise ValueError("accepted speech envelope contains unexpected fields")
+    if not isinstance(candidate, Mapping):
+        raise ValueError("accepted_user_speech_candidate must be an object")
+    if not isinstance(private_turn, Mapping):
+        raise ValueError("private_turn must be an object")
+    return TurnInput.from_accepted_speech_candidate(candidate, private_turn)
+
+
+def _decorate_assistant_event_with_conversation_attempt_ref(
+    event: dict[str, Any],
+    turn: TurnInput | Mapping[str, Any],
+) -> dict[str, Any]:
+    """Attach the one opaque accepted-speech join ref at the HTTP boundary."""
+    event_type = event.get("type")
+    if not isinstance(event_type, str) or not event_type.startswith("assistant."):
+        return event
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return event
+    decorated = dict(event)
+    decorated_data = dict(data)
+    decorated_data.pop("conversation_attempt_ref", None)
+    if isinstance(turn, TurnInput):
+        ref = turn.context_refs.get("conversation_attempt_ref")
+        if _is_opaque_conversation_attempt_ref(ref):
+            decorated_data["conversation_attempt_ref"] = ref
+    decorated["data"] = decorated_data
+    return decorated
+
+
+def _is_opaque_conversation_attempt_ref(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and _OPAQUE_CONVERSATION_ATTEMPT_REF.fullmatch(value) is not None
+    )
 
 
 def create_server(
@@ -192,7 +251,11 @@ def create_server(
                 self._send_sse_live(payload)
                 return
             try:
-                events = loop.run_dicts(payload)
+                turn = materialize_turn_input(payload)
+                events = [
+                    _decorate_assistant_event_with_conversation_attempt_ref(event, turn)
+                    for event in loop.run_dicts(turn)
+                ]
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
@@ -250,12 +313,19 @@ def create_server(
             self.send_header("Connection", "close")
             self.end_headers()
 
+            turn: TurnInput | Mapping[str, Any] = payload
+
             def write_event(event: dict[str, Any]) -> None:
+                event = _decorate_assistant_event_with_conversation_attempt_ref(
+                    event,
+                    turn,
+                )
                 _write_journal_event_safely(event_journal, event)
                 self._write_sse_event(event)
 
             try:
-                loop.run_dicts(payload, event_sink=write_event)
+                turn = materialize_turn_input(payload)
+                loop.run_dicts(turn, event_sink=write_event)
             except ValueError as exc:
                 write_event(
                     _error_event(

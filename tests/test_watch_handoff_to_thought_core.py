@@ -11,6 +11,7 @@ from sword_voice_agent.adapters.status_store import StatusStore
 from sword_voice_agent.adapters.thought_core import ThoughtCoreStreamEvent
 from sword_voice_agent.apps.watch_handoff_to_thought_core import (
     HandoffSignature,
+    NO_SPEECH_PLACEHOLDER,
     ThoughtCoreAituberForwarder,
     build_parser,
     default_auto_review_pending,
@@ -18,10 +19,12 @@ from sword_voice_agent.apps.watch_handoff_to_thought_core import (
     format_watch_start_message,
     handoff_signature,
     pending_action_review,
+    print_result,
     result_module_detail,
     resolve_handoff_json_path,
     run_pending_action_reviews,
     run_once,
+    turn_id_from_result,
     watcher_module_detail,
     write_watcher_module_status,
 )
@@ -142,7 +145,203 @@ class PendingReviewThoughtCoreClient:
         )
 
 
+class CandidateThoughtCoreClient:
+    def __init__(self) -> None:
+        self.turn_payloads = []
+
+    def send_turn_streaming(self, turn_payload, *, on_event=None):
+        self.turn_payloads.append(turn_payload)
+        private_turn = turn_payload["private_turn"]
+        event = ThoughtCoreStreamEvent(
+            event_type="assistant.message",
+            turn_id=private_turn["turn_id"],
+            session_id=private_turn["session_id"],
+            seq=1,
+            data={"speech": "了解です"},
+            elapsed_s=0.1,
+        )
+        if on_event is not None:
+            on_event(event)
+        return AgentResponse(
+            text="了解です",
+            conversation_id=private_turn["turn_id"],
+            raw={"status": "success"},
+        )
+
+
 class WatchHandoffToThoughtCoreTest(TestCase):
+    def test_run_once_forwards_canonical_candidate_envelope(self) -> None:
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            candidate_path = root / "candidate.json"
+            private_turn_path = root / "private-turn.json"
+            candidate_path.write_text(
+                (
+                    Path(__file__).resolve().parents[3]
+                    / "contracts"
+                    / "accepted_user_speech_candidate_input_gate"
+                    / "examples"
+                    / "source_static_accepted_private_user_speech_candidate.example.json"
+                ).read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            private_turn_path.write_text(
+                json.dumps(
+                    {
+                        "text": "synthetic private user speech",
+                        "turn_id": "turn_candidate_watch_001",
+                        "session_id": "session_candidate_watch_001",
+                        "locale": "ja-JP",
+                        "context_refs": {
+                            "conversation_attempt_ref": "attempt:opaque_watch_001",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            client = CandidateThoughtCoreClient()
+            args = build_parser().parse_args(
+                [
+                    "--accepted-speech-candidate-json",
+                    str(candidate_path),
+                    "--private-turn-json",
+                    str(private_turn_path),
+                    "--status-dir",
+                    "",
+                ]
+            )
+
+            result = run_once(args, client=client)
+
+        self.assertFalse(result["skipped"])
+        self.assertEqual(len(client.turn_payloads), 1)
+        self.assertIn("accepted_user_speech_candidate", client.turn_payloads[0])
+        self.assertEqual(turn_id_from_result(result), "turn_candidate_watch_001")
+
+    def test_candidate_envelope_bypasses_legacy_no_speech_placeholder_skip(self) -> None:
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            candidate_path = root / "candidate.json"
+            private_turn_path = root / "private-turn.json"
+            candidate_path.write_text(
+                (
+                    Path(__file__).resolve().parents[3]
+                    / "contracts"
+                    / "accepted_user_speech_candidate_input_gate"
+                    / "examples"
+                    / "source_static_accepted_private_user_speech_candidate.example.json"
+                ).read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            private_turn_path.write_text(
+                json.dumps(
+                    {
+                        "text": NO_SPEECH_PLACEHOLDER,
+                        "turn_id": "turn_candidate_watch_placeholder_001",
+                        "session_id": "session_candidate_watch_placeholder_001",
+                        "locale": "ja-JP",
+                        "context_refs": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            client = CandidateThoughtCoreClient()
+            args = build_parser().parse_args(
+                [
+                    "--accepted-speech-candidate-json",
+                    str(candidate_path),
+                    "--private-turn-json",
+                    str(private_turn_path),
+                    "--status-dir",
+                    "",
+                ]
+            )
+
+            result = run_once(args, client=client)
+
+        self.assertFalse(result["skipped"])
+        self.assertEqual(len(client.turn_payloads), 1)
+        self.assertEqual(
+            client.turn_payloads[0]["private_turn"]["text"],
+            NO_SPEECH_PLACEHOLDER,
+        )
+
+    def test_candidate_result_outputs_are_projected_before_print_persist_and_status(self) -> None:
+        private_marker = "private-marker-keep-private"
+        candidate_marker = "candidate-marker-keep-private"
+        source_path_marker = "C:/private/source-path-marker.wav"
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            candidate_path = root / "candidate.json"
+            private_turn_path = root / "private-turn.json"
+            candidate = json.loads(
+                (
+                    Path(__file__).resolve().parents[3]
+                    / "contracts"
+                    / "accepted_user_speech_candidate_input_gate"
+                    / "examples"
+                    / "source_static_accepted_prepared_sample_candidate.example.json"
+                ).read_text(encoding="utf-8")
+            )
+            candidate["text_publication"]["expected_sample_text"] = candidate_marker
+            candidate["text_publication"]["recognized_text"] = candidate_marker
+            candidate["text_publication"]["content_match_text"] = candidate_marker
+            candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+            private_turn_path.write_text(
+                json.dumps(
+                    {
+                        "text": private_marker,
+                        "turn_id": "turn_candidate_watch_projection_001",
+                        "session_id": "session_candidate_watch_projection_001",
+                        "locale": "ja-JP",
+                        "context_refs": {"source_path": source_path_marker},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            status_dir = root / ".cache" / "sword_voice_agent"
+            output_json = root / "result.json"
+            args = build_parser().parse_args(
+                [
+                    "--accepted-speech-candidate-json",
+                    str(candidate_path),
+                    "--private-turn-json",
+                    str(private_turn_path),
+                    "--status-dir",
+                    str(status_dir),
+                    "--output-json",
+                    str(output_json),
+                    "--print-json",
+                ]
+            )
+
+            result = run_once(args, client=CandidateThoughtCoreClient())
+            with patch("builtins.print") as print_mock:
+                print_result(args, result)
+
+            print_output = str(print_mock.call_args.args[0])
+            persisted_output = output_json.read_text(encoding="utf-8")
+            status_output = (status_dir / "latest_thought_core_response.json").read_text(
+                encoding="utf-8"
+            )
+
+        for output in (print_output, persisted_output, status_output):
+            for marker in (private_marker, candidate_marker, source_path_marker):
+                self.assertNotIn(marker, output)
+            projected = json.loads(output)
+            self.assertEqual(
+                projected["input_gate_class"],
+                "contract_declared_accepted_user_speech_candidate_not_runtime_observed",
+            )
+            self.assertIsNone(projected["thought_core_turninput_count"])
+            self.assertEqual(
+                projected["turn_materialization_class"],
+                "not_observed_source_static",
+            )
+            self.assertEqual(
+                projected["assistant_response_class"], "not_observed_source_static"
+            )
+
     def test_run_once_sends_and_persists_thought_core_result(self) -> None:
         with workspace_tempdir() as tmp:
             root = Path(tmp)
