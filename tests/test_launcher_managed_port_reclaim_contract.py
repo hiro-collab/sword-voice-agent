@@ -418,6 +418,105 @@ exit $LASTEXITCODE
             env={**self.test_environment, **(extra_environment or {})},
         )
 
+    def start_managed_camera_tree_fixture(self, *, port: int) -> tuple[subprocess.Popen[str], list[dict]]:
+        self.vsp_fixture_started = True
+        fixture_script = self.root / "managed_camera_tree_fixture.py"
+        fixture_script.write_text(
+            """from __future__ import annotations
+import argparse
+import socket
+import subprocess
+import sys
+import time
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--stage', choices=('root', 'parent', 'listener'), required=True)
+parser.add_argument('--port', type=int, required=True)
+parser.add_argument('--fixture-owner', required=True)
+args = parser.parse_args()
+base = [sys.executable, __file__, '--port', str(args.port), '--fixture-owner', args.fixture_owner]
+if args.stage == 'root':
+    subprocess.Popen([*base, '--stage', 'parent'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(60)
+elif args.stage == 'parent':
+    subprocess.Popen([*base, '--stage', 'listener'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(60)
+else:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(('127.0.0.1', args.port))
+    listener.listen()
+    try:
+        while True:
+            connection, _ = listener.accept()
+            connection.close()
+    finally:
+        listener.close()
+""",
+            encoding="utf-8",
+        )
+        root = subprocess.Popen(
+            [
+                getattr(sys, "_base_executable", sys.executable),
+                str(fixture_script),
+                "--stage",
+                "root",
+                "--port",
+                str(port),
+                "--fixture-owner",
+                self.root.name,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.children.append(root)
+        wait_for(lambda: port_is_listening(port), timeout=8)
+        inspect_script = f"""
+$rootPid = {root.pid}
+$listenerPid = [int](@(Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess -Unique)[0])
+$rows = @()
+$cursor = $listenerPid
+for ($depth = 0; $depth -lt 8 -and $cursor -gt 0; $depth++) {{
+  $runtime = Get-Process -Id $cursor -ErrorAction Stop
+  $identity = Get-CimInstance Win32_Process -Filter "ProcessId = $cursor" -ErrorAction Stop
+  $rows += [pscustomobject]@{{ pid=[int]$cursor; parent_pid=[int]$identity.ParentProcessId; started_at=([DateTimeOffset]$runtime.StartTime).ToString('o') }}
+  if ($cursor -eq $rootPid) {{ break }}
+  $cursor = [int]$identity.ParentProcessId
+}}
+$rows | ConvertTo-Json -Depth 4 -Compress
+"""
+        result = subprocess.run(
+            [POWERSHELL, "-NoLogo", "-NoProfile", "-Command", inspect_script],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        if result.returncode != 0:
+            raise AssertionError("managed_camera_tree_fixture_inspection_failed")
+        parsed = json.loads(result.stdout)
+        lineage = parsed if isinstance(parsed, list) else [parsed]
+        if not lineage or int(lineage[-1]["pid"]) != root.pid:
+            raise AssertionError("managed_camera_tree_fixture_lineage_incomplete")
+        self.vsp_fixture_pids.update(int(row["pid"]) for row in lineage)
+        child_process_file = self.state_dir / "modules" / "camera-hub" / "processes.json"
+        child_process_file.parent.mkdir(parents=True, exist_ok=True)
+        child_process_file.write_text(
+            json.dumps({"processes": lineage[:-1]}), encoding="utf-8"
+        )
+        self.write_pid_state(
+            {
+                "name": "camera-hub-tree-fixture",
+                "pid": root.pid,
+                "started_at": lineage[-1]["started_at"],
+                "stop_strategy": "managed_tree",
+                "allowed_process_names": ["python"],
+                "child_process_file": str(child_process_file),
+            },
+            schema_version=3,
+        )
+        return root, lineage
+
     def start_vsp_orphan_fixture(self, *, port: int) -> subprocess.Popen[str]:
         self.vsp_fixture_started = True
         for relative_path in (
@@ -936,6 +1035,123 @@ class LauncherManagedPortReclaimContractTest(unittest.TestCase):
             self.assertEqual(
                 payload["stopVerification"]["aliveRecorded"][0]["pid"], child.pid)
             self.assertIsNone(child.poll())
+
+    def test_camera_hub_managed_tree_stops_deepest_descendants_before_root(self) -> None:
+        with LauncherFixture(
+            {"HOME_CONTROL_STACK_STOP_TEST_ROOT_FIRST_TARGETS": "true"}
+        ) as fixture:
+            port = unused_loopback_port()
+            root, lineage = fixture.start_managed_camera_tree_fixture(port=port)
+            unrelated_python = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            fixture.children.append(unrelated_python)
+
+            result = fixture.stop_partial_stack()
+
+            output = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, output)
+            for row in lineage:
+                wait_for(
+                    lambda pid=int(row["pid"]): subprocess.run(
+                        [
+                            POWERSHELL,
+                            "-NoLogo",
+                            "-NoProfile",
+                            "-Command",
+                            f"exit [int]($null -ne (Get-Process -Id {pid} -ErrorAction SilentlyContinue))",
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=5,
+                    ).returncode
+                    == 0
+                )
+            root_marker = f"stopped PID {root.pid} "
+            listener_marker = f"stopped PID {int(lineage[0]['pid'])} "
+            self.assertIn(listener_marker, output, output)
+            if root_marker in output:
+                self.assertLess(output.index(listener_marker), output.index(root_marker))
+            self.assertFalse(port_is_listening(port))
+            self.assertFalse((fixture.state_dir / "pids.json").exists())
+            self.assertIsNone(unrelated_python.poll())
+
+    def test_camera_hub_managed_tree_retains_registry_when_revalidation_refuses_targets(self) -> None:
+        with LauncherFixture() as fixture:
+            port = unused_loopback_port()
+            root, lineage = fixture.start_managed_camera_tree_fixture(port=port)
+            unrelated_python = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            fixture.children.append(unrelated_python)
+
+            result = fixture.stop_partial_stack(
+                {"HOME_CONTROL_STACK_STOP_TEST_REVALIDATE_FAILURE": "true"}
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("stop incomplete", (result.stdout + result.stderr).lower())
+            self.assertTrue(port_is_listening(port))
+            self.assertTrue((fixture.state_dir / "pids.json").exists())
+            self.assertIsNone(root.poll())
+            self.assertTrue(
+                all(
+                    subprocess.run(
+                        [
+                            POWERSHELL,
+                            "-NoLogo",
+                            "-NoProfile",
+                            "-Command",
+                            f"exit [int]($null -ne (Get-Process -Id {int(row['pid'])} -ErrorAction SilentlyContinue))",
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=5,
+                    ).returncode
+                    == 1
+                    for row in lineage
+                )
+            )
+            self.assertIsNone(unrelated_python.poll())
+
+    def test_camera_hub_managed_tree_retains_snapshot_depth_when_current_tree_omits_listener(self) -> None:
+        with LauncherFixture() as fixture:
+            port = unused_loopback_port()
+            _, lineage = fixture.start_managed_camera_tree_fixture(port=port)
+            listener_pid = int(lineage[0]["pid"])
+            unrelated_python = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            fixture.children.append(unrelated_python)
+
+            result = fixture.stop_partial_stack(
+                {
+                    "HOME_CONTROL_STACK_STOP_TEST_OMIT_CURRENT_DESCENDANT_PID": str(
+                        listener_pid
+                    )
+                }
+            )
+
+            output = result.stdout + result.stderr
+            omitted_marker = (
+                f"skipped PID {listener_pid} (no longer a current registry-root descendant)"
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(omitted_marker, output)
+            self.assertIn("stopped PID ", output)
+            self.assertLess(output.index(omitted_marker), output.index("stopped PID "))
+            self.assertTrue(port_is_listening(port))
+            self.assertTrue((fixture.state_dir / "pids.json").exists())
+            self.assertIsNone(unrelated_python.poll())
 
     def test_stop_accepts_final_quiescence_after_shutdown_script_nonzero(self) -> None:
         with LauncherFixture(

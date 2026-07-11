@@ -113,24 +113,46 @@ function ConvertTo-StringArray {
     return @($Value | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 }
 
-function Get-DescendantProcessIds {
+function Get-DescendantProcessPlan {
     param([Parameter(Mandatory = $true)][int]$RootProcessId)
     $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
-    $queue = [System.Collections.Generic.Queue[int]]::new()
+    $queue = [System.Collections.Generic.Queue[object]]::new()
     $seen = [System.Collections.Generic.HashSet[int]]::new()
     if ($seen.Add($RootProcessId)) {
-        $queue.Enqueue($RootProcessId)
+        $queue.Enqueue([pscustomobject]@{ ProcessId = $RootProcessId; Depth = 0 })
     }
+    $plan = @()
     while ($queue.Count -gt 0) {
         $parent = $queue.Dequeue()
-        foreach ($child in @($all | Where-Object { [int]$_.ParentProcessId -eq $parent })) {
+        $plan += $parent
+        foreach ($child in @($all | Where-Object { [int]$_.ParentProcessId -eq [int]$parent.ProcessId })) {
             $childPid = [int]$child.ProcessId
             if ($seen.Add($childPid)) {
-                $queue.Enqueue($childPid)
+                $queue.Enqueue([pscustomobject]@{
+                    ProcessId = $childPid
+                    Depth = ([int]$parent.Depth + 1)
+                })
             }
         }
     }
-    return @($seen)
+    return @($plan)
+}
+
+function Get-DescendantProcessIds {
+    param([Parameter(Mandatory = $true)][int]$RootProcessId)
+    $processIds = @(Get-DescendantProcessPlan -RootProcessId $RootProcessId | ForEach-Object { [int]$_.ProcessId })
+    $testOmittedPid = 0
+    if (
+        $env:NODE_ENV -eq "test" -and
+        [int]::TryParse(
+            [string]$env:HOME_CONTROL_STACK_STOP_TEST_OMIT_CURRENT_DESCENDANT_PID,
+            [ref]$testOmittedPid
+        ) -and
+        $testOmittedPid -gt 0
+    ) {
+        return @($processIds | Where-Object { $_ -ne $testOmittedPid })
+    }
+    return $processIds
 }
 
 function Test-ProcessStartTimeMatches {
@@ -286,7 +308,7 @@ function Test-SealedDescendantListenerRecordShape {
     return $stopStrategy -ceq "role_scoped_descendant"
 }
 
-function Get-ManagedTargetPids {
+function Get-ManagedTargetPlan {
     param(
         [Parameter(Mandatory = $true)][object]$Entry,
         [int]$RegistrySchemaVersion = 0
@@ -311,7 +333,10 @@ function Get-ManagedTargetPids {
             -RequiredOwnershipClass $ownershipClass `
             -SimulateInspectionFailure:$inspectionFailure
         if ($validation.Valid) {
-            return @([int](Get-ObjectProperty -Object $Entry -Name "pid" -Default 0))
+            return @([pscustomobject]@{
+                ProcessId = [int](Get-ObjectProperty -Object $Entry -Name "pid" -Default 0)
+                Depth = 0
+            })
         }
         Write-Host "Sealed descendant listener ownership unavailable: $($validation.Reason)"
         return @()
@@ -320,7 +345,6 @@ function Get-ManagedTargetPids {
         Write-Host "Sealed descendant listener ownership unavailable: class_invalid"
         return @()
     }
-    $targetIds = @()
     $rootPid = [int](Get-ObjectProperty -Object $Entry -Name "pid" -Default 0)
     $rootProcess = if ($rootPid -gt 0) { Get-Process -Id $rootPid -ErrorAction SilentlyContinue } else { $null }
     if ($null -eq $rootProcess) {
@@ -332,15 +356,33 @@ function Get-ManagedTargetPids {
         (Test-ProcessNameAllowed -ProcessName ([string]$rootProcess.ProcessName) -AllowedProcessNames $allowedNames) -and
         (Test-ProcessStartTimeMatches -Process $rootProcess -RecordedAt $startedAt)
     ) {
-        $targetIds += Get-DescendantProcessIds -RootProcessId $rootPid
+        $targetPlan = @(Get-DescendantProcessPlan -RootProcessId $rootPid)
     }
     else {
         Write-Host "skipped root PID $rootPid $($rootProcess.ProcessName) (not an owned registry root)"
         return @()
     }
     $childProcessFile = [string](Get-ObjectProperty -Object $Entry -Name "child_process_file" -Default "")
-    $targetIds += Read-ChildProcessIds -Path $childProcessFile
-    return @($targetIds | Sort-Object -Unique -Descending)
+    $depthByPid = @{}
+    foreach ($plannedTarget in $targetPlan) {
+        $depthByPid[[int]$plannedTarget.ProcessId] = [int]$plannedTarget.Depth
+    }
+    foreach ($childPid in @(Read-ChildProcessIds -Path $childProcessFile)) {
+        if (-not $depthByPid.ContainsKey([int]$childPid)) {
+            $targetPlan += [pscustomobject]@{ ProcessId = [int]$childPid; Depth = -1 }
+            $depthByPid[[int]$childPid] = -1
+        }
+    }
+    if (
+        $env:NODE_ENV -eq "test" -and
+        $env:HOME_CONTROL_STACK_STOP_TEST_ROOT_FIRST_TARGETS -eq "true" -and
+        @($targetPlan | Where-Object { [int]$_.ProcessId -eq $rootPid }).Count -eq 1
+    ) {
+        return @($targetPlan | Where-Object { [int]$_.ProcessId -eq $rootPid }) + @(
+            $targetPlan | Where-Object { [int]$_.ProcessId -ne $rootPid }
+        )
+    }
+    return @($targetPlan)
 }
 
 function Test-ProcessNameAllowed {
@@ -362,6 +404,7 @@ function Test-ProcessNameAllowed {
 function Stop-ManagedProcessEntry {
     param(
         [Parameter(Mandatory = $true)][object]$Entry,
+        [Parameter(Mandatory = $true)][object[]]$TargetPlan,
         [int]$RegistrySchemaVersion = 0
     )
 
@@ -369,10 +412,18 @@ function Stop-ManagedProcessEntry {
     $module = [string](Get-ObjectProperty -Object $Entry -Name "module" -Default "")
     $role = [string](Get-ObjectProperty -Object $Entry -Name "role" -Default "")
     $allowedNames = @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $Entry -Name "allowed_process_names" -Default @()))
-    $targetIds = @(Get-ManagedTargetPids -Entry $Entry -RegistrySchemaVersion $RegistrySchemaVersion)
-    if ($targetIds.Count -eq 0) {
+    if ($TargetPlan.Count -eq 0) {
         return
     }
+
+    $rootPid = [int](Get-ObjectProperty -Object $Entry -Name "pid" -Default 0)
+    $targetIds = @(
+        $TargetPlan |
+            Sort-Object `
+                @{ Expression = { [int]$_.Depth }; Descending = $true }, `
+                @{ Expression = { [int]$_.ProcessId }; Descending = $true } |
+            ForEach-Object { [int]$_.ProcessId }
+    )
 
     $label = $name
     if (-not [string]::IsNullOrWhiteSpace($module) -or -not [string]::IsNullOrWhiteSpace($role)) {
@@ -417,7 +468,6 @@ function Stop-ManagedProcessEntry {
             }
             continue
         }
-        $rootPid = [int](Get-ObjectProperty -Object $Entry -Name "pid" -Default 0)
         $rootProcess = if ($rootPid -gt 0) { Get-Process -Id $rootPid -ErrorAction SilentlyContinue } else { $null }
         $startedAt = [string](Get-ObjectProperty -Object $Entry -Name "started_at" -Default "")
         $testRevalidationFailure = (
@@ -474,14 +524,17 @@ if ($null -ne $state) {
         $registrySchemaVersion = 2
     }
 }
-$managedEntries = @()
+$managedTargets = @()
 $preStopTargetIds = @()
 if ($null -ne $state -and $null -ne $state.processes) {
     foreach ($entry in $state.processes) {
-        $targets = @(Get-ManagedTargetPids -Entry $entry -RegistrySchemaVersion $registrySchemaVersion)
-        if ($targets.Count -gt 0) {
-            $managedEntries += $entry
-            $preStopTargetIds += $targets
+        $targetPlan = @(Get-ManagedTargetPlan -Entry $entry -RegistrySchemaVersion $registrySchemaVersion)
+        if ($targetPlan.Count -gt 0) {
+            $managedTargets += [pscustomobject]@{
+                Entry = $entry
+                TargetPlan = $targetPlan
+            }
+            $preStopTargetIds += @($targetPlan | ForEach-Object { [int]$_.ProcessId })
         }
         else {
             $entryOwnershipClass = [string](Get-ObjectProperty -Object $entry -Name "ownership_class" -Default "")
@@ -500,11 +553,11 @@ if ($null -ne $state -and $null -ne $state.processes) {
     }
 }
 
-if ($managedEntries.Count -eq 0) {
+if ($managedTargets.Count -eq 0) {
     Write-Host "No recorded home-control stack processes are running."
 }
 else {
-    Write-Host "Target managed services: $((@($managedEntries | ForEach-Object { [string](Get-ObjectProperty -Object $_ -Name 'name' -Default 'unknown') })) -join ', ')"
+    Write-Host "Target managed services: $((@($managedTargets | ForEach-Object { [string](Get-ObjectProperty -Object $_.Entry -Name 'name' -Default 'unknown') })) -join ', ')"
     if (-not $Force -and -not $DryRun) {
         $answer = Read-Host "Stop these managed processes? [y/N]"
         if ($answer -notmatch "^(y|yes)$") {
@@ -512,9 +565,10 @@ else {
             return
         }
     }
-    for ($index = $managedEntries.Count - 1; $index -ge 0; $index--) {
+    for ($index = $managedTargets.Count - 1; $index -ge 0; $index--) {
         Stop-ManagedProcessEntry `
-            -Entry $managedEntries[$index] `
+            -Entry $managedTargets[$index].Entry `
+            -TargetPlan @($managedTargets[$index].TargetPlan) `
             -RegistrySchemaVersion $registrySchemaVersion
     }
 }
