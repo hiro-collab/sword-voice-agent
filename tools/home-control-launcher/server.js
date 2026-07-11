@@ -1304,10 +1304,22 @@ $connections = @(Get-NetTCPConnection -LocalPort ${numericPort} -State Listen -E
 foreach ($processId in ($connections | Select-Object -ExpandProperty OwningProcess -Unique)) {
   if ($processId -le 0) { continue }
   $process = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+  $parent = if ($null -ne $process) {
+    Get-CimInstance Win32_Process -Filter "ProcessId = $($process.ParentProcessId)" -ErrorAction SilentlyContinue
+  } else { $null }
+  $parentRuntime = if ($null -ne $parent) { Get-Process -Id $parent.ProcessId -ErrorAction SilentlyContinue } else { $null }
   $items += [pscustomobject]@{
     pid = [int]$processId
     processName = if ($null -ne $process) { [string]$process.Name } else { "" }
     commandLine = if ($null -ne $process) { [string]$process.CommandLine } else { "" }
+    parentPid = if ($null -ne $process) { [int]$process.ParentProcessId } else { 0 }
+    parentProcessName = if ($null -ne $parent) { [string]$parent.Name } else { "" }
+    parentStartedAt = if ($null -ne $parentRuntime) { ([DateTimeOffset]$parentRuntime.StartTime).ToString('o') } else { "" }
+    parentParentPid = if ($null -ne $parent) { [int]$parent.ParentProcessId } else { 0 }
+    startedAt = if ($null -ne $process) {
+      $started = Get-Process -Id $processId -ErrorAction SilentlyContinue
+      if ($null -ne $started) { ([DateTimeOffset]$started.StartTime).ToString('o') } else { '' }
+    } else { "" }
   }
 }
 $items | ConvertTo-Json -Compress
@@ -1405,6 +1417,91 @@ const reclaimPolicyForTarget = (target) => {
   }
 }
 
+const vspListenerCommandMatches = (commandLine, port) => {
+  const text = String(commandLine || '')
+  const numericPort = Number(port)
+  if (!Number.isInteger(numericPort) || numericPort <= 0) return false
+  return /(^|\s)-m\s+vision_snapshot_processor\.main(?:\s|$)/i.test(text) &&
+    new RegExp(`(^|\\s)--port\\s+${numericPort}(?:\\s|$)`, 'i').test(text)
+}
+
+const vspOwnershipSeal = (entry) => {
+  const lineage = Array.isArray(entry && entry.ownership_lineage)
+    ? entry.ownership_lineage
+    : []
+  const parts = [
+    'vsp_descendant_listener.v0',
+    String(Number(entry && entry.pid) || 0),
+    String(entry && entry.started_at || ''),
+    String(Number(entry && entry.ownership_parent_pid) || 0),
+    String(Number(entry && entry.ownership_root_pid) || 0),
+    String(entry && entry.ownership_root_started_at || ''),
+    String(entry && entry.expected_module || ''),
+    String(Number(entry && entry.expected_port) || 0),
+    ...lineage.map((row) => [
+      String(Number(row && row.pid) || 0),
+      String(Number(row && row.parent_pid) || 0),
+      String(row && row.process_name || ''),
+      String(row && row.started_at || '')
+    ].join('|'))
+  ]
+  return crypto.createHash('sha256').update(parts.join('\n'), 'utf8').digest('hex')
+}
+
+const vspListenerRegistryEntryMatches = (entry, owner, target) => {
+  if (!entry || entry.ownership_class !== 'vsp_descendant_listener.v0') return false
+  if (entry.role !== 'vision_snapshot_processor_listener') return false
+  if (entry.expected_module !== 'vision_snapshot_processor.main') return false
+  if (!/^[0-9a-f]{64}$/.test(String(entry.ownership_seal || ''))) return false
+  if (vspOwnershipSeal(entry) !== entry.ownership_seal) return false
+  if (Number(entry.expected_port) !== Number(target && target.port)) return false
+  if (Number(entry.pid) !== Number(owner && owner.pid)) return false
+  if (Number(entry.ownership_parent_pid) !== Number(owner && owner.parentPid)) return false
+  if (!Number.isInteger(Number(entry.ownership_root_pid)) || Number(entry.ownership_root_pid) <= 0) {
+    return false
+  }
+  if (!String(entry.ownership_root_started_at || '').trim()) return false
+  const lineage = Array.isArray(entry.ownership_lineage) ? entry.ownership_lineage : []
+  if (lineage.length === 0 || lineage.length > 8) return false
+  if (Number(lineage[0] && lineage[0].pid) !== Number(entry.ownership_parent_pid)) return false
+  if (Number(lineage[lineage.length - 1] && lineage[lineage.length - 1].pid) !== Number(entry.ownership_root_pid)) return false
+  if (String(lineage[lineage.length - 1].started_at || '') !== String(entry.ownership_root_started_at)) return false
+  for (let index = 0; index < lineage.length; index += 1) {
+    const ancestor = lineage[index] || {}
+    if (!Number.isInteger(Number(ancestor.pid)) || Number(ancestor.pid) <= 0) return false
+    if (!Number.isInteger(Number(ancestor.parent_pid)) || Number(ancestor.parent_pid) <= 0) return false
+    if (!normalizedProcessName(ancestor.process_name)) return false
+    if (!String(ancestor.started_at || '').trim()) return false
+    if (index + 1 < lineage.length && Number(ancestor.parent_pid) !== Number(lineage[index + 1].pid)) {
+      return false
+    }
+  }
+  if (!recordedProcessStartTimeMatches(entry, {
+    alive: true,
+    startedAt: owner && owner.startedAt
+  })) return false
+  if (String(owner && owner.parentProcessName || '').trim()) {
+    const parentRecord = lineage[0]
+    if (Number(owner.parentParentPid) !== Number(parentRecord.parent_pid)) return false
+    if (normalizedProcessName(owner.parentProcessName) !== normalizedProcessName(parentRecord.process_name)) return false
+    if (!recordedProcessStartTimeMatches({
+      started_at: parentRecord.started_at
+    }, {
+      alive: true,
+      startedAt: owner.parentStartedAt
+    })) return false
+  }
+  return normalizedProcessName(owner && owner.processName) === 'python' &&
+    vspListenerCommandMatches(owner && owner.commandLine, target.port)
+}
+
+const recordedVspListenerOwner = (owner, target) => {
+  if (!target || target.key !== 'vision_snapshot_processor') return false
+  const pidState = readPidState()
+  const entries = Array.isArray(pidState.processes) ? pidState.processes : []
+  return entries.some((entry) => vspListenerRegistryEntryMatches(entry, owner, target))
+}
+
 const isReclaimableManagedPortOwner = (owner, target) => {
   const processName = normalizedProcessName(owner && owner.processName)
   if (!processName || EXTERNAL_PROCESS_DENY_LIST.has(processName)) {
@@ -1417,6 +1514,9 @@ const isReclaimableManagedPortOwner = (owner, target) => {
   const allowed = new Set((policy.allowedProcessNames || []).map(normalizedProcessName))
   if (allowed.size > 0 && !allowed.has(processName)) {
     return false
+  }
+  if (target && target.key === 'vision_snapshot_processor') {
+    return recordedVspListenerOwner(owner, target)
   }
   const commandLine = String(owner && owner.commandLine || '')
   return (
@@ -1466,6 +1566,15 @@ const reclaimManagedPortResidue = async (options) => {
     }
     summary.skippedOwners += targetSummary.skippedOwners
     for (const owner of reclaimable) {
+      const currentOwners = await listeningPortProcessOwners(target.port)
+      const revalidatedOwner = currentOwners.find(
+        (current) => Number(current.pid) === Number(owner.pid)
+      )
+      if (!revalidatedOwner || !isReclaimableManagedPortOwner(revalidatedOwner, target)) {
+        summary.skippedOwners += 1
+        targetSummary.skippedOwners += 1
+        continue
+      }
       summary.attempted += 1
       targetSummary.attempted += 1
       appendStackLog(
