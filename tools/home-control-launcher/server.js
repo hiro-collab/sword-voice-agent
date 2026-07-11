@@ -1600,7 +1600,11 @@ const stopStack = async (body) => {
   const scriptArgs = ['stop', '-Profile', opsProfileFor(profileId), '-Force']
   const beforeStopCollection = await collectStackStopVerification(options)
   const { carriedUnverifiedEntries, ...beforeStopVerification } = beforeStopCollection
-  const result = await runScriptAndCollect(SYSTEM_SCRIPT, scriptArgs, 45000)
+  const collectedResult = await runScriptAndCollect(SYSTEM_SCRIPT, scriptArgs, 45000)
+  const result = process.env.NODE_ENV === 'test' &&
+    process.env.HOME_CONTROL_LAUNCHER_TEST_FORCE_STOP_SCRIPT_NONZERO === 'true'
+    ? { ...collectedResult, ok: false, code: 1, timedOut: false }
+    : collectedResult
   const managedPortReclaim = await reclaimManagedPortResidue(options)
   const stopCollection = await waitForStackStopVerification(
     options,
@@ -1608,7 +1612,7 @@ const stopStack = async (body) => {
     beforeStopVerification.staleRecorded
   )
   const { carriedUnverifiedEntries: ignoredCarriedEntries, ...stopVerification } = stopCollection
-  const ok = Boolean(result.ok && stopVerification.ok)
+  const ok = Boolean(stopVerification.ok)
   const payload = {
     ...result,
     ok,

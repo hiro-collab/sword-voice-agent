@@ -937,6 +937,18 @@ class LauncherManagedPortReclaimContractTest(unittest.TestCase):
                 payload["stopVerification"]["aliveRecorded"][0]["pid"], child.pid)
             self.assertIsNone(child.poll())
 
+    def test_stop_accepts_final_quiescence_after_shutdown_script_nonzero(self) -> None:
+        with LauncherFixture(
+            {"HOME_CONTROL_LAUNCHER_TEST_FORCE_STOP_SCRIPT_NONZERO": "true"}
+        ) as fixture:
+            fixture.configure_touchdesigner_target()
+            payload = fixture.post("/api/stop", {})
+            self.assertTrue(payload["ok"])
+            self.assertNotEqual(payload.get("code"), 0)
+            self.assertFalse(payload["stopVerification"]["pidFileExists"])
+            self.assertEqual(payload["stopVerification"]["aliveRecorded"], [])
+            self.assertEqual(payload["stopVerification"]["openPorts"], [])
+
     def test_stop_waits_for_refused_owned_target_to_exit_before_removing_registry(self) -> None:
         with LauncherFixture() as fixture:
             child, _ = fixture.listener(managed=False)
