@@ -33,6 +33,21 @@ $StackStateDir = Resolve-StackStateDir -WorkspaceRoot $WorkspaceRoot -StackState
 $StateDir = $StackStateDir
 $PidFile = Join-Path $StateDir "pids.json"
 
+$StopSettleTimeoutMilliseconds = 10000
+if ($env:NODE_ENV -eq "test") {
+    $testSettleTimeout = 0
+    if (
+        [int]::TryParse(
+            [string]$env:HOME_CONTROL_STACK_STOP_TEST_SETTLE_TIMEOUT_MS,
+            [ref]$testSettleTimeout
+        ) -and
+        $testSettleTimeout -ge 50 -and
+        $testSettleTimeout -le 30000
+    ) {
+        $StopSettleTimeoutMilliseconds = $testSettleTimeout
+    }
+}
+
 $ExternalProcessDenyList = @(
     "chrome",
     "msedge",
@@ -505,6 +520,19 @@ else {
 }
 
 if (-not $DryRun) {
+    $remainingTargetIds = @()
+    $settleDeadline = [DateTimeOffset]::UtcNow.AddMilliseconds($StopSettleTimeoutMilliseconds)
+    do {
+        $remainingTargetIds = @(
+            $preStopTargetIds |
+                Sort-Object -Unique |
+                Where-Object { $null -ne (Get-Process -Id $_ -ErrorAction SilentlyContinue) }
+        )
+        if ($remainingTargetIds.Count -eq 0) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTimeOffset]::UtcNow -lt $settleDeadline)
     $remainingTargetIds = @(
         $preStopTargetIds |
             Sort-Object -Unique |

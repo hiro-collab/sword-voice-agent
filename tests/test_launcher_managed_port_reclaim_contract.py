@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -69,16 +70,20 @@ class LauncherFixture:
         self.vsp_fixture_pids: set[int] = set()
         self.vsp_fixture_started = False
         self.environment = environment or {}
+        ambient_environment = os.environ.copy()
+        ambient_environment.pop("HOME_CONTROL_STACK_STOP_TEST_SETTLE_TIMEOUT_MS", None)
+        self.test_environment = {
+            **ambient_environment,
+            "NODE_ENV": "test",
+            "HOME_CONTROL_LAUNCHER_STOP_VERIFY_TIMEOUT_MS": "250",
+            "HOME_CONTROL_LAUNCHER_STOP_VERIFY_INTERVAL_MS": "50",
+            "HOME_CONTROL_STACK_STOP_TEST_SETTLE_TIMEOUT_MS": "250",
+            **self.environment,
+        }
 
     def __enter__(self) -> "LauncherFixture":
         self.workspace.mkdir()
         self.foreign_root.mkdir()
-        environment = {
-            "NODE_ENV": "test",
-            "HOME_CONTROL_LAUNCHER_STOP_VERIFY_TIMEOUT_MS": "250",
-            "HOME_CONTROL_LAUNCHER_STOP_VERIFY_INTERVAL_MS": "50",
-            **self.environment,
-        }
         self.launcher = subprocess.Popen(
             [
                 NODE,
@@ -95,7 +100,7 @@ class LauncherFixture:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             text=True,
-            env={**os.environ, **environment},
+            env=self.test_environment,
         )
         wait_for(lambda: port_is_listening(self.launcher_port))
         return self
@@ -349,7 +354,7 @@ exit $LASTEXITCODE
 
     def start_partial_stack(self, *, port: int, cleanup_failure: bool) -> subprocess.CompletedProcess[str]:
         thought_core = self.partial_start_workspace(port)
-        environment = {**os.environ, "NODE_ENV": "test"}
+        environment = self.test_environment.copy()
         if cleanup_failure:
             environment["HOME_CONTROL_STACK_STOP_TEST_REVALIDATE_FAILURE"] = "true"
         return subprocess.run(
@@ -410,7 +415,7 @@ exit $LASTEXITCODE
             text=True,
             capture_output=True,
             timeout=10,
-            env={**os.environ, "NODE_ENV": "test", **(extra_environment or {})},
+            env={**self.test_environment, **(extra_environment or {})},
         )
 
     def start_vsp_orphan_fixture(self, *, port: int) -> subprocess.Popen[str]:
@@ -478,8 +483,7 @@ finally:
             encoding="utf-8",
         )
         environment = {
-            **os.environ,
-            "NODE_ENV": "test",
+            **self.test_environment,
             "HOME_CONTROL_STACK_TEST_LAUNCH_VSP_WITHOUT_MEDIAPIPE": "true",
             "PATH": f"{tool_dir}{os.pathsep}{os.environ.get('PATH', '')}",
             "PYTHONPATH": str(package.parent),
@@ -933,6 +937,66 @@ class LauncherManagedPortReclaimContractTest(unittest.TestCase):
                 payload["stopVerification"]["aliveRecorded"][0]["pid"], child.pid)
             self.assertIsNone(child.poll())
 
+    def test_stop_waits_for_refused_owned_target_to_exit_before_removing_registry(self) -> None:
+        with LauncherFixture() as fixture:
+            child, _ = fixture.listener(managed=False)
+            fixture.write_pid_state(
+                {
+                    "name": "settling-owned-fixture",
+                    "pid": child.pid,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "allowed_process_names": ["node"],
+                },
+                schema_version=3,
+            )
+            environment = {
+                **fixture.test_environment,
+                "HOME_CONTROL_STACK_STOP_TEST_REVALIDATE_FAILURE": "true",
+                "HOME_CONTROL_STACK_STOP_TEST_SETTLE_TIMEOUT_MS": "300",
+                "HOME_CONTROL_STACK_STATE_DIR": str(fixture.state_dir),
+            }
+            process = subprocess.Popen(
+                [
+                    POWERSHELL,
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(STACK_STOP),
+                    "-WorkspaceRoot",
+                    str(fixture.workspace),
+                    "-StackStateDir",
+                    str(fixture.state_dir),
+                    "-Force",
+                ],
+                cwd=ROOT,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=environment,
+            )
+            branch_observed = threading.Event()
+
+            def release_after_refusal() -> None:
+                assert process.stdout is not None
+                for line in process.stdout:
+                    if "registry root identity changed before termination" in line:
+                        time.sleep(0.25)
+                        child.terminate()
+                        branch_observed.set()
+
+            reader = threading.Thread(target=release_after_refusal, daemon=True)
+            reader.start()
+            self.assertEqual(process.wait(timeout=10), 0)
+            reader.join(timeout=2)
+            assert process.stdout is not None
+            process.stdout.close()
+            self.assertTrue(branch_observed.is_set())
+            child.wait(timeout=3)
+            self.assertFalse((fixture.state_dir / "pids.json").exists())
+
     def test_stop_refuses_external_deny_list_fixture_with_plausible_timestamp(self) -> None:
         with LauncherFixture() as fixture:
             chrome_fixture = fixture.root / "chrome.exe"
@@ -1175,6 +1239,10 @@ class LauncherManagedPortReclaimContractTest(unittest.TestCase):
 
     def test_vsp_stop_inspection_failure_is_fail_closed(self) -> None:
         with LauncherFixture() as fixture:
+            self.assertEqual(
+                fixture.test_environment["HOME_CONTROL_STACK_STOP_TEST_SETTLE_TIMEOUT_MS"],
+                "250",
+            )
             unrelated, _ = fixture.listener(managed=False)
             port = unused_loopback_port()
             fixture.start_vsp_orphan_fixture(port=port)
