@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sys
 from datetime import datetime
@@ -9,6 +10,19 @@ from unittest import TestCase
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core" / "src"
+SHARED_DANCE_VECTOR_ENV = "SWORD_M4_DANCE_LIFECYCLE_VECTOR_PATH"
+MAX_SHARED_DANCE_VECTOR_BYTES = 128 * 1024
+SHARED_DANCE_CASE_ORDER = [
+    "dance_start_queued",
+    "dance_active_accept",
+    "dance_stop_before_start",
+    "dance_stop_repeated",
+    "dance_stop_active",
+    "dance_late_result_after_stop",
+    "dance_late_frame_after_stop",
+    "dance_stale_result",
+    "dance_settled_idle",
+]
 sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 
 from thought_core.loop import ThoughtLoop  # noqa: E402
@@ -24,7 +38,101 @@ TURN = {
 }
 
 
+def load_shared_dance_lifecycle_vectors() -> dict[str, object] | None:
+    configured = os.environ.get(SHARED_DANCE_VECTOR_ENV, "").strip()
+    if not configured:
+        return None
+    path = Path(configured).resolve(strict=True)
+    if len(str(path)) > 4096 or path.suffix != ".json" or not path.is_file():
+        raise AssertionError("shared dance vector path must be a bounded JSON file")
+    if not 0 < path.stat().st_size <= MAX_SHARED_DANCE_VECTOR_BYTES:
+        raise AssertionError("shared dance vector file size is out of bounds")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise AssertionError("shared dance vector root must be an object")
+    if payload.get("schema_version") != "m4_dance_lifecycle_fault_vectors.v0":
+        raise AssertionError("shared dance vector schema_version is invalid")
+    if payload.get("fixture_kind") != "non_schema_test_vectors":
+        raise AssertionError("shared dance vector must remain non-schema")
+    if payload.get("case_order") != SHARED_DANCE_CASE_ORDER:
+        raise AssertionError("shared dance vector case order is invalid")
+    cases = payload.get("cases")
+    if not isinstance(cases, list) or len(cases) != len(SHARED_DANCE_CASE_ORDER):
+        raise AssertionError("shared dance vector case count is invalid")
+    return payload
+
+
 class ThoughtCoreMotionRequestContractTest(TestCase):
+    def test_shared_dance_lifecycle_vectors_when_configured(self) -> None:
+        vectors = load_shared_dance_lifecycle_vectors()
+        if vectors is None:
+            return
+        raw_cases = vectors["cases"]
+        self.assertIsInstance(raw_cases, list)
+        cases = {case["case_id"]: case for case in raw_cases if isinstance(case, dict)}
+        self.assertEqual(list(cases), SHARED_DANCE_CASE_ORDER)
+        self.assertEqual(len(cases), len(SHARED_DANCE_CASE_ORDER))
+
+        required_safe_fields = {
+            "case_id",
+            "dance_session_ref",
+            "sequence_number",
+            "prior_state",
+            "candidate_event_kind",
+            "lifecycle_state",
+            "candidate_state",
+            "expected_receiver_result_class",
+            "expected_state",
+            "core_contract_class",
+        }
+        for case_id in SHARED_DANCE_CASE_ORDER:
+            with self.subTest(case=case_id):
+                self.assertEqual(required_safe_fields - set(cases[case_id]), set())
+
+        start = cases["dance_start_queued"]
+        self.assertEqual(start["request_mode"], "play")
+        self.assertEqual(start["lifecycle_state"], "queued")
+        self.assertEqual(start["expected_receiver_result_class"], "accepted_queued")
+        self.assertEqual(start["core_contract_class"], "play_request_accepted")
+        start_payload = self._motion_payload(self._run("踊って")[0])
+        self.assertIsNotNone(start_payload)
+        assert start_payload is not None
+        self.assertEqual(start_payload["request_mode"], start["request_mode"])
+        self.assertEqual(start_payload["lifecycle_state"], start["lifecycle_state"])
+
+        stop_payload = self._motion_payload(self._run("踊りをやめて")[0])
+        self.assertIsNotNone(stop_payload)
+        assert stop_payload is not None
+        for case_id, expected_class in (
+            ("dance_stop_before_start", "stop_idempotent"),
+            ("dance_stop_repeated", "stop_idempotent"),
+            ("dance_stop_active", "stop_to_idle"),
+        ):
+            case = cases[case_id]
+            with self.subTest(case=case_id):
+                self.assertEqual(case["candidate_event_kind"], "stimulus")
+                self.assertEqual(case["request_mode"], "stop")
+                self.assertEqual(case["lifecycle_state"], "stopped")
+                self.assertEqual(case["core_contract_class"], expected_class)
+                self.assertEqual(stop_payload["request_mode"], "stop")
+                self.assertEqual(stop_payload["lifecycle_state"], "queued")
+                self.assertEqual(stop_payload["fallback_state"], "stop_to_idle")
+
+        receiver_only = {
+            "dance_active_accept": "accepted_active",
+            "dance_late_result_after_stop": "rejected_late_after_stop",
+            "dance_late_frame_after_stop": "rejected_late_after_stop",
+            "dance_stale_result": "rejected_stale",
+            "dance_settled_idle": "accepted_settled_idle",
+        }
+        for case_id, expected_result_class in receiver_only.items():
+            case = cases[case_id]
+            with self.subTest(case=case_id):
+                self.assertIn(case["candidate_event_kind"], {"runtime_result", "frame"})
+                self.assertEqual(
+                    case["expected_receiver_result_class"], expected_result_class
+                )
+
     def test_dance_request_emits_motion_stimulus_without_home_action(self) -> None:
         events, tools = self._run("踊って")
         event = self._motion_event(events)
