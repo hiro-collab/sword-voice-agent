@@ -53,6 +53,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "..\..\..\scripts\common.ps1")
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = $utf8NoBom
@@ -949,12 +950,12 @@ function Save-PidState {
     param([Parameter(Mandatory = $true)][object[]]$Children)
     New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
     $state = [pscustomobject]@{
-        schema_version = 2
+        schema_version = 3
         started_at = [DateTimeOffset]::Now.ToString("o")
         workspace_root = $WorkspaceRoot
         processes = @(
             $Children | ForEach-Object {
-                [pscustomobject]@{
+                $entry = [ordered]@{
                     name = $_.Name
                     module = $_.Module
                     role = $_.Role
@@ -965,15 +966,21 @@ function Save-PidState {
                     stop_strategy = $_.StopStrategy
                     allowed_process_names = @($_.AllowedProcessNames)
                     child_process_file = $_.ChildProcessFile
-                    ownership_class = [string]$_.OwnershipClass
-                    ownership_root_pid = [int]$_.OwnershipRootPid
-                    ownership_root_started_at = [string]$_.OwnershipRootStartedAt
-                    ownership_parent_pid = [int]$_.OwnershipParentPid
-                    ownership_lineage = @($_.OwnershipLineage)
-                    ownership_seal = [string]$_.OwnershipSeal
-                    expected_module = [string]$_.ExpectedModule
-                    expected_port = [int]$_.ExpectedPort
                 }
+                if (
+                    -not [string]::IsNullOrWhiteSpace([string]$_.OwnershipClass) -or
+                    [string]$_.StopStrategy -ceq "role_scoped_descendant"
+                ) {
+                    $entry["ownership_class"] = [string]$_.OwnershipClass
+                    $entry["ownership_root_pid"] = [int]$_.OwnershipRootPid
+                    $entry["ownership_root_started_at"] = [string]$_.OwnershipRootStartedAt
+                    $entry["ownership_parent_pid"] = [int]$_.OwnershipParentPid
+                    $entry["ownership_lineage"] = @($_.OwnershipLineage)
+                    $entry["ownership_seal"] = [string]$_.OwnershipSeal
+                    $entry["expected_module"] = [string]$_.ExpectedModule
+                    $entry["expected_port"] = [int]$_.ExpectedPort
+                }
+                [pscustomobject]$entry
             }
         )
     }
@@ -1359,38 +1366,45 @@ function Get-VisionSnapshotOwnershipSeal {
     }
 }
 
-function Find-VisionSnapshotListenerRecord {
+function Find-SealedDescendantListenerRecord {
     param(
         [Parameter(Mandatory = $true)][object]$RootChild,
         [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$OwnershipClass,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Module,
         [int]$TimeoutSeconds = 10
     )
+    $classSpec = Get-SwordSealedListenerClassSpec -OwnershipClass $OwnershipClass
+    if ($null -eq $classSpec) {
+        throw "Sealed descendant listener class is not supported"
+    }
     $deadline = [DateTimeOffset]::Now.AddSeconds($TimeoutSeconds)
     while ([DateTimeOffset]::Now -lt $deadline) {
         if ($RootChild.Process.HasExited) {
-            throw "Vision Snapshot Processor root exited before listener ownership was recorded"
+            throw "Sealed descendant listener root exited before ownership was recorded"
         }
         $descendantIds = @(Get-DescendantProcessIds -RootProcessId ([int]$RootChild.Process.Id))
         $connections = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
         $owners = @($connections | Select-Object -ExpandProperty OwningProcess -Unique)
         if ($owners.Count -gt 1) {
-            throw "Vision Snapshot Processor listener ownership is ambiguous"
+            throw "Sealed descendant listener ownership is ambiguous"
         }
         if ($owners.Count -eq 1) {
             $workerPid = [int]$owners[0]
             if ($descendantIds -notcontains $workerPid) {
-                throw "Vision Snapshot Processor listener is not a launch-root descendant"
+                throw "Sealed listener is not a launch-root descendant"
             }
             $identity = Get-CimInstance Win32_Process -Filter "ProcessId = $workerPid" -ErrorAction SilentlyContinue
             $worker = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
             if ($null -eq $identity -or $null -eq $worker) {
-                throw "Vision Snapshot Processor listener identity is unavailable"
+                throw "Sealed descendant listener identity is unavailable"
             }
             if (
-                (Normalize-ProcessName -Name ([string]$worker.ProcessName)) -ne "python" -or
-                -not (Test-VisionSnapshotWorkerCommand -CommandLine ([string]$identity.CommandLine) -Port $Port)
+                (Normalize-ProcessName -Name ([string]$worker.ProcessName)) -ne $classSpec.ProcessName -or
+                -not (Test-SwordSealedListenerCommand -CommandLine ([string]$identity.CommandLine) -OwnershipClass $OwnershipClass -Port $Port)
             ) {
-                throw "Vision Snapshot Processor listener identity is invalid"
+                throw "Sealed descendant listener identity is invalid"
             }
             $lineage = @()
             $cursor = [int]$identity.ParentProcessId
@@ -1398,7 +1412,7 @@ function Find-VisionSnapshotListenerRecord {
                 $ancestorIdentity = Get-CimInstance Win32_Process -Filter "ProcessId = $cursor" -ErrorAction SilentlyContinue
                 $ancestor = Get-Process -Id $cursor -ErrorAction SilentlyContinue
                 if ($null -eq $ancestorIdentity -or $null -eq $ancestor) {
-                    throw "Vision Snapshot Processor launch lineage is unavailable"
+                    throw "Sealed descendant listener lineage is unavailable"
                 }
                 $lineage += [pscustomobject]@{
                     pid = $cursor
@@ -1412,45 +1426,50 @@ function Find-VisionSnapshotListenerRecord {
                 $cursor = [int]$ancestorIdentity.ParentProcessId
             }
             if ($lineage.Count -eq 0 -or [int]$lineage[-1].pid -ne [int]$RootChild.Process.Id) {
-                throw "Vision Snapshot Processor listener lineage does not reach the launch root"
+                throw "Sealed descendant listener lineage does not reach the launch root"
             }
             $listenerStartedAt = ([DateTimeOffset]$worker.StartTime).ToString("o")
             $rootStartedAt = [string]$lineage[-1].started_at
-            $ownershipSeal = Get-VisionSnapshotOwnershipSeal `
-                -ListenerPid $workerPid `
-                -ListenerStartedAt $listenerStartedAt `
-                -ParentPid ([int]$identity.ParentProcessId) `
-                -RootPid ([int]$RootChild.Process.Id) `
-                -RootStartedAt $rootStartedAt `
-                -Port $Port `
-                -Lineage $lineage
-            return [pscustomobject]@{
-                Name = "vision_snapshot_processor_listener"
-                Module = "vision-snapshot-processor"
-                Role = "vision_snapshot_processor_listener"
+            $record = [pscustomobject]@{
+                Name = $Name
+                Module = $Module
+                Role = $classSpec.Role
                 Process = $worker
-                WorkingDirectory = $RootChild.WorkingDirectory
+                WorkingDirectory = ""
                 CommandLine = ""
                 StartedAt = $listenerStartedAt
                 StopStrategy = "role_scoped_descendant"
-                AllowedProcessNames = @("python")
+                AllowedProcessNames = @($classSpec.ProcessName)
                 ChildProcessFile = ""
-                OwnershipClass = "vsp_descendant_listener.v0"
+                OwnershipClass = $OwnershipClass
                 OwnershipRootPid = [int]$RootChild.Process.Id
                 OwnershipRootStartedAt = $rootStartedAt
                 OwnershipParentPid = [int]$identity.ParentProcessId
                 OwnershipLineage = @($lineage)
-                OwnershipSeal = $ownershipSeal
-                ExpectedModule = "vision_snapshot_processor.main"
+                OwnershipSeal = ""
+                ExpectedModule = $classSpec.ExpectedModule
                 ExpectedPort = $Port
                 StdoutEvent = $null
                 StderrEvent = $null
                 NotifiedExit = $false
             }
+            $sealEntry = [pscustomobject]@{
+                ownership_class = $record.OwnershipClass
+                pid = $record.Process.Id
+                started_at = $record.StartedAt
+                ownership_parent_pid = $record.OwnershipParentPid
+                ownership_root_pid = $record.OwnershipRootPid
+                ownership_root_started_at = $record.OwnershipRootStartedAt
+                expected_module = $record.ExpectedModule
+                expected_port = $record.ExpectedPort
+                ownership_lineage = @($record.OwnershipLineage)
+            }
+            $record.OwnershipSeal = Get-SwordSealedListenerOwnershipSeal -Entry $sealEntry
+            return $record
         }
         Start-Sleep -Milliseconds 100
     }
-    throw "Vision Snapshot Processor listener ownership was not observed within the bounded wait"
+    throw "Sealed descendant listener ownership was not observed within the bounded wait"
 }
 
 function Stop-SupervisedEvents {
@@ -2132,10 +2151,36 @@ try {
             $delayedVisionSnapshotSpecs += $spec
             continue
         }
-        $children += Start-SupervisedProcess -Spec $spec
+        $rootChild = Start-SupervisedProcess -Spec $spec
+        $children += $rootChild
         Save-PidState -Children $children
+        $sealedListener = switch ($spec.Name) {
+            "home_assistant_bridge" {
+                Find-SealedDescendantListenerRecord `
+                    -RootChild $rootChild `
+                    -Port $HomeAssistantBridgePort `
+                    -OwnershipClass "home_control_bridge_descendant_listener.v0" `
+                    -Name "home_assistant_bridge_listener" `
+                    -Module "home-assistant-server"
+                break
+            }
+            "thought_core_api" {
+                Find-SealedDescendantListenerRecord `
+                    -RootChild $rootChild `
+                    -Port $ThoughtCorePort `
+                    -OwnershipClass "thought_core_descendant_listener.v0" `
+                    -Name "thought_core_api_listener" `
+                    -Module "control-plane-core"
+                break
+            }
+            default { $null }
+        }
+        if ($null -ne $sealedListener) {
+            $children += $sealedListener
+            Save-PidState -Children $children
+        }
         if ($spec.Name -eq "mediapipe_camera_hub_stack") {
-            $mediapipeCameraHubChild = $children[-1]
+            $mediapipeCameraHubChild = $rootChild
         }
         Start-Sleep -Milliseconds 500
     }
@@ -2146,9 +2191,12 @@ try {
         $visionSnapshotRootChild = Start-SupervisedProcess -Spec $spec
         $children += $visionSnapshotRootChild
         Save-PidState -Children $children
-        $visionSnapshotListener = Find-VisionSnapshotListenerRecord `
+        $visionSnapshotListener = Find-SealedDescendantListenerRecord `
             -RootChild $visionSnapshotRootChild `
-            -Port $VisionSnapshotProcessorPort
+            -Port $VisionSnapshotProcessorPort `
+            -OwnershipClass "vsp_descendant_listener.v0" `
+            -Name "vision_snapshot_processor_listener" `
+            -Module "vision-snapshot-processor"
         $children += $visionSnapshotListener
         Save-PidState -Children $children
     }

@@ -52,6 +52,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public')
 const PROFILE_FILE = path.join(__dirname, 'config', 'default-profiles.json')
 const OPS_SCRIPT_ROOT = path.join(PROJECT_ROOT, 'ops', 'scripts')
 const SYSTEM_SCRIPT = path.join(OPS_SCRIPT_ROOT, 'system.ps1')
+const COMMON_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'common.ps1')
 const STATE_DIR = resolveStackStateDir()
 const LOG_DIR = path.join(STATE_DIR, 'logs')
 const PID_FILE = path.join(STATE_DIR, 'pids.json')
@@ -1328,7 +1329,15 @@ $items | ConvertTo-Json -Compress
   if (!result.ok) {
     return []
   }
-  return parseJsonArray(result.stdout)
+  const owners = parseJsonArray(result.stdout)
+  if (
+    process.env.NODE_ENV === 'test' &&
+    process.env.HOME_CONTROL_LAUNCHER_TEST_DUPLICATE_PORT_OWNER === 'true' &&
+    owners.length === 1
+  ) {
+    return [owners[0], { ...owners[0] }]
+  }
+  return owners
 }
 
 const normalizedProcessName = (value) =>
@@ -1417,92 +1426,65 @@ const reclaimPolicyForTarget = (target) => {
   }
 }
 
-const vspListenerCommandMatches = (commandLine, port) => {
-  const text = String(commandLine || '')
-  const numericPort = Number(port)
-  if (!Number.isInteger(numericPort) || numericPort <= 0) return false
-  return /(^|\s)-m\s+vision_snapshot_processor\.main(?:\s|$)/i.test(text) &&
-    new RegExp(`(^|\\s)--port\\s+${numericPort}(?:\\s|$)`, 'i').test(text)
+const SEALED_LISTENER_CLASS_BY_TARGET = {
+  home_assistant_bridge: 'home_control_bridge_descendant_listener.v0',
+  vision_snapshot_processor: 'vsp_descendant_listener.v0',
+  thought_core_api: 'thought_core_descendant_listener.v0'
 }
+const sealedValidationCounts = new Map()
 
-const vspOwnershipSeal = (entry) => {
-  const lineage = Array.isArray(entry && entry.ownership_lineage)
-    ? entry.ownership_lineage
-    : []
-  const parts = [
-    'vsp_descendant_listener.v0',
-    String(Number(entry && entry.pid) || 0),
-    String(entry && entry.started_at || ''),
-    String(Number(entry && entry.ownership_parent_pid) || 0),
-    String(Number(entry && entry.ownership_root_pid) || 0),
-    String(entry && entry.ownership_root_started_at || ''),
-    String(entry && entry.expected_module || ''),
-    String(Number(entry && entry.expected_port) || 0),
-    ...lineage.map((row) => [
-      String(Number(row && row.pid) || 0),
-      String(Number(row && row.parent_pid) || 0),
-      String(row && row.process_name || ''),
-      String(row && row.started_at || '')
-    ].join('|'))
-  ]
-  return crypto.createHash('sha256').update(parts.join('\n'), 'utf8').digest('hex')
-}
-
-const vspListenerRegistryEntryMatches = (entry, owner, target) => {
-  if (!entry || entry.ownership_class !== 'vsp_descendant_listener.v0') return false
-  if (entry.role !== 'vision_snapshot_processor_listener') return false
-  if (entry.expected_module !== 'vision_snapshot_processor.main') return false
-  if (!/^[0-9a-f]{64}$/.test(String(entry.ownership_seal || ''))) return false
-  if (vspOwnershipSeal(entry) !== entry.ownership_seal) return false
-  if (Number(entry.expected_port) !== Number(target && target.port)) return false
-  if (Number(entry.pid) !== Number(owner && owner.pid)) return false
-  if (Number(entry.ownership_parent_pid) !== Number(owner && owner.parentPid)) return false
-  if (!Number.isInteger(Number(entry.ownership_root_pid)) || Number(entry.ownership_root_pid) <= 0) {
-    return false
+const validateSealedListenerEntry = async (entry, requiredOwnershipClass) => {
+  const validationKey = `${requiredOwnershipClass}:${Number(entry && entry.pid) || 0}`
+  const validationCount = sealedValidationCounts.get(validationKey) || 0
+  sealedValidationCounts.set(validationKey, validationCount + 1)
+  if (
+    process.env.NODE_ENV === 'test' &&
+    process.env.HOME_CONTROL_LAUNCHER_TEST_FAIL_SEALED_REVALIDATION === 'true' &&
+    validationCount > 0
+  ) {
+    return { valid: false, reason: 'inspection_failed' }
   }
-  if (!String(entry.ownership_root_started_at || '').trim()) return false
-  const lineage = Array.isArray(entry.ownership_lineage) ? entry.ownership_lineage : []
-  if (lineage.length === 0 || lineage.length > 8) return false
-  if (Number(lineage[0] && lineage[0].pid) !== Number(entry.ownership_parent_pid)) return false
-  if (Number(lineage[lineage.length - 1] && lineage[lineage.length - 1].pid) !== Number(entry.ownership_root_pid)) return false
-  if (String(lineage[lineage.length - 1].started_at || '') !== String(entry.ownership_root_started_at)) return false
-  for (let index = 0; index < lineage.length; index += 1) {
-    const ancestor = lineage[index] || {}
-    if (!Number.isInteger(Number(ancestor.pid)) || Number(ancestor.pid) <= 0) return false
-    if (!Number.isInteger(Number(ancestor.parent_pid)) || Number(ancestor.parent_pid) <= 0) return false
-    if (!normalizedProcessName(ancestor.process_name)) return false
-    if (!String(ancestor.started_at || '').trim()) return false
-    if (index + 1 < lineage.length && Number(ancestor.parent_pid) !== Number(lineage[index + 1].pid)) {
-      return false
+  const encodedEntry = Buffer.from(JSON.stringify(entry || {}), 'utf8').toString('base64')
+  const commonScript = COMMON_SCRIPT.replace(/'/g, "''")
+  const requiredClass = String(requiredOwnershipClass || '').replace(/'/g, "''")
+  const simulateFailure = process.env.NODE_ENV === 'test' &&
+    process.env.HOME_CONTROL_LAUNCHER_TEST_SEALED_INSPECTION_FAILURE === 'true'
+  const result = await runPowerShellInlineAndCollect(`
+. '${commonScript}'
+$entryJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedEntry}'))
+$entry = $entryJson | ConvertFrom-Json
+$result = Test-SwordSealedDescendantListenerEntry -Entry $entry -RequiredOwnershipClass '${requiredClass}' -SimulateInspectionFailure:$${simulateFailure ? 'true' : 'false'}
+$result | ConvertTo-Json -Compress
+`)
+  if (!result.ok) return { valid: false, reason: 'inspection_failed' }
+  try {
+    const parsed = JSON.parse(String(result.stdout || '').trim())
+    return {
+      valid: parsed.Valid === true,
+      reason: String(parsed.Reason || 'inspection_failed'),
+      listenerPid: Number(parsed.ListenerPid) || 0
     }
+  } catch {
+    return { valid: false, reason: 'inspection_failed' }
   }
-  if (!recordedProcessStartTimeMatches(entry, {
-    alive: true,
-    startedAt: owner && owner.startedAt
-  })) return false
-  if (String(owner && owner.parentProcessName || '').trim()) {
-    const parentRecord = lineage[0]
-    if (Number(owner.parentParentPid) !== Number(parentRecord.parent_pid)) return false
-    if (normalizedProcessName(owner.parentProcessName) !== normalizedProcessName(parentRecord.process_name)) return false
-    if (!recordedProcessStartTimeMatches({
-      started_at: parentRecord.started_at
-    }, {
-      alive: true,
-      startedAt: owner.parentStartedAt
-    })) return false
-  }
-  return normalizedProcessName(owner && owner.processName) === 'python' &&
-    vspListenerCommandMatches(owner && owner.commandLine, target.port)
 }
 
-const recordedVspListenerOwner = (owner, target) => {
-  if (!target || target.key !== 'vision_snapshot_processor') return false
+const recordedSealedListenerOwner = async (owner, target) => {
+  const requiredClass = SEALED_LISTENER_CLASS_BY_TARGET[target && target.key]
+  if (!requiredClass) return false
   const pidState = readPidState()
   const entries = Array.isArray(pidState.processes) ? pidState.processes : []
-  return entries.some((entry) => vspListenerRegistryEntryMatches(entry, owner, target))
+  const candidates = entries.filter((entry) =>
+    entry && entry.ownership_class === requiredClass &&
+    Number(entry.pid) === Number(owner && owner.pid) &&
+    Number(entry.expected_port) === Number(target && target.port)
+  )
+  if (candidates.length !== 1) return false
+  const validation = await validateSealedListenerEntry(candidates[0], requiredClass)
+  return validation.valid && validation.listenerPid === Number(owner && owner.pid)
 }
 
-const isReclaimableManagedPortOwner = (owner, target) => {
+const isReclaimableManagedPortOwner = async (owner, target) => {
   const processName = normalizedProcessName(owner && owner.processName)
   if (!processName || EXTERNAL_PROCESS_DENY_LIST.has(processName)) {
     return false
@@ -1515,8 +1497,8 @@ const isReclaimableManagedPortOwner = (owner, target) => {
   if (allowed.size > 0 && !allowed.has(processName)) {
     return false
   }
-  if (target && target.key === 'vision_snapshot_processor') {
-    return recordedVspListenerOwner(owner, target)
+  if (SEALED_LISTENER_CLASS_BY_TARGET[target && target.key]) {
+    return recordedSealedListenerOwner(owner, target)
   }
   const commandLine = String(owner && owner.commandLine || '')
   return (
@@ -1552,9 +1534,10 @@ const reclaimManagedPortResidue = async (options) => {
   }
   for (const target of targets) {
     const owners = await listeningPortProcessOwners(target.port)
-    const reclaimable = owners.filter((owner) =>
-      isReclaimableManagedPortOwner(owner, target)
-    )
+    const reclaimable = []
+    if (owners.length === 1 && await isReclaimableManagedPortOwner(owners[0], target)) {
+      reclaimable.push(owners[0])
+    }
     const targetSummary = {
       key: target.key,
       label: target.label,
@@ -1567,10 +1550,12 @@ const reclaimManagedPortResidue = async (options) => {
     summary.skippedOwners += targetSummary.skippedOwners
     for (const owner of reclaimable) {
       const currentOwners = await listeningPortProcessOwners(target.port)
-      const revalidatedOwner = currentOwners.find(
-        (current) => Number(current.pid) === Number(owner.pid)
-      )
-      if (!revalidatedOwner || !isReclaimableManagedPortOwner(revalidatedOwner, target)) {
+      const revalidatedOwner = currentOwners.length === 1 ? currentOwners[0] : null
+      if (
+        !revalidatedOwner ||
+        Number(revalidatedOwner.pid) !== Number(owner.pid) ||
+        !await isReclaimableManagedPortOwner(revalidatedOwner, target)
+      ) {
         summary.skippedOwners += 1
         targetSummary.skippedOwners += 1
         continue

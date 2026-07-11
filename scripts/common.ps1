@@ -359,6 +359,179 @@ function Get-SwordDescendantProcessIds {
     return @($seen.Keys | ForEach-Object { [int]$_ })
 }
 
+function Get-SwordSealedListenerClassSpec {
+    param([Parameter(Mandatory = $true)][string]$OwnershipClass)
+
+    switch ($OwnershipClass) {
+        "vsp_descendant_listener.v0" {
+            return [pscustomobject]@{
+                Role = "vision_snapshot_processor_listener"
+                ExpectedModule = "vision_snapshot_processor.main"
+                ProcessName = "python"
+            }
+        }
+        "home_control_bridge_descendant_listener.v0" {
+            return [pscustomobject]@{
+                Role = "home_assistant_bridge_listener"
+                ExpectedModule = "home_control_bridge.main:app"
+                ProcessName = "python"
+            }
+        }
+        "thought_core_descendant_listener.v0" {
+            return [pscustomobject]@{
+                Role = "thought_core_api_listener"
+                ExpectedModule = "thought_core"
+                ProcessName = "python"
+            }
+        }
+        default { return $null }
+    }
+}
+
+function ConvertTo-SwordOwnershipTimestamp {
+    param([object]$Value)
+    if ($Value -is [DateTimeOffset]) { return ([DateTimeOffset]$Value).ToString("o") }
+    if ($Value -is [DateTime]) { return ([DateTime]$Value).ToString("o") }
+    return [string]$Value
+}
+
+function Get-SwordObjectProperty {
+    param([object]$Object, [Parameter(Mandatory = $true)][string]$Name, [object]$Default = $null)
+    if ($null -eq $Object) { return $Default }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) { return $Default }
+    return $property.Value
+}
+
+function Get-SwordSealedListenerOwnershipSeal {
+    param([Parameter(Mandatory = $true)][object]$Entry)
+    $parts = @(
+        [string](Get-SwordObjectProperty $Entry "ownership_class" "")
+        [string][int](Get-SwordObjectProperty $Entry "pid" 0)
+        ConvertTo-SwordOwnershipTimestamp (Get-SwordObjectProperty $Entry "started_at" "")
+        [string][int](Get-SwordObjectProperty $Entry "ownership_parent_pid" 0)
+        [string][int](Get-SwordObjectProperty $Entry "ownership_root_pid" 0)
+        ConvertTo-SwordOwnershipTimestamp (Get-SwordObjectProperty $Entry "ownership_root_started_at" "")
+        [string](Get-SwordObjectProperty $Entry "expected_module" "")
+        [string][int](Get-SwordObjectProperty $Entry "expected_port" 0)
+    )
+    foreach ($row in @((Get-SwordObjectProperty $Entry "ownership_lineage" @()))) {
+        $parts += ("{0}|{1}|{2}|{3}" -f
+            [int](Get-SwordObjectProperty $row "pid" 0),
+            [int](Get-SwordObjectProperty $row "parent_pid" 0),
+            ([string](Get-SwordObjectProperty $row "process_name" "")).ToLowerInvariant().Replace(".exe", ""),
+            (ConvertTo-SwordOwnershipTimestamp (Get-SwordObjectProperty $row "started_at" "")))
+    }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([Convert]::ToHexString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($parts -join "`n"))))).ToLowerInvariant()
+    }
+    finally { $sha.Dispose() }
+}
+
+function Test-SwordSealedListenerCommand {
+    param([string]$CommandLine, [string]$OwnershipClass, [int]$Port)
+    if ([string]::IsNullOrWhiteSpace($CommandLine) -or $Port -le 0) { return $false }
+    $portPattern = "(?i)(^|\s)--port\s+{0}(?:\s|$)" -f $Port
+    if ($CommandLine -notmatch $portPattern) { return $false }
+    switch ($OwnershipClass) {
+        "vsp_descendant_listener.v0" { return $CommandLine -match '(?i)(^|\s)-m\s+vision_snapshot_processor\.main(?:\s|$)' }
+        "home_control_bridge_descendant_listener.v0" {
+            return $CommandLine -match '(?i)(^|\s)-m\s+uvicorn(?:\s|$)' -and
+                $CommandLine -match '(?i)(^|\s)home_control_bridge\.main:app(?:\s|$)'
+        }
+        "thought_core_descendant_listener.v0" { return $CommandLine -match '(?i)(^|\s)-m\s+thought_core(?:\s|$)' }
+        default { return $false }
+    }
+}
+
+function Test-SwordSealedListenerStart {
+    param([Parameter(Mandatory = $true)][object]$Process, [string]$RecordedAt)
+    try {
+        $delta = ([DateTimeOffset]$Process.StartTime) - [DateTimeOffset]::Parse($RecordedAt)
+        return [Math]::Abs($delta.TotalMilliseconds) -le 2000
+    }
+    catch { return $false }
+}
+
+function Test-SwordSealedDescendantListenerEntry {
+    param(
+        [Parameter(Mandatory = $true)][object]$Entry,
+        [string]$RequiredOwnershipClass = "",
+        [switch]$SimulateInspectionFailure
+    )
+
+    $invalid = { param($Reason) [pscustomobject]@{ Valid = $false; Reason = $Reason; ListenerPid = 0; LiveChainPids = @() } }
+    if ($SimulateInspectionFailure) { return & $invalid "inspection_failed" }
+    $ownershipClass = [string](Get-SwordObjectProperty $Entry "ownership_class" "")
+    $spec = Get-SwordSealedListenerClassSpec -OwnershipClass $ownershipClass
+    if ($null -eq $spec -or (-not [string]::IsNullOrWhiteSpace($RequiredOwnershipClass) -and $ownershipClass -cne $RequiredOwnershipClass)) {
+        return & $invalid "class_invalid"
+    }
+    $storedSeal = [string](Get-SwordObjectProperty $Entry "ownership_seal" "")
+    if ($storedSeal -notmatch '^[0-9a-f]{64}$' -or (Get-SwordSealedListenerOwnershipSeal $Entry) -cne $storedSeal) {
+        return & $invalid "seal_invalid"
+    }
+    if ([string](Get-SwordObjectProperty $Entry "role" "") -cne $spec.Role -or
+        [string](Get-SwordObjectProperty $Entry "expected_module" "") -cne $spec.ExpectedModule) {
+        return & $invalid "service_invalid"
+    }
+    $listenerPid = [int](Get-SwordObjectProperty $Entry "pid" 0)
+    $parentPid = [int](Get-SwordObjectProperty $Entry "ownership_parent_pid" 0)
+    $rootPid = [int](Get-SwordObjectProperty $Entry "ownership_root_pid" 0)
+    $port = [int](Get-SwordObjectProperty $Entry "expected_port" 0)
+    if ($listenerPid -le 0 -or $parentPid -le 0 -or $rootPid -le 0 -or $port -le 0) { return & $invalid "correlation_invalid" }
+    try {
+        $listener = Get-Process -Id $listenerPid -ErrorAction Stop
+        $identity = Get-CimInstance Win32_Process -Filter "ProcessId = $listenerPid" -ErrorAction Stop
+        $owners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Stop |
+            Where-Object { [string]$_.LocalAddress -in @("127.0.0.1", "::1") } |
+            Select-Object -ExpandProperty OwningProcess -Unique)
+    }
+    catch { return & $invalid "inspection_failed" }
+    if ($owners.Count -ne 1 -or [int]$owners[0] -ne $listenerPid) { return & $invalid "port_owner_invalid" }
+    $processName = ([string]$listener.ProcessName).ToLowerInvariant().Replace(".exe", "")
+    if ($processName -cne $spec.ProcessName -or [int]$identity.ParentProcessId -ne $parentPid -or
+        -not (Test-SwordSealedListenerStart $listener ([string](Get-SwordObjectProperty $Entry "started_at" ""))) -or
+        -not (Test-SwordSealedListenerCommand ([string]$identity.CommandLine) $ownershipClass $port)) {
+        return & $invalid "listener_identity_invalid"
+    }
+    $lineage = @((Get-SwordObjectProperty $Entry "ownership_lineage" @()))
+    $rootStartedAt = ConvertTo-SwordOwnershipTimestamp (Get-SwordObjectProperty $Entry "ownership_root_started_at" "")
+    if ($lineage.Count -eq 0 -or $lineage.Count -gt 8 -or
+        [int](Get-SwordObjectProperty $lineage[0] "pid" 0) -ne $parentPid -or
+        [int](Get-SwordObjectProperty $lineage[-1] "pid" 0) -ne $rootPid -or
+        (ConvertTo-SwordOwnershipTimestamp (Get-SwordObjectProperty $lineage[-1] "started_at" "")) -cne $rootStartedAt) {
+        return & $invalid "lineage_invalid"
+    }
+    $liveChain = @($listenerPid)
+    for ($index = 0; $index -lt $lineage.Count; $index++) {
+        $row = $lineage[$index]
+        $rowPid = [int](Get-SwordObjectProperty $row "pid" 0)
+        $rowParentPid = [int](Get-SwordObjectProperty $row "parent_pid" 0)
+        $rowName = ([string](Get-SwordObjectProperty $row "process_name" "")).ToLowerInvariant().Replace(".exe", "")
+        $rowStartedAt = ConvertTo-SwordOwnershipTimestamp (Get-SwordObjectProperty $row "started_at" "")
+        if ($rowPid -le 0 -or $rowParentPid -le 0 -or [string]::IsNullOrWhiteSpace($rowName) -or [string]::IsNullOrWhiteSpace($rowStartedAt)) {
+            return & $invalid "lineage_invalid"
+        }
+        if ($index + 1 -lt $lineage.Count -and $rowParentPid -ne [int](Get-SwordObjectProperty $lineage[$index + 1] "pid" 0)) {
+            return & $invalid "lineage_invalid"
+        }
+        $runtime = Get-Process -Id $rowPid -ErrorAction SilentlyContinue
+        $runtimeIdentity = Get-CimInstance Win32_Process -Filter "ProcessId = $rowPid" -ErrorAction SilentlyContinue
+        if ($null -ne $runtime -or $null -ne $runtimeIdentity) {
+            if ($null -eq $runtime -or $null -eq $runtimeIdentity -or
+                ([string]$runtime.ProcessName).ToLowerInvariant().Replace(".exe", "") -cne $rowName -or
+                -not (Test-SwordSealedListenerStart $runtime $rowStartedAt) -or
+                [int]$runtimeIdentity.ParentProcessId -ne $rowParentPid) {
+                return & $invalid "lineage_changed"
+            }
+            $liveChain += $rowPid
+        }
+    }
+    return [pscustomobject]@{ Valid = $true; Reason = "owned"; ListenerPid = $listenerPid; LiveChainPids = @($liveChain | Sort-Object -Unique -Descending) }
+}
+
 function Write-SwordModuleStatus {
     param(
         [Parameter(Mandatory = $true)][string]$StatusDir,

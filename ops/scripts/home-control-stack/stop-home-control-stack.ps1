@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "..\..\..\scripts\common.ps1")
 
 function Resolve-StackStateDir {
     param(
@@ -170,20 +171,6 @@ function Read-ChildProcessIds {
     }
 }
 
-function Test-VisionSnapshotListenerCommand {
-    param(
-        [string]$CommandLine,
-        [int]$Port
-    )
-    if ([string]::IsNullOrWhiteSpace($CommandLine) -or $Port -le 0) {
-        return $false
-    }
-    return (
-        $CommandLine -match '(?i)(^|\s)-m\s+vision_snapshot_processor\.main(?:\s|$)' -and
-        $CommandLine -match ("(?i)(^|\s)--port\s+{0}(?:\s|$)" -f $Port)
-    )
-}
-
 function ConvertTo-OwnershipTimestamp {
     param([object]$Value)
     if ($Value -is [DateTimeOffset]) {
@@ -195,149 +182,127 @@ function ConvertTo-OwnershipTimestamp {
     return [string]$Value
 }
 
-function Get-VisionSnapshotOwnershipSeal {
-    param([Parameter(Mandatory = $true)][object]$Entry)
-    $parts = @(
-        "vsp_descendant_listener.v0"
-        [string][int](Get-ObjectProperty -Object $Entry -Name "pid" -Default 0)
-        ConvertTo-OwnershipTimestamp (Get-ObjectProperty -Object $Entry -Name "started_at" -Default "")
-        [string][int](Get-ObjectProperty -Object $Entry -Name "ownership_parent_pid" -Default 0)
-        [string][int](Get-ObjectProperty -Object $Entry -Name "ownership_root_pid" -Default 0)
-        ConvertTo-OwnershipTimestamp (Get-ObjectProperty -Object $Entry -Name "ownership_root_started_at" -Default "")
-        [string](Get-ObjectProperty -Object $Entry -Name "expected_module" -Default "")
-        [string][int](Get-ObjectProperty -Object $Entry -Name "expected_port" -Default 0)
+function Test-ExactIntegerValue {
+    param(
+        [object]$Value,
+        [long]$ExpectedValue
     )
-    foreach ($row in @((Get-ObjectProperty -Object $Entry -Name "ownership_lineage" -Default @()))) {
-        $parts += (
-            "{0}|{1}|{2}|{3}" -f
-            [int](Get-ObjectProperty -Object $row -Name "pid" -Default 0),
-            [int](Get-ObjectProperty -Object $row -Name "parent_pid" -Default 0),
-            [string](Get-ObjectProperty -Object $row -Name "process_name" -Default ""),
-            (ConvertTo-OwnershipTimestamp (Get-ObjectProperty -Object $row -Name "started_at" -Default ""))
-        )
-    }
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $bytes = [Text.Encoding]::UTF8.GetBytes(($parts -join "`n"))
-        return ([Convert]::ToHexString($sha.ComputeHash($bytes))).ToLowerInvariant()
-    }
-    finally {
-        $sha.Dispose()
-    }
+    return (
+        $Value -is [byte] -or $Value -is [sbyte] -or
+        $Value -is [short] -or $Value -is [ushort] -or
+        $Value -is [int] -or $Value -is [uint] -or
+        $Value -is [long] -or $Value -is [ulong]
+    ) -and $Value -eq $ExpectedValue
 }
 
-function Test-VisionSnapshotListenerEntryOwned {
+function Test-LegacyV2DefaultOwnershipBundle {
     param([Parameter(Mandatory = $true)][object]$Entry)
 
-    if ($env:NODE_ENV -eq "test" -and $env:HOME_CONTROL_STACK_STOP_TEST_VSP_INSPECTION_FAILURE -eq "true") {
-        Write-Host "VSP listener ownership unavailable: inspection_failed"
+    $requiredFields = @(
+        "ownership_class",
+        "ownership_root_pid",
+        "ownership_root_started_at",
+        "ownership_parent_pid",
+        "ownership_lineage",
+        "ownership_seal",
+        "expected_module",
+        "expected_port"
+    )
+    foreach ($field in $requiredFields) {
+        if ($null -eq $Entry.PSObject.Properties[$field]) {
+            return $false
+        }
+    }
+    foreach ($field in @(
+        "ownership_class",
+        "ownership_root_started_at",
+        "ownership_seal",
+        "expected_module"
+    )) {
+        $value = $Entry.PSObject.Properties[$field].Value
+        if ($value -isnot [string] -or $value.Length -ne 0) {
+            return $false
+        }
+    }
+    foreach ($field in @("ownership_root_pid", "ownership_parent_pid", "expected_port")) {
+        if (-not (Test-ExactIntegerValue -Value $Entry.PSObject.Properties[$field].Value -ExpectedValue 0)) {
+            return $false
+        }
+    }
+    $lineage = $Entry.PSObject.Properties["ownership_lineage"].Value
+    if ($lineage -isnot [Array] -or $lineage.Count -ne 0) {
         return $false
     }
-    if ([string](Get-ObjectProperty -Object $Entry -Name "ownership_class" -Default "") -ne "vsp_descendant_listener.v0") {
-        Write-Host "VSP listener ownership unavailable: class_invalid"
+    $stopStrategyProperty = $Entry.PSObject.Properties["stop_strategy"]
+    if ($null -eq $stopStrategyProperty) {
         return $false
     }
-    $storedSeal = [string](Get-ObjectProperty -Object $Entry -Name "ownership_seal" -Default "")
+    $stopStrategy = $stopStrategyProperty.Value
+    return $stopStrategy -is [string] -and $stopStrategy -ceq "managed_tree"
+}
+
+function Test-SealedDescendantListenerRecordShape {
+    param(
+        [Parameter(Mandatory = $true)][object]$Entry,
+        [int]$RegistrySchemaVersion = 0
+    )
+
     if (
-        $storedSeal -notmatch '^[0-9a-f]{64}$' -or
-        (Get-VisionSnapshotOwnershipSeal -Entry $Entry) -cne $storedSeal
+        $RegistrySchemaVersion -eq 2 -and
+        (Test-LegacyV2DefaultOwnershipBundle -Entry $Entry)
     ) {
-        Write-Host "VSP listener ownership unavailable: seal_invalid"
-        return $false
-    }
-    if (
-        [string](Get-ObjectProperty -Object $Entry -Name "role" -Default "") -ne "vision_snapshot_processor_listener" -or
-        [string](Get-ObjectProperty -Object $Entry -Name "expected_module" -Default "") -ne "vision_snapshot_processor.main"
-    ) {
-        Write-Host "VSP listener ownership unavailable: role_invalid"
-        return $false
-    }
-    $listenerPid = [int](Get-ObjectProperty -Object $Entry -Name "pid" -Default 0)
-    $parentPid = [int](Get-ObjectProperty -Object $Entry -Name "ownership_parent_pid" -Default 0)
-    $rootPid = [int](Get-ObjectProperty -Object $Entry -Name "ownership_root_pid" -Default 0)
-    $port = [int](Get-ObjectProperty -Object $Entry -Name "expected_port" -Default 0)
-    if ($listenerPid -le 0 -or $parentPid -le 0 -or $rootPid -le 0 -or $port -le 0) {
-        Write-Host "VSP listener ownership unavailable: correlation_invalid"
-        return $false
-    }
-    $listener = Get-Process -Id $listenerPid -ErrorAction SilentlyContinue
-    $identity = Get-CimInstance Win32_Process -Filter "ProcessId = $listenerPid" -ErrorAction SilentlyContinue
-    if (
-        $null -eq $listener -or $null -eq $identity -or
-        -not (Test-ProcessNameAllowed -ProcessName ([string]$listener.ProcessName) -AllowedProcessNames @("python")) -or
-        -not (Test-ProcessStartTimeMatches -Process $listener -RecordedAt ([string](Get-ObjectProperty -Object $Entry -Name "started_at" -Default ""))) -or
-        [int]$identity.ParentProcessId -ne $parentPid -or
-        -not (Test-VisionSnapshotListenerCommand -CommandLine ([string]$identity.CommandLine) -Port $port)
-    ) {
-        Write-Host "VSP listener ownership unavailable: listener_identity_invalid"
-        return $false
-    }
-    $portOwners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
-    if ($portOwners.Count -ne 1 -or [int]$portOwners[0] -ne $listenerPid) {
-        Write-Host "VSP listener ownership unavailable: port_owner_invalid"
         return $false
     }
 
-    $rootStartedAt = ConvertTo-OwnershipTimestamp (Get-ObjectProperty -Object $Entry -Name "ownership_root_started_at" -Default "")
-    if ([string]::IsNullOrWhiteSpace($rootStartedAt)) {
-        Write-Host "VSP listener ownership unavailable: root_time_invalid"
-        return $false
-    }
-    $lineage = @((Get-ObjectProperty -Object $Entry -Name "ownership_lineage" -Default @()))
-    if (
-        $lineage.Count -eq 0 -or $lineage.Count -gt 8 -or
-        [int](Get-ObjectProperty -Object $lineage[0] -Name "pid" -Default 0) -ne $parentPid -or
-        [int](Get-ObjectProperty -Object $lineage[-1] -Name "pid" -Default 0) -ne $rootPid -or
-        (ConvertTo-OwnershipTimestamp (Get-ObjectProperty -Object $lineage[-1] -Name "started_at" -Default "")) -ne $rootStartedAt
-    ) {
-        Write-Host "VSP listener ownership unavailable: lineage_invalid"
-        return $false
-    }
-    for ($index = 0; $index -lt $lineage.Count; $index++) {
-        $ancestorRecord = $lineage[$index]
-        $ancestorPid = [int](Get-ObjectProperty -Object $ancestorRecord -Name "pid" -Default 0)
-        $ancestorParentPid = [int](Get-ObjectProperty -Object $ancestorRecord -Name "parent_pid" -Default 0)
-        $ancestorName = Normalize-ProcessName -Name ([string](Get-ObjectProperty -Object $ancestorRecord -Name "process_name" -Default ""))
-        $ancestorStartedAt = ConvertTo-OwnershipTimestamp (Get-ObjectProperty -Object $ancestorRecord -Name "started_at" -Default "")
-        if (
-            $ancestorPid -le 0 -or $ancestorParentPid -le 0 -or
-            [string]::IsNullOrWhiteSpace($ancestorName) -or
-            [string]::IsNullOrWhiteSpace($ancestorStartedAt) -or
-            $ExternalProcessDenyList -contains $ancestorName
-        ) {
-            Write-Host "VSP listener ownership unavailable: lineage_invalid"
-            return $false
-        }
-        if ($index + 1 -lt $lineage.Count) {
-            $nextPid = [int](Get-ObjectProperty -Object $lineage[$index + 1] -Name "pid" -Default 0)
-            if ($ancestorParentPid -ne $nextPid) {
-                Write-Host "VSP listener ownership unavailable: lineage_invalid"
-                return $false
-            }
-        }
-        $ancestor = Get-Process -Id $ancestorPid -ErrorAction SilentlyContinue
-        $ancestorIdentity = Get-CimInstance Win32_Process -Filter "ProcessId = $ancestorPid" -ErrorAction SilentlyContinue
-        if ($null -ne $ancestor -or $null -ne $ancestorIdentity) {
-            if (
-                $null -eq $ancestor -or $null -eq $ancestorIdentity -or
-                (Normalize-ProcessName -Name ([string]$ancestor.ProcessName)) -ne $ancestorName -or
-                -not (Test-ProcessStartTimeMatches -Process $ancestor -RecordedAt $ancestorStartedAt) -or
-                [int]$ancestorIdentity.ParentProcessId -ne $ancestorParentPid
-            ) {
-                Write-Host "VSP listener ownership unavailable: lineage_changed"
-                return $false
-            }
+    foreach ($field in @(
+        "ownership_seal",
+        "ownership_root_pid",
+        "ownership_root_started_at",
+        "ownership_parent_pid",
+        "ownership_lineage",
+        "expected_module",
+        "expected_port"
+    )) {
+        if ($null -ne $Entry.PSObject.Properties[$field]) {
+            return $true
         }
     }
-    return $true
+    $stopStrategy = [string](Get-ObjectProperty -Object $Entry -Name "stop_strategy" -Default "")
+    return $stopStrategy -ceq "role_scoped_descendant"
 }
 
 function Get-ManagedTargetPids {
-    param([Parameter(Mandatory = $true)][object]$Entry)
-    if ([string](Get-ObjectProperty -Object $Entry -Name "ownership_class" -Default "") -eq "vsp_descendant_listener.v0") {
-        if (Test-VisionSnapshotListenerEntryOwned -Entry $Entry) {
+    param(
+        [Parameter(Mandatory = $true)][object]$Entry,
+        [int]$RegistrySchemaVersion = 0
+    )
+    $ownershipClass = [string](Get-ObjectProperty -Object $Entry -Name "ownership_class" -Default "")
+    $sealedRecordShape = Test-SealedDescendantListenerRecordShape `
+        -Entry $Entry `
+        -RegistrySchemaVersion $RegistrySchemaVersion
+    $sealedClassSpec = if ([string]::IsNullOrWhiteSpace($ownershipClass)) { $null } else {
+        Get-SwordSealedListenerClassSpec -OwnershipClass $ownershipClass
+    }
+    if ($null -ne $sealedClassSpec) {
+        $inspectionFailure = (
+            $env:NODE_ENV -eq "test" -and
+            (
+                $env:HOME_CONTROL_STACK_STOP_TEST_VSP_INSPECTION_FAILURE -eq "true" -or
+                $env:HOME_CONTROL_STACK_STOP_TEST_REVALIDATE_FAILURE -eq "true"
+            )
+        )
+        $validation = Test-SwordSealedDescendantListenerEntry `
+            -Entry $Entry `
+            -RequiredOwnershipClass $ownershipClass `
+            -SimulateInspectionFailure:$inspectionFailure
+        if ($validation.Valid) {
             return @([int](Get-ObjectProperty -Object $Entry -Name "pid" -Default 0))
         }
+        Write-Host "Sealed descendant listener ownership unavailable: $($validation.Reason)"
+        return @()
+    }
+    if ($sealedRecordShape) {
+        Write-Host "Sealed descendant listener ownership unavailable: class_invalid"
         return @()
     }
     $targetIds = @()
@@ -380,13 +345,16 @@ function Test-ProcessNameAllowed {
 }
 
 function Stop-ManagedProcessEntry {
-    param([Parameter(Mandatory = $true)][object]$Entry)
+    param(
+        [Parameter(Mandatory = $true)][object]$Entry,
+        [int]$RegistrySchemaVersion = 0
+    )
 
     $name = [string](Get-ObjectProperty -Object $Entry -Name "name" -Default "unknown")
     $module = [string](Get-ObjectProperty -Object $Entry -Name "module" -Default "")
     $role = [string](Get-ObjectProperty -Object $Entry -Name "role" -Default "")
     $allowedNames = @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $Entry -Name "allowed_process_names" -Default @()))
-    $targetIds = @(Get-ManagedTargetPids -Entry $Entry)
+    $targetIds = @(Get-ManagedTargetPids -Entry $Entry -RegistrySchemaVersion $RegistrySchemaVersion)
     if ($targetIds.Count -eq 0) {
         return
     }
@@ -402,21 +370,35 @@ function Stop-ManagedProcessEntry {
             continue
         }
         $ownershipClass = [string](Get-ObjectProperty -Object $Entry -Name "ownership_class" -Default "")
-        if ($ownershipClass -eq "vsp_descendant_listener.v0") {
-            if (-not (Test-VisionSnapshotListenerEntryOwned -Entry $Entry)) {
-                Write-Host "skipped PID $pidValue (VSP listener identity changed before termination)"
+        $sealedClassSpec = if ([string]::IsNullOrWhiteSpace($ownershipClass)) { $null } else {
+            Get-SwordSealedListenerClassSpec -OwnershipClass $ownershipClass
+        }
+        if ($null -ne $sealedClassSpec) {
+            $inspectionFailure = (
+                $env:NODE_ENV -eq "test" -and
+                (
+                    $env:HOME_CONTROL_STACK_STOP_TEST_VSP_INSPECTION_FAILURE -eq "true" -or
+                    $env:HOME_CONTROL_STACK_STOP_TEST_REVALIDATE_FAILURE -eq "true"
+                )
+            )
+            $validation = Test-SwordSealedDescendantListenerEntry `
+                -Entry $Entry `
+                -RequiredOwnershipClass $ownershipClass `
+                -SimulateInspectionFailure:$inspectionFailure
+            if (-not $validation.Valid -or [int]$validation.ListenerPid -ne $pidValue) {
+                Write-Host "skipped PID $pidValue (sealed listener identity changed before termination: $($validation.Reason))"
                 continue
             }
             if ($DryRun) {
-                Write-Host "[dry-run] stop PID $pidValue python [vision_snapshot_processor_listener]"
+                Write-Host "[dry-run] stop PID $pidValue python [sealed_descendant_listener]"
                 continue
             }
             try {
                 Stop-Process -Id $pidValue -Force -ErrorAction Stop
-                Write-Host "stopped PID $pidValue python [vision_snapshot_processor_listener]"
+                Write-Host "stopped PID $pidValue python [sealed_descendant_listener]"
             }
             catch {
-                Write-Warning "failed to stop VSP listener PID $pidValue"
+                Write-Warning "failed to stop sealed descendant listener PID $pidValue"
             }
             continue
         }
@@ -470,18 +452,31 @@ function Stop-ManagedProcessEntry {
 }
 
 $state = Read-PidState
+$registrySchemaVersion = 0
+if ($null -ne $state) {
+    $schemaValue = Get-ObjectProperty -Object $state -Name "schema_version" -Default $null
+    if (Test-ExactIntegerValue -Value $schemaValue -ExpectedValue 2) {
+        $registrySchemaVersion = 2
+    }
+}
 $managedEntries = @()
 $preStopTargetIds = @()
 if ($null -ne $state -and $null -ne $state.processes) {
     foreach ($entry in $state.processes) {
-        $targets = @(Get-ManagedTargetPids -Entry $entry)
+        $targets = @(Get-ManagedTargetPids -Entry $entry -RegistrySchemaVersion $registrySchemaVersion)
         if ($targets.Count -gt 0) {
             $managedEntries += $entry
             $preStopTargetIds += $targets
         }
-        elseif (
-            [string](Get-ObjectProperty -Object $entry -Name "ownership_class" -Default "") -eq "vsp_descendant_listener.v0"
-        ) {
+        else {
+            $entryOwnershipClass = [string](Get-ObjectProperty -Object $entry -Name "ownership_class" -Default "")
+            $entrySealedRecordShape = Test-SealedDescendantListenerRecordShape `
+                -Entry $entry `
+                -RegistrySchemaVersion $registrySchemaVersion
+            $entrySealedClassSpec = if ([string]::IsNullOrWhiteSpace($entryOwnershipClass)) { $null } else {
+                Get-SwordSealedListenerClassSpec -OwnershipClass $entryOwnershipClass
+            }
+            if ($null -eq $entrySealedClassSpec -and -not $entrySealedRecordShape) { continue }
             $unverifiedPid = [int](Get-ObjectProperty -Object $entry -Name "pid" -Default 0)
             if ($unverifiedPid -gt 0 -and $null -ne (Get-Process -Id $unverifiedPid -ErrorAction SilentlyContinue)) {
                 $preStopTargetIds += $unverifiedPid
@@ -503,7 +498,9 @@ else {
         }
     }
     for ($index = $managedEntries.Count - 1; $index -ge 0; $index--) {
-        Stop-ManagedProcessEntry -Entry $managedEntries[$index]
+        Stop-ManagedProcessEntry `
+            -Entry $managedEntries[$index] `
+            -RegistrySchemaVersion $registrySchemaVersion
     }
 }
 

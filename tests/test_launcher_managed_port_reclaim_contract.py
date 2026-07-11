@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import socket
@@ -228,10 +229,13 @@ class LauncherFixture:
         wait_for(lambda: port_is_listening(port))
         return process, port
 
-    def write_pid_state(self, entry: dict) -> None:
+    def write_pid_state(self, entry: dict, *, schema_version: int | None = None) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        state = {"processes": [entry]}
+        if schema_version is not None:
+            state["schema_version"] = schema_version
         (self.state_dir / "pids.json").write_text(
-            json.dumps({"processes": [entry]}), encoding="utf-8"
+            json.dumps(state), encoding="utf-8"
         )
 
     def post(self, route: str, payload: dict) -> dict:
@@ -301,14 +305,36 @@ class LauncherFixture:
             "organs/speech-input/ai-talk-core",
         ):
             (self.workspace / relative_path).mkdir(parents=True, exist_ok=True)
-        (thought_core / "services" / "thought-core").mkdir(parents=True)
+        thought_package = thought_core / "services" / "thought-core" / "src" / "thought_core"
+        thought_package.mkdir(parents=True)
+        (thought_package / "__init__.py").write_text("", encoding="utf-8")
+        (thought_package / "__main__.py").write_text(
+            """import argparse
+import socket
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--host')
+parser.add_argument('--port', type=int, required=True)
+args = parser.parse_args()
+listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(('127.0.0.1', args.port))
+listener.listen()
+try:
+    while True:
+        connection, _ = listener.accept()
+        connection.close()
+finally:
+    listener.close()
+""",
+            encoding="utf-8",
+        )
         (thought_core / ".env").write_text("THOUGHT_CORE_LLM_MODE=off\n", encoding="utf-8")
         (scripts / "start-thought-core.ps1").write_text(
-            """param([string]$HostName, [int]$Port, [string]$StatusDir)
-$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
-$listener.Start()
-try { while ($true) { Start-Sleep -Milliseconds 100 } }
-finally { $listener.Stop() }
+            f"""param([string]$HostName, [int]$Port, [string]$StatusDir)
+$env:PYTHONPATH = Join-Path $PSScriptRoot '..\\services\\thought-core\\src'
+& '{sys.executable.replace("'", "''")}' -m thought_core --host $HostName --port $Port
+exit $LASTEXITCODE
 """,
             encoding="utf-8",
         )
@@ -524,6 +550,172 @@ finally:
                 pid_state_path.write_text(json.dumps(state), encoding="utf-8")
                 return state["processes"][index]
         raise AssertionError("VSP listener record missing")
+
+    def configure_sealed_target(self, service: str, port: int) -> None:
+        is_home = service == "home"
+        saved = self.post(
+            "/api/save-config",
+            {
+                "profileId": "thought-core-v0",
+                "options": {
+                    "SkipVoicevoxCheck": True,
+                    "SkipHomeAssistantBridge": not is_home,
+                    "HomeAssistantBridgePort": port if is_home else unused_loopback_port(),
+                    "SkipEnvironmentState": True,
+                    "SkipMediapipe": True,
+                    "SkipVisionSnapshotProcessor": True,
+                    "SkipAituber": True,
+                    "SkipTouchDesignerGui": True,
+                    "EnableThoughtCore": not is_home,
+                    "EnableThoughtCoreWatch": False,
+                    "ThoughtCorePort": port if not is_home else unused_loopback_port(),
+                },
+            },
+        )
+        assert saved["ok"] is True
+
+    def start_sealed_service_fixture(
+        self, service: str, port: int, *, root_exit_seconds: float = 5.0
+    ) -> tuple[subprocess.Popen[str], dict]:
+        self.vsp_fixture_started = True
+        modules = self.root / f"sealed-{service}-modules"
+        package_name = "uvicorn" if service == "home" else "thought_core"
+        package = modules / package_name
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "__main__.py").write_text(
+            """import argparse
+import socket
+
+parser = argparse.ArgumentParser()
+parser.add_argument('app', nargs='?')
+parser.add_argument('--host')
+parser.add_argument('--port', type=int, required=True)
+args = parser.parse_args()
+listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(('127.0.0.1', args.port))
+listener.listen()
+try:
+    while True:
+        connection, _ = listener.accept()
+        connection.close()
+finally:
+    listener.close()
+""",
+            encoding="utf-8",
+        )
+        root_source = """import os, subprocess, sys, time
+if '--sealed-parent' in sys.argv:
+    service = sys.argv[sys.argv.index('--service') + 1]
+    port = sys.argv[sys.argv.index('--port') + 1]
+    command = [sys.executable, '-m', 'uvicorn', 'home_control_bridge.main:app', '--host', '127.0.0.1', '--port', port] if service == 'home' else [sys.executable, '-m', 'thought_core', '--host', '127.0.0.1', '--port', port]
+    subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=os.environ.copy())
+    time.sleep(30)
+else:
+    source = sys.argv[sys.argv.index('--source') + 1]
+    subprocess.Popen([sys.executable, '-c', source, '--sealed-parent', '--service', sys.argv[sys.argv.index('--service') + 1], '--port', sys.argv[sys.argv.index('--port') + 1]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=os.environ.copy())
+    time.sleep(__ROOT_EXIT_SECONDS__)
+""".replace("__ROOT_EXIT_SECONDS__", repr(root_exit_seconds))
+        root = subprocess.Popen(
+            [sys.executable, "-c", root_source, "--source", root_source, "--service", service, "--port", str(port)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, "PYTHONPATH": str(modules)},
+        )
+        self.children.append(root)
+        wait_for(lambda: port_is_listening(port), timeout=8)
+        inspect_script = f"""
+$rootPid = {root.pid}
+$listenerPid = [int](@(Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess -Unique)[0])
+$listener = Get-Process -Id $listenerPid -ErrorAction Stop
+$identity = Get-CimInstance Win32_Process -Filter "ProcessId = $listenerPid" -ErrorAction Stop
+$lineage = @()
+$cursor = [int]$identity.ParentProcessId
+for ($depth = 0; $depth -lt 8 -and $cursor -gt 0; $depth++) {{
+  $runtime = Get-Process -Id $cursor -ErrorAction Stop
+  $item = Get-CimInstance Win32_Process -Filter "ProcessId = $cursor" -ErrorAction Stop
+  $lineage += [pscustomobject]@{{ pid=[int]$cursor; parent_pid=[int]$item.ParentProcessId; process_name=([string]$runtime.ProcessName).ToLowerInvariant().Replace('.exe',''); started_at=([DateTimeOffset]$runtime.StartTime).ToString('o') }}
+  if ($cursor -eq $rootPid) {{ break }}
+  $cursor = [int]$item.ParentProcessId
+}}
+[pscustomobject]@{{ pid=$listenerPid; parent_pid=[int]$identity.ParentProcessId; started_at=([DateTimeOffset]$listener.StartTime).ToString('o'); lineage=$lineage }} | ConvertTo-Json -Depth 6 -Compress
+"""
+        result = subprocess.run(
+            [POWERSHELL, "-NoLogo", "-NoProfile", "-Command", inspect_script],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        if result.returncode != 0:
+            raise AssertionError(f"sealed fixture inspection failed: {result.stderr}")
+        identity = json.loads(result.stdout)
+        ownership_class = (
+            "home_control_bridge_descendant_listener.v0"
+            if service == "home"
+            else "thought_core_descendant_listener.v0"
+        )
+        role = "home_assistant_bridge_listener" if service == "home" else "thought_core_api_listener"
+        expected_module = "home_control_bridge.main:app" if service == "home" else "thought_core"
+        lineage = identity["lineage"] if isinstance(identity["lineage"], list) else [identity["lineage"]]
+        record = {
+            "name": role,
+            "module": "fixture",
+            "role": role,
+            "pid": identity["pid"],
+            "working_directory": "",
+            "command": "",
+            "started_at": identity["started_at"],
+            "stop_strategy": "role_scoped_descendant",
+            "allowed_process_names": ["python"],
+            "child_process_file": "",
+            "ownership_class": ownership_class,
+            "ownership_root_pid": root.pid,
+            "ownership_root_started_at": lineage[-1]["started_at"],
+            "ownership_parent_pid": identity["parent_pid"],
+            "ownership_lineage": lineage,
+            "expected_module": expected_module,
+            "expected_port": port,
+        }
+        parts = [
+            ownership_class,
+            str(record["pid"]),
+            record["started_at"],
+            str(record["ownership_parent_pid"]),
+            str(record["ownership_root_pid"]),
+            record["ownership_root_started_at"],
+            expected_module,
+            str(port),
+            *[
+                f'{row["pid"]}|{row["parent_pid"]}|{row["process_name"]}|{row["started_at"]}'
+                for row in lineage
+            ],
+        ]
+        record["ownership_seal"] = hashlib.sha256("\n".join(parts).encode()).hexdigest()
+        self.write_pid_state(record)
+        self.vsp_fixture_pids.update([record["pid"], *(row["pid"] for row in lineage)])
+        return root, record
+
+    @staticmethod
+    def reseal_record(record: dict) -> dict:
+        updated = dict(record)
+        parts = [
+            updated["ownership_class"],
+            str(updated["pid"]),
+            updated["started_at"],
+            str(updated["ownership_parent_pid"]),
+            str(updated["ownership_root_pid"]),
+            updated["ownership_root_started_at"],
+            updated["expected_module"],
+            str(updated["expected_port"]),
+            *[
+                f'{row["pid"]}|{row["parent_pid"]}|{row["process_name"]}|{row["started_at"]}'
+                for row in updated["ownership_lineage"]
+            ],
+        ]
+        updated["ownership_seal"] = hashlib.sha256("\n".join(parts).encode()).hexdigest()
+        return updated
 
 
 @unittest.skipUnless(NODE and POWERSHELL, "Node and PowerShell are required for launcher port contracts")
@@ -1039,6 +1231,375 @@ class LauncherManagedPortReclaimContractTest(unittest.TestCase):
             self.assertGreaterEqual(payload["managedPortReclaim"]["skippedOwners"], 1)
             self.assertTrue(port_is_listening(port))
             self.assertIsNone(unrelated.poll())
+
+    def test_home_and_thought_sealed_two_hop_listener_stop_after_root_exit(self) -> None:
+        for service in ("home", "thought"):
+            with self.subTest(service=service), LauncherFixture() as fixture:
+                unrelated, _ = fixture.listener(managed=False)
+                port = unused_loopback_port()
+                root, record = fixture.start_sealed_service_fixture(service, port)
+                wait_for(lambda: root.poll() is not None, timeout=5)
+
+                cleanup = fixture.stop_partial_stack()
+                second = fixture.stop_partial_stack()
+
+                self.assertEqual(cleanup.returncode, 0, f"{cleanup.stdout}\n{cleanup.stderr}")
+                self.assertEqual(second.returncode, 0, f"{second.stdout}\n{second.stderr}")
+                wait_for(lambda: not port_is_listening(port))
+                self.assertFalse((fixture.state_dir / "pids.json").exists())
+                self.assertIsNone(unrelated.poll())
+                self.assertEqual(record["working_directory"], "")
+                self.assertEqual(record["command"], "")
+
+    def test_home_and_thought_launcher_reclaim_use_sealed_record(self) -> None:
+        for service in ("home", "thought"):
+            with self.subTest(service=service), LauncherFixture() as fixture:
+                unrelated, _ = fixture.listener(managed=False)
+                port = unused_loopback_port()
+                root, record = fixture.start_sealed_service_fixture(service, port)
+                wait_for(lambda: root.poll() is not None, timeout=5)
+                fixture.configure_sealed_target(service, port)
+
+                payload = fixture.post("/api/reclaim-managed-ports", {})
+
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["managedPortReclaim"]["attempted"], 1)
+                self.assertEqual(
+                    [row["pid"] for row in payload["managedPortReclaim"]["reclaimed"]],
+                    [record["pid"]],
+                )
+                wait_for(lambda: not port_is_listening(port))
+                self.assertIsNone(unrelated.poll())
+                cleanup = fixture.stop_partial_stack()
+                self.assertEqual(cleanup.returncode, 0, f"{cleanup.stdout}\n{cleanup.stderr}")
+
+    def test_home_and_thought_sealed_mutations_fail_closed_with_residue(self) -> None:
+        for service in ("home", "thought"):
+            with self.subTest(service=service), LauncherFixture() as fixture:
+                port = unused_loopback_port()
+                root, original = fixture.start_sealed_service_fixture(service, port)
+                wait_for(lambda: root.poll() is not None, timeout=5)
+                other_class = (
+                    "thought_core_descendant_listener.v0"
+                    if service == "home"
+                    else "home_control_bridge_descendant_listener.v0"
+                )
+                mutations = {
+                    "listener_start_drift": lambda row: fixture.reseal_record(
+                        {**row, "started_at": "2000-01-01T00:00:00+00:00"}
+                    ),
+                    "parent_start_drift": lambda row: fixture.reseal_record(
+                        {
+                            **row,
+                            "ownership_lineage": [
+                                {**row["ownership_lineage"][0], "started_at": "2000-01-01T00:00:00+00:00"},
+                                *row["ownership_lineage"][1:],
+                            ],
+                        }
+                    ),
+                    "parent_replacement": lambda row: fixture.reseal_record(
+                        {**row, "ownership_parent_pid": row["ownership_parent_pid"] + 1}
+                    ),
+                    "seal_mutation": lambda row: {**row, "ownership_seal": "0" * 64},
+                    "missing_seal": lambda row: {key: value for key, value in row.items() if key != "ownership_seal"},
+                    "cross_service": lambda row: fixture.reseal_record(
+                        {**row, "ownership_class": other_class}
+                    ),
+                }
+                for name, mutate in mutations.items():
+                    with self.subTest(service=service, mutation=name):
+                        fixture.write_pid_state(mutate(original))
+                        cleanup = fixture.stop_partial_stack()
+                        self.assertNotEqual(cleanup.returncode, 0)
+                        self.assertIn("stop incomplete", (cleanup.stdout + cleanup.stderr).lower())
+                        self.assertTrue(port_is_listening(port))
+                        self.assertTrue((fixture.state_dir / "pids.json").exists())
+                fixture.write_pid_state(original)
+                cleanup = fixture.stop_partial_stack()
+                self.assertEqual(cleanup.returncode, 0, f"{cleanup.stdout}\n{cleanup.stderr}")
+
+    def test_all_sealed_services_fail_closed_before_generic_cleanup_on_invalid_class(self) -> None:
+        service_classes = {
+            "vsp": "vsp_descendant_listener.v0",
+            "home": "home_control_bridge_descendant_listener.v0",
+            "thought": "thought_core_descendant_listener.v0",
+        }
+        service_roles = {
+            "vsp": "vision_snapshot_processor_listener",
+            "home": "home_assistant_bridge_listener",
+            "thought": "thought_core_api_listener",
+        }
+        selected_service = os.environ.get("HOME_CONTROL_STACK_TEST_SEALED_SERVICE", "")
+        for service, ownership_class in service_classes.items():
+            if selected_service and service != selected_service:
+                continue
+            with self.subTest(service=service), LauncherFixture() as fixture:
+                port = unused_loopback_port()
+                if service == "vsp":
+                    fixture.start_vsp_orphan_fixture(port=port)
+                    wait_for(lambda: fixture.read_vsp_listener_record() is not None, timeout=20)
+                    original = fixture.read_vsp_listener_record()
+                else:
+                    _, original = fixture.start_sealed_service_fixture(
+                        service, port, root_exit_seconds=30.0
+                    )
+                self.assertIsNotNone(original)
+                unrelated_python = subprocess.Popen(
+                    [sys.executable, "-c", "import time; time.sleep(60)"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                fixture.children.append(unrelated_python)
+                cross_service_class = next(value for value in service_classes.values() if value != ownership_class)
+                cross_service_role = next(value for key, value in service_roles.items() if key != service)
+                mutations: list[tuple[str, dict]] = []
+                for class_mutation in ("missing", "empty", "unknown"):
+                    for role_mutation in ("missing", "empty", "unknown", "cross_service"):
+                        mutated = dict(original)
+                        if class_mutation == "missing":
+                            mutated.pop("ownership_class", None)
+                        elif class_mutation == "empty":
+                            mutated["ownership_class"] = ""
+                        else:
+                            mutated["ownership_class"] = "unknown_descendant_listener.v0"
+                        if role_mutation == "missing":
+                            mutated.pop("role", None)
+                        elif role_mutation == "empty":
+                            mutated["role"] = ""
+                        elif role_mutation == "unknown":
+                            mutated["role"] = "unknown_listener_role"
+                        else:
+                            mutated["role"] = cross_service_role
+                        mutations.append((f"{class_mutation}_class_{role_mutation}_role", mutated))
+                mutations.append(("cross_service_class_and_role", {
+                    **original,
+                    "ownership_class": cross_service_class,
+                    "role": cross_service_role,
+                }))
+                generic_fields = {
+                    key: original[key]
+                    for key in (
+                        "name",
+                        "module",
+                        "pid",
+                        "started_at",
+                        "allowed_process_names",
+                        "child_process_file",
+                    )
+                    if key in original
+                }
+                for marker in (
+                    "ownership_seal",
+                    "ownership_root_pid",
+                    "ownership_parent_pid",
+                    "ownership_root_started_at",
+                    "ownership_lineage",
+                ):
+                    mutations.append((f"partial_{marker}", {**generic_fields, marker: original[marker]}))
+                mutations.append(("partial_stop_strategy", {
+                    **generic_fields,
+                    "stop_strategy": "role_scoped_descendant",
+                }))
+                sealed_property_values = {
+                    "ownership_seal": ("", 0, None, [], {"malformed": True}),
+                    "ownership_root_pid": ("", 0, None, [], {"malformed": True}),
+                    "ownership_root_started_at": ("", 0, None, [], {"malformed": True}),
+                    "ownership_parent_pid": ("", 0, None, [], {"malformed": True}),
+                    "ownership_lineage": ("", 0, None, [], {"malformed": True}),
+                    "expected_module": ("", 0, None, [], {"malformed": True}),
+                    "expected_port": ("", 0, None, [], {"malformed": True}),
+                }
+                value_labels = ("empty_string", "zero", "null", "empty_array", "malformed_type")
+                for sealed_property, values in sealed_property_values.items():
+                    for value_label, value in zip(value_labels, values, strict=True):
+                        mutations.append((
+                            f"present_{sealed_property}_{value_label}",
+                            {**generic_fields, sealed_property: value},
+                        ))
+                for mutation_name, mutated in mutations:
+                    with self.subTest(service=service, mutation=mutation_name):
+                        fixture.write_pid_state(mutated, schema_version=3)
+
+                        cleanup = fixture.stop_partial_stack()
+
+                        output = cleanup.stdout + cleanup.stderr
+                        self.assertNotEqual(cleanup.returncode, 0)
+                        self.assertIn("Sealed descendant listener ownership unavailable:", output)
+                        self.assertIn("stop incomplete", output.lower())
+                        self.assertIn(
+                            f"retained PID registry for verification: {original['pid']}",
+                            output,
+                        )
+                        self.assertTrue(port_is_listening(port))
+                        self.assertTrue((fixture.state_dir / "pids.json").exists())
+                        self.assertIsNone(unrelated_python.poll())
+                fixture.write_pid_state(original, schema_version=3)
+                cleanup = fixture.stop_partial_stack()
+                self.assertEqual(cleanup.returncode, 0, f"{cleanup.stdout}\n{cleanup.stderr}")
+                self.assertIsNone(unrelated_python.poll())
+
+    def test_genuine_legacy_nonsealed_entry_uses_generic_direct_cleanup(self) -> None:
+        with LauncherFixture() as fixture:
+            child, port = fixture.listener(managed=True)
+            fixture.write_pid_state({
+                "name": "legacy_generic_listener",
+                "module": "legacy-fixture",
+                "role": "legacy_api",
+                "pid": child.pid,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "allowed_process_names": ["node"],
+                "child_process_file": "",
+            })
+
+            cleanup = fixture.stop_partial_stack()
+
+            self.assertEqual(cleanup.returncode, 0, f"{cleanup.stdout}\n{cleanup.stderr}")
+            wait_for(lambda: child.poll() is not None)
+            self.assertFalse(port_is_listening(port))
+            self.assertFalse((fixture.state_dir / "pids.json").exists())
+
+    def test_exact_v2_default_bundle_uses_prior_generic_cleanup(self) -> None:
+        with LauncherFixture() as fixture:
+            child, port = fixture.listener(managed=True)
+            unrelated_python = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            fixture.children.append(unrelated_python)
+            v2_entry = {
+                "name": "legacy_v2_generic_listener",
+                "module": "legacy-fixture",
+                "role": "legacy_api",
+                "pid": child.pid,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "stop_strategy": "managed_tree",
+                "allowed_process_names": ["node"],
+                "child_process_file": "",
+                "ownership_class": "",
+                "ownership_root_pid": 0,
+                "ownership_root_started_at": "",
+                "ownership_parent_pid": 0,
+                "ownership_lineage": [],
+                "ownership_seal": "",
+                "expected_module": "",
+                "expected_port": 0,
+            }
+            near_default_mutations = {
+                "nondefault_root_pid": {**v2_entry, "ownership_root_pid": 1},
+                "null_seal": {**v2_entry, "ownership_seal": None},
+                "strategy_process_tree": {**v2_entry, "stop_strategy": "process_tree"},
+                "strategy_empty": {**v2_entry, "stop_strategy": ""},
+                "strategy_null": {**v2_entry, "stop_strategy": None},
+                "strategy_unknown": {**v2_entry, "stop_strategy": "unknown"},
+                "strategy_case_title": {**v2_entry, "stop_strategy": "Managed_Tree"},
+                "strategy_case_upper": {**v2_entry, "stop_strategy": "MANAGED_TREE"},
+                "strategy_case_mixed": {**v2_entry, "stop_strategy": "managed_Tree"},
+                "strategy_non_string": {**v2_entry, "stop_strategy": ["managed_tree"]},
+                "partial_bundle": {
+                    key: value for key, value in v2_entry.items() if key != "expected_port"
+                },
+            }
+            for mutation_name, mutated in near_default_mutations.items():
+                with self.subTest(mutation=mutation_name):
+                    fixture.write_pid_state(mutated, schema_version=2)
+                    refused = fixture.stop_partial_stack()
+                    self.assertNotEqual(refused.returncode, 0)
+                    self.assertIn("stop incomplete", (refused.stdout + refused.stderr).lower())
+                    self.assertTrue(port_is_listening(port))
+                    self.assertTrue((fixture.state_dir / "pids.json").exists())
+                    self.assertIsNone(unrelated_python.poll())
+            fixture.write_pid_state(v2_entry, schema_version=2)
+
+            cleanup = fixture.stop_partial_stack()
+
+            self.assertEqual(cleanup.returncode, 0, f"{cleanup.stdout}\n{cleanup.stderr}")
+            wait_for(lambda: child.poll() is not None)
+            self.assertFalse(port_is_listening(port))
+            self.assertFalse((fixture.state_dir / "pids.json").exists())
+            self.assertIsNone(unrelated_python.poll())
+
+    def test_real_v2_sealed_records_still_validate_and_fail_closed(self) -> None:
+        selected_service = os.environ.get("HOME_CONTROL_STACK_TEST_SEALED_SERVICE", "")
+        services = (selected_service,) if selected_service else ("vsp", "home", "thought")
+        for service in services:
+            with self.subTest(service=service), LauncherFixture() as fixture:
+                port = unused_loopback_port()
+                if service == "vsp":
+                    fixture.start_vsp_orphan_fixture(port=port)
+                    wait_for(lambda: fixture.read_vsp_listener_record() is not None, timeout=20)
+                    original = fixture.read_vsp_listener_record()
+                else:
+                    _, original = fixture.start_sealed_service_fixture(
+                        service, port, root_exit_seconds=30.0
+                    )
+                unrelated_python = subprocess.Popen(
+                    [sys.executable, "-c", "import time; time.sleep(60)"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                fixture.children.append(unrelated_python)
+                fixture.write_pid_state(
+                    {**original, "ownership_seal": "0" * 64},
+                    schema_version=2,
+                )
+
+                cleanup = fixture.stop_partial_stack()
+
+                output = cleanup.stdout + cleanup.stderr
+                self.assertNotEqual(cleanup.returncode, 0)
+                self.assertIn("seal_invalid", output)
+                self.assertIn("stop incomplete", output.lower())
+                self.assertTrue(port_is_listening(port))
+                self.assertTrue((fixture.state_dir / "pids.json").exists())
+                self.assertIsNone(unrelated_python.poll())
+                fixture.write_pid_state(original, schema_version=2)
+                restored = fixture.stop_partial_stack()
+                self.assertEqual(restored.returncode, 0, f"{restored.stdout}\n{restored.stderr}")
+
+    def test_sealed_reclaim_source_requires_unique_revalidation_and_no_generic_python(self) -> None:
+        source = LAUNCHER_SERVER.read_text(encoding="utf-8")
+        stop_source = STACK_STOP.read_text(encoding="utf-8")
+        self.assertIn("owners.length === 1", source)
+        self.assertIn("currentOwners.length === 1", source)
+        self.assertIn("validateSealedListenerEntry", source)
+        self.assertIn("Test-SwordSealedDescendantListenerEntry", stop_source)
+        self.assertNotIn("allowedProcessNames: ['python']\n  },\n  thought_core_api", source)
+        for legacy_symbol, owning_source in {
+            "Test-VisionSnapshotListenerCommand": stop_source,
+            "Get-VisionSnapshotOwnershipSeal": stop_source,
+            "Test-VisionSnapshotListenerEntryOwned": stop_source,
+            "vspListenerCommandMatches": source,
+            "vspOwnershipSeal": source,
+            "vspListenerRegistryEntryMatches": source,
+        }.items():
+            self.assertNotIn(legacy_symbol, owning_source)
+
+    def test_home_and_thought_launcher_reclaim_fail_closed_on_duplicate_and_revalidation(self) -> None:
+        modes = {
+            "duplicate_owner": "HOME_CONTROL_LAUNCHER_TEST_DUPLICATE_PORT_OWNER",
+            "revalidation_failure": "HOME_CONTROL_LAUNCHER_TEST_FAIL_SEALED_REVALIDATION",
+        }
+        for service in ("home", "thought"):
+            for mode, environment_name in modes.items():
+                with self.subTest(service=service, mode=mode), LauncherFixture(
+                    {environment_name: "true"}
+                ) as fixture:
+                    port = unused_loopback_port()
+                    fixture.start_sealed_service_fixture(service, port, root_exit_seconds=30.0)
+                    fixture.configure_sealed_target(service, port)
+
+                    payload = fixture.post("/api/reclaim-managed-ports", {})
+
+                    self.assertTrue(payload["ok"])
+                    self.assertEqual(payload["managedPortReclaim"]["attempted"], 0)
+                    self.assertGreaterEqual(payload["managedPortReclaim"]["skippedOwners"], 1)
+                    self.assertTrue(port_is_listening(port))
+                    cleanup = fixture.stop_partial_stack()
+                    self.assertEqual(cleanup.returncode, 0, f"{cleanup.stdout}\n{cleanup.stderr}")
 
     def test_stop_is_idempotent_when_no_test_owned_stack_residue_exists(self) -> None:
         with LauncherFixture() as fixture:
