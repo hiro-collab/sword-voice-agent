@@ -26,7 +26,7 @@ from thought_core.provenance_diagnostics import (  # noqa: E402
 )
 from thought_core.schema import TurnInput  # noqa: E402
 from thought_core.server import (  # noqa: E402
-    _decorate_assistant_event_with_conversation_attempt_ref,
+    _decorate_correlated_event_with_conversation_attempt_ref,
     _is_opaque_conversation_attempt_ref,
     create_server,
 )
@@ -105,11 +105,17 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
             def run_dicts(self, turn, *, event_sink=None):
                 injected = dict(assistant_event)
                 injected["event_id"] = "evt_shared_vector_message"
+                injected["conversation_attempt_ref"] = (
+                    "m4.prepared_sample_attempt:ffffffffffffffffffffffffffffffff"
+                )
                 injected["data"] = dict(assistant_event["data"])
                 events = [
                     {
                         "event_id": "evt_shared_vector_delta",
                         "type": "assistant.speech_delta",
+                        "conversation_attempt_ref": (
+                            "m4.prepared_sample_attempt:ffffffffffffffffffffffffffffffff"
+                        ),
                         "data": {
                             "delta": "synthetic delta",
                             "conversation_attempt_ref": assistant_event["data"][
@@ -122,6 +128,16 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
                         "event_id": "evt_shared_vector_completed",
                         "type": "turn.completed",
                         "data": {"status": "success"},
+                    },
+                    {
+                        "event_id": "evt_shared_vector_motion",
+                        "type": "motion.requested",
+                        "conversation_attempt_ref": "injected:not_authoritative",
+                        "data": {
+                            "schema_version": "motion_stimulus.v0",
+                            "motion_event_id": "mot_evt_shared_vector_001",
+                            "conversation_attempt_ref": "injected:not_authoritative",
+                        },
                     },
                 ]
                 if event_sink is not None:
@@ -168,6 +184,15 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
                             self.assertEqual(
                                 event["data"]["conversation_attempt_ref"], canonical_ref
                             )
+                            self.assertNotIn("conversation_attempt_ref", event)
+                        elif event["type"] == "motion.requested":
+                            self.assertEqual(
+                                event["conversation_attempt_ref"], canonical_ref
+                            )
+                            self.assertNotIn(
+                                "conversation_attempt_ref",
+                                event["data"],
+                            )
                         else:
                             self.assertNotIn("conversation_attempt_ref", event["data"])
             for name, invalid_ref in invalid_refs.items():
@@ -179,6 +204,7 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
                                 "conversation_attempt_ref",
                                 event["data"],
                             )
+                            self.assertNotIn("conversation_attempt_ref", event)
         finally:
             server.shutdown()
             server.server_close()
@@ -197,6 +223,9 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
                     {
                         "event_id": "evt_candidate_delta",
                         "type": "assistant.speech_delta",
+                        "conversation_attempt_ref": (
+                            "m4.prepared_sample_attempt:ffffffffffffffffffffffffffffffff"
+                        ),
                         "data": {
                             "delta": "synthetic assistant delta",
                             "conversation_attempt_ref": "injected:not_authoritative",
@@ -205,6 +234,7 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
                     {
                         "event_id": "evt_candidate_message",
                         "type": "assistant.message",
+                        "conversation_attempt_ref": "C:/injected/private/path.wav",
                         "data": {
                             "speech": "synthetic assistant response",
                             "conversation_attempt_ref": "injected:not_authoritative",
@@ -214,6 +244,16 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
                         "event_id": "evt_candidate_completed",
                         "type": "turn.completed",
                         "data": {"status": "success"},
+                    },
+                    {
+                        "event_id": "evt_candidate_motion",
+                        "type": "motion.requested",
+                        "conversation_attempt_ref": "injected:not_authoritative",
+                        "data": {
+                            "schema_version": "motion_stimulus.v0",
+                            "motion_event_id": "mot_evt_candidate_001",
+                            "conversation_attempt_ref": "injected:not_authoritative",
+                        },
                     },
                 ]
                 if event_sink is not None:
@@ -278,6 +318,16 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
                                 event["data"]["conversation_attempt_ref"],
                                 "m4.prepared_sample_attempt:0123456789abcdef0123456789abcdef",
                             )
+                            self.assertNotIn("conversation_attempt_ref", event)
+                        elif event["type"] == "motion.requested":
+                            self.assertEqual(
+                                event["conversation_attempt_ref"],
+                                "m4.prepared_sample_attempt:0123456789abcdef0123456789abcdef",
+                            )
+                            self.assertNotIn(
+                                "conversation_attempt_ref",
+                                event["data"],
+                            )
                         else:
                             self.assertNotIn(
                                 "conversation_attempt_ref",
@@ -304,45 +354,136 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def test_conversation_attempt_ref_decorator_ignores_missing_invalid_and_plain_turns(
+    def test_assistant_ref_uses_only_validated_turn_context_and_strips_envelope(
         self,
     ) -> None:
-        event = {"type": "assistant.message", "data": {"speech": "response"}}
-        non_assistant_event = {"type": "turn.completed", "data": {"status": "success"}}
-
-        missing = TurnInput(
-            text="private text",
-            turn_id="turn_missing_ref",
-            session_id="session_missing_ref",
+        canonical_ref = (
+            "m4.prepared_sample_attempt:0123456789abcdef0123456789abcdef"
         )
-        invalid = TurnInput(
-            text="private text",
-            turn_id="turn_invalid_ref",
-            session_id="session_invalid_ref",
-            context_refs={"conversation_attempt_ref": "C:/private/path.wav"},
-        )
+        turn_cases = {
+            "canonical": (
+                TurnInput(
+                    text="private text",
+                    turn_id="turn_canonical_ref",
+                    session_id="session_canonical_ref",
+                    context_refs={"conversation_attempt_ref": canonical_ref},
+                ),
+                canonical_ref,
+            ),
+            "missing": (
+                TurnInput(
+                    text="private text",
+                    turn_id="turn_missing_ref",
+                    session_id="session_missing_ref",
+                ),
+                None,
+            ),
+            "malformed": (
+                TurnInput(
+                    text="private text",
+                    turn_id="turn_malformed_ref",
+                    session_id="session_malformed_ref",
+                    context_refs={"conversation_attempt_ref": "malformed"},
+                ),
+                None,
+            ),
+            "path": (
+                TurnInput(
+                    text="private text",
+                    turn_id="turn_path_ref",
+                    session_id="session_path_ref",
+                    context_refs={"conversation_attempt_ref": "C:/private/path.wav"},
+                ),
+                None,
+            ),
+            "private_marker": (
+                TurnInput(
+                    text="private text",
+                    turn_id="turn_private_marker_ref",
+                    session_id="session_private_marker_ref",
+                    context_refs={"conversation_attempt_ref": "private:test-marker"},
+                ),
+                None,
+            ),
+            "plain_mapping": ({"text": "ordinary turn"}, None),
+        }
+        envelope_injections = {
+            "valid_looking": (
+                "m4.prepared_sample_attempt:ffffffffffffffffffffffffffffffff"
+            ),
+            "malformed": "malformed",
+            "path": "C:/injected/private/path.wav",
+            "private_marker": "private:injected-marker",
+        }
 
-        for turn in (missing, invalid, {"text": "ordinary turn"}):
-            with self.subTest(turn=type(turn).__name__):
+        for injection_case, injected_ref in envelope_injections.items():
+            for turn_case, (turn, expected_ref) in turn_cases.items():
                 injected_event = {
                     "type": "assistant.message",
+                    "conversation_attempt_ref": injected_ref,
                     "data": {
                         "speech": "response",
                         "conversation_attempt_ref": "injected:not_authoritative",
                     },
                 }
-                self.assertNotIn(
-                    "conversation_attempt_ref",
-                    _decorate_assistant_event_with_conversation_attempt_ref(
+                with self.subTest(
+                    injection=injection_case,
+                    turn=turn_case,
+                ):
+                    decorated = _decorate_correlated_event_with_conversation_attempt_ref(
                         injected_event,
                         turn,
-                    )[
-                        "data"
-                    ],
+                    )
+                    self.assertNotIn("conversation_attempt_ref", decorated)
+                    if expected_ref is None:
+                        self.assertNotIn(
+                            "conversation_attempt_ref",
+                            decorated["data"],
+                        )
+                    else:
+                        self.assertEqual(
+                            decorated["data"]["conversation_attempt_ref"],
+                            expected_ref,
+                        )
+
+    def test_assistant_non_dict_data_strips_only_the_event_envelope_ref(self) -> None:
+        turn = TurnInput(
+            text="private text",
+            turn_id="turn_non_dict_assistant_data",
+            session_id="session_non_dict_assistant_data",
+            context_refs={
+                "conversation_attempt_ref": (
+                    "m4.prepared_sample_attempt:0123456789abcdef0123456789abcdef"
                 )
+            },
+        )
+        cases = {
+            "string": {
+                "type": "assistant.message",
+                "conversation_attempt_ref": "private:injected-marker",
+                "data": "unchanged non-dict data",
+            },
+            "missing_data": {
+                "type": "assistant.completed",
+                "conversation_attempt_ref": "C:/injected/private/path.wav",
+            },
+        }
+
+        for case, event in cases.items():
+            with self.subTest(case=case):
+                decorated = _decorate_correlated_event_with_conversation_attempt_ref(
+                    event,
+                    turn,
+                )
+                self.assertIsNot(decorated, event)
+                self.assertNotIn("conversation_attempt_ref", decorated)
+                self.assertEqual(decorated.get("data"), event.get("data"))
+
+    def test_non_assistant_event_does_not_receive_the_turn_ref(self) -> None:
+        non_assistant_event = {"type": "turn.completed", "data": {"status": "success"}}
         self.assertNotIn(
             "conversation_attempt_ref",
-            _decorate_assistant_event_with_conversation_attempt_ref(
+            _decorate_correlated_event_with_conversation_attempt_ref(
                 non_assistant_event,
                 TurnInput(
                     text="private text",
@@ -355,6 +496,115 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
                     },
                 ),
             )["data"],
+        )
+
+    def test_motion_request_uses_only_the_turn_ref_on_the_event_envelope(self) -> None:
+        canonical_ref = (
+            "m4.prepared_sample_attempt:0123456789abcdef0123456789abcdef"
+        )
+        strict_payload = {
+            "schema_version": "motion_stimulus.v0",
+            "motion_event_id": "mot_evt_turn_001",
+            "phase": "queued",
+        }
+        event = {
+            "type": "motion.requested",
+            "conversation_attempt_ref": "injected:not_authoritative",
+            "data": dict(strict_payload),
+        }
+        turn = TurnInput(
+            text="private text",
+            turn_id="turn_motion_ref",
+            session_id="session_motion_ref",
+            context_refs={"conversation_attempt_ref": canonical_ref},
+        )
+
+        decorated = _decorate_correlated_event_with_conversation_attempt_ref(
+            event,
+            turn,
+        )
+
+        self.assertEqual(decorated["conversation_attempt_ref"], canonical_ref)
+        self.assertEqual(decorated["data"], strict_payload)
+        self.assertNotIn("conversation_attempt_ref", decorated["data"])
+        self.assertEqual(
+            event["conversation_attempt_ref"],
+            "injected:not_authoritative",
+        )
+
+    def test_motion_request_strips_non_authoritative_refs(self) -> None:
+        event = {
+            "type": "motion.requested",
+            "conversation_attempt_ref": (
+                "m4.prepared_sample_attempt:ffffffffffffffffffffffffffffffff"
+            ),
+            "data": {
+                "schema_version": "motion_stimulus.v0",
+                "motion_event_id": "mot_evt_turn_002",
+                "conversation_attempt_ref": "injected:not_authoritative",
+            },
+        }
+        invalid_turns = {
+            "missing": TurnInput(
+                text="private text",
+                turn_id="turn_missing_ref",
+                session_id="session_missing_ref",
+            ),
+            "malformed": TurnInput(
+                text="private text",
+                turn_id="turn_malformed_ref",
+                session_id="session_malformed_ref",
+                context_refs={"conversation_attempt_ref": "malformed"},
+            ),
+            "private_marker": TurnInput(
+                text="private text",
+                turn_id="turn_private_marker_ref",
+                session_id="session_private_marker_ref",
+                context_refs={"conversation_attempt_ref": "private:test-marker"},
+            ),
+            "path": TurnInput(
+                text="private text",
+                turn_id="turn_path_ref",
+                session_id="session_path_ref",
+                context_refs={"conversation_attempt_ref": "C:/private/path.wav"},
+            ),
+            "plain_mapping": {
+                "conversation_attempt_ref": event["conversation_attempt_ref"]
+            },
+        }
+
+        for case, turn in invalid_turns.items():
+            with self.subTest(case=case):
+                decorated = _decorate_correlated_event_with_conversation_attempt_ref(
+                    event,
+                    turn,
+                )
+                self.assertNotIn("conversation_attempt_ref", decorated)
+                self.assertNotIn("conversation_attempt_ref", decorated["data"])
+
+    def test_non_assistant_non_motion_events_are_unchanged(self) -> None:
+        event = {
+            "type": "turn.completed",
+            "conversation_attempt_ref": "existing-non-correlation-field",
+            "data": {
+                "status": "success",
+                "conversation_attempt_ref": "existing-non-correlation-data",
+            },
+        }
+        turn = TurnInput(
+            text="private text",
+            turn_id="turn_non_correlated",
+            session_id="session_non_correlated",
+            context_refs={
+                "conversation_attempt_ref": (
+                    "m4.prepared_sample_attempt:0123456789abcdef0123456789abcdef"
+                )
+            },
+        )
+
+        self.assertIs(
+            _decorate_correlated_event_with_conversation_attempt_ref(event, turn),
+            event,
         )
 
     def test_conversation_attempt_ref_grammar_is_canonical_and_bounded(self) -> None:

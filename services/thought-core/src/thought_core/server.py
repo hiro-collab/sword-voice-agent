@@ -54,25 +54,47 @@ def materialize_turn_input(payload: Mapping[str, Any]) -> TurnInput | Mapping[st
     return TurnInput.from_accepted_speech_candidate(candidate, private_turn)
 
 
-def _decorate_assistant_event_with_conversation_attempt_ref(
+def _decorate_correlated_event_with_conversation_attempt_ref(
     event: dict[str, Any],
     turn: TurnInput | Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Attach the one opaque accepted-speech join ref at the HTTP boundary."""
+    """Decorate correlated events from the authoritative materialized turn."""
     event_type = event.get("type")
-    if not isinstance(event_type, str) or not event_type.startswith("assistant."):
+    if not isinstance(event_type, str):
         return event
-    data = event.get("data")
-    if not isinstance(data, dict):
+
+    is_assistant_event = event_type.startswith("assistant.")
+    is_motion_request = event_type == "motion.requested"
+    if not is_assistant_event and not is_motion_request:
         return event
-    decorated = dict(event)
-    decorated_data = dict(data)
-    decorated_data.pop("conversation_attempt_ref", None)
+
+    ref: str | None = None
     if isinstance(turn, TurnInput):
-        ref = turn.context_refs.get("conversation_attempt_ref")
-        if _is_opaque_conversation_attempt_ref(ref):
+        candidate_ref = turn.context_refs.get("conversation_attempt_ref")
+        if _is_opaque_conversation_attempt_ref(candidate_ref):
+            ref = candidate_ref
+
+    data = event.get("data")
+    if is_assistant_event:
+        decorated = dict(event)
+        decorated.pop("conversation_attempt_ref", None)
+        if not isinstance(data, dict):
+            return decorated
+        decorated_data = dict(data)
+        decorated_data.pop("conversation_attempt_ref", None)
+        if ref is not None:
             decorated_data["conversation_attempt_ref"] = ref
-    decorated["data"] = decorated_data
+        decorated["data"] = decorated_data
+        return decorated
+
+    decorated = dict(event)
+    decorated.pop("conversation_attempt_ref", None)
+    if isinstance(data, dict):
+        decorated_data = dict(data)
+        decorated_data.pop("conversation_attempt_ref", None)
+        decorated["data"] = decorated_data
+    if ref is not None:
+        decorated["conversation_attempt_ref"] = ref
     return decorated
 
 
@@ -253,7 +275,7 @@ def create_server(
             try:
                 turn = materialize_turn_input(payload)
                 events = [
-                    _decorate_assistant_event_with_conversation_attempt_ref(event, turn)
+                    _decorate_correlated_event_with_conversation_attempt_ref(event, turn)
                     for event in loop.run_dicts(turn)
                 ]
             except ValueError as exc:
@@ -316,7 +338,7 @@ def create_server(
             turn: TurnInput | Mapping[str, Any] = payload
 
             def write_event(event: dict[str, Any]) -> None:
-                event = _decorate_assistant_event_with_conversation_attempt_ref(
+                event = _decorate_correlated_event_with_conversation_attempt_ref(
                     event,
                     turn,
                 )
