@@ -1162,11 +1162,6 @@ class ThoughtLoop:
                         if current_room_light
                         else ""
                     ),
-                    "answer_hint": (
-                        current_room_light.get("answer_hint")
-                        if current_room_light
-                        else ""
-                    ),
                     "authority": (
                         current_room_light.get("authority")
                         if current_room_light
@@ -4628,7 +4623,7 @@ class ThoughtLoop:
                 },
             )
         )
-        result = call()
+        result = self._sanitize_tool_result(tool_name, call())
         status = result.get("status", "ok")
         events.append(
             factory.emit(
@@ -4642,6 +4637,27 @@ class ThoughtLoop:
             )
         )
         return result
+
+    def _sanitize_tool_result(
+        self,
+        tool_name: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        if tool_name != "environment.observe":
+            return result
+        sanitized = self._without_environment_answer_hints(result)
+        return sanitized if isinstance(sanitized, dict) else {}
+
+    def _without_environment_answer_hints(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: self._without_environment_answer_hints(item)
+                for key, item in value.items()
+                if key not in {"answer_hint", "effective_answer_hint"}
+            }
+        if isinstance(value, list):
+            return [self._without_environment_answer_hints(item) for item in value]
+        return value
 
     def _emit_input_ack(
         self,
@@ -5701,7 +5717,6 @@ class ThoughtLoop:
                         room_light.get("confidence_label") if room_light else ""
                     ),
                     "authority": room_light.get("authority") if room_light else "",
-                    "answer_hint": room_light.get("answer_hint") if room_light else "",
                     "source": "environment.observe",
                 },
             )
@@ -6382,7 +6397,6 @@ class ThoughtLoop:
             "projected_by": str(room_light.get("projected_by") or ""),
             "predicted_state": str(room_light.get("state") or "unknown"),
             "confidence_label": str(room_light.get("confidence_label") or ""),
-            "answer_hint": str(room_light.get("answer_hint") or ""),
             "observed_at": str(
                 room_light.get("observed_at") or evidence.get("observed_at") or ""
             ),
@@ -6430,19 +6444,26 @@ class ThoughtLoop:
         state = str(room_light.get("state") or "unknown").lower()
         confidence = str(room_light.get("confidence_label") or "").lower()
         if confidence in {"low", "very_low", "unknown"}:
-            speech = "カメラ推定では明るさの判定がまだ弱いです。実際の状態を教えてもらえると助かります。"
+            speech = (
+                "カメラ推定では部屋の明るさの判定がまだ弱いです。"
+                "照明の電気的な状態はこの推定だけでは分かりません。"
+            )
             return {"speech": speech, "display": speech}
         if state == "on":
-            speech = "カメラ推定では、リビングの電気はついているように見えます。"
+            speech = (
+                "カメラ推定では、部屋は明るく見えます。"
+                "照明の電気的な状態はこの推定だけでは分かりません。"
+            )
             return {"speech": speech, "display": speech}
         if state == "off":
-            speech = "カメラ推定では、リビングの電気は消えているように見えます。"
+            speech = (
+                "カメラ推定では、部屋は暗く見えます。"
+                "照明の電気的な状態はこの推定だけでは分かりません。"
+            )
             return {"speech": speech, "display": speech}
-        hint = str(room_light.get("answer_hint") or "").strip()
         speech = (
-            f"カメラ推定ではまだ判断できません。{hint}"
-            if hint
-            else "カメラ推定ではまだ判断できません。"
+            "カメラ推定ではまだ部屋の明るさを判断できません。"
+            "照明の電気的な状態もこの推定だけでは分かりません。"
         )
         return {"speech": speech, "display": speech}
 
