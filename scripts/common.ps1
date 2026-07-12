@@ -778,6 +778,178 @@ function Invoke-OrPrint {
     }
 }
 
+function Write-SwordControllerManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$LaunchNonce,
+        [Parameter(Mandatory = $true)][string]$ServiceClass,
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Controller,
+        [Parameter(Mandatory = $true)][string]$ExpectedModule,
+        [Parameter(Mandatory = $true)][int]$ExpectedPort
+    )
+
+    $temporaryPath = "${Path}.$PID.tmp"
+    $forceWriteFailure = $false
+    try {
+        if ($LaunchNonce -notmatch "^[a-f0-9]{32}$") {
+            throw "invalid"
+        }
+        $directory = Split-Path -Parent $Path
+        if ([string]::IsNullOrWhiteSpace($directory)) {
+            throw "invalid"
+        }
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        $controllerStartedAt = ([DateTimeOffset]$Controller.StartTime).ToString("o")
+        $payload = [ordered]@{
+            schema_version = "thought_core_controller.v1"
+            service_class = $ServiceClass
+            launch_nonce = $LaunchNonce
+            controller_pid = [int]$Controller.Id
+            controller_started_at = $controllerStartedAt
+            expected_module = $ExpectedModule
+            expected_port = $ExpectedPort
+            written_at = [DateTimeOffset]::UtcNow.ToString("o")
+        }
+        if ($env:NODE_ENV -eq "test") {
+            switch ([string]$env:HOME_CONTROL_STACK_TEST_THOUGHT_CORE_MANIFEST_MUTATION) {
+                "missing" { return }
+                "partial" { $payload.Remove("expected_module") }
+                "stale" { $payload["written_at"] = "2000-01-01T00:00:00+00:00" }
+                "nonce" { $payload["launch_nonce"] = "0" * 32 }
+                "controller_start" { $payload["controller_started_at"] = "2000-01-01T00:00:00+00:00" }
+                "service_class" { $payload["service_class"] = "unrelated_service" }
+                "module" { $payload["expected_module"] = "unrelated.module" }
+                "port" { $payload["expected_port"] = $ExpectedPort + 1 }
+                "controller_pid" {
+                    $replacementPid = 0
+                    if ([int]::TryParse(
+                        [string]$env:HOME_CONTROL_STACK_TEST_THOUGHT_CORE_MANIFEST_CONTROLLER_PID,
+                        [ref]$replacementPid
+                    ) -and $replacementPid -gt 0) {
+                        $replacement = Get-Process -Id $replacementPid -ErrorAction Stop
+                        $payload["controller_pid"] = $replacementPid
+                        $payload["controller_started_at"] = ([DateTimeOffset]$replacement.StartTime).ToString("o")
+                    }
+                }
+                "write_failure" { $forceWriteFailure = $true }
+            }
+        }
+        $json = $payload | ConvertTo-Json -Depth 3
+        if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 4096) {
+            throw "invalid"
+        }
+        [IO.File]::WriteAllText($temporaryPath, $json, [Text.UTF8Encoding]::new($false))
+        if ($forceWriteFailure) {
+            $pidFile = [string]$env:HOME_CONTROL_STACK_TEST_THOUGHT_CORE_PID_FILE
+            $deadline = [DateTime]::UtcNow.AddSeconds(2)
+            while (
+                -not [string]::IsNullOrWhiteSpace($pidFile) -and
+                -not (Test-Path -LiteralPath $pidFile -PathType Leaf) -and
+                [DateTime]::UtcNow -lt $deadline
+            ) {
+                Start-Sleep -Milliseconds 25
+            }
+            throw [IO.IOException]::new("fixture_write_failure")
+        }
+        Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+    }
+    catch {
+        Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        throw "thought_core_controller_manifest_write_failed"
+    }
+}
+
+function Invoke-SwordControllerCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][string[]]$Command,
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$LaunchNonce,
+        [Parameter(Mandatory = $true)][string]$ServiceClass,
+        [Parameter(Mandatory = $true)][string]$ExpectedModule,
+        [Parameter(Mandatory = $true)][int]$ExpectedPort
+    )
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Command[0]
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $argumentListProperty = $startInfo.GetType().GetProperty("ArgumentList")
+    if ($null -eq $argumentListProperty) {
+        throw "thought_core_controller_start_failed"
+    }
+    foreach ($argument in @($Command | Select-Object -Skip 1)) {
+        $startInfo.ArgumentList.Add($argument)
+    }
+    if (
+        $env:NODE_ENV -eq "test" -and
+        $env:HOME_CONTROL_STACK_TEST_THOUGHT_CORE_PRIVATE_ENV_INJECTION -eq "true"
+    ) {
+        $startInfo.Environment["SWORD_THOUGHT_CORE_CONTROLLER_MANIFEST"] = "fixture_private_value"
+        $startInfo.Environment["SWORD_THOUGHT_CORE_LAUNCH_NONCE"] = "fixture_private_value"
+    }
+    $startInfo.Environment.Remove("SWORD_THOUGHT_CORE_CONTROLLER_MANIFEST") | Out-Null
+    $startInfo.Environment.Remove("SWORD_THOUGHT_CORE_LAUNCH_NONCE") | Out-Null
+    $controller = [System.Diagnostics.Process]::new()
+    $controller.StartInfo = $startInfo
+    $controllerStarted = $false
+    $controllerExitedNormally = $false
+    $controllerStartedAtTicks = [long]0
+    try {
+        if (-not $controller.Start()) {
+            throw "thought_core_controller_start_failed"
+        }
+        $controllerStarted = $true
+        $controllerStartedAtTicks = $controller.StartTime.ToUniversalTime().Ticks
+        Write-SwordControllerManifest `
+            -Path $ManifestPath `
+            -LaunchNonce $LaunchNonce `
+            -ServiceClass $ServiceClass `
+            -Controller $controller `
+            -ExpectedModule $ExpectedModule `
+            -ExpectedPort $ExpectedPort
+        $controller.WaitForExit()
+        $controllerExitedNormally = $true
+        return [int]$controller.ExitCode
+    }
+    catch {
+        $failureClass = "thought_core_controller_start_failed"
+        if ($_.Exception.Message -match "^thought_core_controller_") {
+            $failureClass = $_.Exception.Message
+        }
+        if ($controllerStarted -and -not $controllerExitedNormally) {
+            $cleanupComplete = $false
+            try {
+                $controller.Refresh()
+                if ($controller.HasExited) {
+                    $cleanupComplete = $true
+                }
+                elseif (
+                    $controllerStartedAtTicks -gt 0 -and
+                    $controller.StartTime.ToUniversalTime().Ticks -eq $controllerStartedAtTicks
+                ) {
+                    $controller.Kill($true)
+                    $cleanupComplete = $controller.WaitForExit(5000)
+                    if ($cleanupComplete) {
+                        Start-Sleep -Milliseconds 100
+                    }
+                }
+            }
+            catch {
+                $cleanupComplete = $false
+            }
+            if (-not $cleanupComplete) {
+                throw "thought_core_controller_cleanup_incomplete"
+            }
+        }
+        throw $failureClass
+    }
+    finally {
+        $controller.Dispose()
+    }
+}
+
 function Invoke-WithModuleStatus {
     param(
         [Parameter(Mandatory = $true)][string]$WorkingDirectory,
@@ -786,6 +958,11 @@ function Invoke-WithModuleStatus {
         [Parameter(Mandatory = $true)][string]$ModuleName,
         [Parameter(Mandatory = $true)][string]$ModuleLabel,
         [string]$Detail = "",
+        [string]$ControllerManifestPath = "",
+        [string]$ControllerLaunchNonce = "",
+        [string]$ControllerServiceClass = "",
+        [string]$ControllerExpectedModule = "",
+        [int]$ControllerExpectedPort = 0,
         [switch]$DryRun
     )
 
@@ -807,7 +984,22 @@ function Invoke-WithModuleStatus {
         -Label $ModuleLabel `
         -Detail $Detail
     try {
-        Invoke-OrPrint -WorkingDirectory $WorkingDirectory -Command $Command
+        if (-not [string]::IsNullOrWhiteSpace($ControllerManifestPath)) {
+            $controllerExitCode = Invoke-SwordControllerCommand `
+                -WorkingDirectory $WorkingDirectory `
+                -Command $Command `
+                -ManifestPath $ControllerManifestPath `
+                -LaunchNonce $ControllerLaunchNonce `
+                -ServiceClass $ControllerServiceClass `
+                -ExpectedModule $ControllerExpectedModule `
+                -ExpectedPort $ControllerExpectedPort
+            if ($controllerExitCode -ne 0) {
+                throw "thought_core_controller_exited"
+            }
+        }
+        else {
+            Invoke-OrPrint -WorkingDirectory $WorkingDirectory -Command $Command
+        }
     }
     finally {
         Stop-SwordModuleHeartbeat -Job $heartbeat

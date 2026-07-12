@@ -37,6 +37,24 @@ def port_is_listening(port: int) -> bool:
         return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
+def process_is_alive(pid: int) -> bool:
+    return (
+        subprocess.run(
+            [
+                POWERSHELL,
+                "-NoLogo",
+                "-NoProfile",
+                "-Command",
+                f"exit [int]($null -eq (Get-Process -Id {pid} -ErrorAction SilentlyContinue))",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        ).returncode
+        == 0
+    )
+
+
 def wait_for(predicate, *, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -315,12 +333,29 @@ class LauncherFixture:
         (thought_package / "__init__.py").write_text("", encoding="utf-8")
         (thought_package / "__main__.py").write_text(
             """import argparse
+import os
 import socket
+from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--host')
 parser.add_argument('--port', type=int, required=True)
 args = parser.parse_args()
+private_env_present = any(
+    os.environ.get(name)
+    for name in (
+        'SWORD_THOUGHT_CORE_CONTROLLER_MANIFEST',
+        'SWORD_THOUGHT_CORE_LAUNCH_NONCE',
+    )
+)
+status_path = os.environ.get('HOME_CONTROL_STACK_TEST_THOUGHT_CORE_LISTENER_ENV_STATUS_FILE')
+if status_path:
+    Path(status_path).write_text(
+        'private_env_present' if private_env_present else 'private_env_absent',
+        encoding='utf-8',
+    )
+if private_env_present:
+    raise SystemExit(42)
 listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 listener.bind(('127.0.0.1', args.port))
@@ -335,13 +370,45 @@ finally:
             encoding="utf-8",
         )
         (thought_core / ".env").write_text("THOUGHT_CORE_LLM_MODE=off\n", encoding="utf-8")
-        (scripts / "start-thought-core.ps1").write_text(
-            f"""param([string]$HostName, [int]$Port, [string]$StatusDir)
-$env:PYTHONPATH = Join-Path $PSScriptRoot '..\\services\\thought-core\\src'
-& '{sys.executable.replace("'", "''")}' -m thought_core --host $HostName --port $Port
-exit $LASTEXITCODE
+        controller_script = scripts / "thought-core-controller.py"
+        controller_script.write_text(
+            """import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+private_env_present = any(
+    os.environ.get(name)
+    for name in (
+        'SWORD_THOUGHT_CORE_CONTROLLER_MANIFEST',
+        'SWORD_THOUGHT_CORE_LAUNCH_NONCE',
+    )
+)
+status_path = os.environ.get('HOME_CONTROL_STACK_TEST_THOUGHT_CORE_CONTROLLER_ENV_STATUS_FILE')
+if status_path:
+    Path(status_path).write_text(
+        'private_env_present' if private_env_present else 'private_env_absent',
+        encoding='utf-8',
+    )
+if private_env_present:
+    raise SystemExit(43)
+child = subprocess.Popen([sys.executable, *sys.argv[1:]])
+pid_path = os.environ.get('HOME_CONTROL_STACK_TEST_THOUGHT_CORE_PID_FILE')
+if pid_path:
+    Path(pid_path).write_text(
+        json.dumps({'controller_pid': os.getpid(), 'listener_pid': child.pid}),
+        encoding='utf-8',
+    )
+raise SystemExit(child.wait())
 """,
             encoding="utf-8",
+        )
+        shutil.copy2(ROOT / "scripts" / "common.ps1", scripts / "common.ps1")
+        shutil.copy2(ROOT / "scripts" / "load-env.ps1", scripts / "load-env.ps1")
+        shutil.copy2(
+            ROOT / "scripts" / "start-thought-core.ps1",
+            scripts / "start-thought-core.ps1",
         )
         (scripts / "start-thought-core-watch.ps1").write_text(
             "Start-Sleep -Milliseconds 150\n"
@@ -352,13 +419,46 @@ exit $LASTEXITCODE
         )
         return thought_core
 
-    def start_partial_stack(self, *, port: int, cleanup_failure: bool) -> subprocess.CompletedProcess[str]:
+    def start_partial_stack(
+        self,
+        *,
+        port: int,
+        cleanup_failure: bool,
+        extra_environment: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         thought_core = self.partial_start_workspace(port)
         environment = self.test_environment.copy()
+        case_environment = dict(extra_environment or {})
+        controller_python = sys.executable
+        if (
+            case_environment.get("HOME_CONTROL_STACK_TEST_THOUGHT_CORE_MANIFEST_MUTATION")
+            == "write_failure"
+        ):
+            controller_python = getattr(sys, "_base_executable", sys.executable)
+        thought_core_src = thought_core / "services" / "thought-core" / "src"
+        environment.update(
+            {
+                "HOME_CONTROL_STACK_TEST_THOUGHT_CORE_PYTHON": controller_python,
+                "HOME_CONTROL_STACK_TEST_THOUGHT_CORE_CONTROLLER_SCRIPT": str(
+                    thought_core / "scripts" / "thought-core-controller.py"
+                ),
+                "HOME_CONTROL_STACK_TEST_THOUGHT_CORE_PRIVATE_ENV_INJECTION": "true",
+                "HOME_CONTROL_STACK_TEST_THOUGHT_CORE_CONTROLLER_ENV_STATUS_FILE": str(
+                    thought_core / "scripts" / "controller-env-status.txt"
+                ),
+                "HOME_CONTROL_STACK_TEST_THOUGHT_CORE_LISTENER_ENV_STATUS_FILE": str(
+                    thought_core / "scripts" / "listener-env-status.txt"
+                ),
+                "HOME_CONTROL_STACK_TEST_THOUGHT_CORE_PID_FILE": str(
+                    thought_core / "scripts" / "controller-pids.json"
+                ),
+                "PYTHONPATH": str(thought_core_src),
+            }
+        )
         if cleanup_failure:
             environment["HOME_CONTROL_STACK_STOP_TEST_REVALIDATE_FAILURE"] = "true"
-        return subprocess.run(
-            [
+        environment.update(case_environment)
+        command = [
                 POWERSHELL,
                 "-NoLogo",
                 "-NoProfile",
@@ -384,14 +484,29 @@ exit $LASTEXITCODE
                 "-EnableThoughtCore",
                 "-EnableThoughtCoreWatch",
                 "-ThoughtCoreNoProvider",
-            ],
-            cwd=ROOT,
-            text=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=20,
-            env=environment,
-        )
+            ]
+        with tempfile.TemporaryFile(
+            mode="w+", encoding="utf-8", errors="replace"
+        ) as stdout_file, tempfile.TemporaryFile(
+            mode="w+", encoding="utf-8", errors="replace"
+        ) as stderr_file:
+            completed = subprocess.run(
+                command,
+                cwd=ROOT,
+                text=True,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                timeout=35,
+                env=environment,
+            )
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            return subprocess.CompletedProcess(
+                completed.args,
+                completed.returncode,
+                stdout_file.read(),
+                stderr_file.read(),
+            )
 
     def stop_partial_stack(
         self, extra_environment: dict[str, str] | None = None
@@ -1546,6 +1661,200 @@ class LauncherManagedPortReclaimContractTest(unittest.TestCase):
                 self.assertIsNone(unrelated.poll())
                 self.assertEqual(record["working_directory"], "")
                 self.assertEqual(record["command"], "")
+
+    def test_thought_listener_seal_retries_after_stale_first_descendant_snapshot(self) -> None:
+        source = STACK_START.read_text(encoding="utf-8")
+        self.assertIn(
+            "HOME_CONTROL_STACK_TEST_STALE_SEALED_DESCENDANT_SNAPSHOT_ONCE",
+            source,
+        )
+        with LauncherFixture() as fixture:
+            unrelated, _ = fixture.listener(managed=False)
+            port = unused_loopback_port()
+
+            result = fixture.start_partial_stack(
+                port=port,
+                cleanup_failure=False,
+                extra_environment={
+                    "HOME_CONTROL_STACK_TEST_STALE_SEALED_DESCENDANT_SNAPSHOT_ONCE": "true"
+                },
+            )
+
+            watcher_marker = (
+                fixture.workspace
+                / "control-plane"
+                / "core"
+                / "scripts"
+                / "watcher-ran-and-failed.txt"
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue(
+                watcher_marker.exists(),
+                f"{result.stdout}\n{result.stderr}",
+            )
+            manifest = json.loads(
+                (fixture.state_dir / "thought-core-api" / "controller.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                set(manifest),
+                {
+                    "schema_version",
+                    "service_class",
+                    "launch_nonce",
+                    "controller_pid",
+                    "controller_started_at",
+                    "expected_module",
+                    "expected_port",
+                    "written_at",
+                },
+            )
+            self.assertFalse(
+                {"command", "cwd", "path", "environment", "token", "provider"}
+                & set(manifest)
+            )
+            scripts = fixture.workspace / "control-plane" / "core" / "scripts"
+            self.assertEqual(
+                (scripts / "controller-env-status.txt").read_text(encoding="utf-8"),
+                "private_env_absent",
+            )
+            self.assertEqual(
+                (scripts / "listener-env-status.txt").read_text(encoding="utf-8"),
+                "private_env_absent",
+            )
+            self.assertFalse(port_is_listening(port))
+            self.assertFalse((fixture.state_dir / "pids.json").exists())
+            self.assertIsNone(unrelated.poll())
+
+    def test_thought_listener_seal_rejects_persistent_non_descendant(self) -> None:
+        source = STACK_START.read_text(encoding="utf-8")
+        self.assertIn(
+            "HOME_CONTROL_STACK_TEST_STALE_SEALED_DESCENDANT_SNAPSHOT_ALWAYS",
+            source,
+        )
+        with LauncherFixture() as fixture:
+            unrelated, _ = fixture.listener(managed=False)
+            port = unused_loopback_port()
+
+            result = fixture.start_partial_stack(
+                port=port,
+                cleanup_failure=False,
+                extra_environment={
+                    "HOME_CONTROL_STACK_TEST_STALE_SEALED_DESCENDANT_SNAPSHOT_ALWAYS": "true"
+                },
+            )
+
+            watcher_marker = (
+                fixture.workspace
+                / "control-plane"
+                / "core"
+                / "scripts"
+                / "watcher-ran-and-failed.txt"
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(watcher_marker.exists())
+            self.assertFalse(port_is_listening(port))
+            self.assertFalse((fixture.state_dir / "pids.json").exists())
+            self.assertIsNone(unrelated.poll())
+
+    def test_thought_controller_manifest_mutations_fail_closed(self) -> None:
+        mutations = (
+            "missing",
+            "partial",
+            "stale",
+            "nonce",
+            "controller_start",
+            "service_class",
+            "module",
+            "port",
+            "controller_pid",
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), LauncherFixture() as fixture:
+                unrelated, _ = fixture.listener(managed=False)
+                port = unused_loopback_port()
+                extra_environment = {
+                    "HOME_CONTROL_STACK_TEST_THOUGHT_CORE_MANIFEST_MUTATION": mutation
+                }
+                if mutation == "controller_pid":
+                    extra_environment[
+                        "HOME_CONTROL_STACK_TEST_THOUGHT_CORE_MANIFEST_CONTROLLER_PID"
+                    ] = str(unrelated.pid)
+
+                result = fixture.start_partial_stack(
+                    port=port,
+                    cleanup_failure=False,
+                    extra_environment=extra_environment,
+                )
+
+                watcher_marker = (
+                    fixture.workspace
+                    / "control-plane"
+                    / "core"
+                    / "scripts"
+                    / "watcher-ran-and-failed.txt"
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(watcher_marker.exists())
+                self.assertFalse(port_is_listening(port))
+                wait_for(lambda: not (fixture.state_dir / "pids.json").exists())
+                self.assertIsNone(unrelated.poll())
+
+    def test_thought_controller_manifest_write_failure_cleans_exact_process_tree(
+        self,
+    ) -> None:
+        with LauncherFixture() as fixture:
+            unrelated, _ = fixture.listener(managed=False)
+            port = unused_loopback_port()
+
+            result = fixture.start_partial_stack(
+                port=port,
+                cleanup_failure=False,
+                extra_environment={
+                    "HOME_CONTROL_STACK_TEST_THOUGHT_CORE_MANIFEST_MUTATION": "write_failure"
+                },
+            )
+
+            scripts = fixture.workspace / "control-plane" / "core" / "scripts"
+            watcher_marker = scripts / "watcher-ran-and-failed.txt"
+            pid_file = scripts / "controller-pids.json"
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(watcher_marker.exists())
+            self.assertTrue(pid_file.exists())
+            owned_pids = json.loads(pid_file.read_text(encoding="utf-8"))
+            wait_for(
+                lambda: not process_is_alive(owned_pids["controller_pid"])
+                and not process_is_alive(owned_pids["listener_pid"])
+            )
+            wait_for(lambda: not port_is_listening(port))
+            self.assertFalse((fixture.state_dir / "pids.json").exists())
+            self.assertEqual(
+                list((fixture.state_dir / "thought-core-api").glob("controller.json.*.tmp")),
+                [],
+            )
+            self.assertEqual(
+                (scripts / "controller-env-status.txt").read_text(encoding="utf-8"),
+                "private_env_absent",
+            )
+            combined_output = result.stdout + result.stderr
+            self.assertIn(
+                "thought_core_controller_manifest_write_failed",
+                combined_output,
+            )
+            self.assertNotIn(str(fixture.root), combined_output)
+            self.assertNotIn(
+                str(fixture.state_dir / "thought-core-api" / "controller.json"),
+                combined_output,
+            )
+            self.assertNotIn(str(pid_file), combined_output)
+            self.assertNotIn("fixture_write_failure", combined_output)
+            self.assertNotIn("CategoryInfo", combined_output)
+            self.assertNotIn("FullyQualifiedErrorId", combined_output)
+            self.assertNotIn("At line:", combined_output)
+            self.assertNotIn("start-home-control-stack.ps1:", combined_output)
+            self.assertIn("home_control_stack_start_failed", combined_output)
+            self.assertIsNone(unrelated.poll())
 
     def test_home_and_thought_launcher_reclaim_use_sealed_record(self) -> None:
         for service in ("home", "thought"):

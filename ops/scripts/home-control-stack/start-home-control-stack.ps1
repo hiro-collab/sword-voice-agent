@@ -210,6 +210,7 @@ $LogDir = Join-Path $StateDir "logs"
 $PidFile = Join-Path $StateDir "pids.json"
 $StopScript = Join-Path $PSScriptRoot "stop-home-control-stack.ps1"
 $ThoughtCoreStatusDir = Join-Path $StateDir "thought-core-api"
+$ThoughtCoreControllerManifestPath = Join-Path $ThoughtCoreStatusDir "controller.json"
 $ThoughtCoreWatchStatusDir = Join-Path $StateDir "thought-core-watcher"
 $HomeAssistantBridgeClientHost = if ($HomeAssistantBridgeHost -eq "0.0.0.0") { "127.0.0.1" } else { $HomeAssistantBridgeHost }
 $EnvironmentStateClientHost = if ($EnvironmentStateHost -eq "0.0.0.0") { "127.0.0.1" } else { $EnvironmentStateHost }
@@ -1366,6 +1367,109 @@ function Get-VisionSnapshotOwnershipSeal {
     }
 }
 
+function Get-ThoughtCoreControllerManifestBinding {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$LaunchNonce,
+        [Parameter(Mandatory = $true)][object]$RootChild,
+        [Parameter(Mandatory = $true)][int]$Port
+    )
+
+    $validationStage = "path"
+    if (
+        [string]::IsNullOrWhiteSpace($Path) -or
+        -not (Test-PathUnderDirectory -Path $Path -Directory $StateDir)
+    ) {
+        throw "thought_core_controller_manifest_invalid"
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+    try {
+        $validationStage = "shape"
+        $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+        if ($item.Length -le 0 -or $item.Length -gt 4096) {
+            throw "invalid"
+        }
+        $manifest = Get-Content -Raw -LiteralPath $Path -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        $expectedKeys = @(
+            "controller_pid",
+            "controller_started_at",
+            "expected_module",
+            "expected_port",
+            "launch_nonce",
+            "schema_version",
+            "service_class",
+            "written_at"
+        )
+        $actualKeys = @($manifest.PSObject.Properties.Name | Sort-Object)
+        if (($actualKeys -join "`n") -cne (($expectedKeys | Sort-Object) -join "`n")) {
+            throw "invalid"
+        }
+        $validationStage = "value"
+        if (
+            [string]$manifest.schema_version -cne "thought_core_controller.v1" -or
+            [string]$manifest.service_class -cne "thought_core_api" -or
+            [string]$manifest.launch_nonce -cne $LaunchNonce -or
+            [string]$manifest.expected_module -cne "thought_core" -or
+            ($manifest.controller_pid -isnot [int] -and $manifest.controller_pid -isnot [long]) -or
+            ($manifest.expected_port -isnot [int] -and $manifest.expected_port -isnot [long]) -or
+            [int]$manifest.expected_port -ne $Port
+        ) {
+            throw "invalid"
+        }
+        $validationStage = "freshness"
+        $rootStartedAt = [DateTimeOffset]$RootChild.Process.StartTime
+        $controllerStartedAt = [DateTimeOffset]::Parse([string]$manifest.controller_started_at)
+        $writtenAt = [DateTimeOffset]::Parse([string]$manifest.written_at)
+        $now = [DateTimeOffset]::Now
+        if (
+            $writtenAt -lt $rootStartedAt.AddSeconds(-2) -or
+            $writtenAt -gt $now.AddSeconds(2) -or
+            $controllerStartedAt -lt $rootStartedAt.AddSeconds(-2)
+        ) {
+            throw "invalid"
+        }
+        $validationStage = "controller_identity"
+        $controllerPid = [int]$manifest.controller_pid
+        $controller = Get-Process -Id $controllerPid -ErrorAction Stop
+        $validationStage = "controller_inspection"
+        $controllerIdentity = Get-CimInstance Win32_Process -Filter "ProcessId = $controllerPid" -ErrorAction Stop
+        $actualControllerStartedAt = [DateTimeOffset]$controller.StartTime
+        $validationStage = "controller_start"
+        if ([Math]::Abs(($actualControllerStartedAt - $controllerStartedAt).TotalMilliseconds) -gt 2000) {
+            throw "invalid"
+        }
+        $allowedControllerNames = @("uv")
+        if (
+            $env:NODE_ENV -eq "test" -and
+            -not [string]::IsNullOrWhiteSpace($env:HOME_CONTROL_STACK_TEST_THOUGHT_CORE_PYTHON)
+        ) {
+            $allowedControllerNames += "python"
+        }
+        $validationStage = "controller_name"
+        if ($allowedControllerNames -notcontains (Normalize-ProcessName -Name ([string]$controller.ProcessName))) {
+            throw "invalid"
+        }
+        $validationStage = "controller_root"
+        $rootDescendants = @(Get-DescendantProcessIds -RootProcessId ([int]$RootChild.Process.Id))
+        if ($rootDescendants -notcontains $controllerPid) {
+            throw "invalid"
+        }
+        return [pscustomobject]@{
+            controller_pid = $controllerPid
+            controller_started_at = $controllerStartedAt.ToString("o")
+            controller_parent_pid = [int]$controllerIdentity.ParentProcessId
+        }
+    }
+    catch {
+        if ($env:NODE_ENV -eq "test") {
+            throw "thought_core_controller_manifest_invalid_$validationStage"
+        }
+        throw "thought_core_controller_manifest_invalid"
+    }
+}
+
 function Find-SealedDescendantListenerRecord {
     param(
         [Parameter(Mandatory = $true)][object]$RootChild,
@@ -1373,12 +1477,23 @@ function Find-SealedDescendantListenerRecord {
         [Parameter(Mandatory = $true)][string]$OwnershipClass,
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string]$Module,
+        [string]$ControllerManifestPath = "",
+        [string]$LaunchNonce = "",
         [int]$TimeoutSeconds = 10
     )
     $classSpec = Get-SwordSealedListenerClassSpec -OwnershipClass $OwnershipClass
     if ($null -eq $classSpec) {
         throw "Sealed descendant listener class is not supported"
     }
+    $injectStaleDescendantSnapshotOnce = (
+        $env:NODE_ENV -eq "test" -and
+        $env:HOME_CONTROL_STACK_TEST_STALE_SEALED_DESCENDANT_SNAPSHOT_ONCE -eq "true"
+    )
+    $injectStaleDescendantSnapshotAlways = (
+        $env:NODE_ENV -eq "test" -and
+        $env:HOME_CONTROL_STACK_TEST_STALE_SEALED_DESCENDANT_SNAPSHOT_ALWAYS -eq "true"
+    )
+    $staleDescendantSnapshotInjected = $false
     $deadline = [DateTimeOffset]::Now.AddSeconds($TimeoutSeconds)
     while ([DateTimeOffset]::Now -lt $deadline) {
         if ($RootChild.Process.HasExited) {
@@ -1392,8 +1507,33 @@ function Find-SealedDescendantListenerRecord {
         }
         if ($owners.Count -eq 1) {
             $workerPid = [int]$owners[0]
+            if (
+                (
+                    $injectStaleDescendantSnapshotAlways -or
+                    ($injectStaleDescendantSnapshotOnce -and -not $staleDescendantSnapshotInjected)
+                ) -and
+                $descendantIds -contains $workerPid
+            ) {
+                $descendantIds = @($descendantIds | Where-Object { $_ -ne $workerPid })
+                if ($injectStaleDescendantSnapshotOnce) {
+                    $staleDescendantSnapshotInjected = $true
+                }
+            }
             if ($descendantIds -notcontains $workerPid) {
-                throw "Sealed listener is not a launch-root descendant"
+                Start-Sleep -Milliseconds 100
+                continue
+            }
+            $controllerBinding = $null
+            if ($OwnershipClass -ceq "thought_core_descendant_listener.v0") {
+                $controllerBinding = Get-ThoughtCoreControllerManifestBinding `
+                    -Path $ControllerManifestPath `
+                    -LaunchNonce $LaunchNonce `
+                    -RootChild $RootChild `
+                    -Port $Port
+                if ($null -eq $controllerBinding) {
+                    Start-Sleep -Milliseconds 100
+                    continue
+                }
             }
             $identity = Get-CimInstance Win32_Process -Filter "ProcessId = $workerPid" -ErrorAction SilentlyContinue
             $worker = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
@@ -1427,6 +1567,12 @@ function Find-SealedDescendantListenerRecord {
             }
             if ($lineage.Count -eq 0 -or [int]$lineage[-1].pid -ne [int]$RootChild.Process.Id) {
                 throw "Sealed descendant listener lineage does not reach the launch root"
+            }
+            if (
+                $null -ne $controllerBinding -and
+                @($lineage | Where-Object { [int]$_.pid -eq [int]$controllerBinding.controller_pid }).Count -ne 1
+            ) {
+                throw "thought_core_controller_manifest_invalid"
             }
             $listenerStartedAt = ([DateTimeOffset]$worker.StartTime).ToString("o")
             $rootStartedAt = [string]$lineage[-1].started_at
@@ -1837,6 +1983,13 @@ $displayRuntimeEnvironment = @{}
 if ($thoughtCoreEnvironment.ContainsKey("THOUGHT_CORE_TOOLS_ADAPTER")) {
     $displayRuntimeEnvironment["THOUGHT_CORE_TOOLS_ADAPTER"] = $thoughtCoreEnvironment["THOUGHT_CORE_TOOLS_ADAPTER"]
 }
+$thoughtCoreLaunchNonce = ""
+if ($StartThoughtCoreService) {
+    Clear-ChildProcessManifest -Path $ThoughtCoreControllerManifestPath
+    $thoughtCoreLaunchNonce = [Guid]::NewGuid().ToString("N")
+    $thoughtCoreEnvironment["SWORD_THOUGHT_CORE_CONTROLLER_MANIFEST"] = $ThoughtCoreControllerManifestPath
+    $thoughtCoreEnvironment["SWORD_THOUGHT_CORE_LAUNCH_NONCE"] = $thoughtCoreLaunchNonce
+}
 if ($StartThoughtCoreService) {
     $specs += New-ServiceSpec `
         -Name "thought_core_api" `
@@ -2170,7 +2323,9 @@ try {
                     -Port $ThoughtCorePort `
                     -OwnershipClass "thought_core_descendant_listener.v0" `
                     -Name "thought_core_api_listener" `
-                    -Module "control-plane-core"
+                    -Module "control-plane-core" `
+                    -ControllerManifestPath $ThoughtCoreControllerManifestPath `
+                    -LaunchNonce $thoughtCoreLaunchNonce
                 break
             }
             default { $null }
@@ -2231,10 +2386,14 @@ try {
 catch [System.Management.Automation.PipelineStoppedException] {
     Write-Host "Ctrl+C received; stopping stack..."
 }
+catch {
+    [Console]::Error.WriteLine("home_control_stack_start_failed")
+    $exitCode = 1
+}
 finally {
     if (-not $shutdownStarted) {
         $liveChildren = @($children | Where-Object { -not $_.Process.HasExited })
-        if ($liveChildren.Count -gt 0) {
+        if ($liveChildren.Count -gt 0 -or (Test-Path -LiteralPath $PidFile -PathType Leaf)) {
             $shutdownStarted = $true
             Stop-RecordedStack
         }
