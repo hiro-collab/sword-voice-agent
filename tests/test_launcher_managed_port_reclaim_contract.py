@@ -252,11 +252,14 @@ class LauncherFixture:
         wait_for(lambda: port_is_listening(port))
         return process, port
 
-    def write_pid_state(self, entry: dict, *, schema_version: int | None = None) -> None:
+    def write_pid_state(self, entry: dict | list[dict], *, schema_version: int | None = None) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        state = {"processes": [entry]}
+        state = {"processes": entry if isinstance(entry, list) else [entry]}
         if schema_version is not None:
             state["schema_version"] = schema_version
+        if schema_version == 3:
+            state["started_at"] = datetime.now(timezone.utc).isoformat()
+            state["workspace_root"] = str(self.workspace)
         (self.state_dir / "pids.json").write_text(
             json.dumps(state), encoding="utf-8"
         )
@@ -1279,6 +1282,322 @@ class LauncherManagedPortReclaimContractTest(unittest.TestCase):
             self.assertFalse(payload["stopVerification"]["pidFileExists"])
             self.assertEqual(payload["stopVerification"]["aliveRecorded"], [])
             self.assertEqual(payload["stopVerification"]["openPorts"], [])
+
+    def test_launcher_converges_only_an_unchanged_valid_dead_schema3_registry(self) -> None:
+        cases = (
+            {"name": "generic", "expect_ok": True},
+            {"name": "selected-closed-port", "expect_ok": True, "selected_port": True},
+            {"name": "mixed-sealed", "expect_ok": True, "sealed": True},
+            {"name": "malformed", "malformed": True},
+            {
+                "name": "drift-after-first-probe",
+                "environment": {
+                    "HOME_CONTROL_LAUNCHER_TEST_DEAD_REGISTRY_DRIFT_AFTER_PROBE": "true"
+                },
+            },
+            {
+                "name": "drift-before-unlink",
+                "environment": {
+                    "HOME_CONTROL_LAUNCHER_TEST_DEAD_REGISTRY_DRIFT_BEFORE_UNLINK": "true"
+                },
+            },
+            {
+                "name": "recovered-inspection-failure-carried-unverified",
+                "environment": {
+                    "HOME_CONTROL_LAUNCHER_TEST_INSPECTION_FAILURE_ONCE": "true"
+                },
+            },
+            {
+                "name": "tcp-inspection-failure",
+                "environment": {
+                    "HOME_CONTROL_LAUNCHER_TEST_TCP_INSPECTION_FAILURE": "true"
+                },
+                "selected_port": True,
+            },
+            {"name": "selected-open-port", "open_port": True},
+            {"name": "carried-stale-record", "stale": True},
+            {"name": "live-recorded-process", "release": False},
+        )
+        for case in cases:
+            case_name = str(case["name"])
+            environment = {
+                "HOME_CONTROL_LAUNCHER_STOP_VERIFY_TIMEOUT_MS": "6000",
+                "HOME_CONTROL_STACK_STOP_TEST_SETTLE_TIMEOUT_MS": "50",
+                "HOME_CONTROL_STACK_STOP_TEST_REVALIDATE_FAILURE": "true",
+                **case.get("environment", {}),
+            }
+            with self.subTest(case=case_name), LauncherFixture(
+                environment
+            ) as fixture:
+                open_listener = None
+                selected_port = None
+                if case.get("open_port"):
+                    open_listener, selected_port = fixture.listener(managed=False)
+                elif case.get("selected_port"):
+                    selected_port = unused_loopback_port()
+                fixture.configure_touchdesigner_target(
+                    selected_port
+                )
+                owned = subprocess.Popen(
+                    [NODE, "-e", "setInterval(() => {}, 1000)"],
+                    cwd=fixture.workspace,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                unrelated = subprocess.Popen(
+                    [sys.executable, "-c", "import time; time.sleep(30)"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                fixture.children.extend([owned, unrelated])
+                entry = {
+                    "name": "late-exit-fixture",
+                    "module": "fixture-module",
+                    "role": "fixture-role",
+                    "pid": owned.pid,
+                    "working_directory": str(fixture.workspace),
+                    "command": "fixture-command",
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "stop_strategy": "managed_tree",
+                    "allowed_process_names": ["node"],
+                    "child_process_file": "",
+                }
+                if case.get("malformed"):
+                    entry["unexpected_field"] = "must-retain"
+                entries = [entry]
+                stale_process = None
+                if case.get("stale"):
+                    stale_process = subprocess.Popen(
+                        [NODE, "-e", "setInterval(() => {}, 1000)"],
+                        cwd=fixture.workspace,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    fixture.children.append(stale_process)
+                    entries.append(
+                        {
+                            **entry,
+                            "name": "stale-fixture",
+                            "pid": stale_process.pid,
+                            "started_at": "2000-01-01T00:00:00+00:00",
+                        }
+                    )
+                if case.get("sealed"):
+                    sealed_started_at = datetime.now(timezone.utc).isoformat()
+                    sealed_entry = {
+                        "name": "dead-sealed-fixture",
+                        "module": "vision-snapshot-processor",
+                        "role": "vision_snapshot_processor_listener",
+                        "pid": 999999,
+                        "working_directory": str(fixture.workspace),
+                        "command": "fixture-command",
+                        "started_at": sealed_started_at,
+                        "stop_strategy": "role_scoped_descendant",
+                        "allowed_process_names": ["python"],
+                        "child_process_file": "",
+                        "ownership_class": "vsp_descendant_listener.v0",
+                        "ownership_root_pid": 999997,
+                        "ownership_root_started_at": sealed_started_at,
+                        "ownership_parent_pid": 999998,
+                        "ownership_lineage": [
+                            {
+                                "pid": 999999,
+                                "parent_pid": 999998,
+                                "process_name": "python",
+                                "started_at": sealed_started_at,
+                            },
+                            {
+                                "pid": 999998,
+                                "parent_pid": 999997,
+                                "process_name": "python",
+                                "started_at": sealed_started_at,
+                            },
+                        ],
+                        "ownership_seal": "",
+                        "expected_module": "vision_snapshot_processor.main",
+                        "expected_port": 18876,
+                    }
+                    entries.append(fixture.reseal_record(sealed_entry))
+                fixture.write_pid_state(entries, schema_version=3)
+                sibling = fixture.state_dir / "sibling-state.txt"
+                sibling.write_text("preserve", encoding="utf-8")
+                registry_before = (fixture.state_dir / "pids.json").read_bytes()
+                branch_observed = threading.Event()
+
+                def release_after_script_retains_registry() -> None:
+                    time.sleep(3.0)
+                    owned.terminate()
+                    owned.wait(timeout=3)
+                    if stale_process is not None:
+                        stale_process.terminate()
+                        stale_process.wait(timeout=3)
+                    branch_observed.set()
+
+                release_owned = case.get("release", True)
+                releaser = None
+                if release_owned:
+                    releaser = threading.Thread(
+                        target=release_after_script_retains_registry,
+                        daemon=True,
+                    )
+                    releaser.start()
+                payload = fixture.post("/api/stop", {})
+                if releaser is not None:
+                    releaser.join(timeout=3)
+
+                self.assertEqual(branch_observed.is_set(), release_owned)
+                if release_owned:
+                    self.assertIsNotNone(owned.poll())
+                else:
+                    self.assertIsNone(owned.poll())
+                self.assertTrue(sibling.exists())
+                self.assertIsNone(unrelated.poll())
+                self.assertNotEqual(payload.get("code"), 0)
+                if case.get("open_port"):
+                    self.assertEqual(len(payload["stopVerification"]["openPorts"]), 1)
+                    self.assertIsNone(open_listener.poll())
+                    self.assertTrue(port_is_listening(selected_port))
+                    self.assertEqual(payload["managedPortReclaim"]["reclaimed"], [])
+                else:
+                    self.assertEqual(payload["stopVerification"]["openPorts"], [])
+                if (
+                    case.get("environment", {}).get(
+                        "HOME_CONTROL_LAUNCHER_TEST_TCP_INSPECTION_FAILURE"
+                    )
+                    == "true"
+                ):
+                    self.assertGreaterEqual(
+                        len(payload["stopVerification"]["portInspectionFailures"]), 1
+                    )
+                else:
+                    self.assertEqual(
+                        payload["stopVerification"]["portInspectionFailures"], []
+                    )
+                if case.get("expect_ok"):
+                    self.assertTrue(payload["ok"])
+                    self.assertEqual(payload["stopVerification"]["aliveRecorded"], [])
+                    self.assertFalse((fixture.state_dir / "pids.json").exists())
+                else:
+                    self.assertFalse(payload["ok"])
+                    self.assertTrue((fixture.state_dir / "pids.json").exists())
+                    if not case_name.startswith("drift-"):
+                        self.assertEqual(
+                            (fixture.state_dir / "pids.json").read_bytes(),
+                            registry_before,
+                        )
+
+    def test_dead_registry_snapshot_validation_rejects_every_malformed_class_without_mutation(self) -> None:
+        with LauncherFixture() as fixture:
+            started_at = datetime.now(timezone.utc).isoformat()
+
+            def generic_entry(pid: int = 999999) -> dict:
+                return {
+                    "name": "dead-generic-fixture",
+                    "module": "fixture-module",
+                    "role": "fixture-role",
+                    "pid": pid,
+                    "working_directory": str(fixture.workspace),
+                    "command": "fixture-command",
+                    "started_at": started_at,
+                    "stop_strategy": "managed_tree",
+                    "allowed_process_names": ["node"],
+                    "child_process_file": "",
+                }
+
+            sealed_entry = fixture.reseal_record(
+                {
+                    "name": "dead-sealed-fixture",
+                    "module": "vision-snapshot-processor",
+                    "role": "vision_snapshot_processor_listener",
+                    "pid": 999998,
+                    "working_directory": str(fixture.workspace),
+                    "command": "fixture-command",
+                    "started_at": started_at,
+                    "stop_strategy": "role_scoped_descendant",
+                    "allowed_process_names": ["python"],
+                    "child_process_file": "",
+                    "ownership_class": "vsp_descendant_listener.v0",
+                    "ownership_root_pid": 999996,
+                    "ownership_root_started_at": started_at,
+                    "ownership_parent_pid": 999997,
+                    "ownership_lineage": [
+                        {
+                            "pid": 999998,
+                            "parent_pid": 999997,
+                            "process_name": "python",
+                            "started_at": started_at,
+                        },
+                        {
+                            "pid": 999997,
+                            "parent_pid": 999996,
+                            "process_name": "python",
+                            "started_at": started_at,
+                        },
+                    ],
+                    "ownership_seal": "",
+                    "expected_module": "vision_snapshot_processor.main",
+                    "expected_port": 18876,
+                }
+            )
+            valid_state = {
+                "schema_version": 3,
+                "started_at": started_at,
+                "workspace_root": str(fixture.workspace),
+                "processes": [generic_entry(), sealed_entry],
+            }
+
+            def clone(value: dict) -> dict:
+                return json.loads(json.dumps(value))
+
+            invalid_states: list[tuple[str, dict | str]] = []
+            schema = clone(valid_state)
+            schema["schema_version"] = 2
+            invalid_states.append(("wrong-schema", schema))
+            workspace = clone(valid_state)
+            workspace["workspace_root"] = str(fixture.foreign_root)
+            invalid_states.append(("wrong-workspace", workspace))
+            empty = clone(valid_state)
+            empty["processes"] = []
+            invalid_states.append(("empty-processes", empty))
+            duplicate = clone(valid_state)
+            duplicate["processes"].append(generic_entry())
+            invalid_states.append(("duplicate-pid", duplicate))
+            invalid_pid = clone(valid_state)
+            invalid_pid["processes"][0]["pid"] = 0
+            invalid_states.append(("invalid-pid", invalid_pid))
+            missing_generic = clone(valid_state)
+            del missing_generic["processes"][0]["started_at"]
+            invalid_states.append(("missing-generic-field", missing_generic))
+            extra_generic = clone(valid_state)
+            extra_generic["processes"][0]["extra"] = True
+            invalid_states.append(("extra-generic-field", extra_generic))
+            invalid_seal = clone(valid_state)
+            invalid_seal["processes"][1]["ownership_seal"] = "0" * 64
+            invalid_states.append(("invalid-seal", invalid_seal))
+            invalid_lineage = clone(valid_state)
+            invalid_lineage["processes"][1]["ownership_lineage"][0]["extra"] = True
+            invalid_states.append(("invalid-lineage-shape", invalid_lineage))
+            invalid_states.append(("malformed-json", "{"))
+
+            pid_file = fixture.state_dir / "pids.json"
+            fixture.state_dir.mkdir(parents=True, exist_ok=True)
+            valid_bytes = json.dumps(valid_state).encode()
+            pid_file.write_bytes(valid_bytes)
+            self.assertTrue(
+                fixture.post("/api/test/pid-registry-snapshot-valid", {})["valid"]
+            )
+            self.assertEqual(pid_file.read_bytes(), valid_bytes)
+
+            for name, value in invalid_states:
+                with self.subTest(name=name):
+                    raw = value.encode() if isinstance(value, str) else json.dumps(value).encode()
+                    pid_file.write_bytes(raw)
+                    payload = fixture.post("/api/test/pid-registry-snapshot-valid", {})
+                    self.assertFalse(payload["valid"])
+                    self.assertEqual(pid_file.read_bytes(), raw)
 
     def test_stop_waits_for_refused_owned_target_to_exit_before_removing_registry(self) -> None:
         with LauncherFixture() as fixture:

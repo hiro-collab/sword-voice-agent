@@ -1598,6 +1598,7 @@ const stopStack = async (body) => {
   }
   const options = normalizeOptions(profileId, config.options || {})
   const scriptArgs = ['stop', '-Profile', opsProfileFor(profileId), '-Force']
+  const pidRegistrySnapshot = readExactPidRegistrySnapshot()
   const beforeStopCollection = await collectStackStopVerification(options)
   const { carriedUnverifiedEntries, ...beforeStopVerification } = beforeStopCollection
   const collectedResult = await runScriptAndCollect(SYSTEM_SCRIPT, scriptArgs, 45000)
@@ -1606,11 +1607,22 @@ const stopStack = async (body) => {
     ? { ...collectedResult, ok: false, code: 1, timedOut: false }
     : collectedResult
   const managedPortReclaim = await reclaimManagedPortResidue(options)
-  const stopCollection = await waitForStackStopVerification(
+  let stopCollection = await waitForStackStopVerification(
     options,
     carriedUnverifiedEntries,
     beforeStopVerification.staleRecorded
   )
+  if (
+    !stopCollection.ok &&
+    await convergeDeadPidRegistryAfterStop(
+      pidRegistrySnapshot,
+      options,
+      carriedUnverifiedEntries,
+      beforeStopVerification.staleRecorded
+    )
+  ) {
+    stopCollection = await collectStackStopVerification(options)
+  }
   const { carriedUnverifiedEntries: ignoredCarriedEntries, ...stopVerification } = stopCollection
   const ok = Boolean(stopVerification.ok)
   const payload = {
@@ -1677,20 +1689,33 @@ const isProcessAlive = (pid) => {
 
 const checkTcp = (port, host = '127.0.0.1', timeoutMs = 1200) =>
   new Promise((resolve) => {
+    if (
+      process.env.NODE_ENV === 'test' &&
+      process.env.HOME_CONTROL_LAUNCHER_TEST_TCP_INSPECTION_FAILURE === 'true'
+    ) {
+      resolve({ ok: false, state: 'inspection_failed', detail: 'inspection_failed' })
+      return
+    }
     const socket = new net.Socket()
     let settled = false
-    const finish = (ok, detail) => {
+    const finish = (ok, state, detail) => {
       if (settled) {
         return
       }
       settled = true
       socket.destroy()
-      resolve({ ok, detail })
+      resolve({ ok, state, detail })
     }
     socket.setTimeout(timeoutMs)
-    socket.once('connect', () => finish(true, 'listen'))
-    socket.once('timeout', () => finish(false, 'timeout'))
-    socket.once('error', (error) => finish(false, error.code || error.message))
+    socket.once('connect', () => finish(true, 'open', 'listen'))
+    socket.once('timeout', () => finish(false, 'inspection_failed', 'inspection_failed'))
+    socket.once('error', (error) => {
+      if (error && error.code === 'ECONNREFUSED') {
+        finish(false, 'closed', 'closed')
+        return
+      }
+      finish(false, 'inspection_failed', 'inspection_failed')
+    })
     socket.connect(port, host)
   })
 
@@ -1780,10 +1805,21 @@ const compactPidEntry = (entry) => ({
   pid: Number(entry.pid) || null
 })
 
+let testRecordedProcessInspectionCount = 0
+
 const inspectRecordedProcesses = async (recordedProcesses) => {
+  if (process.env.NODE_ENV === 'test') {
+    testRecordedProcessInspectionCount += 1
+  }
   if (
     process.env.NODE_ENV === 'test' &&
-    process.env.HOME_CONTROL_LAUNCHER_TEST_INSPECTION_FAILURE === 'true'
+    (
+      process.env.HOME_CONTROL_LAUNCHER_TEST_INSPECTION_FAILURE === 'true' ||
+      (
+        process.env.HOME_CONTROL_LAUNCHER_TEST_INSPECTION_FAILURE_ONCE === 'true' &&
+        testRecordedProcessInspectionCount === 1
+      )
+    )
   ) {
     return { ok: false, processes: new Map() }
   }
@@ -1866,6 +1902,234 @@ const mergeRecordedEntries = (recordedProcesses, carriedUnverifiedEntries) => {
   return [...merged.values()]
 }
 
+const PID_REGISTRY_TOP_LEVEL_KEYS = [
+  'processes',
+  'schema_version',
+  'started_at',
+  'workspace_root'
+]
+const PID_REGISTRY_GENERIC_ENTRY_KEYS = [
+  'allowed_process_names',
+  'child_process_file',
+  'command',
+  'module',
+  'name',
+  'pid',
+  'role',
+  'started_at',
+  'stop_strategy',
+  'working_directory'
+]
+const PID_REGISTRY_SEALED_ENTRY_KEYS = [
+  ...PID_REGISTRY_GENERIC_ENTRY_KEYS,
+  'expected_module',
+  'expected_port',
+  'ownership_class',
+  'ownership_lineage',
+  'ownership_parent_pid',
+  'ownership_root_pid',
+  'ownership_root_started_at',
+  'ownership_seal'
+].sort()
+const PID_REGISTRY_LINEAGE_KEYS = [
+  'parent_pid',
+  'pid',
+  'process_name',
+  'started_at'
+]
+
+const hasExactObjectKeys = (value, expected) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const actual = Object.keys(value).sort()
+  const required = [...expected].sort()
+  return actual.length === required.length &&
+    actual.every((key, index) => key === required[index])
+}
+
+const isNonEmptyString = (value) =>
+  typeof value === 'string' && value.trim().length > 0
+
+const isValidRecordedTimestamp = (value) =>
+  isNonEmptyString(value) && Number.isFinite(Date.parse(value))
+
+const isValidPid = (value) => Number.isInteger(value) && value > 0
+
+const sealedRegistryEntryIsStructurallyValid = (entry) => {
+  if (!hasExactObjectKeys(entry, PID_REGISTRY_SEALED_ENTRY_KEYS)) return false
+  if (entry.stop_strategy !== 'role_scoped_descendant') return false
+  if (!Object.values(SEALED_LISTENER_CLASS_BY_TARGET).includes(entry.ownership_class)) {
+    return false
+  }
+  if (
+    !isValidPid(entry.ownership_root_pid) ||
+    !isValidPid(entry.ownership_parent_pid) ||
+    !isValidRecordedTimestamp(entry.ownership_root_started_at) ||
+    !isNonEmptyString(entry.expected_module) ||
+    !Number.isInteger(entry.expected_port) ||
+    entry.expected_port < 1 ||
+    !Array.isArray(entry.ownership_lineage) ||
+    entry.ownership_lineage.length < 1 ||
+    !/^[a-f0-9]{64}$/.test(String(entry.ownership_seal || ''))
+  ) {
+    return false
+  }
+  for (const row of entry.ownership_lineage) {
+    if (
+      !hasExactObjectKeys(row, PID_REGISTRY_LINEAGE_KEYS) ||
+      !isValidPid(row.pid) ||
+      !Number.isInteger(row.parent_pid) ||
+      row.parent_pid < 0 ||
+      !isNonEmptyString(row.process_name) ||
+      !isValidRecordedTimestamp(row.started_at)
+    ) {
+      return false
+    }
+  }
+  const sealParts = [
+    entry.ownership_class,
+    entry.pid,
+    entry.started_at,
+    entry.ownership_parent_pid,
+    entry.ownership_root_pid,
+    entry.ownership_root_started_at,
+    entry.expected_module,
+    entry.expected_port,
+    ...entry.ownership_lineage.map((row) =>
+      `${row.pid}|${row.parent_pid}|${row.process_name}|${row.started_at}`
+    )
+  ]
+  const expectedSeal = crypto
+    .createHash('sha256')
+    .update(sealParts.join('\n'))
+    .digest('hex')
+  return expectedSeal === entry.ownership_seal
+}
+
+const pidRegistryEntryIsStructurallyValid = (entry) => {
+  const sealed = Object.prototype.hasOwnProperty.call(entry || {}, 'ownership_class')
+  if (sealed) {
+    if (!sealedRegistryEntryIsStructurallyValid(entry)) return false
+  } else if (
+    !hasExactObjectKeys(entry, PID_REGISTRY_GENERIC_ENTRY_KEYS) ||
+    entry.stop_strategy !== 'managed_tree'
+  ) {
+    return false
+  }
+  return isNonEmptyString(entry.name) &&
+    isNonEmptyString(entry.module) &&
+    isNonEmptyString(entry.role) &&
+    isValidPid(entry.pid) &&
+    isNonEmptyString(entry.working_directory) &&
+    typeof entry.command === 'string' &&
+    isValidRecordedTimestamp(entry.started_at) &&
+    Array.isArray(entry.allowed_process_names) &&
+    entry.allowed_process_names.length > 0 &&
+    entry.allowed_process_names.every(isNonEmptyString) &&
+    typeof entry.child_process_file === 'string'
+}
+
+const readExactPidRegistrySnapshot = () => {
+  if (!fs.existsSync(PID_FILE)) return null
+  try {
+    const raw = fs.readFileSync(PID_FILE, 'utf8')
+    if (!raw || Buffer.byteLength(raw, 'utf8') > 1024 * 1024) return null
+    const state = JSON.parse(raw)
+    if (
+      !hasExactObjectKeys(state, PID_REGISTRY_TOP_LEVEL_KEYS) ||
+      state.schema_version !== 3 ||
+      !isValidRecordedTimestamp(state.started_at) ||
+      path.resolve(String(state.workspace_root || '')).toLowerCase() !==
+        WORKSPACE_ROOT.toLowerCase() ||
+      !Array.isArray(state.processes) ||
+      state.processes.length < 1 ||
+      !state.processes.every(pidRegistryEntryIsStructurallyValid)
+    ) {
+      return null
+    }
+    const pids = state.processes.map((entry) => entry.pid)
+    if (new Set(pids).size !== pids.length) return null
+    return { raw, state }
+  } catch {
+    return null
+  }
+}
+
+const exactPidRegistrySnapshotMatches = (expected) => {
+  const current = readExactPidRegistrySnapshot()
+  return Boolean(current && expected && current.raw === expected.raw)
+}
+
+const deadRegistryConvergenceProbe = async (
+  snapshot,
+  options,
+  carriedUnverifiedEntries,
+  carriedStaleRecorded
+) => {
+  if (
+    !snapshot ||
+    carriedUnverifiedEntries.length > 0 ||
+    carriedStaleRecorded.length > 0 ||
+    !exactPidRegistrySnapshotMatches(snapshot)
+  ) {
+    return false
+  }
+  const inspection = await inspectRecordedProcesses(snapshot.state.processes)
+  if (!inspection.ok || inspection.processes.size !== snapshot.state.processes.length) {
+    return false
+  }
+  for (const entry of snapshot.state.processes) {
+    const process = inspection.processes.get(entry.pid)
+    if (!process || process.alive) return false
+  }
+  const verification = await collectStackStopVerification(options)
+  return verification.pidFileExists &&
+    verification.recordedProcessCount === snapshot.state.processes.length &&
+    verification.aliveRecorded.length === 0 &&
+    verification.staleRecorded.length === 0 &&
+    verification.openPorts.length === 0 &&
+    verification.portInspectionFailures.length === 0
+}
+
+const convergeDeadPidRegistryAfterStop = async (
+  snapshot,
+  options,
+  carriedUnverifiedEntries,
+  carriedStaleRecorded
+) => {
+  for (let probe = 0; probe < 2; probe += 1) {
+    if (!await deadRegistryConvergenceProbe(
+      snapshot,
+      options,
+      carriedUnverifiedEntries,
+      carriedStaleRecorded
+    )) {
+      return false
+    }
+    if (probe === 0) {
+      if (
+        process.env.NODE_ENV === 'test' &&
+        process.env.HOME_CONTROL_LAUNCHER_TEST_DEAD_REGISTRY_DRIFT_AFTER_PROBE === 'true'
+      ) {
+        fs.appendFileSync(PID_FILE, ' ')
+      }
+      await sleep(STOP_VERIFY_INTERVAL_MS)
+    }
+  }
+  if (
+    process.env.NODE_ENV === 'test' &&
+    process.env.HOME_CONTROL_LAUNCHER_TEST_DEAD_REGISTRY_DRIFT_BEFORE_UNLINK === 'true'
+  ) {
+    fs.appendFileSync(PID_FILE, ' ')
+  }
+  if (!exactPidRegistrySnapshotMatches(snapshot)) return false
+  try {
+    fs.unlinkSync(PID_FILE)
+    return true
+  } catch {
+    return false
+  }
+}
+
 const collectStackStopVerification = async (
   options,
   carriedUnverifiedEntries = [],
@@ -1912,7 +2176,7 @@ const collectStackStopVerification = async (
     }))
   )
   const openPorts = checkedPorts
-    .filter((target) => target.tcp && target.tcp.ok)
+    .filter((target) => target.tcp && target.tcp.state === 'open')
     .map((target) => ({
       key: target.key,
       label: target.label,
@@ -1920,8 +2184,20 @@ const collectStackStopVerification = async (
       port: target.port,
       detail: target.tcp.detail || 'listen'
     }))
+  const portInspectionFailures = checkedPorts
+    .filter((target) => !target.tcp || target.tcp.state === 'inspection_failed')
+    .map((target) => ({
+      key: target.key,
+      label: target.label,
+      host: target.host,
+      port: target.port,
+      detail: 'inspection_failed'
+    }))
   return {
-    ok: !pidFileExists && aliveRecorded.length === 0 && openPorts.length === 0,
+    ok: !pidFileExists &&
+      aliveRecorded.length === 0 &&
+      openPorts.length === 0 &&
+      portInspectionFailures.length === 0,
     checkedAt: nowIso(),
     pidFileExists,
     recordedProcessCount: recordedProcesses.length,
@@ -1929,7 +2205,8 @@ const collectStackStopVerification = async (
     staleRecorded: [...staleRecorded].sort(),
     carriedUnverifiedEntries: carriedEntries,
     checkedPortCount: checkedPorts.length,
-    openPorts
+    openPorts,
+    portInspectionFailures
   }
 }
 
@@ -1979,6 +2256,13 @@ const describeStopVerificationFailure = (verification, scriptResult) => {
         .map((entry) => `${entry.label}:${entry.port}`)
         .join(', ')}`
     )
+  }
+  if (
+    verification &&
+    verification.portInspectionFailures &&
+    verification.portInspectionFailures.length > 0
+  ) {
+    parts.push('managed port inspection failed')
   }
   if (verification && verification.timedOut) {
     parts.push('stop verification timed out')
@@ -2990,6 +3274,17 @@ const handleApi = async (request, response, requestUrl) => {
     const headers =
       requestUrl.pathname === '/api/status' ? launcherStatusCorsHeaders() : {}
     sendJson(response, 204, {}, headers)
+    return
+  }
+  if (
+    process.env.NODE_ENV === 'test' &&
+    request.method === 'POST' &&
+    requestUrl.pathname === '/api/test/pid-registry-snapshot-valid'
+  ) {
+    sendJson(response, 200, {
+      ok: true,
+      valid: Boolean(readExactPidRegistrySnapshot())
+    })
     return
   }
   if (request.method === 'GET' && requestUrl.pathname === '/api/state') {
