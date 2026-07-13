@@ -11,6 +11,7 @@ LAUNCHER_PROFILES = ROOT / "tools" / "home-control-launcher" / "config" / "defau
 TIMING_COLLECTOR = ROOT / "tools" / "home-control-launcher" / "scripts" / "collect-demo-timing.mjs"
 DEMO_SAFE_DEFAULTS = PRODUCT_ROOT / "manifests" / "demo-safe-settings" / "defaults.json"
 STACK_START_SCRIPT = ROOT / "ops" / "scripts" / "home-control-stack" / "start-home-control-stack.ps1"
+LAUNCHER_START_SCRIPT = ROOT / "ops" / "scripts" / "home-control-stack" / "start-home-control-launcher.ps1"
 SYSTEM_SCRIPT = ROOT / "ops" / "scripts" / "system.ps1"
 THOUGHT_CORE_START_SCRIPT = ROOT / "scripts" / "start-thought-core.ps1"
 
@@ -43,6 +44,10 @@ def read_stack_start_script() -> str:
     return STACK_START_SCRIPT.read_text(encoding="utf-8")
 
 
+def read_launcher_start_script() -> str:
+    return LAUNCHER_START_SCRIPT.read_text(encoding="utf-8")
+
+
 def read_system_script() -> str:
     return SYSTEM_SCRIPT.read_text(encoding="utf-8")
 
@@ -58,6 +63,14 @@ def extract_between(text: str, start: str, end: str) -> str:
 
 
 class LauncherUiContractTest(TestCase):
+    def test_launcher_reuse_requires_same_workspace_launcher_owner(self) -> None:
+        script = read_launcher_start_script()
+
+        self.assertIn("Get-LauncherListeners", script)
+        self.assertIn("IsLauncher", script)
+        self.assertIn("WorkspaceMatches", script)
+        self.assertIn("Refusing to reuse it", script)
+
     def test_launch_configuration_uses_progressive_disclosure(self) -> None:
         html = read_public("index.html")
 

@@ -47,12 +47,30 @@ function Open-LauncherBrowser {
     }
 }
 
-function Get-LauncherListenerPids {
+function Get-LauncherListeners {
     $connections = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
     if ($null -eq $connections) {
         return @()
     }
-    return @($connections | Select-Object -ExpandProperty OwningProcess -Unique)
+
+    $workspaceNeedle = $WorkspaceRoot.ToLowerInvariant()
+    $listeners = @()
+    foreach ($processId in ($connections | Select-Object -ExpandProperty OwningProcess -Unique)) {
+        if ($processId -le 0) {
+            continue
+        }
+        $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+        if ($null -eq $processInfo) {
+            continue
+        }
+        $commandLower = ([string]$processInfo.CommandLine).ToLowerInvariant()
+        $listeners += [pscustomobject]@{
+            ProcessId = [int]$processId
+            IsLauncher = [bool]($commandLower -match "tools[\\/]+home-control-launcher[\\/]+server\.js")
+            WorkspaceMatches = [bool]($commandLower.Contains($workspaceNeedle))
+        }
+    }
+    return $listeners
 }
 
 Write-Host "Home Control Launcher"
@@ -60,9 +78,14 @@ Write-Host "  URL      : $url"
 Write-Host "  Workspace: $WorkspaceRoot"
 Write-Host ""
 
-$existingPids = @(Get-LauncherListenerPids)
-if ($existingPids.Count -gt 0) {
+$existingListeners = @(Get-LauncherListeners)
+if ($existingListeners.Count -gt 0) {
     if ($ReuseExisting) {
+        $reusableListeners = @($existingListeners | Where-Object { $_.IsLauncher -and $_.WorkspaceMatches })
+        if ($reusableListeners.Count -ne $existingListeners.Count) {
+            throw "Port $Port is in use by a process that is not this workspace's Home Control Launcher. Refusing to reuse it."
+        }
+        $existingPids = @($reusableListeners | ForEach-Object { $_.ProcessId })
         Write-Host "Home Control Launcher is already running: $url"
         Write-Host "  PID(s): $($existingPids -join ', ')"
         Write-Host "  Stop : .\stop-home-control-launcher.bat"
