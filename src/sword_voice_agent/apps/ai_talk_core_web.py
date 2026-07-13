@@ -23,6 +23,9 @@ from sword_voice_agent.adapters.ai_talk_core import (
     build_accepted_user_speech_turn_envelope,
 )
 from sword_voice_agent.adapters.thought_core import ThoughtCoreClient
+from sword_voice_agent.apps.watch_handoff_to_thought_core import (
+    ThoughtCoreAituberForwarder,
+)
 
 
 @dataclass(frozen=True)
@@ -310,6 +313,8 @@ def load_ai_talk_core_app(
 
 def build_live_private_turn_sink(
     client: ThoughtCoreClient | None = None,
+    *,
+    aituber_forwarder_factory: Callable[[str], Any] | None = None,
 ) -> Callable[[Mapping[str, object], str], Mapping[str, object]]:
     """Build a process-local one-shot sink for a gate-consumed private turn."""
     thought_core = client or ThoughtCoreClient.from_env()
@@ -360,8 +365,24 @@ def build_live_private_turn_sink(
             private_turn,
         )
         completed_turn_ids: list[str] = []
+        assistant_message_events: list[Any] = []
+        assistant_message_event_count = 0
 
         def observe_event(event: Any) -> None:
+            nonlocal assistant_message_event_count
+            event_id = getattr(event, "event_id", None)
+            if bool(getattr(event, "is_message", False)) and bool(
+                getattr(event, "speech", "")
+            ):
+                assistant_message_event_count += 1
+            if (
+                bool(getattr(event, "is_message", False))
+                and bool(getattr(event, "speech", ""))
+                and getattr(event, "turn_id", None) == turn_id
+                and isinstance(event_id, str)
+                and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", event_id) is not None
+            ):
+                assistant_message_events.append(event)
             if bool(getattr(event, "is_completed", False)):
                 completed_turn_ids.append(str(getattr(event, "turn_id", "")))
 
@@ -374,6 +395,18 @@ def build_live_private_turn_sink(
                 completed_turn_ids == [turn_id]
                 and getattr(response, "conversation_id", None) == turn_id
             ):
+                if (
+                    assistant_message_event_count == 1
+                    and len(assistant_message_events) == 1
+                ):
+                    _forward_live_assistant_message(
+                        assistant_message_events[0],
+                        turn_id=turn_id,
+                        forwarder_factory=(
+                            aituber_forwarder_factory
+                            or _build_live_aituber_forwarder
+                        ),
+                    )
                 return dict(THOUGHT_CORE_TURNINPUT_ACCEPTED)
             return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
         except Exception:
@@ -387,6 +420,53 @@ def build_live_private_turn_sink(
             transcript = ""
 
     return submit_private_turn
+
+
+def _build_live_aituber_forwarder(
+    turn_id: str,
+) -> ThoughtCoreAituberForwarder | None:
+    message_url = str(os.environ.get("AITUBER_MESSAGE_URL", "") or "").strip()
+    if not message_url:
+        return None
+    try:
+        timeout_s = max(
+            0.05,
+            float(os.environ.get("AITUBER_HTTP_TIMEOUT_S", "0.75")),
+        )
+        return ThoughtCoreAituberForwarder(
+            message_url,
+            timeout_s=timeout_s,
+            async_post=False,
+            max_chars=4000,
+            turn_id=turn_id,
+            preserve_message_unit=True,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _forward_live_assistant_message(
+    event: Any,
+    *,
+    turn_id: str,
+    forwarder_factory: Callable[[str], Any],
+) -> None:
+    forwarder: Any = None
+    try:
+        forwarder = forwarder_factory(turn_id)
+        if forwarder is not None:
+            forwarder(event)
+    except Exception:
+        # The Thought Core turn has already been accepted. Presentation delivery
+        # is a separate proof layer and must not rewrite TurnInput counts.
+        return
+    finally:
+        close = getattr(forwarder, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
 
 
 def _is_canonical_gate_accepted_candidate(

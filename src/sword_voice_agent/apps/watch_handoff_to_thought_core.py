@@ -747,13 +747,17 @@ class ThoughtCoreAituberForwarder:
         max_chars: int = 80,
         store: StatusStore | None = None,
         turn_id: str | None = None,
+        preserve_message_unit: bool = False,
     ) -> None:
         self.message_url = validate_http_url(message_url, label="--aituber-message-url")
         self.timeout_s = max(0.05, timeout_s)
         self.max_chars = max(8, max_chars)
         self.store = store
         self.turn_id = turn_id
+        self.preserve_message_unit = preserve_message_unit
         self.error_count = 0
+        self.assistant_message_event_count = 0
+        self.dispatch_count = 0
         self.poster = AsyncJsonPostWorker(
             self.message_url,
             timeout_s=self.timeout_s,
@@ -783,7 +787,8 @@ class ThoughtCoreAituberForwarder:
 
     def __call__(self, event: ThoughtCoreStreamEvent) -> None:
         if event.is_message and event.speech:
-            self.post(event.speech)
+            self.assistant_message_event_count += 1
+            self.post(event.speech, message_id=event.event_id)
 
     def finish(self, result: dict[str, Any]) -> None:
         self.close()
@@ -794,10 +799,24 @@ class ThoughtCoreAituberForwarder:
     def post_local_ack(self, message: str) -> None:
         self.post(message)
 
-    def post(self, message: str) -> None:
-        for chunk in split_aituber_speech_message(message, max_chars=self.max_chars):
-            body = json.dumps({"messages": [chunk]}, ensure_ascii=False).encode("utf-8")
+    def post(self, message: str, *, message_id: str | None = None) -> None:
+        normalized_message = message.strip()
+        if self.preserve_message_unit:
+            if not normalized_message or len(normalized_message) > self.max_chars:
+                self.record_error("assistant message exceeds presentation limit")
+                return
+            chunks = [normalized_message]
+        else:
+            chunks = split_aituber_speech_message(message, max_chars=self.max_chars)
+        for chunk in chunks:
+            payload: dict[str, Any] = {"messages": [chunk]}
+            if message_id and self.turn_id:
+                payload["turn_id"] = self.turn_id
+                payload["message_id"] = message_id
+                payload["response_source"] = "thought_core_assistant_message"
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.poster.post(body)
+            self.dispatch_count += 1
 
     def record_error(self, message: str) -> None:
         self.error_count += 1

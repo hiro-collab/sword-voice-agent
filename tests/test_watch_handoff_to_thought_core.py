@@ -78,6 +78,7 @@ class FakeThoughtCoreClient:
                 seq=2,
                 data={"speech": "了解です"},
                 elapsed_s=0.2,
+                event_id="evt-2",
             ),
             ThoughtCoreStreamEvent(
                 event_type="turn.completed",
@@ -622,6 +623,13 @@ class WatchHandoffToThoughtCoreTest(TestCase):
         self.assertEqual(
             [payload["messages"][0] for payload in payloads],
             ["[neutral]はいよ。", "了解です"],
+        )
+        self.assertNotIn("turn_id", payloads[0])
+        self.assertEqual(payloads[1]["turn_id"], "turn-aituber")
+        self.assertEqual(payloads[1]["message_id"], "evt-2")
+        self.assertEqual(
+            payloads[1]["response_source"],
+            "thought_core_assistant_message",
         )
 
     def test_aituber_forward_error_redacts_message_url(self) -> None:

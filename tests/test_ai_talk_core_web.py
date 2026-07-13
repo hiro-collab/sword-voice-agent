@@ -2,12 +2,13 @@ import copy
 from concurrent.futures import ThreadPoolExecutor
 from unittest import TestCase
 from argparse import Namespace
+import json
 from pathlib import Path
 import shutil
 import threading
 import time
 from uuid import uuid4
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from sword_voice_agent.apps.ai_talk_core_web import (
     AiTalkCoreWebDefaults,
@@ -19,6 +20,9 @@ from sword_voice_agent.apps.ai_talk_core_web import (
     run,
     set_checkbox_checked,
     should_use_native_profile,
+)
+from sword_voice_agent.apps.watch_handoff_to_thought_core import (
+    ThoughtCoreAituberForwarder,
 )
 
 
@@ -185,6 +189,366 @@ class AiTalkCoreWebDefaultsTest(TestCase):
             sent["accepted_user_speech_candidate"],
         )
         self.assertNotIn(private_marker, repr(result))
+
+    def test_private_turn_sink_forwards_one_public_assistant_message_after_acceptance(
+        self,
+    ) -> None:
+        private_marker = "private-live-speech-do-not-forward"
+        forwarded_events: list[object] = []
+        closed: list[bool] = []
+        factory_turn_ids: list[str] = []
+
+        class FakeForwarder:
+            def __call__(self, event: object) -> None:
+                forwarded_events.append(event)
+
+            def close(self) -> None:
+                closed.append(True)
+
+        class FakeClient:
+            def send_turn_streaming(self, payload, *, on_event):
+                turn_id = payload["private_turn"]["turn_id"]
+                on_event(
+                    Mock(
+                        is_message=True,
+                        is_completed=False,
+                        turn_id=turn_id,
+                        event_id="evt-live-1",
+                        speech="公開応答です",
+                    )
+                )
+                on_event(
+                    Mock(
+                        is_message=False,
+                        is_completed=True,
+                        turn_id=turn_id,
+                    )
+                )
+                return Mock(conversation_id=turn_id)
+
+        def build_forwarder(turn_id: str) -> FakeForwarder:
+            factory_turn_ids.append(turn_id)
+            return FakeForwarder()
+
+        result = build_live_private_turn_sink(
+            FakeClient(),
+            aituber_forwarder_factory=build_forwarder,
+        )(accepted_candidate_audit(), private_marker)
+
+        self.assertEqual(result["thought_core_turninput_count"], 1)
+        self.assertEqual(len(factory_turn_ids), 1)
+        self.assertRegex(factory_turn_ids[0], r"^turn_live_speech_[0-9a-f]{32}$")
+        self.assertEqual(len(forwarded_events), 1)
+        self.assertEqual(forwarded_events[0].speech, "公開応答です")
+        self.assertEqual(forwarded_events[0].event_id, "evt-live-1")
+        self.assertEqual(closed, [True])
+        self.assertNotIn(private_marker, repr(forwarded_events))
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_thought_core.request.urlopen")
+    def test_private_turn_sink_invokes_production_aituber_post(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+        urlopen.return_value = response
+
+        class FakeClient:
+            def send_turn_streaming(self, payload, *, on_event):
+                turn_id = payload["private_turn"]["turn_id"]
+                on_event(
+                    Mock(
+                        is_message=True,
+                        is_completed=False,
+                        turn_id=turn_id,
+                        event_id="evt-live-post-1",
+                        speech="一文目です。二文目です。",
+                    )
+                )
+                on_event(
+                    Mock(
+                        is_message=False,
+                        is_completed=True,
+                        turn_id=turn_id,
+                    )
+                )
+                return Mock(conversation_id=turn_id)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "AITUBER_MESSAGE_URL": (
+                    "http://127.0.0.1:3000/api/messages"
+                    "?clientId=client-1&type=direct_send"
+                ),
+                "AITUBER_HTTP_TIMEOUT_S": "0.2",
+            },
+            clear=True,
+        ):
+            result = build_live_private_turn_sink(FakeClient())(
+                accepted_candidate_audit(),
+                "private-do-not-publish",
+            )
+
+        self.assertEqual(result["thought_core_turninput_count"], 1)
+        self.assertEqual(urlopen.call_count, 1)
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(payload["messages"], ["一文目です。二文目です。"])
+        self.assertRegex(payload["turn_id"], r"^turn_live_speech_[0-9a-f]{32}$")
+        self.assertEqual(payload["message_id"], "evt-live-post-1")
+        self.assertEqual(
+            payload["response_source"],
+            "thought_core_assistant_message",
+        )
+        self.assertNotIn("private-do-not-publish", repr(payload))
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_thought_core.request.urlopen")
+    def test_private_turn_sink_rejects_over_limit_presentation_without_rewriting_acceptance(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        private_marker = "private-over-limit-do-not-echo"
+        created_forwarders: list[ThoughtCoreAituberForwarder] = []
+
+        class FakeClient:
+            def send_turn_streaming(self, payload, *, on_event):
+                turn_id = payload["private_turn"]["turn_id"]
+                on_event(
+                    Mock(
+                        is_message=True,
+                        is_completed=False,
+                        turn_id=turn_id,
+                        event_id="evt-live-over-limit",
+                        speech="長" * 4001,
+                    )
+                )
+                on_event(
+                    Mock(
+                        is_message=False,
+                        is_completed=True,
+                        turn_id=turn_id,
+                    )
+                )
+                return Mock(conversation_id=turn_id)
+
+        def build_forwarder(turn_id: str) -> ThoughtCoreAituberForwarder:
+            forwarder = ThoughtCoreAituberForwarder(
+                "http://127.0.0.1:3000/api/messages"
+                "?clientId=client-1&type=direct_send",
+                timeout_s=0.2,
+                async_post=False,
+                max_chars=4000,
+                turn_id=turn_id,
+                preserve_message_unit=True,
+            )
+            created_forwarders.append(forwarder)
+            return forwarder
+
+        result = build_live_private_turn_sink(
+            FakeClient(),
+            aituber_forwarder_factory=build_forwarder,
+        )(accepted_candidate_audit(), private_marker)
+
+        self.assertEqual(
+            result,
+            {
+                "result_class": "thought_core_turninput_accepted",
+                "submission_count": 1,
+                "thought_core_turninput_count": 1,
+            },
+        )
+        self.assertEqual(len(created_forwarders), 1)
+        self.assertEqual(created_forwarders[0].dispatch_count, 0)
+        self.assertEqual(created_forwarders[0].error_count, 1)
+        urlopen.assert_not_called()
+        self.assertNotIn(private_marker, repr(result))
+        self.assertNotIn("長" * 100, repr(result))
+
+    def test_private_turn_sink_does_not_forward_ambiguous_assistant_messages(
+        self,
+    ) -> None:
+        factory = Mock()
+
+        class FakeClient:
+            def send_turn_streaming(self, payload, *, on_event):
+                turn_id = payload["private_turn"]["turn_id"]
+                for event_id in ("evt-live-1", "evt-live-2"):
+                    on_event(
+                        Mock(
+                            is_message=True,
+                            is_completed=False,
+                            turn_id=turn_id,
+                            event_id=event_id,
+                            speech="公開応答です",
+                        )
+                    )
+                on_event(
+                    Mock(
+                        is_message=False,
+                        is_completed=True,
+                        turn_id=turn_id,
+                    )
+                )
+                return Mock(conversation_id=turn_id)
+
+        result = build_live_private_turn_sink(
+            FakeClient(),
+            aituber_forwarder_factory=factory,
+        )(accepted_candidate_audit(), "private")
+
+        self.assertEqual(result["thought_core_turninput_count"], 1)
+        factory.assert_not_called()
+
+    def test_private_turn_sink_does_not_forward_unowned_or_unsafe_message_ids(
+        self,
+    ) -> None:
+        for event_turn_id, event_id in (
+            ("turn_other", "evt-live-1"),
+            (None, "evt-live-1"),
+            ("current", "private/raw"),
+            ("current", None),
+        ):
+            with self.subTest(event_turn_id=event_turn_id, event_id=event_id):
+                factory = Mock()
+
+                class FakeClient:
+                    def send_turn_streaming(self, payload, *, on_event):
+                        turn_id = payload["private_turn"]["turn_id"]
+                        on_event(
+                            Mock(
+                                is_message=True,
+                                is_completed=False,
+                                turn_id=(
+                                    turn_id
+                                    if event_turn_id == "current"
+                                    else event_turn_id
+                                ),
+                                event_id=event_id,
+                                speech="公開応答です",
+                            )
+                        )
+                        on_event(
+                            Mock(
+                                is_message=False,
+                                is_completed=True,
+                                turn_id=turn_id,
+                            )
+                        )
+                        return Mock(conversation_id=turn_id)
+
+                result = build_live_private_turn_sink(
+                    FakeClient(),
+                    aituber_forwarder_factory=factory,
+                )(accepted_candidate_audit(), "private")
+
+                self.assertEqual(result["thought_core_turninput_count"], 1)
+                factory.assert_not_called()
+
+    def test_private_turn_sink_rejects_mixed_valid_and_invalid_message_stream(
+        self,
+    ) -> None:
+        factory = Mock()
+
+        class FakeClient:
+            def send_turn_streaming(self, payload, *, on_event):
+                turn_id = payload["private_turn"]["turn_id"]
+                on_event(
+                    Mock(
+                        is_message=True,
+                        is_completed=False,
+                        turn_id=turn_id,
+                        event_id="evt-live-1",
+                        speech="公開応答です",
+                    )
+                )
+                on_event(
+                    Mock(
+                        is_message=True,
+                        is_completed=False,
+                        turn_id="turn_other",
+                        event_id="private/raw",
+                        speech="混在応答です",
+                    )
+                )
+                on_event(
+                    Mock(
+                        is_message=False,
+                        is_completed=True,
+                        turn_id=turn_id,
+                    )
+                )
+                return Mock(conversation_id=turn_id)
+
+        result = build_live_private_turn_sink(
+            FakeClient(),
+            aituber_forwarder_factory=factory,
+        )(accepted_candidate_audit(), "private")
+
+        self.assertEqual(result["thought_core_turninput_count"], 1)
+        factory.assert_not_called()
+
+    def test_private_turn_sink_keeps_acceptance_when_presentation_fails(
+        self,
+    ) -> None:
+        private_marker = "private-presentation-error-do-not-echo"
+
+        class FakeClient:
+            def send_turn_streaming(self, payload, *, on_event):
+                turn_id = payload["private_turn"]["turn_id"]
+                on_event(
+                    Mock(
+                        is_message=True,
+                        is_completed=False,
+                        turn_id=turn_id,
+                        event_id="evt-live-1",
+                        speech="公開応答です",
+                    )
+                )
+                on_event(
+                    Mock(
+                        is_message=False,
+                        is_completed=True,
+                        turn_id=turn_id,
+                    )
+                )
+                return Mock(conversation_id=turn_id)
+
+        class FailingForwarder:
+            def __init__(self, failure: str) -> None:
+                self.failure = failure
+
+            def __call__(self, _event: object) -> None:
+                if self.failure == "call":
+                    raise RuntimeError(private_marker)
+
+            def close(self) -> None:
+                if self.failure == "close":
+                    raise RuntimeError(private_marker)
+
+        factories = {
+            "factory": lambda _turn_id: (_ for _ in ()).throw(
+                RuntimeError(private_marker)
+            ),
+            "call": lambda _turn_id: FailingForwarder("call"),
+            "close": lambda _turn_id: FailingForwarder("close"),
+        }
+        for failure, factory in factories.items():
+            with self.subTest(failure=failure):
+                result = build_live_private_turn_sink(
+                    FakeClient(),
+                    aituber_forwarder_factory=factory,
+                )(accepted_candidate_audit(), private_marker)
+
+                self.assertEqual(
+                    result,
+                    {
+                        "result_class": "thought_core_turninput_accepted",
+                        "submission_count": 1,
+                        "thought_core_turninput_count": 1,
+                    },
+                )
+                self.assertNotIn(private_marker, repr(result))
 
     def test_private_turn_sink_fails_closed_without_exact_completion(self) -> None:
         private_marker = "private-client-error-do-not-echo"
