@@ -1,10 +1,13 @@
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from unittest import TestCase, skipUnless
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PRODUCT_ROOT = ROOT.parents[1]
+SYSTEM = ROOT / "ops" / "scripts" / "system.ps1"
 STACK_START = ROOT / "ops" / "scripts" / "home-control-stack" / "start-home-control-stack.ps1"
 POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 
@@ -72,11 +75,106 @@ def run_stack_dry_run(workspace: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def run_system(*arguments: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            POWERSHELL,
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SYSTEM),
+            *arguments,
+        ],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+
 @skipUnless(POWERSHELL, "PowerShell is required for launcher dry-run contract tests")
 class LauncherNativeLayoutTest(TestCase):
-    def test_stack_dry_run_accepts_native_agent_os_layout_without_legacy_aliases(self) -> None:
-        import tempfile
+    def test_system_default_workspace_matches_explicit_product_root_independent_of_cwd(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sword-system-default-status-") as temp_dir:
+            temp_root = Path(temp_dir)
+            default_cwd = temp_root / "default-cwd"
+            explicit_cwd = temp_root / "explicit-cwd"
+            default_cwd.mkdir()
+            explicit_cwd.mkdir()
+            relative_state_dir = Path(".cache") / f"workspace-root-parity-{temp_root.name}"
+            canonical_state_dir = PRODUCT_ROOT / relative_state_dir
+            incorrect_state_dir = PRODUCT_ROOT / "control-plane" / relative_state_dir
+            common_arguments = (
+                "status",
+                "-Profile",
+                "thought-core-v0",
+                "-StackStateDir",
+                str(relative_state_dir),
+                "-ManifestOnly",
+            )
 
+            default_result = run_system(*common_arguments, cwd=default_cwd)
+            explicit_result = run_system(
+                *common_arguments,
+                "-WorkspaceRoot",
+                str(PRODUCT_ROOT),
+                cwd=explicit_cwd,
+            )
+            default_output = f"{default_result.stdout}\n{default_result.stderr}"
+            explicit_output = f"{explicit_result.stdout}\n{explicit_result.stderr}"
+
+            self.assertEqual(default_result.returncode, 0, default_output)
+            self.assertEqual(explicit_result.returncode, 0, explicit_output)
+            self.assertEqual(default_result.stdout, explicit_result.stdout)
+            self.assertEqual(default_result.stderr, explicit_result.stderr)
+            for output in (default_output, explicit_output):
+                self.assertIn(f"state_dir={canonical_state_dir}", output)
+                self.assertNotIn(str(incorrect_state_dir), output)
+            self.assertFalse(canonical_state_dir.exists())
+            self.assertFalse((canonical_state_dir / "pids.json").exists())
+            self.assertFalse(incorrect_state_dir.exists())
+
+    def test_system_default_workspace_dry_run_reaches_canonical_product_paths(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sword-system-default-start-") as temp_dir:
+            temp_root = Path(temp_dir)
+            unrelated_cwd = temp_root / "unrelated-cwd"
+            unrelated_cwd.mkdir()
+            state_dir = temp_root / "stack-state"
+
+            result = run_system(
+                "start",
+                "-Profile",
+                "thought-core-v0",
+                "-StackStateDir",
+                str(state_dir),
+                "-SkipHomeAssistantBridge",
+                "-SkipEnvironmentState",
+                "-SkipMediapipe",
+                "-SkipVisionSnapshotProcessor",
+                "-SkipAituber",
+                "-SkipTouchDesignerGui",
+                "-SkipVoicevoxCheck",
+                "-ThoughtCoreNoProvider",
+                "-StopExisting",
+                "-DryRun",
+                cwd=unrelated_cwd,
+            )
+            output = f"{result.stdout}\n{result.stderr}"
+
+            self.assertEqual(result.returncode, 0, output)
+            self.assertIn(str(PRODUCT_ROOT / "control-plane/core/scripts/start-thought-core.ps1"), output)
+            self.assertIn(str(PRODUCT_ROOT / "control-plane/core/scripts/start-thought-core-watch.ps1"), output)
+            self.assertIn(str(PRODUCT_ROOT / "organs/speech-input/ai-talk-core"), output)
+            self.assertNotIn(r"sword-control-plane\scripts", output)
+            self.assertNotIn(r"organs\voice\ai-talk-core", output)
+            self.assertTrue((state_dir / "logs").is_dir())
+            self.assertEqual({path.name for path in state_dir.iterdir()}, {"logs"})
+            self.assertEqual(list((state_dir / "logs").iterdir()), [])
+            self.assertFalse((state_dir / "pids.json").exists())
+
+    def test_stack_dry_run_accepts_native_agent_os_layout_without_legacy_aliases(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sword-launch-native-layout-") as temp_dir:
             workspace = Path(temp_dir) / "sword-agent-os"
             make_native_workspace(workspace)
@@ -95,8 +193,6 @@ class LauncherNativeLayoutTest(TestCase):
             self.assertNotIn(r"organs\voice\ai-talk-core", output)
 
     def test_stack_dry_run_prefers_native_paths_when_legacy_aliases_exist(self) -> None:
-        import tempfile
-
         with tempfile.TemporaryDirectory(prefix="sword-launch-native-preferred-") as temp_dir:
             workspace = Path(temp_dir) / "sword-agent-os"
             make_native_workspace(workspace)
@@ -112,8 +208,6 @@ class LauncherNativeLayoutTest(TestCase):
             self.assertNotIn(r"organs\voice\ai-talk-core", output)
 
     def test_stack_dry_run_rejects_missing_canonical_speech_input_even_if_legacy_residue_exists(self) -> None:
-        import tempfile
-
         with tempfile.TemporaryDirectory(prefix="sword-launch-partial-ai-talk-") as temp_dir:
             workspace = Path(temp_dir) / "sword-agent-os"
             make_native_workspace(workspace)

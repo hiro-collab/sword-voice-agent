@@ -66,7 +66,7 @@ function Resolve-WorkspaceRoot {
     if (-not [string]::IsNullOrWhiteSpace($Value)) {
         return (Resolve-Path -LiteralPath $Value).Path
     }
-    return (Resolve-Path -LiteralPath (Join-Path (Resolve-RepoRoot) "..")).Path
+    return (Resolve-Path -LiteralPath (Join-Path (Resolve-RepoRoot) "..\..")).Path
 }
 
 function Resolve-StackStateDir {
