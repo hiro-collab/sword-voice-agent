@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable, Mapping
+import hashlib
 import importlib
 import os
 import re
+import secrets
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
+from uuid import uuid4
+
+from sword_voice_agent.adapters.ai_talk_core import (
+    ACCEPTED_USER_SPEECH_CANDIDATE_INPUT_GATE_SCHEMA,
+    build_accepted_user_speech_turn_envelope,
+)
+from sword_voice_agent.adapters.thought_core import ThoughtCoreClient
 
 
 @dataclass(frozen=True)
@@ -29,6 +40,16 @@ CHECKBOX_IDS = {
 }
 AI_TALK_CORE_WEB_PRESET_ENV = "AI_TALK_CORE_WEB_PRESET"
 NATIVE_PROFILE_NAMES = ("integration",)
+THOUGHT_CORE_TURNINPUT_ACCEPTED = {
+    "result_class": "thought_core_turninput_accepted",
+    "submission_count": 1,
+    "thought_core_turninput_count": 1,
+}
+THOUGHT_CORE_TURNINPUT_REJECTED = {
+    "result_class": "thought_core_turninput_rejected",
+    "submission_count": 0,
+    "thought_core_turninput_count": 0,
+}
 
 
 def apply_ai_talk_core_web_defaults(
@@ -184,6 +205,7 @@ def create_ai_talk_core_app(
     port: int,
     runtime_status_writer: Any,
     started_at: str,
+    private_turn_sink: Any = None,
 ) -> Any:
     """Create the ai_talk_core Flask app while tolerating older checkouts."""
     try:
@@ -192,6 +214,7 @@ def create_ai_talk_core_app(
             port=port,
             runtime_status_writer=runtime_status_writer,
             started_at=started_at,
+            private_turn_sink=private_turn_sink,
         )
     except TypeError:
         return module.create_app()
@@ -238,6 +261,7 @@ def load_ai_talk_core_app_with_optional_preset(
     port: int,
     runtime_status_writer: Any,
     started_at: str,
+    private_turn_sink: Any = None,
 ) -> Any:
     """Load ai_talk_core while setting its native preset env when requested."""
     previous = os.environ.get(AI_TALK_CORE_WEB_PRESET_ENV)
@@ -253,6 +277,7 @@ def load_ai_talk_core_app_with_optional_preset(
             port=port,
             runtime_status_writer=runtime_status_writer,
             started_at=started_at,
+            private_turn_sink=private_turn_sink,
         )
     finally:
         if previous is None:
@@ -269,6 +294,7 @@ def load_ai_talk_core_app(
     port: int = 8000,
     runtime_status_writer: Any = None,
     started_at: str = "",
+    private_turn_sink: Any = None,
 ) -> Any:
     """Compatibility wrapper for tests and older integration call sites."""
     return load_ai_talk_core_app_with_optional_preset(
@@ -278,6 +304,115 @@ def load_ai_talk_core_app(
         port=port,
         runtime_status_writer=runtime_status_writer,
         started_at=started_at,
+        private_turn_sink=private_turn_sink,
+    )
+
+
+def build_live_private_turn_sink(
+    client: ThoughtCoreClient | None = None,
+) -> Callable[[Mapping[str, object], str], Mapping[str, object]]:
+    """Build a process-local one-shot sink for a gate-consumed private turn."""
+    thought_core = client or ThoughtCoreClient.from_env()
+    claim_key = secrets.token_bytes(32)
+    claimed_candidate_fingerprints: set[bytes] = set()
+    claim_lock = threading.Lock()
+
+    def submit_private_turn(
+        candidate: Mapping[str, object],
+        transcript: str,
+    ) -> Mapping[str, object]:
+        if not _is_canonical_gate_accepted_candidate(candidate):
+            return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
+        if not isinstance(transcript, str) or not transcript.strip():
+            return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
+        candidate_id = candidate.get("candidate_id")
+        if (
+            not isinstance(candidate_id, str)
+            or len(candidate_id) > 120
+            or re.fullmatch(r"ausc_[A-Za-z0-9_.:-]+", candidate_id) is None
+        ):
+            return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
+        fingerprint = hashlib.blake2s(
+            candidate_id.encode("utf-8"),
+            key=claim_key,
+            digest_size=16,
+        ).digest()
+        with claim_lock:
+            if (
+                fingerprint in claimed_candidate_fingerprints
+                or len(claimed_candidate_fingerprints) >= 4096
+            ):
+                return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
+            claimed_candidate_fingerprints.add(fingerprint)
+        candidate_id = ""
+
+        correlation_suffix = uuid4().hex
+        turn_id = f"turn_live_speech_{correlation_suffix}"
+        private_turn: dict[str, object] = {
+            "text": transcript,
+            "turn_id": turn_id,
+            "session_id": f"session_live_speech_{correlation_suffix}",
+            "locale": "ja-JP",
+            "context_refs": {},
+        }
+        envelope = build_accepted_user_speech_turn_envelope(
+            candidate,
+            private_turn,
+        )
+        completed_turn_ids: list[str] = []
+
+        def observe_event(event: Any) -> None:
+            if bool(getattr(event, "is_completed", False)):
+                completed_turn_ids.append(str(getattr(event, "turn_id", "")))
+
+        try:
+            response = thought_core.send_turn_streaming(
+                envelope,
+                on_event=observe_event,
+            )
+            if (
+                completed_turn_ids == [turn_id]
+                and getattr(response, "conversation_id", None) == turn_id
+            ):
+                return dict(THOUGHT_CORE_TURNINPUT_ACCEPTED)
+            return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
+        except Exception:
+            return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
+        finally:
+            envelope_private_turn = envelope.get("private_turn")
+            if isinstance(envelope_private_turn, dict):
+                envelope_private_turn["text"] = ""
+            envelope.clear()
+            private_turn["text"] = ""
+            transcript = ""
+
+    return submit_private_turn
+
+
+def _is_canonical_gate_accepted_candidate(
+    candidate: Mapping[str, object],
+) -> bool:
+    if not isinstance(candidate, Mapping):
+        return False
+    input_gate = candidate.get("input_gate")
+    acceptance = candidate.get("acceptance_decision")
+    return bool(
+        candidate.get("schema_version")
+        == ACCEPTED_USER_SPEECH_CANDIDATE_INPUT_GATE_SCHEMA
+        and candidate.get("source_kind") == "user_speech_candidate"
+        and candidate.get("speaker_role") == "user_candidate"
+        and isinstance(input_gate, Mapping)
+        and input_gate.get("input_gate_decision_owner")
+        == "ai_talk_core_input_gate"
+        and input_gate.get("input_gate_decision_class")
+        == "accepted_user_speech_candidate"
+        and input_gate.get("normal_turn_block_reason") is None
+        and isinstance(acceptance, Mapping)
+        and acceptance.get("acceptance_status")
+        == "accepted_user_speech_candidate"
+        and acceptance.get("may_materialize_thought_core_turninput") is True
+        and acceptance.get("private_text_handoff_required") is True
+        and candidate.get("raw_private_publication_flags") is False
     )
 
 
@@ -312,6 +447,7 @@ def run(args: argparse.Namespace) -> int:
         port=args.port,
         runtime_status_writer=runtime_status_writer,
         started_at=started_at,
+        private_turn_sink=build_live_private_turn_sink(),
     )
     if native_defaults_enabled and defaults != AiTalkCoreWebDefaults():
         install_native_startup_redirect(app, native_profile, defaults)
