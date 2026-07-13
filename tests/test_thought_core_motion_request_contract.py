@@ -152,6 +152,8 @@ class ThoughtCoreMotionRequestContractTest(TestCase):
         self.assertEqual(payload["safe_visible_state"], "requested")
         self.assertEqual(payload["safe_display_name"], "Dance sequence")
         self.assertEqual(payload["target_model_type"], "vrm")
+        self.assertEqual(payload["loop"], False)
+        self.assertEqual(payload["loop_count"], 1)
         self.assertTrue(payload["stimulus_id"].startswith("mot_stim_"))
         self.assertTrue(payload["motion_event_id"].startswith("mot_evt_"))
         self.assertTrue(payload["stimulus_instance_id"].startswith("mot_inst_"))
@@ -207,6 +209,7 @@ class ThoughtCoreMotionRequestContractTest(TestCase):
                 self.assertEqual(payload["safe_display_name"], "Stop motion")
                 self.assertEqual(payload["duration_ms"], 0)
                 self.assertEqual(payload["loop"], False)
+                self.assertEqual(payload["loop_count"], 0)
                 self.assertEqual(payload["interrupt_policy"], "stop")
                 self.assertEqual(payload["fallback_state"], "stop_to_idle")
                 self.assertEqual(payload["stop_reason"], "user_requested")
@@ -225,6 +228,8 @@ class ThoughtCoreMotionRequestContractTest(TestCase):
         self.assertEqual(payload["kind"], "dance_sequence")
         self.assertEqual(payload["safe_display_name"], "Music dance")
         self.assertEqual(payload["payload_ref"], "motion.thought_core.dance_sequence.v0")
+        self.assertEqual(payload["loop"], False)
+        self.assertEqual(payload["loop_count"], 1)
         self.assertEqual(payload["safety"]["home_assistant_route"], False)
         self.assert_no_home_action(events, tools)
 
@@ -236,6 +241,8 @@ class ThoughtCoreMotionRequestContractTest(TestCase):
         assert payload is not None
         self.assertEqual(payload["kind"], "expression")
         self.assertEqual(payload["request_mode"], "apply")
+        self.assertEqual(payload["loop"], False)
+        self.assertEqual(payload["loop_count"], 0)
         self.assertEqual(payload["safe_display_name"], "Happy expression")
         self.assertEqual(
             payload["track_mask"],
