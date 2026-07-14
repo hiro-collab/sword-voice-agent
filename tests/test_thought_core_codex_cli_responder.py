@@ -18,6 +18,7 @@ from thought_core.responders import (  # noqa: E402
     CodexCliChatResponder,
     EnvironmentTurnResponder,
     OpenAICompatibleChatResponder,
+    _codex_command_prefix,
     _codex_config_overrides_from_env,
     _default_codex_cwd,
     _run_codex_command,
@@ -32,6 +33,20 @@ class ThoughtCoreCodexCliResponderTests(TestCase):
         self.assertEqual(_default_codex_cwd(), REPO_ROOT.parents[1])
         self.assertTrue((_default_codex_cwd() / "control-plane").is_dir())
         self.assertTrue((_default_codex_cwd() / "AGENTS.md").is_file())
+
+    def test_windows_codex_cmd_uses_explicit_command_shell_prefix(self) -> None:
+        command = r"C:\Users\operator\AppData\Roaming\npm\codex.cmd"
+        with patch.dict(
+            "os.environ",
+            {"COMSPEC": r"C:\Windows\System32\cmd.exe"},
+            clear=False,
+        ):
+            prefix = _codex_command_prefix(command)
+
+        self.assertEqual(
+            prefix,
+            [r"C:\Windows\System32\cmd.exe", "/d", "/s", "/c", command],
+        )
 
     def test_stack_start_passes_codex_cli_mode_keys_to_thought_core(self) -> None:
         stack_start = STACK_START.read_text(encoding="utf-8")

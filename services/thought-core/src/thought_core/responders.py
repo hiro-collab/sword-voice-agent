@@ -759,7 +759,8 @@ def _codex_workspace_class(path: Path) -> str:
 
 
 def _codex_command_prefix(command: str) -> list[str]:
-    if command.lower().endswith(".ps1"):
+    lower_command = command.lower()
+    if lower_command.endswith(".ps1"):
         powershell = shutil.which("pwsh") or shutil.which("powershell") or "powershell"
         return [
             powershell,
@@ -769,6 +770,13 @@ def _codex_command_prefix(command: str) -> list[str]:
             "-File",
             command,
         ]
+    if lower_command.endswith((".cmd", ".bat")):
+        command_shell = (
+            os.environ.get("COMSPEC")
+            or shutil.which("cmd.exe")
+            or str(Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32" / "cmd.exe")
+        )
+        return [command_shell, "/d", "/s", "/c", command]
     return [command]
 
 
