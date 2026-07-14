@@ -33,6 +33,8 @@ const state = {
   latestStatusTimestamp: '',
   startupTiming: null,
   diagnosticSurfaces: null,
+  videoInputDevices: [],
+  videoInputEnumerationClass: 'pending',
   demoSafeSettings: {
     rows: [],
     summary: { total: 0, enabled: 0, enabled_appliance: 0, enabled_readiness: 0 }
@@ -66,7 +68,19 @@ const translations = {
     'provider.codexLuna': 'Codex CLI (Luna / low)',
     'provider.description': 'Changes only the Thought Core child process started by this launcher. Codex CLI stays response-only and read-only.',
     'launch.mediapipeStartup': 'MediaPipe startup',
-    'launch.cameraName': 'Camera name',
+    'launch.cameraName': 'Connected camera',
+    'launch.refreshCameras': 'Refresh cameras',
+    'launch.cameraSelectionPending': 'Checking connected cameras.',
+    'launch.cameraSelectionAvailable': '{count} connected camera(s).',
+    'launch.cameraSelectionMissing': 'The saved camera is currently missing. Selection retained.',
+    'launch.cameraSelectionNone': 'No connected camera is currently listed.',
+    'launch.cameraSelectionUnavailable': 'Camera enumeration is unavailable. Saved selection retained.',
+    'launch.cameraChoose': 'Choose a connected camera',
+    'launch.cameraMissingSuffix': 'missing',
+    'launch.cameraManualTitle': 'Advanced manual camera name',
+    'launch.cameraManualDescription': 'Use only for a virtual or late-attached camera that cannot be listed.',
+    'launch.cameraManualName': 'Manual camera name',
+    'launch.cameraManualApply': 'Use manual name',
     'launch.cameraWidth': 'Width',
     'launch.cameraHeight': 'Height',
     'launch.cameraFps': 'Requested FPS',
@@ -298,7 +312,19 @@ const translations = {
     'provider.codexLuna': 'Codex CLI（Luna / low）',
     'provider.description': 'このランチャーが起動するThought Core子プロセスだけを切り替えます。Codex CLIは応答専用・読取専用です。',
     'launch.mediapipeStartup': 'カメラ入力の起動方式',
-    'launch.cameraName': 'カメラ名',
+    'launch.cameraName': '接続中のカメラ',
+    'launch.refreshCameras': 'カメラ一覧を更新',
+    'launch.cameraSelectionPending': '接続中のカメラを確認しています。',
+    'launch.cameraSelectionAvailable': '接続中のカメラ: {count}台',
+    'launch.cameraSelectionMissing': '保存済みのカメラは現在未接続です。選択は保持しています。',
+    'launch.cameraSelectionNone': '接続中のカメラは見つかりませんでした。',
+    'launch.cameraSelectionUnavailable': 'カメラ一覧を取得できません。保存済みの選択は保持しています。',
+    'launch.cameraChoose': '接続中のカメラを選択',
+    'launch.cameraMissingSuffix': '未接続',
+    'launch.cameraManualTitle': '詳細: カメラ名を手動入力',
+    'launch.cameraManualDescription': '一覧に出ない仮想カメラや後から接続したカメラに限って使用します。',
+    'launch.cameraManualName': '手動カメラ名',
+    'launch.cameraManualApply': '手動名を使用',
     'launch.cameraWidth': '幅',
     'launch.cameraHeight': '高さ',
     'launch.cameraFps': '要求FPS',
@@ -578,7 +604,6 @@ const corePortFields = [
 ]
 
 const textFields = [
-  'MediapipeCameraName',
   'MediapipeCameraInputCodec',
   'VoicevoxUrl',
   'HomeControlConfigPath'
@@ -982,6 +1007,73 @@ const currentOptions = () => ({
   ...state.options
 })
 
+const applyPreviewOptions = (previewOptions) => {
+  const cameraSelection = state.options.MediapipeCameraName
+  state.options = {
+    ...(previewOptions || {}),
+    MediapipeCameraName: cameraSelection
+  }
+}
+
+const videoInputDeviceNames = () =>
+  (state.videoInputDevices || [])
+    .map((device) => String(device?.value || '').trim())
+    .filter(Boolean)
+
+const normalizeCameraSelection = (value) => {
+  const name = String(value || '').trim()
+  return name && name.length <= 256 && !/[\u0000-\u001f\u007f]/.test(name) ? name : ''
+}
+
+const renderCameraSelector = () => {
+  const select = $('MediapipeCameraName')
+  const selected = String(state.options.MediapipeCameraName || '').trim()
+  const devices = videoInputDeviceNames()
+  const selectedMatch = Boolean(selected && devices.includes(selected))
+  const options = []
+
+  if (!selected) {
+    options.push(`<option value="">${escapeHtml(t('launch.cameraChoose'))}</option>`)
+  } else if (!selectedMatch) {
+    options.push(
+      `<option value="${escapeHtml(selected)}">${escapeHtml(selected)} (${escapeHtml(t('launch.cameraMissingSuffix'))})</option>`
+    )
+  }
+  for (const name of devices) {
+    options.push(`<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
+  }
+  select.innerHTML = options.join('')
+  select.value = selected
+
+  let statusKey = 'launch.cameraSelectionPending'
+  let statusValues = {}
+  if (state.videoInputEnumerationClass === 'video_inputs_enumerated') {
+    statusKey = selected && !selectedMatch
+      ? 'launch.cameraSelectionMissing'
+      : 'launch.cameraSelectionAvailable'
+    statusValues = { count: devices.length }
+  } else if (state.videoInputEnumerationClass === 'video_inputs_none') {
+    statusKey = selected ? 'launch.cameraSelectionMissing' : 'launch.cameraSelectionNone'
+  } else if (state.videoInputEnumerationClass !== 'pending') {
+    statusKey = 'launch.cameraSelectionUnavailable'
+  }
+  $('camera-selection-state').textContent = t(statusKey, statusValues)
+}
+
+const refreshVideoInputDevices = async () => {
+  state.videoInputEnumerationClass = 'pending'
+  renderCameraSelector()
+  try {
+    const payload = await api('/api/video-input-devices')
+    state.videoInputDevices = Array.isArray(payload.devices) ? payload.devices : []
+    state.videoInputEnumerationClass = payload.result_class || 'video_input_enumeration_unavailable'
+  } catch {
+    state.videoInputDevices = []
+    state.videoInputEnumerationClass = 'video_input_enumeration_unavailable'
+  }
+  renderCameraSelector()
+}
+
 const formatReviewCommandPreview = (commandLine) => String(commandLine || '').trim()
 
 const setCommandPreview = (commandLine) => {
@@ -1081,7 +1173,7 @@ const applyProfileDefaults = async () => {
       options: profileOptions()
     })
   })
-  state.options = preview.options
+  applyPreviewOptions(preview.options)
   setCommandPreview(preview.commandLine)
   renderControls()
   renderSystemSummary()
@@ -1249,6 +1341,7 @@ const renderControls = () => {
   for (const field of textFields) {
     $(field).value = state.options[field] || ''
   }
+  renderCameraSelector()
   $('ThoughtCoreLlmProvider').value = state.options.ThoughtCoreLlmProvider || 'configured'
 
   document.querySelectorAll('#mediapipe-mode button').forEach((button) => {
@@ -2135,7 +2228,7 @@ const refreshPreview = async () => {
         options: currentOptions()
       })
     })
-    state.options = preview.options
+    applyPreviewOptions(preview.options)
     setCommandPreview(preview.commandLine)
   } catch (error) {
     $('command-preview').textContent = error.message
@@ -2324,6 +2417,21 @@ const bindControls = () => {
       setOption(field, event.target.value)
     })
   }
+  $('MediapipeCameraName').addEventListener('change', (event) => {
+    setOption('MediapipeCameraName', event.target.value)
+  })
+  $('refresh-camera-devices').addEventListener('click', () => {
+    refreshVideoInputDevices().catch(showError)
+  })
+  $('apply-manual-camera').addEventListener('click', () => {
+    const manualInput = $('MediapipeCameraNameManual')
+    const value = normalizeCameraSelection(manualInput.value)
+    if (!value) {
+      return
+    }
+    setOption('MediapipeCameraName', value)
+    manualInput.value = ''
+  })
   $('ThoughtCoreLlmProvider').addEventListener('change', (event) => {
     setOption('ThoughtCoreLlmProvider', event.target.value)
   })
@@ -2379,7 +2487,8 @@ const showError = (error) => {
 applyStaticTranslations()
 bindControls()
 refreshState()
-  .then(() => {
+  .then(async () => {
+    await refreshVideoInputDevices()
     renderOperation()
     renderActionButtons()
     window.setInterval(() => refreshStatusOnly().catch(() => {}), 5000)

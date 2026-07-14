@@ -147,10 +147,44 @@
             </button>
           </div>
 
-          <label class="field">
-            <span data-i18n="launch.cameraName">Camera name</span>
-            <input id="MediapipeCameraName" type="text" autocomplete="off" />
-          </label>
+          <div class="field">
+            <span data-i18n="launch.cameraName">Connected camera</span>
+            <div class="port-grid">
+              <select id="MediapipeCameraName"></select>
+              <button
+                id="refresh-camera-devices"
+                class="secondary compact"
+                type="button"
+                data-i18n="launch.refreshCameras"
+              >
+                Refresh cameras
+              </button>
+            </div>
+            <p id="camera-selection-state" class="description"></p>
+          </div>
+          <details class="option-drawer">
+            <summary data-i18n="launch.cameraManualTitle">Advanced manual camera name</summary>
+            <p class="description" data-i18n="launch.cameraManualDescription">
+              Use only for a virtual or late-attached camera that cannot be listed.
+            </p>
+            <label class="field">
+              <span data-i18n="launch.cameraManualName">Manual camera name</span>
+              <input
+                id="MediapipeCameraNameManual"
+                type="text"
+                autocomplete="off"
+                maxlength="256"
+              />
+            </label>
+            <button
+              id="apply-manual-camera"
+              class="secondary compact"
+              type="button"
+              data-i18n="launch.cameraManualApply"
+            >
+              Use manual name
+            </button>
+          </details>
           <div class="port-grid">
             <label class="field">
               <span data-i18n="launch.cameraWidth">Width</span>

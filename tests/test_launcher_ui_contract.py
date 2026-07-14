@@ -141,6 +141,7 @@ class LauncherUiContractTest(TestCase):
                 ),
                 encoding="utf-8",
             )
+            private_camera_name = "private://camera-$(expand)-raw-marker"
             (state_dir / "pids.json").write_text(
                 json.dumps(
                     {
@@ -154,7 +155,11 @@ class LauncherUiContractTest(TestCase):
                                 "role": "camera_hub_stack",
                                 "pid": camera_helper.pid,
                                 "working_directory": str(ROOT),
-                                "command": "test-only-owner",
+                                "command": (
+                                    "uv run python apps/serve_camera_hub.py "
+                                    f"--camera-name {private_camera_name} "
+                                    f"--port {mediapipe_port}"
+                                ),
                                 "started_at": started_at,
                                 "allowed_process_names": ["uv", "python", "mediamtx", "ffmpeg"],
                                 "child_process_file": str(manifest_path),
@@ -229,6 +234,7 @@ class LauncherUiContractTest(TestCase):
             )
             try:
                 status_url = f"http://127.0.0.1:{launcher_port}/api/status"
+                state_url = f"http://127.0.0.1:{launcher_port}/api/state"
 
                 def read_status() -> dict:
                     deadline = time.monotonic() + 8
@@ -293,7 +299,21 @@ class LauncherUiContractTest(TestCase):
                     unavailable["startupTiming"]["status_class"],
                     "startup_expected_services_operational_with_degraded",
                 )
-                self.assertNotIn("private://", json.dumps(unavailable))
+                unavailable_serialized = json.dumps(unavailable)
+                self.assertNotIn(private_camera_name, unavailable_serialized)
+                self.assertIn(
+                    "<local-camera-selection>",
+                    unavailable["services"]["mediapipe"]["command"],
+                )
+                with urllib.request.urlopen(state_url, timeout=2) as response:
+                    launcher_state = json.loads(response.read().decode("utf-8"))
+                launcher_state_serialized = json.dumps(launcher_state)
+                self.assertNotIn(private_camera_name, launcher_state_serialized)
+                self.assertIn(
+                    "<local-camera-selection>",
+                    launcher_state["status"]["services"]["mediapipe"]["command"],
+                )
+                self.assertNotIn("private://", unavailable_serialized)
 
                 write_manifest("recovering", False)
                 recovering = read_status()
@@ -645,6 +665,143 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("runtime diagnostics remain the authority for achieved FPS", app)
         self.assertIn('"--ffmpeg-input-codec"', stack)
         self.assertIn('$MediapipeCameraInputCodec', stack)
+
+    def test_launcher_camera_selector_is_enumerated_refreshable_and_fail_closed(self) -> None:
+        html = read_public("index.html")
+        app = read_public("app.js")
+        server = read_launcher_server()
+
+        self.assertIn('<select id="MediapipeCameraName"></select>', html)
+        self.assertIn('id="refresh-camera-devices"', html)
+        self.assertIn('id="MediapipeCameraNameManual"', html)
+        self.assertIn('maxlength="256"', html)
+        self.assertIn('id="apply-manual-camera"', html)
+        self.assertNotIn('id="MediapipeCameraName" type="text"', html)
+        self.assertIn("const refreshVideoInputDevices = async () =>", app)
+        self.assertIn("api('/api/video-input-devices')", app)
+        self.assertIn("selected && !selectedMatch", app)
+        self.assertIn("launch.cameraSelectionMissing", app)
+        self.assertIn("setOption('MediapipeCameraName', event.target.value)", app)
+        self.assertIn("setOption('MediapipeCameraName', value)", app)
+        self.assertIn("const normalizeCameraSelection = (value) =>", app)
+        self.assertNotIn("'MediapipeCameraName',\n  'MediapipeCameraInputCodec'", app)
+        self.assertIn("-list_devices", server)
+        self.assertIn("\\(video\\)", server)
+        self.assertIn("device_start_count: 0", server)
+        self.assertIn("capture_count: 0", server)
+        self.assertIn("video_input_enumeration_unavailable", server)
+        self.assertIn("normalized.MediapipeCameraName = sanitizeVideoInputDeviceName", server)
+
+    def test_launcher_camera_enumeration_endpoint_has_no_device_side_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_root:
+            state_dir = Path(temporary_root) / "state"
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            probe.bind(("127.0.0.1", 0))
+            launcher_port = probe.getsockname()[1]
+            probe.close()
+            env = os.environ.copy()
+            env["NODE_ENV"] = "test"
+            env["HOME_CONTROL_LAUNCHER_TEST_VIDEO_INPUTS"] = json.dumps(
+                ["camera-a", "camera-b", "camera-a"]
+            )
+            launcher = subprocess.Popen(
+                [
+                    "node",
+                    str(LAUNCHER_SERVER),
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(launcher_port),
+                    "--workspace",
+                    str(ROOT.parents[1]),
+                    "--state-dir",
+                    str(state_dir),
+                ],
+                cwd=ROOT,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                url = f"http://127.0.0.1:{launcher_port}/api/video-input-devices"
+                payload = None
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    try:
+                        with urllib.request.urlopen(url, timeout=2) as response:
+                            payload = json.loads(response.read().decode("utf-8"))
+                        break
+                    except Exception:
+                        time.sleep(0.05)
+                self.assertIsNotNone(payload)
+                self.assertEqual(payload["result_class"], "video_inputs_enumerated")
+                self.assertEqual(payload["count"], 2)
+                self.assertEqual(len(payload["devices"]), 2)
+                self.assertEqual(payload["device_start_count"], 0)
+                self.assertEqual(payload["capture_count"], 0)
+                self.assertFalse((state_dir / "pids.json").exists())
+                self.assertFalse((state_dir / "launcher-state.json").exists())
+
+                adversarial_name = 'private://camera-$(expand)-`tick-"quote"'
+                request_body = json.dumps(
+                    {
+                        "profileId": "thought-core-v0",
+                        "options": {"MediapipeCameraName": adversarial_name},
+                    }
+                ).encode("utf-8")
+                command_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/test/camera-command-boundary",
+                    data=request_body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(command_request, timeout=5) as response:
+                    command_boundary = json.loads(response.read().decode("utf-8"))
+                self.assertTrue(command_boundary["input_accepted"])
+                self.assertTrue(command_boundary["execution_argv_exact"])
+                self.assertTrue(command_boundary["review_command_redacted"])
+                self.assertTrue(command_boundary["public_preview_redacted"])
+                self.assertTrue(command_boundary["launcher_state_command_redacted"])
+                self.assertTrue(command_boundary["log_command_redacted"])
+                self.assertNotIn(adversarial_name, json.dumps(command_boundary))
+
+                preview_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/preview",
+                    data=request_body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(preview_request, timeout=5) as response:
+                    public_preview = json.loads(response.read().decode("utf-8"))
+                public_preview_json = json.dumps(public_preview)
+                self.assertNotIn(adversarial_name, public_preview_json)
+                self.assertNotIn("MediapipeCameraName", public_preview["options"])
+                self.assertNotIn("command", public_preview)
+                self.assertIn("<local-camera-selection>", public_preview["commandLine"])
+
+                invalid_body = json.dumps(
+                    {
+                        "profileId": "thought-core-v0",
+                        "options": {"MediapipeCameraName": "camera\ncontrol"},
+                    }
+                ).encode("utf-8")
+                invalid_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/test/camera-command-boundary",
+                    data=invalid_body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(invalid_request, timeout=5) as response:
+                    invalid_boundary = json.loads(response.read().decode("utf-8"))
+                self.assertFalse(invalid_boundary["input_accepted"])
+                self.assertTrue(invalid_boundary["execution_argv_exact"])
+            finally:
+                launcher.terminate()
+                try:
+                    launcher.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    launcher.kill()
+                    launcher.wait(timeout=5)
 
     def test_launcher_docs_name_streamcam_request_without_60_fps_claim(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
