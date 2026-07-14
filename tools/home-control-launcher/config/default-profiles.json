@@ -60,6 +60,7 @@
       "StopExisting": true,
       "SkipVoicevoxCheck": true,
       "SkipHomeAssistantBridge": true,
+      "SkipEnvironmentState": true,
       "SkipAituber": true,
       "SkipTouchDesignerGui": true,
       "MediapipeMode": "mediamtx",

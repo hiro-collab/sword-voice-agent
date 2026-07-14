@@ -767,6 +767,7 @@ class LauncherUiContractTest(TestCase):
 
         camera_debug = profiles["camera-debug"]["options"]
         self.assertTrue(camera_debug["SkipHomeAssistantBridge"])
+        self.assertTrue(camera_debug["SkipEnvironmentState"])
         self.assertTrue(camera_debug["SkipAituber"])
         self.assertTrue(camera_debug["SkipTouchDesignerGui"])
         self.assertFalse(camera_debug["MediapipeNoBrowser"])
