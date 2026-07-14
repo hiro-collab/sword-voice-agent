@@ -135,6 +135,52 @@ class LauncherUiContractTest(TestCase):
         self.assertIn('"never"', stack)
         self.assertIn('"true"', stack)
 
+    def test_launcher_routes_streamcam_capture_request_without_claiming_achieved_fps(self) -> None:
+        html = read_public("index.html")
+        app = read_public("app.js")
+        server = read_launcher_server()
+        system = read_system_script()
+        stack = read_stack_start_script()
+
+        for field in (
+            "MediapipeCameraName",
+            "MediapipeCameraWidth",
+            "MediapipeCameraHeight",
+            "MediapipeCameraFps",
+            "MediapipeCameraInputCodec",
+        ):
+            self.assertIn(f'id="{field}"', html)
+            self.assertIn(field, app)
+            self.assertIn(field, server)
+            self.assertIn(field, system)
+            self.assertIn(field, stack)
+
+        self.assertIn("Logitech StreamCam", server)
+        self.assertIn("MediapipeCameraWidth: 1920", server)
+        self.assertIn("MediapipeCameraHeight: 1080", server)
+        self.assertIn("MediapipeCameraFps: 30", server)
+        self.assertIn("MediapipeCameraInputCodec: 'mjpeg'", server)
+        self.assertIn("MediapipeCameraWidth: { min: 160, max: 3840 }", server)
+        self.assertIn("MediapipeCameraHeight: { min: 120, max: 2160 }", server)
+        self.assertIn("MediapipeCameraFps: { min: 1, max: 120 }", server)
+        self.assertIn("numberValue >= limits.min && numberValue <= limits.max", server)
+        self.assertIn("[ValidateRange(160, 3840)]", system)
+        self.assertIn("[ValidateRange(120, 2160)]", system)
+        self.assertIn("[ValidateRange(1, 120)]", system)
+        self.assertIn("[ValidateRange(160, 3840)]", stack)
+        self.assertIn("[ValidateRange(120, 2160)]", stack)
+        self.assertIn("[ValidateRange(1, 120)]", stack)
+        self.assertIn("runtime diagnostics remain the authority for achieved FPS", app)
+        self.assertIn('"--ffmpeg-input-codec"', stack)
+        self.assertIn('$MediapipeCameraInputCodec', stack)
+
+    def test_launcher_docs_name_streamcam_request_without_60_fps_claim(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("Logitech StreamCam", readme)
+        self.assertIn("実際の解像度/FPS", readme)
+        self.assertNotIn("現在の既定例は `HD Pro Webcam C920`", readme)
+
     def test_launcher_exposes_demo_safe_settings_without_claiming_proof(self) -> None:
         html = read_public("index.html")
         app = read_public("app.js")

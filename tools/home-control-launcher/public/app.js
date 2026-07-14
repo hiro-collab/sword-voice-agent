@@ -67,6 +67,12 @@ const translations = {
     'provider.description': 'Changes only the Thought Core child process started by this launcher. Codex CLI stays response-only and read-only.',
     'launch.mediapipeStartup': 'MediaPipe startup',
     'launch.cameraName': 'Camera name',
+    'launch.cameraWidth': 'Width',
+    'launch.cameraHeight': 'Height',
+    'launch.cameraFps': 'Requested FPS',
+    'launch.cameraInputCodec': 'Input codec',
+    'launch.cameraInputCodecAuto': 'Auto',
+    'launch.cameraRequestDescription': 'Requested capture settings; runtime diagnostics remain the authority for achieved FPS.',
     'mediapipe.normal': 'Normal',
     'mediapipe.normalTitle': 'Normal: MediaMTX video plus CameraHub WebSocket',
     'mediapipe.cameraHub': 'CameraHub only',
@@ -291,6 +297,12 @@ const translations = {
     'provider.description': 'このランチャーが起動するThought Core子プロセスだけを切り替えます。Codex CLIは応答専用・読取専用です。',
     'launch.mediapipeStartup': 'カメラ入力の起動方式',
     'launch.cameraName': 'カメラ名',
+    'launch.cameraWidth': '幅',
+    'launch.cameraHeight': '高さ',
+    'launch.cameraFps': '要求FPS',
+    'launch.cameraInputCodec': '入力codec',
+    'launch.cameraInputCodecAuto': '自動',
+    'launch.cameraRequestDescription': '撮像の要求値です。実際のFPSは実行時診断の値を確認してください。',
     'mediapipe.normal': '通常',
     'mediapipe.normalTitle': '通常: MediaMTX映像とCameraHub通信',
     'mediapipe.cameraHub': 'CameraHubのみ',
@@ -533,7 +545,12 @@ const portFields = [
   'VisionSnapshotProcessorPort'
 ]
 
-const numericOptionFields = [...portFields]
+const numericOptionFields = [
+  ...portFields,
+  'MediapipeCameraWidth',
+  'MediapipeCameraHeight',
+  'MediapipeCameraFps'
+]
 
 const readyTimeoutOptionFields = [
   'VoicevoxReadyTimeoutSeconds',
@@ -558,6 +575,7 @@ const corePortFields = [
 
 const textFields = [
   'MediapipeCameraName',
+  'MediapipeCameraInputCodec',
   'VoicevoxUrl',
   'HomeControlConfigPath'
 ]

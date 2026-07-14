@@ -151,6 +151,30 @@
             <span data-i18n="launch.cameraName">Camera name</span>
             <input id="MediapipeCameraName" type="text" autocomplete="off" />
           </label>
+          <div class="port-grid">
+            <label class="field">
+              <span data-i18n="launch.cameraWidth">Width</span>
+              <input id="MediapipeCameraWidth" type="number" min="160" max="3840" />
+            </label>
+            <label class="field">
+              <span data-i18n="launch.cameraHeight">Height</span>
+              <input id="MediapipeCameraHeight" type="number" min="120" max="2160" />
+            </label>
+            <label class="field">
+              <span data-i18n="launch.cameraFps">Requested FPS</span>
+              <input id="MediapipeCameraFps" type="number" min="1" max="120" />
+            </label>
+            <label class="field">
+              <span data-i18n="launch.cameraInputCodec">Input codec</span>
+              <select id="MediapipeCameraInputCodec">
+                <option value="mjpeg">MJPEG</option>
+                <option value="auto" data-i18n="launch.cameraInputCodecAuto">Auto</option>
+              </select>
+            </label>
+          </div>
+          <p class="description" data-i18n="launch.cameraRequestDescription">
+            Requested capture settings; runtime diagnostics remain the authority for achieved FPS.
+          </p>
 
           <div class="section-title" data-i18n="summary.title">Launch summary</div>
           <div

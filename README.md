@@ -30,7 +30,7 @@
 | 種類 | 用途 | 備考 |
 |---|---|---|
 | Windows PC | 全体実行 | PowerShell 7、Python、Node.js、カメラ処理が動く性能が必要です。 |
-| Webカメラ | MediaPipe、刀印、部屋の明るさ推定 | 現在の既定例は `HD Pro Webcam C920` です。別カメラの場合は起動時の `-MediapipeCameraName` を変えます。 |
+| Webカメラ | MediaPipe、刀印、部屋の明るさ推定 | 現在の既定は `Logitech StreamCam` の `1920x1080 / 30fps / MJPEG` 要求です。実際の解像度/FPSは実行時診断を確認し、別カメラではlauncherのカメラ設定を変えます。 |
 | マイク | 音声入力 | Chromeのマイク権限を許可します。 |
 | スピーカーまたは音声出力 | TTS再生 | VOICEVOXやAITuber Kitの音声出力で使います。 |
 | Raspberry Pi 4B | Home Assistant実行 | この環境ではHome AssistantをRaspberry Pi 4B側で動かします。Windows PCだけを用意しても家電操作は動きません。 |

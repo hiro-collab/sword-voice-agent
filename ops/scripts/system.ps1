@@ -25,7 +25,15 @@ param(
     [int]$VoicevoxReadyTimeoutSeconds = 45,
     [ValidateSet("gui", "headless", "camera-hub", "mediamtx")]
     [string]$MediapipeMode = "mediamtx",
-    [string]$MediapipeCameraName = "HD Pro Webcam C920",
+    [string]$MediapipeCameraName = "Logitech StreamCam",
+    [ValidateRange(160, 3840)]
+    [int]$MediapipeCameraWidth = 1920,
+    [ValidateRange(120, 2160)]
+    [int]$MediapipeCameraHeight = 1080,
+    [ValidateRange(1, 120)]
+    [int]$MediapipeCameraFps = 30,
+    [ValidateSet("auto", "mjpeg")]
+    [string]$MediapipeCameraInputCodec = "mjpeg",
     [int]$MediapipeReadyTimeoutSeconds = 90,
     [ValidateSet("dshow", "testsrc")]
     [string]$MediapipeVideoSource = "dshow",
@@ -366,6 +374,10 @@ function New-StackStartArguments {
     Add-NamedArgument -Arguments $arguments -Name "-VoicevoxReadyTimeoutSeconds" -Value $VoicevoxReadyTimeoutSeconds
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeMode" -Value $MediapipeMode
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeCameraName" -Value $MediapipeCameraName
+    Add-NamedArgument -Arguments $arguments -Name "-MediapipeCameraWidth" -Value $MediapipeCameraWidth
+    Add-NamedArgument -Arguments $arguments -Name "-MediapipeCameraHeight" -Value $MediapipeCameraHeight
+    Add-NamedArgument -Arguments $arguments -Name "-MediapipeCameraFps" -Value $MediapipeCameraFps
+    Add-NamedArgument -Arguments $arguments -Name "-MediapipeCameraInputCodec" -Value $MediapipeCameraInputCodec
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeReadyTimeoutSeconds" -Value $MediapipeReadyTimeoutSeconds
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeVideoSource" -Value $MediapipeVideoSource
 

@@ -142,7 +142,11 @@ const DEFAULT_OPTIONS = {
   VoicevoxUrl: '',
   HomeControlConfigPath: '',
   MediapipeMode: 'mediamtx',
-  MediapipeCameraName: 'HD Pro Webcam C920',
+  MediapipeCameraName: 'Logitech StreamCam',
+  MediapipeCameraWidth: 1920,
+  MediapipeCameraHeight: 1080,
+  MediapipeCameraFps: 30,
+  MediapipeCameraInputCodec: 'mjpeg',
   MediapipeOpenBrowser: false,
   MediapipeNoBrowser: true,
   MediapipePythonGui: false,
@@ -184,7 +188,10 @@ const NUMBER_FIELDS = new Set([
   'TouchDesignerGuiPort',
   'ThoughtCorePort',
   'VoicevoxReadyTimeoutSeconds',
-  'MediapipeReadyTimeoutSeconds'
+  'MediapipeReadyTimeoutSeconds',
+  'MediapipeCameraWidth',
+  'MediapipeCameraHeight',
+  'MediapipeCameraFps'
 ])
 
 const STRING_FIELDS = new Set([
@@ -196,8 +203,15 @@ const STRING_FIELDS = new Set([
   'VoicevoxUrl',
   'HomeControlConfigPath',
   'MediapipeMode',
-  'MediapipeCameraName'
+  'MediapipeCameraName',
+  'MediapipeCameraInputCodec'
 ])
+
+const NUMBER_LIMITS = {
+  MediapipeCameraWidth: { min: 160, max: 3840 },
+  MediapipeCameraHeight: { min: 120, max: 2160 },
+  MediapipeCameraFps: { min: 1, max: 120 }
+}
 
 const SWITCH_FIELDS = Object.keys(DEFAULT_OPTIONS).filter(
   (key) => typeof DEFAULT_OPTIONS[key] === 'boolean'
@@ -821,7 +835,11 @@ const normalizeOptions = (profileId, overrides = {}) => {
     const value = base[key]
     if (NUMBER_FIELDS.has(key)) {
       const numberValue = Number(value)
-      normalized[key] = Number.isInteger(numberValue) && numberValue > 0
+      const limits = NUMBER_LIMITS[key]
+      const withinLimits = !limits || (
+        numberValue >= limits.min && numberValue <= limits.max
+      )
+      normalized[key] = Number.isInteger(numberValue) && numberValue > 0 && withinLimits
         ? numberValue
         : defaultValue
       continue
@@ -837,6 +855,9 @@ const normalizeOptions = (profileId, overrides = {}) => {
   // as a normal launcher mode.
   if (!['gui', 'headless', 'camera-hub', 'mediamtx'].includes(normalized.MediapipeMode)) {
     normalized.MediapipeMode = DEFAULT_OPTIONS.MediapipeMode
+  }
+  if (!['auto', 'mjpeg'].includes(normalized.MediapipeCameraInputCodec)) {
+    normalized.MediapipeCameraInputCodec = DEFAULT_OPTIONS.MediapipeCameraInputCodec
   }
   if (!['configured', 'openai-compatible', 'codex-cli', 'codex-cli-luna'].includes(normalized.ThoughtCoreLlmProvider)) {
     normalized.ThoughtCoreLlmProvider = DEFAULT_OPTIONS.ThoughtCoreLlmProvider
@@ -958,6 +979,15 @@ const buildSystemStartArgs = (profileId, options) => {
   )
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeMode', options.MediapipeMode)
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeCameraName', options.MediapipeCameraName)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeCameraWidth', options.MediapipeCameraWidth)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeCameraHeight', options.MediapipeCameraHeight)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeCameraFps', options.MediapipeCameraFps)
+  addSupportedParam(
+    SYSTEM_SCRIPT,
+    stackArgs,
+    'MediapipeCameraInputCodec',
+    options.MediapipeCameraInputCodec
+  )
 
   if (options.VoicevoxUrl) {
     addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'VoicevoxUrl', options.VoicevoxUrl)

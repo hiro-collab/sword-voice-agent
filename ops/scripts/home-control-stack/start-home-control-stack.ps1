@@ -31,7 +31,15 @@ param(
     [int]$VoicevoxReadyTimeoutSeconds = 45,
     [ValidateSet("gui", "headless", "camera-hub", "mediamtx")]
     [string]$MediapipeMode = "mediamtx",
-    [string]$MediapipeCameraName = "HD Pro Webcam C920",
+    [string]$MediapipeCameraName = "Logitech StreamCam",
+    [ValidateRange(160, 3840)]
+    [int]$MediapipeCameraWidth = 1920,
+    [ValidateRange(120, 2160)]
+    [int]$MediapipeCameraHeight = 1080,
+    [ValidateRange(1, 120)]
+    [int]$MediapipeCameraFps = 30,
+    [ValidateSet("auto", "mjpeg")]
+    [string]$MediapipeCameraInputCodec = "mjpeg",
     [int]$MediapipeReadyTimeoutSeconds = 90,
     [ValidateSet("dshow", "testsrc")]
     [string]$MediapipeVideoSource = "dshow",
@@ -2065,8 +2073,16 @@ if (-not $SkipMediapipe) {
             "scripts\camera_hub_stack.py",
             "--camera-name",
             $MediapipeCameraName,
+            "--width",
+            [string]$MediapipeCameraWidth,
+            "--height",
+            [string]$MediapipeCameraHeight,
+            "--fps",
+            [string]$MediapipeCameraFps,
             "--ffmpeg-video-source",
             $MediapipeVideoSource,
+            "--ffmpeg-input-codec",
+            $MediapipeCameraInputCodec,
             "--hub-port",
             [string]$MediapipePort,
             "--viewer-port",
