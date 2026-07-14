@@ -90,6 +90,51 @@ class LauncherUiContractTest(TestCase):
         self.assertIn('id="launch-scope-enabled"', html)
         self.assertIn('id="launch-scope-skipped"', html)
 
+    def test_launcher_selects_conversation_provider_without_rewriting_env(self) -> None:
+        html = read_public("index.html")
+        app = read_public("app.js")
+        server = read_launcher_server()
+        system = read_system_script()
+        stack = read_stack_start_script()
+
+        self.assertIn('id="ThoughtCoreLlmProvider"', html)
+        for provider in ("configured", "openai-compatible", "codex-cli", "codex-cli-luna"):
+            self.assertIn(f'value="{provider}"', html)
+            self.assertIn(provider, server)
+        self.assertIn("ThoughtCoreLlmProvider", app)
+        bind_controls = extract_between(app, "const bindControls = () => {", "const showError =")
+        self.assertIn("$('ThoughtCoreLlmProvider').addEventListener('change'", bind_controls)
+        self.assertIn("ThoughtCoreLlmProvider", system)
+        self.assertIn("ThoughtCoreLlmProvider", stack)
+        self.assertIn('"gpt-5.6-terra"', stack)
+        self.assertIn('"gpt-5.6-luna"', stack)
+        self.assertIn('"medium"', stack)
+        self.assertIn('"low"', stack)
+        self.assertIn(
+            '$ThoughtCoreLlmProvider -in @("codex-cli", "codex-cli-luna")',
+            stack,
+        )
+        self.assertIn(
+            '$thoughtCoreEnvironment["THOUGHT_CORE_LLM_PROVIDER"] = $thoughtCoreRuntimeProvider',
+            stack,
+        )
+        self.assertIn(
+            'if ($ThoughtCoreLlmProvider -eq "codex-cli-luna")',
+            stack,
+        )
+        self.assertIn(
+            '$thoughtCoreEnvironment["THOUGHT_CORE_LLM_VISIBLE_SPEECH_ENABLED"] = "1"',
+            stack,
+        )
+        self.assertIn(
+            '$thoughtCoreEnvironment["THOUGHT_CORE_REQUIRE_LLM_VISIBLE_SPEECH"] = "0"',
+            stack,
+        )
+        self.assertIn('"respond"', stack)
+        self.assertIn('"read-only"', stack)
+        self.assertIn('"never"', stack)
+        self.assertIn('"true"', stack)
+
     def test_launcher_exposes_demo_safe_settings_without_claiming_proof(self) -> None:
         html = read_public("index.html")
         app = read_public("app.js")

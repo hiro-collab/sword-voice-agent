@@ -136,6 +136,7 @@ const DEFAULT_OPTIONS = {
   TouchDesignerGuiPort: 8788,
   ThoughtCoreHost: '127.0.0.1',
   ThoughtCorePort: 18787,
+  ThoughtCoreLlmProvider: 'configured',
   VoicevoxReadyTimeoutSeconds: 45,
   MediapipeReadyTimeoutSeconds: 90,
   VoicevoxUrl: '',
@@ -191,6 +192,7 @@ const STRING_FIELDS = new Set([
   'AituberHost',
   'TouchDesignerGuiHost',
   'ThoughtCoreHost',
+  'ThoughtCoreLlmProvider',
   'VoicevoxUrl',
   'HomeControlConfigPath',
   'MediapipeMode',
@@ -836,6 +838,9 @@ const normalizeOptions = (profileId, overrides = {}) => {
   if (!['gui', 'headless', 'camera-hub', 'mediamtx'].includes(normalized.MediapipeMode)) {
     normalized.MediapipeMode = DEFAULT_OPTIONS.MediapipeMode
   }
+  if (!['configured', 'openai-compatible', 'codex-cli', 'codex-cli-luna'].includes(normalized.ThoughtCoreLlmProvider)) {
+    normalized.ThoughtCoreLlmProvider = DEFAULT_OPTIONS.ThoughtCoreLlmProvider
+  }
   if (normalized.MediapipeOpenBrowser) {
     normalized.MediapipeNoBrowser = false
   }
@@ -933,6 +938,12 @@ const buildSystemStartArgs = (profileId, options) => {
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'TouchDesignerGuiPort', options.TouchDesignerGuiPort)
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'ThoughtCoreHost', options.ThoughtCoreHost)
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'ThoughtCorePort', options.ThoughtCorePort)
+  addSupportedParam(
+    SYSTEM_SCRIPT,
+    stackArgs,
+    'ThoughtCoreLlmProvider',
+    options.ThoughtCoreLlmProvider
+  )
   addSupportedParam(
     SYSTEM_SCRIPT,
     stackArgs,

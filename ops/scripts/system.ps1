@@ -18,6 +18,8 @@ param(
     [string]$TouchDesignerGuiHost = "127.0.0.1",
     [string]$ThoughtCoreHost = "127.0.0.1",
     [int]$ThoughtCorePort = 18787,
+    [ValidateSet("configured", "openai-compatible", "codex-cli", "codex-cli-luna")]
+    [string]$ThoughtCoreLlmProvider = "configured",
     [string]$ThoughtCoreWatchAituberHttpTimeout = "",
     [string]$VoicevoxUrl = "",
     [int]$VoicevoxReadyTimeoutSeconds = 45,
@@ -358,6 +360,7 @@ function New-StackStartArguments {
     Add-NamedArgument -Arguments $arguments -Name "-TouchDesignerGuiHost" -Value $TouchDesignerGuiHost
     Add-NamedArgument -Arguments $arguments -Name "-ThoughtCoreHost" -Value $ThoughtCoreHost
     Add-NamedArgument -Arguments $arguments -Name "-ThoughtCorePort" -Value $ThoughtCorePort
+    Add-NamedArgument -Arguments $arguments -Name "-ThoughtCoreLlmProvider" -Value $ThoughtCoreLlmProvider
     Add-NamedArgument -Arguments $arguments -Name "-ThoughtCoreWatchAituberHttpTimeout" -Value $ThoughtCoreWatchAituberHttpTimeout -SkipWhenBlank $true
     Add-NamedArgument -Arguments $arguments -Name "-VoicevoxUrl" -Value $VoicevoxUrl -SkipWhenBlank $true
     Add-NamedArgument -Arguments $arguments -Name "-VoicevoxReadyTimeoutSeconds" -Value $VoicevoxReadyTimeoutSeconds

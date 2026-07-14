@@ -24,6 +24,8 @@ param(
     [int]$TouchDesignerUdpPort = 9001,
     [string]$ThoughtCoreHost = "127.0.0.1",
     [int]$ThoughtCorePort = 18787,
+    [ValidateSet("configured", "openai-compatible", "codex-cli", "codex-cli-luna")]
+    [string]$ThoughtCoreLlmProvider = "configured",
     [string]$ThoughtCoreWatchAituberHttpTimeout = "",
     [string]$VoicevoxUrl = "",
     [int]$VoicevoxReadyTimeoutSeconds = 45,
@@ -1913,6 +1915,38 @@ foreach ($name in @(
 }
 if (-not $thoughtCoreEnvironment.ContainsKey("THOUGHT_CORE_PERSONA")) {
     $thoughtCoreEnvironment["THOUGHT_CORE_PERSONA"] = "cheerful_ossan"
+}
+if ((-not $ThoughtCoreNoProvider) -and $ThoughtCoreLlmProvider -ne "configured") {
+    $thoughtCoreRuntimeProvider = if ($ThoughtCoreLlmProvider -in @("codex-cli", "codex-cli-luna")) {
+        "codex-cli"
+    } else {
+        $ThoughtCoreLlmProvider
+    }
+    $thoughtCoreEnvironment["THOUGHT_CORE_LLM_ENABLED"] = "1"
+    $thoughtCoreEnvironment["THOUGHT_CORE_FORCE_NO_PROVIDER"] = ""
+    $thoughtCoreEnvironment["THOUGHT_CORE_LLM_PROVIDER"] = $thoughtCoreRuntimeProvider
+    $thoughtCoreEnvironment["THOUGHT_CORE_LLM_ADAPTER"] = $thoughtCoreRuntimeProvider
+    if ($thoughtCoreRuntimeProvider -eq "codex-cli") {
+        # The launcher preset is response-only. Thought Core and Home Control retain
+        # intent/action authority; Codex CLI cannot edit the workspace in this mode.
+        $thoughtCoreEnvironment["THOUGHT_CORE_ACTION_LLM_ENABLED"] = "0"
+        # Codex may vary only the visible wording after Thought Core has already
+        # decided and executed the action. A responder failure keeps the canonical
+        # deterministic phrase instead of suppressing the action result.
+        $thoughtCoreEnvironment["THOUGHT_CORE_LLM_VISIBLE_SPEECH_ENABLED"] = "1"
+        $thoughtCoreEnvironment["THOUGHT_CORE_REQUIRE_LLM_VISIBLE_SPEECH"] = "0"
+        if ($ThoughtCoreLlmProvider -eq "codex-cli-luna") {
+            $thoughtCoreEnvironment["THOUGHT_CORE_CODEX_CLI_MODEL"] = "gpt-5.6-luna"
+            $thoughtCoreEnvironment["THOUGHT_CORE_CODEX_CLI_REASONING_EFFORT"] = "low"
+        } else {
+            $thoughtCoreEnvironment["THOUGHT_CORE_CODEX_CLI_MODEL"] = "gpt-5.6-terra"
+            $thoughtCoreEnvironment["THOUGHT_CORE_CODEX_CLI_REASONING_EFFORT"] = "medium"
+        }
+        $thoughtCoreEnvironment["THOUGHT_CORE_CODEX_CLI_MODE"] = "respond"
+        $thoughtCoreEnvironment["THOUGHT_CORE_CODEX_CLI_SANDBOX"] = "read-only"
+        $thoughtCoreEnvironment["THOUGHT_CORE_CODEX_CLI_APPROVAL"] = "never"
+        $thoughtCoreEnvironment["THOUGHT_CORE_CODEX_CLI_EPHEMERAL"] = "true"
+    }
 }
 if ($ThoughtCoreNoProvider) {
     $thoughtCoreEnvironment["THOUGHT_CORE_FORCE_NO_PROVIDER"] = "1"

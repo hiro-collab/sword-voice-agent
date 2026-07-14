@@ -103,6 +103,19 @@
           </label>
           <p id="profile-description" class="description"></p>
 
+          <label class="field">
+            <span data-i18n="launch.llmProvider">Conversation LLM</span>
+            <select id="ThoughtCoreLlmProvider">
+              <option value="configured" data-i18n="provider.configured">Use environment setting</option>
+              <option value="openai-compatible" data-i18n="provider.openai">OpenAI-compatible API</option>
+              <option value="codex-cli" data-i18n="provider.codex">Codex CLI (Terra / medium)</option>
+              <option value="codex-cli-luna" data-i18n="provider.codexLuna">Codex CLI (Luna / low)</option>
+            </select>
+          </label>
+          <p class="description" data-i18n="provider.description">
+            This changes only the Thought Core child process started by this launcher.
+          </p>
+
           <div class="section-title" data-i18n="launch.mediapipeStartup">MediaPipe startup</div>
           <div class="segmented" id="mediapipe-mode">
             <button

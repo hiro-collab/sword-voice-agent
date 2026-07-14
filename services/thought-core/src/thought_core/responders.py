@@ -219,6 +219,30 @@ _CODEX_CONFIG_KEY_ALLOWLIST = {
     "model_reasoning_effort",
     "model_verbosity",
 }
+_CODEX_RESPONSE_ENV_ALLOWLIST = frozenset(
+    {
+        "APPDATA",
+        "CODEX_HOME",
+        "COMSPEC",
+        "HOME",
+        "LOCALAPPDATA",
+        "NO_COLOR",
+        "OS",
+        "PATH",
+        "PATHEXT",
+        "PROCESSOR_ARCHITECTURE",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PROGRAMW6432",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "WINDIR",
+    }
+)
 
 
 class CodexCliChatResponder:
@@ -264,7 +288,7 @@ class CodexCliChatResponder:
         self.expected_version = expected_version.strip()
         self.version_policy = _normalize_codex_version_policy(version_policy)
         self.version_timeout_s = max(0.5, version_timeout_s)
-        self.runner = runner or _run_codex_command
+        self.runner = runner
 
     @classmethod
     def from_env(cls) -> "CodexCliChatResponder | None":
@@ -343,6 +367,7 @@ class CodexCliChatResponder:
 
         with tempfile.TemporaryDirectory(prefix="thought-core-codex-") as tmp_dir:
             output_path = Path(tmp_dir) / "last-message.txt"
+            effective_cwd = Path(tmp_dir) if self.mode == "respond" else self.cwd
             args = [
                 *_codex_command_prefix(self.command),
                 "exec",
@@ -350,18 +375,31 @@ class CodexCliChatResponder:
                 "--sandbox",
                 self.sandbox,
                 "--cd",
-                str(self.cwd),
+                str(effective_cwd),
                 "--output-last-message",
                 str(output_path),
             ]
             if self.ephemeral:
                 args.insert(args.index("--skip-git-repo-check"), "--ephemeral")
+            if self.mode == "respond":
+                args.extend(
+                    [
+                        "--ignore-user-config",
+                        "--ignore-rules",
+                        "--disable",
+                        "shell_tool",
+                        "-c",
+                        'web_search="disabled"',
+                        "-c",
+                        'shell_environment_policy.inherit="none"',
+                    ]
+                )
             for override in self.config_overrides:
                 args.extend(["-c", override])
             args.extend(["-c", _codex_config_override("approval_policy", self.approval)])
             if self.model and self.model != "codex-cli":
                 args.extend(["--model", self.model])
-            if self.profile:
+            if self.profile and self.mode == "operate":
                 args.extend(["--profile", self.profile])
             prompt = _codex_cli_prompt(
                 turn,
@@ -372,7 +410,7 @@ class CodexCliChatResponder:
             )
             args.append("-")
 
-            result = self.runner(args, self.timeout_s, prompt)
+            result = self._run(args, self.timeout_s, prompt)
             if result.returncode != 0:
                 raise OSError(
                     "codex_cli_nonzero_exit:"
@@ -402,7 +440,11 @@ class CodexCliChatResponder:
                 "sandbox": self.sandbox,
                 "approval": self.approval,
                 "ephemeral": self.ephemeral,
-                "workspace_class": _codex_workspace_class(self.cwd),
+                "workspace_class": (
+                    "isolated_response_workspace"
+                    if self.mode == "respond"
+                    else _codex_workspace_class(effective_cwd)
+                ),
                 **version_metadata,
                 **_response_context_metadata(response_context),
             },
@@ -418,7 +460,7 @@ class CodexCliChatResponder:
         }
         try:
             args = [*_codex_command_prefix(self.command), "--version"]
-            result = self.runner(args, self.version_timeout_s, "")
+            result = self._run(args, self.version_timeout_s, "")
         except (OSError, subprocess.SubprocessError, ValueError):
             return metadata
 
@@ -441,6 +483,21 @@ class CodexCliChatResponder:
         else:
             metadata["codex_cli_version_class"] = "observed_no_expected"
         return metadata
+
+    def _run(
+        self,
+        args: Sequence[str],
+        timeout_s: float,
+        prompt: str,
+    ) -> subprocess.CompletedProcess[str]:
+        if self.runner is not None:
+            return self.runner(args, timeout_s, prompt)
+        child_env = (
+            _codex_response_child_environment()
+            if self.mode == "respond"
+            else None
+        )
+        return _run_codex_command(args, timeout_s, prompt, env=child_env)
 
 
 class EnvironmentTurnResponder:
@@ -719,17 +776,29 @@ def _run_codex_command(
     args: Sequence[str],
     timeout_s: float,
     prompt: str,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        list(args),
-        check=False,
-        capture_output=True,
-        input=prompt,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout_s,
-    )
+    run_kwargs: dict[str, Any] = {
+        "check": False,
+        "capture_output": True,
+        "input": prompt,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": timeout_s,
+    }
+    if env is not None:
+        run_kwargs["env"] = dict(env)
+    return subprocess.run(list(args), **run_kwargs)
+
+
+def _codex_response_child_environment() -> dict[str, str]:
+    child_env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if key.upper() in _CODEX_RESPONSE_ENV_ALLOWLIST:
+            child_env[key] = value
+    return child_env
 
 
 def _codex_cli_prompt(
@@ -746,13 +815,14 @@ def _codex_cli_prompt(
         "You are Codex CLI embedded inside Thought Core, not a parallel "
         "AITuberKit provider. AITuberKit, VOICEVOX, memory, Environment State, "
         "and Home Control remain behind the existing Thought Core boundaries.",
-        "Your working directory is the SWORD Agent OS system workspace. Read "
-        "and obey AGENTS.md and narrower project rules before changing files.",
         f"Execution mode: {mode}. Sandbox: {sandbox}. Approval: {approval}.",
     ]
     if mode == "operate":
         parts.extend(
             [
+                "Your working directory is the SWORD Agent OS system workspace. "
+                "Read and obey AGENTS.md and narrower project rules before "
+                "changing files.",
                 "Act as a self-operating development agent when the user asks "
                 "for system work: inspect files, make tightly scoped edits, "
                 "and run deterministic validation when useful.",
@@ -768,8 +838,12 @@ def _codex_cli_prompt(
     else:
         parts.extend(
             [
-                "Operate as a response-only adapter for this turn. Do not edit "
-                "files, run commands, or claim device actions.",
+                "Operate as a response-only adapter in an isolated empty working "
+                "directory. Shell, web, user configuration, project rules, and "
+                "external tools are technically unavailable for this turn.",
+                "Do not claim file, command, network, device, or Home Control "
+                "actions. Thought Core has already decided any allowed action; "
+                "you may vary only its user-facing wording.",
                 "Return only the final short Japanese assistant utterance for "
                 "speech and display. Do not include analysis, logs, markdown "
                 "fences, or tool call descriptions.",

@@ -59,6 +59,12 @@ const translations = {
     'metric.noSignal': 'No signal yet',
     'launch.title': 'Launch configuration',
     'launch.profile': 'Profile',
+    'launch.llmProvider': 'Conversation LLM',
+    'provider.configured': 'Use environment setting',
+    'provider.openai': 'OpenAI-compatible API',
+    'provider.codex': 'Codex CLI (Terra / medium)',
+    'provider.codexLuna': 'Codex CLI (Luna / low)',
+    'provider.description': 'Changes only the Thought Core child process started by this launcher. Codex CLI stays response-only and read-only.',
     'launch.mediapipeStartup': 'MediaPipe startup',
     'launch.cameraName': 'Camera name',
     'mediapipe.normal': 'Normal',
@@ -277,6 +283,12 @@ const translations = {
     'metric.noSignal': 'まだ状態未取得',
     'launch.title': '起動設定',
     'launch.profile': '構成',
+    'launch.llmProvider': '会話LLM',
+    'provider.configured': '環境設定に従う',
+    'provider.openai': 'OpenAI互換API',
+    'provider.codex': 'Codex CLI（Terra / medium）',
+    'provider.codexLuna': 'Codex CLI（Luna / low）',
+    'provider.description': 'このランチャーが起動するThought Core子プロセスだけを切り替えます。Codex CLIは応答専用・読取専用です。',
     'launch.mediapipeStartup': 'カメラ入力の起動方式',
     'launch.cameraName': 'カメラ名',
     'mediapipe.normal': '通常',
@@ -1122,8 +1134,16 @@ const summarizeDiagnostics = () => {
 
 const summarizeRuntime = () => {
   const fallbackOnly = Boolean(state.options.ThoughtCoreNoProvider)
+  const providerLabels = {
+    configured: t('provider.configured'),
+    'openai-compatible': t('provider.openai'),
+    'codex-cli': t('provider.codex'),
+    'codex-cli-luna': t('provider.codexLuna')
+  }
   return {
-    card: fallbackOnly ? t('summary.fallbackOnly') : t('summary.providerAllowed')
+    card: fallbackOnly
+      ? t('summary.fallbackOnly')
+      : providerLabels[state.options.ThoughtCoreLlmProvider] || t('summary.providerAllowed')
   }
 }
 
@@ -1207,6 +1227,7 @@ const renderControls = () => {
   for (const field of textFields) {
     $(field).value = state.options[field] || ''
   }
+  $('ThoughtCoreLlmProvider').value = state.options.ThoughtCoreLlmProvider || 'configured'
 
   document.querySelectorAll('#mediapipe-mode button').forEach((button) => {
     button.classList.toggle('active', button.dataset.value === state.options.MediapipeMode)
@@ -2274,6 +2295,9 @@ const bindControls = () => {
       setOption(field, event.target.value)
     })
   }
+  $('ThoughtCoreLlmProvider').addEventListener('change', (event) => {
+    setOption('ThoughtCoreLlmProvider', event.target.value)
+  })
   document.querySelectorAll('#mediapipe-mode button').forEach((button) => {
     button.addEventListener('click', () => {
       setOption('MediapipeMode', button.dataset.value)

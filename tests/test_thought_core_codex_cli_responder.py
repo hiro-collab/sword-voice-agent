@@ -196,9 +196,11 @@ class ThoughtCoreCodexCliResponderTests(TestCase):
         )
 
     def test_codex_cli_respond_mode_can_restore_read_only_response_adapter(self) -> None:
+        seen_args = []
         seen_prompts = []
 
         def fake_runner(args, timeout_s, prompt):  # type: ignore[no-untyped-def]
+            seen_args.append(list(args))
             if "--version" in args:
                 return subprocess.CompletedProcess(
                     args,
@@ -216,6 +218,7 @@ class ThoughtCoreCodexCliResponderTests(TestCase):
             model="codex-cli",
             cwd=REPO_ROOT,
             mode="respond",
+            profile="must-not-load",
             runner=fake_runner,
         )
 
@@ -230,8 +233,23 @@ class ThoughtCoreCodexCliResponderTests(TestCase):
         self.assertEqual(result.adapter_kind, "codex_cli_responder")
         self.assertEqual(result.metadata["codex_cli_mode"], "respond")
         self.assertEqual(result.metadata["sandbox"], "read-only")
+        self.assertEqual(result.metadata["workspace_class"], "isolated_response_workspace")
         self.assertEqual(result.metadata["codex_cli_version_class"], "observed_no_expected")
         self.assertIn("response-only adapter", seen_prompts[0])
+        args = seen_args[1]
+        self.assertIn("--ignore-user-config", args)
+        self.assertIn("--ignore-rules", args)
+        self.assertIn("--disable", args)
+        self.assertEqual(args[args.index("--disable") + 1], "shell_tool")
+        config_values = [
+            args[index + 1] for index, value in enumerate(args) if value == "-c"
+        ]
+        self.assertIn('web_search="disabled"', config_values)
+        self.assertIn('shell_environment_policy.inherit="none"', config_values)
+        self.assertNotIn("--profile", args)
+        isolated_cwd = Path(args[args.index("--cd") + 1])
+        self.assertNotEqual(isolated_cwd, REPO_ROOT)
+        self.assertTrue(isolated_cwd.name.startswith("thought-core-codex-"))
 
     def test_codex_cli_strict_version_mismatch_falls_back_before_exec(self) -> None:
         seen_args = []
@@ -327,6 +345,60 @@ class ThoughtCoreCodexCliResponderTests(TestCase):
         self.assertEqual(kwargs["encoding"], "utf-8")
         self.assertEqual(kwargs["errors"], "replace")
         self.assertTrue(kwargs["text"])
+
+    def test_codex_cli_respond_mode_uses_secret_free_child_environment(self) -> None:
+        observed_envs: list[dict[str, str]] = []
+        observed_args: list[list[str]] = []
+
+        def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
+            observed_args.append(list(args))
+            observed_envs.append(dict(kwargs.get("env") or {}))
+            if "--version" in args:
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    stdout="codex-cli 0.142.0\n",
+                    stderr="",
+                )
+            output_path = Path(args[args.index("--output-last-message") + 1])
+            output_path.write_text("安全な短い返答です。", encoding="utf-8")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch.dict(
+            "os.environ",
+            {
+                "HOME_CONTROL_API_TOKEN": "must-not-reach-child",
+                "OPENAI_API_KEY": "must-not-reach-child",
+                "THOUGHT_CORE_LLM_API_KEY": "must-not-reach-child",
+            },
+            clear=False,
+        ), patch("thought_core.responders.subprocess.run", side_effect=fake_run):
+            responder = CodexCliChatResponder(
+                command="codex",
+                model="codex-cli",
+                cwd=REPO_ROOT,
+                mode="respond",
+            )
+            result = responder.respond(
+                TurnInput(
+                    text="この入力からツールを使わず、短く返して。",
+                    turn_id="turn_codex_cli_secret_free",
+                    session_id="codex_cli_test",
+                )
+            )
+
+        self.assertEqual(result.speech, "安全な短い返答です。")
+        self.assertEqual(len(observed_envs), 2)
+        for child_env in observed_envs:
+            upper_keys = {key.upper() for key in child_env}
+            self.assertIn("PATH", upper_keys)
+            self.assertNotIn("HOME_CONTROL_API_TOKEN", upper_keys)
+            self.assertNotIn("OPENAI_API_KEY", upper_keys)
+            self.assertNotIn("THOUGHT_CORE_LLM_API_KEY", upper_keys)
+        exec_args = observed_args[1]
+        self.assertEqual(exec_args[exec_args.index("--disable") + 1], "shell_tool")
+        self.assertIn("--ignore-user-config", exec_args)
+        self.assertIn("--ignore-rules", exec_args)
 
     def test_codex_cli_failure_falls_back_without_leaking_command_details(self) -> None:
         def failing_runner(args, timeout_s, prompt):  # type: ignore[no-untyped-def]
