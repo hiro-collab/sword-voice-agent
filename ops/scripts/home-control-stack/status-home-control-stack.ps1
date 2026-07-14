@@ -43,6 +43,7 @@ function Resolve-StackStateDir {
 $WorkspaceRoot = Resolve-HomeControlWorkspaceRoot -WorkspaceRoot $WorkspaceRoot -ScriptRoot $PSScriptRoot
 $StackStateDir = Resolve-StackStateDir -WorkspaceRoot $WorkspaceRoot -StackStateDir $StackStateDir
 $PidFile = Join-Path $StackStateDir "pids.json"
+$CameraHubStateFile = Join-Path $StackStateDir "modules\mediapipe_camera_hub_stack\processes.json"
 $AituberEnvPath = Join-Path $WorkspaceRoot "organs\expression\aituber-kit\.env"
 
 function Get-DotEnvValue {
@@ -67,9 +68,17 @@ function Read-PidState {
     }
     try {
         $raw = Get-Content -LiteralPath $PidFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        $map = @{}
+        $map = @{
+            __registry_schema_valid = ((Get-ObjectProperty -Object $raw -Name "schema_version" -Default 0) -eq 3)
+            __registry_duplicate_names = $false
+        }
         foreach ($entry in @($raw.processes)) {
-            $map[[string]$entry.name] = $entry
+            $name = [string](Get-ObjectProperty -Object $entry -Name "name" -Default "")
+            if ([string]::IsNullOrWhiteSpace($name) -or $map.ContainsKey($name)) {
+                $map["__registry_duplicate_names"] = $true
+                continue
+            }
+            $map[$name] = $entry
         }
         return $map
     }
@@ -225,34 +234,224 @@ function Read-JsonFile {
     }
 }
 
+function Test-CameraHubRequiredProcessesRunning {
+    param([Parameter(Mandatory = $true)][object]$Manifest)
+    $runningByName = @{}
+    foreach ($process in @(Get-ObjectProperty -Object $Manifest -Name "processes" -Default @())) {
+        $name = [string](Get-ObjectProperty -Object $process -Name "name" -Default "")
+        $running = Get-ObjectProperty -Object $process -Name "running" -Default $null
+        if ([string]::IsNullOrWhiteSpace($name) -or $running -isnot [bool] -or $runningByName.ContainsKey($name)) {
+            return $false
+        }
+        $runningByName[$name] = $running
+    }
+    return (
+        $runningByName.ContainsKey("mediamtx") -and $runningByName["mediamtx"] -and
+        $runningByName.ContainsKey("camera-hub") -and $runningByName["camera-hub"]
+    )
+}
+
+function Test-CameraHubRegistryEntry {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$PidState,
+        [object]$Entry
+    )
+    if (
+        $null -eq $Entry -or
+        $PidState["__registry_schema_valid"] -ne $true -or
+        $PidState["__registry_duplicate_names"] -eq $true -or
+        [string](Get-ObjectProperty -Object $Entry -Name "name" -Default "") -ne "mediapipe_camera_hub_stack" -or
+        [string](Get-ObjectProperty -Object $Entry -Name "module" -Default "") -ne "mediapipe-sword-sign" -or
+        [string](Get-ObjectProperty -Object $Entry -Name "role" -Default "") -ne "camera_hub_stack" -or
+        [string](Get-ObjectProperty -Object $Entry -Name "stop_strategy" -Default "") -ne "managed_tree"
+    ) {
+        return $false
+    }
+    $pidValue = 0
+    $pidText = [string](Get-ObjectProperty -Object $Entry -Name "pid" -Default "")
+    if (-not [int]::TryParse($pidText, [ref]$pidValue) -or $pidValue -le 0) {
+        return $false
+    }
+    $startedAtText = [string](Get-ObjectProperty -Object $Entry -Name "started_at" -Default "")
+    $startedAtValue = [DateTimeOffset]::MinValue
+    if ([string]::IsNullOrWhiteSpace($startedAtText) -or -not [DateTimeOffset]::TryParse($startedAtText, [ref]$startedAtValue)) {
+        return $false
+    }
+    try {
+        if (-not [System.IO.Path]::GetFullPath([string](Get-ObjectProperty -Object $Entry -Name "child_process_file" -Default "")).Equals(
+            [System.IO.Path]::GetFullPath($CameraHubStateFile),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            return $false
+        }
+    }
+    catch {
+        return $false
+    }
+    $allowedNames = @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $Entry -Name "allowed_process_names" -Default @()) |
+        ForEach-Object { Normalize-ProcessName -Name $_ } |
+        Sort-Object -Unique)
+    if (($allowedNames -join ",") -ne "ffmpeg,mediamtx,python,uv") {
+        return $false
+    }
+    return Test-ProcessAlive -Entry $Entry
+}
+
+function Test-CameraHubRuntimeOwnership {
+    param(
+        [Parameter(Mandatory = $true)][object]$Manifest,
+        [Parameter(Mandatory = $true)][object]$Entry,
+        [Parameter(Mandatory = $true)][int]$Port
+    )
+    $rootPid = [int](Get-ObjectProperty -Object $Entry -Name "pid" -Default 0)
+    $ownerPid = 0
+    if ($rootPid -le 0 -or -not [int]::TryParse([string](Get-ObjectProperty -Object $Manifest -Name "owner_pid" -Default ""), [ref]$ownerPid) -or $ownerPid -le 0) {
+        return $false
+    }
+    $root = Get-Process -Id $rootPid -ErrorAction SilentlyContinue
+    $owner = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+    if (
+        $null -eq $root -or $null -eq $owner -or
+        -not (Test-ProcessStartTimeMatches -Process $root -RecordedAt ([string](Get-ObjectProperty -Object $Entry -Name "started_at" -Default "")) -GraceSeconds 60) -or
+        (Normalize-ProcessName -Name ([string]$owner.ProcessName)) -ne "python"
+    ) {
+        return $false
+    }
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $descendants = {
+        param([int]$RootProcessId)
+        $queue = [System.Collections.Generic.Queue[int]]::new()
+        $seen = [System.Collections.Generic.HashSet[int]]::new()
+        if ($seen.Add($RootProcessId)) { $queue.Enqueue($RootProcessId) }
+        while ($queue.Count -gt 0) {
+            $parent = $queue.Dequeue()
+            foreach ($child in @($all | Where-Object { [int]$_.ParentProcessId -eq $parent })) {
+                $childPid = [int]$child.ProcessId
+                if ($seen.Add($childPid)) { $queue.Enqueue($childPid) }
+            }
+        }
+        return @($seen)
+    }
+    if (@(& $descendants $rootPid) -notcontains $ownerPid) {
+        return $false
+    }
+    try {
+        if ([DateTimeOffset]$owner.StartTime -lt ([DateTimeOffset]$root.StartTime).AddSeconds(-2)) {
+            return $false
+        }
+    }
+    catch {
+        return $false
+    }
+    $listeners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Where-Object { [string]$_.LocalAddress -in @("127.0.0.1", "::1") } |
+        Select-Object -ExpandProperty OwningProcess -Unique)
+    if ($listeners.Count -ne 1) {
+        return $false
+    }
+    $listenerPid = [int]$listeners[0]
+    if (@(& $descendants $ownerPid) -notcontains $listenerPid) {
+        return $false
+    }
+    $listener = Get-Process -Id $listenerPid -ErrorAction SilentlyContinue
+    $listenerIdentity = $all | Where-Object { [int]$_.ProcessId -eq $listenerPid } | Select-Object -First 1
+    if ($null -eq $listener -or $null -eq $listenerIdentity) {
+        return $false
+    }
+    $commandLine = [string]$listenerIdentity.CommandLine
+    return (
+        (Normalize-ProcessName -Name ([string]$listener.ProcessName)) -eq "python" -and
+        $commandLine -match '(?i)apps[\\/]serve_camera_hub\.py'
+    )
+}
+
+function Test-CameraHubManifestFreshForEntry {
+    param(
+        [Parameter(Mandatory = $true)][object]$Manifest,
+        [object]$Entry
+    )
+    $updatedAt = [string](Get-ObjectProperty -Object $Manifest -Name "updated_at" -Default "")
+    if ([string]::IsNullOrWhiteSpace($updatedAt)) {
+        return $false
+    }
+    try {
+        $manifestTime = [DateTimeOffset]::Parse($updatedAt)
+        if ($null -eq $Entry) {
+            return $false
+        }
+        $startedAt = [DateTimeOffset]::Parse([string](Get-ObjectProperty -Object $Entry -Name "started_at" -Default ""))
+        return $manifestTime -ge $startedAt.AddSeconds(-2)
+    }
+    catch {
+        return $false
+    }
+}
+
 function Get-CameraHubReadyStatus {
-    param([object]$Entry)
-    $path = [string](Get-ObjectProperty -Object $Entry -Name "child_process_file" -Default "")
-    if ([string]::IsNullOrWhiteSpace($path)) {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$PidState,
+        [object]$Entry
+    )
+    if (-not (Test-CameraHubRegistryEntry -PidState $PidState -Entry $Entry)) {
         return [pscustomobject]@{
             Known = $false
+            Valid = $false
+            Operational = $false
             Ready = $false
-            Detail = ""
+            ListenerValid = $false
+            StateClass = "unknown"
+            DetailClass = "camera_registry_validation_failed"
         }
     }
 
-    $manifest = Read-JsonFile -Path $path
+    $manifest = Read-JsonFile -Path $CameraHubStateFile
     if ($null -eq $manifest) {
         return [pscustomobject]@{
             Known = $true
+            Valid = $false
+            Operational = $false
             Ready = $false
-            Detail = "waiting for Camera Hub process manifest"
+            ListenerValid = $false
+            StateClass = "unknown"
+            DetailClass = "camera_manifest_missing_or_invalid_json"
         }
     }
 
-    $detail = [string]$manifest.ready_detail
-    if ([string]::IsNullOrWhiteSpace($detail)) {
-        $detail = if ($manifest.ready -eq $true) { "Camera Hub topics ready" } else { "waiting for Camera Hub topics" }
+    $stateClass = [string](Get-ObjectProperty -Object $manifest -Name "camera_state_class" -Default "")
+    $readyValue = Get-ObjectProperty -Object $manifest -Name "ready" -Default $null
+    $readyAt = [string](Get-ObjectProperty -Object $manifest -Name "ready_at" -Default "")
+    $readyAtPresent = -not [string]::IsNullOrWhiteSpace($readyAt)
+    $valid = (
+        (Get-ObjectProperty -Object $manifest -Name "schema_version" -Default 0) -eq 2 -and
+        [string](Get-ObjectProperty -Object $manifest -Name "module" -Default "") -eq "mediapipe-sword-sign" -and
+        [string](Get-ObjectProperty -Object $manifest -Name "service" -Default "") -eq "mediapipe_camera_hub_stack" -and
+        $stateClass -in @("starting", "unavailable", "recovering", "ready", "stopping") -and
+        $readyValue -is [bool] -and
+        $readyValue -eq ($stateClass -eq "ready") -and
+        $readyValue -eq $readyAtPresent -and
+        (Test-CameraHubManifestFreshForEntry -Manifest $manifest -Entry $Entry)
+    )
+    if ($valid -and $readyAtPresent) {
+        try { [void][DateTimeOffset]::Parse($readyAt) }
+        catch { $valid = $false }
     }
+    $listenerValid = $valid -and (Test-CameraHubRuntimeOwnership -Manifest $manifest -Entry $Entry -Port $MediapipePort)
+    if ($valid -and -not $listenerValid) {
+        $valid = $false
+    }
+    $operational = (
+        $valid -and $listenerValid -and
+        $stateClass -in @("unavailable", "recovering", "ready") -and
+        (Test-CameraHubRequiredProcessesRunning -Manifest $manifest)
+    )
     return [pscustomobject]@{
         Known = $true
-        Ready = ($manifest.ready -eq $true)
-        Detail = $detail
+        Valid = $valid
+        Operational = $operational
+        Ready = ($valid -and $operational -and $stateClass -eq "ready")
+        ListenerValid = $listenerValid
+        StateClass = if ($valid) { $stateClass } else { "unknown" }
+        DetailClass = if ($valid) { "camera_state_$stateClass" } else { "camera_manifest_runtime_or_shape_validation_failed" }
     }
 }
 
@@ -263,9 +462,13 @@ function New-StatusRow {
         [Parameter(Mandatory = $true)][bool]$PortListening,
         [Parameter(Mandatory = $true)][bool]$HttpOk,
         [Parameter(Mandatory = $true)][string]$Detail,
-        [bool]$RequireHttp = $false
+        [bool]$RequireHttp = $false,
+        [string]$StateOverride = ""
     )
-    $state = if ($ProcessAlive -and ($PortListening -or $HttpOk)) {
+    $state = if (-not [string]::IsNullOrWhiteSpace($StateOverride)) {
+        $StateOverride
+    }
+    elseif ($ProcessAlive -and ($PortListening -or $HttpOk)) {
         if ($RequireHttp -and -not $HttpOk) { "DEGRADED" } else { "OK" }
     }
     elseif ($HttpOk) {
@@ -325,31 +528,44 @@ function Get-StatusText {
         -Detail $environmentHealth.Detail `
         -RequireHttp $true
 
-    $mediapipeEntry = $pidState["mediapipe_camera_hub"]
+    $mediapipeEntry = $pidState["mediapipe_camera_hub_stack"]
     if ($null -eq $mediapipeEntry) {
-        $mediapipeEntry = $pidState["mediapipe_camera_hub_stack"]
+        $mediapipeEntry = $pidState["mediapipe_camera_hub"]
     }
     if ($null -eq $mediapipeEntry) {
         $mediapipeEntry = $pidState["mediapipe_ws"]
     }
     $mediapipeListen = Test-TcpListen -Port $MediapipePort
-    $cameraHubReady = Get-CameraHubReadyStatus -Entry $mediapipeEntry
-    $mediapipeReady = if ($cameraHubReady.Known) { $cameraHubReady.Ready } else { $mediapipeListen }
-    $mediapipeDetail = if ($mediapipeReady -and $mediapipeListen) {
-        if ($cameraHubReady.Known) { $cameraHubReady.Detail } else { "ws://127.0.0.1:$MediapipePort listening" }
+    $cameraHubReady = Get-CameraHubReadyStatus -PidState $pidState -Entry $pidState["mediapipe_camera_hub_stack"]
+    $mediapipeProcessAlive = Test-ProcessAlive -Entry $mediapipeEntry
+    $mediapipeState = if (-not $cameraHubReady.Valid) {
+        if ($mediapipeProcessAlive -or $mediapipeListen) { "DEGRADED" } else { "DOWN" }
     }
-    elseif ($mediapipeListen) {
-        "ws://127.0.0.1:$MediapipePort listening; $($cameraHubReady.Detail)"
+    elseif (-not $mediapipeProcessAlive -or -not $mediapipeListen) {
+        "DEGRADED"
+    }
+    elseif ($cameraHubReady.StateClass -eq "ready" -and $cameraHubReady.Operational) {
+        "OK"
+    }
+    elseif ($cameraHubReady.StateClass -eq "ready") {
+        "DEGRADED"
+    }
+    elseif ($cameraHubReady.StateClass -in @("unavailable", "recovering")) {
+        "DEGRADED"
+    }
+    elseif ($cameraHubReady.StateClass -eq "starting") {
+        "STARTING/WAITING"
     }
     else {
-        "waiting for Camera Hub WebSocket"
+        "DOWN"
     }
     $rows += New-StatusRow `
         -Name "mediapipe" `
-        -ProcessAlive (Test-ProcessAlive -Entry $mediapipeEntry) `
-        -PortListening ($mediapipeListen -and $mediapipeReady) `
+        -ProcessAlive $mediapipeProcessAlive `
+        -PortListening $mediapipeListen `
         -HttpOk $false `
-        -Detail $mediapipeDetail
+        -Detail $cameraHubReady.DetailClass `
+        -StateOverride $mediapipeState
 
     $visionSnapshotEntry = $pidState["vision_snapshot_processor"]
     $visionSnapshotListen = Test-TcpListen -Port $VisionSnapshotProcessorPort

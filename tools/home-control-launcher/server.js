@@ -56,6 +56,12 @@ const COMMON_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'common.ps1')
 const STATE_DIR = resolveStackStateDir()
 const LOG_DIR = path.join(STATE_DIR, 'logs')
 const PID_FILE = path.join(STATE_DIR, 'pids.json')
+const CAMERA_HUB_STATE_FILE = path.join(
+  STATE_DIR,
+  'modules',
+  'mediapipe_camera_hub_stack',
+  'processes.json'
+)
 const LAUNCHER_CONFIG_FILE = path.join(STATE_DIR, 'launcher-config.json')
 const LAUNCHER_STATE_FILE = path.join(STATE_DIR, 'launcher-state.json')
 const DEMO_SAFE_SETTINGS_FILE = path.join(STATE_DIR, 'demo-safe-settings.json')
@@ -2617,6 +2623,268 @@ const serviceState = ({ entry, tcp, http, requireHttp = false, processOnly = fal
   }
 }
 
+const CAMERA_STATE_CLASSES = new Set([
+  'starting',
+  'unavailable',
+  'recovering',
+  'ready',
+  'stopping'
+])
+
+const invalidCameraHubState = (validationClass) => ({
+  valid: false,
+  operational: false,
+  ready: false,
+  stateClass: 'unknown',
+  validationClass
+})
+
+const cameraHubRegistryEntryState = (entry, registry) => {
+  if (
+    !entry ||
+    registry.__registrySchemaValid !== true ||
+    registry.__duplicateNames === true ||
+    entry.name !== 'mediapipe_camera_hub_stack' ||
+    entry.module !== 'mediapipe-sword-sign' ||
+    entry.role !== 'camera_hub_stack' ||
+    entry.stop_strategy !== 'managed_tree' ||
+    !Number.isInteger(Number(entry.pid)) ||
+    Number(entry.pid) <= 0 ||
+    !isValidRecordedTimestamp(entry.started_at) ||
+    !Array.isArray(entry.allowed_process_names)
+  ) {
+    return { valid: false, validationClass: 'camera_registry_identity_invalid' }
+  }
+  const allowedNames = [...new Set(entry.allowed_process_names.map(normalizedProcessName))].sort()
+  if (allowedNames.join(',') !== 'ffmpeg,mediamtx,python,uv') {
+    return { valid: false, validationClass: 'camera_registry_process_names_invalid' }
+  }
+  try {
+    if (
+      typeof entry.child_process_file !== 'string' ||
+      path.resolve(entry.child_process_file).toLowerCase() !==
+        path.resolve(CAMERA_HUB_STATE_FILE).toLowerCase()
+    ) {
+      return { valid: false, validationClass: 'camera_registry_manifest_path_invalid' }
+    }
+  } catch {
+    return { valid: false, validationClass: 'camera_registry_manifest_path_invalid' }
+  }
+  if (!isProcessAlive(Number(entry.pid))) {
+    return { valid: false, validationClass: 'camera_registry_process_not_alive' }
+  }
+  return { valid: true, validationClass: 'camera_registry_valid' }
+}
+
+const inspectCameraHubRuntimeOwnership = async ({ entry, ownerPid, port }) => {
+  const numericOwnerPid = Number(ownerPid)
+  const numericPort = Number(port)
+  if (
+    !entry ||
+    !Number.isInteger(numericOwnerPid) ||
+    numericOwnerPid <= 0 ||
+    !Number.isInteger(numericPort) ||
+    numericPort <= 0
+  ) {
+    return { valid: false, validationClass: 'camera_runtime_correlation_invalid' }
+  }
+  const encodedEntry = Buffer.from(JSON.stringify(entry), 'utf8').toString('base64')
+  const result = await runPowerShellInlineAndCollect(`
+$entry = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedEntry}')) | ConvertFrom-Json
+$invalid = { param([string]$Class) [pscustomobject]@{ valid = $false; validationClass = $Class } | ConvertTo-Json -Compress; exit 0 }
+try {
+  $rootPid = [int]$entry.pid
+  $ownerPid = ${numericOwnerPid}
+  $port = ${numericPort}
+  $recordedAt = [DateTimeOffset]::Parse([string]$entry.started_at)
+  $root = Get-Process -Id $rootPid -ErrorAction Stop
+  $owner = Get-Process -Id $ownerPid -ErrorAction Stop
+  $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+  $descendants = {
+    param([int]$RootProcessId)
+    $queue = [System.Collections.Generic.Queue[int]]::new()
+    $seen = [System.Collections.Generic.HashSet[int]]::new()
+    if ($seen.Add($RootProcessId)) { $queue.Enqueue($RootProcessId) }
+    while ($queue.Count -gt 0) {
+      $parent = $queue.Dequeue()
+      foreach ($child in @($all | Where-Object { [int]$_.ParentProcessId -eq $parent })) {
+        $childPid = [int]$child.ProcessId
+        if ($seen.Add($childPid)) { $queue.Enqueue($childPid) }
+      }
+    }
+    return @($seen)
+  }
+  $rootStarted = [DateTimeOffset]$root.StartTime
+  if ($rootStarted -lt $recordedAt.AddSeconds(-10) -or $rootStarted -gt $recordedAt.AddSeconds(60)) {
+    & $invalid 'camera_runtime_root_start_mismatch'
+  }
+  $allowedRootNames = @($entry.allowed_process_names | ForEach-Object {
+    ([string]$_).ToLowerInvariant().Replace('.exe', '')
+  })
+  $rootProcessName = ([string]$root.ProcessName).ToLowerInvariant().Replace('.exe', '')
+  if ($allowedRootNames -notcontains $rootProcessName) {
+    & $invalid 'camera_runtime_root_identity_invalid'
+  }
+  if (([string]$owner.ProcessName).ToLowerInvariant().Replace('.exe', '') -cne 'python') {
+    & $invalid 'camera_runtime_owner_identity_invalid'
+  }
+  if (@(& $descendants $rootPid) -notcontains $ownerPid -or [DateTimeOffset]$owner.StartTime -lt $rootStarted.AddSeconds(-2)) {
+    & $invalid 'camera_runtime_owner_lineage_invalid'
+  }
+  $listeners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Stop |
+    Where-Object { [string]$_.LocalAddress -in @('127.0.0.1', '::1') } |
+    Select-Object -ExpandProperty OwningProcess -Unique)
+  if ($listeners.Count -ne 1) { & $invalid 'camera_runtime_listener_ambiguous_or_missing' }
+  $listenerPid = [int]$listeners[0]
+  if (@(& $descendants $ownerPid) -notcontains $listenerPid) { & $invalid 'camera_runtime_listener_lineage_invalid' }
+  $listener = Get-Process -Id $listenerPid -ErrorAction Stop
+  $listenerIdentity = $all | Where-Object { [int]$_.ProcessId -eq $listenerPid } | Select-Object -First 1
+  $commandLine = [string]$listenerIdentity.CommandLine
+  if (([string]$listener.ProcessName).ToLowerInvariant().Replace('.exe', '') -cne 'python') {
+    & $invalid 'camera_runtime_listener_process_invalid'
+  }
+  if ($commandLine -notmatch '(?i)apps[\\/]serve_camera_hub\.py') {
+    & $invalid 'camera_runtime_listener_entrypoint_invalid'
+  }
+  [pscustomobject]@{ valid = $true; validationClass = 'camera_runtime_owned_listener_valid' } | ConvertTo-Json -Compress
+} catch {
+  & $invalid 'camera_runtime_inspection_failed'
+}
+`)
+  if (!result.ok) {
+    return { valid: false, validationClass: 'camera_runtime_inspection_failed' }
+  }
+  try {
+    const parsed = JSON.parse(String(result.stdout || '').trim())
+    return parsed && parsed.valid === true
+      ? { valid: true, validationClass: 'camera_runtime_owned_listener_valid' }
+      : {
+          valid: false,
+          validationClass: String(parsed && parsed.validationClass || 'camera_runtime_inspection_failed')
+        }
+  } catch {
+    return { valid: false, validationClass: 'camera_runtime_inspection_failed' }
+  }
+}
+
+const cameraHubManifestState = async (entry, registry, port) => {
+  const registryState = cameraHubRegistryEntryState(entry, registry)
+  if (!registryState.valid) return invalidCameraHubState(registryState.validationClass)
+  try {
+    const stat = fs.statSync(CAMERA_HUB_STATE_FILE)
+    if (!stat.isFile() || stat.size < 2 || stat.size > 1024 * 1024) {
+      return invalidCameraHubState('camera_manifest_file_invalid')
+    }
+    const manifest = JSON.parse(fs.readFileSync(CAMERA_HUB_STATE_FILE, 'utf8'))
+    if (
+      manifest.schema_version !== 2 ||
+      manifest.module !== 'mediapipe-sword-sign' ||
+      manifest.service !== 'mediapipe_camera_hub_stack'
+    ) {
+      return invalidCameraHubState('camera_manifest_authority_invalid')
+    }
+    const stateClass = String(manifest.camera_state_class || '')
+    if (!CAMERA_STATE_CLASSES.has(stateClass)) {
+      return invalidCameraHubState('camera_manifest_state_invalid')
+    }
+    if (typeof manifest.ready !== 'boolean') {
+      return invalidCameraHubState('camera_manifest_ready_invalid')
+    }
+    const readyAtPresent = isValidRecordedTimestamp(manifest.ready_at)
+    if (
+      manifest.ready !== (stateClass === 'ready') ||
+      manifest.ready !== readyAtPresent
+    ) {
+      return invalidCameraHubState('camera_manifest_ready_mismatch')
+    }
+    const updatedAtMs = Date.parse(manifest.updated_at || '')
+    const childStartedAtMs = Date.parse(entry.started_at || '')
+    if (
+      !Number.isFinite(updatedAtMs) ||
+      !Number.isFinite(childStartedAtMs) ||
+      updatedAtMs < childStartedAtMs - 2000
+    ) {
+      return invalidCameraHubState('camera_manifest_lineage_stale')
+    }
+    if (!Array.isArray(manifest.processes)) {
+      return invalidCameraHubState('camera_manifest_processes_invalid')
+    }
+    const runningByName = new Map()
+    for (const item of manifest.processes) {
+      if (
+        !item ||
+        typeof item.name !== 'string' ||
+        item.name.trim().length === 0 ||
+        typeof item.running !== 'boolean' ||
+        runningByName.has(item.name)
+      ) {
+        return invalidCameraHubState('camera_manifest_processes_invalid')
+      }
+      runningByName.set(item.name, item.running)
+    }
+    const runtimeOwnership = await inspectCameraHubRuntimeOwnership({
+      entry,
+      ownerPid: manifest.owner_pid,
+      port
+    })
+    if (!runtimeOwnership.valid) {
+      return invalidCameraHubState(runtimeOwnership.validationClass)
+    }
+    const requiredProcessesRunning =
+      runningByName.get('mediamtx') === true &&
+      runningByName.get('camera-hub') === true
+    const operational =
+      ['unavailable', 'recovering', 'ready'].includes(stateClass) &&
+      requiredProcessesRunning
+    return {
+      valid: true,
+      operational,
+      ready: stateClass === 'ready',
+      stateClass,
+      validationClass: 'camera_manifest_valid'
+    }
+  } catch {
+    return invalidCameraHubState('camera_manifest_missing_or_invalid_json')
+  }
+}
+
+const cameraHubServiceState = ({ entry, tcp, cameraState }) => {
+  const processAlive = entry ? isProcessAlive(entry.pid) : false
+  const tcpOk = Boolean(tcp && tcp.ok)
+  let state = 'DOWN'
+  if (cameraState.valid && processAlive && tcpOk) {
+    if (cameraState.stateClass === 'ready' && cameraState.operational) {
+      state = 'OK'
+    } else if (
+      ['unavailable', 'recovering'].includes(cameraState.stateClass) &&
+      cameraState.operational
+    ) {
+      state = 'DEGRADED'
+    } else if (cameraState.stateClass === 'starting') {
+      state = 'STARTING'
+    } else {
+      state = 'DEGRADED'
+    }
+  } else if (processAlive || tcpOk) {
+    state = cameraState.valid && cameraState.stateClass === 'starting'
+      ? 'STARTING'
+      : 'DEGRADED'
+  }
+  return {
+    state,
+    processAlive,
+    pid: entry ? entry.pid : null,
+    command: entry ? entry.command || '' : '',
+    workingDirectory: entry ? entry.working_directory || '' : '',
+    tcp: tcp || { ok: false, detail: '-' },
+    http: { ok: false, detail: '-' },
+    startedAt: entry ? entry.started_at || null : null,
+    camera_state_class: cameraState.valid ? cameraState.stateClass : 'unknown',
+    camera_state_validation_class: cameraState.validationClass,
+    camera_state_operational: Boolean(cameraState.operational && processAlive && tcpOk)
+  }
+}
+
 const expectedServicesForOptions = (options) => {
   const services = []
   if (!options.SkipHomeAssistantBridge) services.push('home_assistant_bridge')
@@ -2648,6 +2916,14 @@ const serviceIsReady = (service) => {
   return state === 'OK' || state === 'OK_EXTERNAL'
 }
 
+const serviceIsOperationalForStartup = (service) =>
+  serviceIsReady(service) || Boolean(
+    service &&
+    service.state === 'DEGRADED' &&
+    service.camera_state_operational === true &&
+    ['unavailable', 'recovering'].includes(service.camera_state_class)
+  )
+
 const dateMs = (value) => {
   const ms = Date.parse(value || '')
   return Number.isFinite(ms) ? ms : null
@@ -2677,6 +2953,13 @@ const startupTimingEvents = ({ acceptedAt, lastCheckedAt, serviceReadiness }) =>
         serviceId,
         at: item.firstReadyAt,
         elapsedMs: item.firstReadyElapsedMs
+      })
+    } else if (item.firstOperationalAt) {
+      events.push({
+        event_class: 'service_first_operational_degraded',
+        serviceId,
+        at: item.firstOperationalAt,
+        elapsedMs: item.firstOperationalElapsedMs
       })
     } else {
       events.push({
@@ -2710,24 +2993,37 @@ const updateStartupTimingSummary = ({ profileId, options, services }) => {
   const serviceReadiness = {}
   const waitingServiceIds = []
   const readyServiceIds = []
+  const operationalServiceIds = []
+  const degradedServiceIds = []
 
   for (const serviceId of expectedServiceIds) {
     const service = services[serviceId] || {}
     const prior = previousReadiness[serviceId] || {}
     const ready = serviceIsReady(service)
+    const operational = serviceIsOperationalForStartup(service)
     const firstSeenAt = prior.firstSeenAt || startedAt || nowText
     const firstReadyAt = ready
       ? prior.firstReadyAt || nowText
       : prior.firstReadyAt || null
-    const waitingElapsed = ready
+    const firstOperationalAt = operational
+      ? prior.firstOperationalAt || prior.firstReadyAt || nowText
+      : prior.firstOperationalAt || null
+    const waitingElapsed = operational
       ? null
       : elapsedMs(firstSeenAt, now)
     const firstReadyElapsed = firstReadyAt && startedAt
       ? elapsedMs(startedAt, dateMs(firstReadyAt))
       : null
     const readyTimeoutMs = startupReadyTimeoutMsForService(serviceId, options)
+    const firstOperationalElapsed = firstOperationalAt && startedAt
+      ? elapsedMs(startedAt, dateMs(firstOperationalAt))
+      : null
     if (ready) {
       readyServiceIds.push(serviceId)
+    }
+    if (operational) {
+      operationalServiceIds.push(serviceId)
+      if (!ready) degradedServiceIds.push(serviceId)
     } else {
       waitingServiceIds.push(serviceId)
     }
@@ -2736,6 +3032,9 @@ const updateStartupTimingSummary = ({ profileId, options, services }) => {
       firstSeenAt,
       firstReadyAt,
       firstReadyElapsedMs: firstReadyElapsed,
+      firstOperationalAt,
+      firstOperationalElapsedMs: firstOperationalElapsed,
+      operational,
       waitingElapsedMs: waitingElapsed,
       readyTimeoutMs,
       readyTimeoutClass: Number.isFinite(readyTimeoutMs) && readyTimeoutMs > 0
@@ -2770,10 +3069,14 @@ const updateStartupTimingSummary = ({ profileId, options, services }) => {
     status_class: expectedServiceIds.length === 0
       ? 'startup_no_expected_services'
       : waitingServiceIds.length === 0
-        ? 'startup_expected_services_ready'
+        ? degradedServiceIds.length > 0
+          ? 'startup_expected_services_operational_with_degraded'
+          : 'startup_expected_services_ready'
         : 'startup_waiting_for_expected_services',
     expectedServiceIds,
     readyServiceIds,
+    operationalServiceIds,
+    degradedServiceIds,
     waitingServiceIds,
     criticalPathServiceId,
     criticalPathStateClass: criticalPathServiceId
@@ -2808,9 +3111,17 @@ const updateStartupTimingSummary = ({ profileId, options, services }) => {
 
 const pidMap = () => {
   const state = readPidState()
-  const map = {}
+  const map = {
+    __registrySchemaValid: state.schema_version === 3,
+    __duplicateNames: false
+  }
   for (const entry of state.processes || []) {
-    map[entry.name] = entry
+    const name = typeof entry?.name === 'string' ? entry.name : ''
+    if (!name || Object.prototype.hasOwnProperty.call(map, name)) {
+      map.__duplicateNames = true
+      continue
+    }
+    map[name] = entry
   }
   return map
 }
@@ -2973,6 +3284,7 @@ const getStatus = async () => {
   }
   const homeAssistantBridgeEnabled = !options.SkipHomeAssistantBridge
   const environmentStateEnabled = !options.SkipEnvironmentState
+  const mediapipeEnabled = !options.SkipMediapipe
   const aituberEnabled = !options.SkipAituber
   const touchDesignerEnabled = !options.SkipTouchDesignerGui
   const thoughtCoreEnabled = Boolean(options.EnableThoughtCore)
@@ -2985,6 +3297,7 @@ const getStatus = async () => {
     homeHealth,
     environmentTcp,
     environmentHttp,
+    mediapipeTcp,
     aituberTcp,
     aituberHttp,
     tdTcp,
@@ -2993,7 +3306,8 @@ const getStatus = async () => {
     thoughtCoreHttp,
     voicevoxTcp,
     voicevoxHttp,
-    environmentIndicators
+    environmentIndicators,
+    cameraState
   ] = await Promise.all([
     checkTcpIf(homeAssistantBridgeEnabled, options.HomeAssistantBridgePort),
     checkHttpIf(
@@ -3002,6 +3316,7 @@ const getStatus = async () => {
     ),
     checkTcpIf(environmentStateEnabled, options.EnvironmentStatePort),
     checkHttpIf(environmentStateEnabled, `http://127.0.0.1:${options.EnvironmentStatePort}/health`),
+    checkTcpIf(mediapipeEnabled, options.MediapipePort),
     checkTcpIf(aituberEnabled, options.AituberPort),
     checkHttpIf(aituberEnabled, `http://127.0.0.1:${options.AituberPort}`),
     checkTcpIf(touchDesignerEnabled, options.TouchDesignerGuiPort),
@@ -3013,7 +3328,8 @@ const getStatus = async () => {
     fetchJsonIf(
       environmentIndicatorsEnabled,
       `http://127.0.0.1:${options.EnvironmentStatePort}/indicators/current`
-    )
+    ),
+    cameraHubManifestState(mediapipeEntry, pids, options.MediapipePort)
   ])
   const homeHttp = homeHealth && homeHealth.statusCode
     ? {
@@ -3037,9 +3353,10 @@ const getStatus = async () => {
       http: environmentHttp,
       requireHttp: true
     }),
-    mediapipe: serviceState({
+    mediapipe: cameraHubServiceState({
       entry: mediapipeEntry,
-      processOnly: true
+      tcp: mediapipeTcp,
+      cameraState
     }),
     vision_snapshot_processor: serviceState({
       entry: pids.vision_snapshot_processor,

@@ -901,47 +901,189 @@ function Test-ManifestFreshForChild {
     }
 }
 
+function Test-CameraHubRequiredProcessesRunning {
+    param([Parameter(Mandatory = $true)][object]$Manifest)
+    $runningByName = @{}
+    foreach ($entry in @(Get-ObjectProperty -Object $Manifest -Name "processes" -Default @())) {
+        $name = [string](Get-ObjectProperty -Object $entry -Name "name" -Default "")
+        $running = Get-ObjectProperty -Object $entry -Name "running" -Default $null
+        if ([string]::IsNullOrWhiteSpace($name) -or $running -isnot [bool] -or $runningByName.ContainsKey($name)) {
+            return $false
+        }
+        $runningByName[$name] = $running
+    }
+    return (
+        $runningByName.ContainsKey("mediamtx") -and $runningByName["mediamtx"] -and
+        $runningByName.ContainsKey("camera-hub") -and $runningByName["camera-hub"]
+    )
+}
+
+function Test-CameraHubRuntimeOwnership {
+    param(
+        [Parameter(Mandatory = $true)][object]$Manifest,
+        [Parameter(Mandatory = $true)][object]$Child,
+        [Parameter(Mandatory = $true)][int]$Port
+    )
+    $ownerPid = 0
+    if (-not [int]::TryParse([string](Get-ObjectProperty -Object $Manifest -Name "owner_pid" -Default ""), [ref]$ownerPid) -or $ownerPid -le 0) {
+        return $false
+    }
+    $rootPid = [int]$Child.Process.Id
+    $root = Get-Process -Id $rootPid -ErrorAction SilentlyContinue
+    $owner = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+    $ownerIdentity = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerPid" -ErrorAction SilentlyContinue
+    if (
+        $null -eq $root -or $null -eq $owner -or $null -eq $ownerIdentity -or
+        -not (Test-ProcessStartTimeMatches -Process $root -RecordedAt ([string]$Child.StartedAt) -GraceSeconds 60) -or
+        (Normalize-ProcessName -Name ([string]$owner.ProcessName)) -ne "python"
+    ) {
+        return $false
+    }
+    $rootDescendants = @(Get-DescendantProcessIds -RootProcessId $rootPid)
+    if ($rootDescendants -notcontains $ownerPid) {
+        return $false
+    }
+    try {
+        if ([DateTimeOffset]$owner.StartTime -lt ([DateTimeOffset]$root.StartTime).AddSeconds(-2)) {
+            return $false
+        }
+    }
+    catch {
+        return $false
+    }
+
+    $listeners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Where-Object { [string]$_.LocalAddress -in @("127.0.0.1", "::1") } |
+        Select-Object -ExpandProperty OwningProcess -Unique)
+    if ($listeners.Count -ne 1) {
+        return $false
+    }
+    $listenerPid = [int]$listeners[0]
+    if (@(Get-DescendantProcessIds -RootProcessId $ownerPid) -notcontains $listenerPid) {
+        return $false
+    }
+    $listener = Get-Process -Id $listenerPid -ErrorAction SilentlyContinue
+    $listenerIdentity = Get-CimInstance Win32_Process -Filter "ProcessId = $listenerPid" -ErrorAction SilentlyContinue
+    if ($null -eq $listener -or $null -eq $listenerIdentity) {
+        return $false
+    }
+    $commandLine = [string]$listenerIdentity.CommandLine
+    return (
+        (Normalize-ProcessName -Name ([string]$listener.ProcessName)) -eq "python" -and
+        $commandLine -match '(?i)apps[\\/]serve_camera_hub\.py'
+    )
+}
+
+function Get-ValidatedCameraHubState {
+    param(
+        [Parameter(Mandatory = $true)][object]$Manifest,
+        [Parameter(Mandatory = $true)][object]$Child
+    )
+    $invalid = {
+        param([string]$Class)
+        return [pscustomobject]@{
+            Valid = $false
+            Operational = $false
+            StateClass = "unknown"
+            ValidationClass = $Class
+        }
+    }
+
+    if ((Get-ObjectProperty -Object $Manifest -Name "schema_version" -Default 0) -ne 2) {
+        return & $invalid "camera_manifest_schema_invalid"
+    }
+    if (
+        [string](Get-ObjectProperty -Object $Manifest -Name "module" -Default "") -ne "mediapipe-sword-sign" -or
+        [string](Get-ObjectProperty -Object $Manifest -Name "service" -Default "") -ne "mediapipe_camera_hub_stack"
+    ) {
+        return & $invalid "camera_manifest_authority_invalid"
+    }
+
+    $stateClass = [string](Get-ObjectProperty -Object $Manifest -Name "camera_state_class" -Default "")
+    $allowedClasses = @("starting", "unavailable", "recovering", "ready", "stopping")
+    if ($stateClass -notin $allowedClasses) {
+        return & $invalid "camera_manifest_state_invalid"
+    }
+
+    $readyValue = Get-ObjectProperty -Object $Manifest -Name "ready" -Default $null
+    if ($readyValue -isnot [bool]) {
+        return & $invalid "camera_manifest_ready_invalid"
+    }
+    $readyAt = [string](Get-ObjectProperty -Object $Manifest -Name "ready_at" -Default "")
+    $readyAtPresent = -not [string]::IsNullOrWhiteSpace($readyAt)
+    if (($readyValue -ne ($stateClass -eq "ready")) -or ($readyValue -ne $readyAtPresent)) {
+        return & $invalid "camera_manifest_ready_mismatch"
+    }
+    if ($readyAtPresent) {
+        try { [void][DateTimeOffset]::Parse($readyAt) }
+        catch { return & $invalid "camera_manifest_ready_at_invalid" }
+    }
+    if (-not (Test-ManifestFreshForChild -Manifest $Manifest -Child $Child)) {
+        return & $invalid "camera_manifest_lineage_stale"
+    }
+    if (-not (Test-CameraHubRuntimeOwnership -Manifest $Manifest -Child $Child -Port $MediapipePort)) {
+        return & $invalid "camera_manifest_runtime_ownership_invalid"
+    }
+
+    $operational = (
+        $stateClass -in @("unavailable", "recovering", "ready") -and
+        (Test-CameraHubRequiredProcessesRunning -Manifest $Manifest)
+    )
+    return [pscustomobject]@{
+        Valid = $true
+        Operational = $operational
+        StateClass = $stateClass
+        ValidationClass = "camera_manifest_valid"
+    }
+}
+
 function Wait-CameraHubStackReady {
     param(
         [Parameter(Mandatory = $true)][object]$Child,
         [int]$TimeoutSeconds = 35
     )
-    $manifestPath = [string]$Child.ChildProcessFile
+    $manifestPath = $MediapipeCameraHubChildProcessFile
     if ([string]::IsNullOrWhiteSpace($manifestPath)) {
         return
     }
+    $configuredManifestPath = [string]$Child.ChildProcessFile
+    if (
+        [string]::IsNullOrWhiteSpace($configuredManifestPath) -or
+        -not [System.IO.Path]::GetFullPath($configuredManifestPath).Equals(
+            [System.IO.Path]::GetFullPath($manifestPath),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw "$($Child.Name) Camera Hub manifest route does not match the canonical state path."
+    }
 
-    Write-Host "[$($Child.Name)] waiting for Camera Hub topics readiness..."
+    Write-Host "[$($Child.Name)] waiting for Camera Hub operational state..."
     $deadline = [DateTimeOffset]::Now.AddSeconds($TimeoutSeconds)
-    $lastDetail = "waiting for process manifest"
+    $lastClass = "camera_manifest_waiting"
     while ([DateTimeOffset]::Now -lt $deadline) {
         if ($Child.Process.HasExited) {
-            throw "$($Child.Name) exited before Camera Hub topics became ready. Last detail: $lastDetail"
+            throw "$($Child.Name) exited before Camera Hub became operational. Last class: $lastClass"
         }
 
         $manifest = Read-JsonFile -Path $manifestPath
         if ($null -ne $manifest) {
-            if (-not (Test-ManifestFreshForChild -Manifest $manifest -Child $Child)) {
-                $lastDetail = "waiting for fresh Camera Hub process manifest"
-                Start-Sleep -Milliseconds 500
-                continue
+            $cameraState = Get-ValidatedCameraHubState -Manifest $manifest -Child $Child
+            $lastClass = if ($cameraState.Valid) {
+                "camera_state_$($cameraState.StateClass)"
             }
-
-            $lastDetail = [string](Get-ObjectProperty -Object $manifest -Name "ready_detail" -Default "waiting for Camera Hub topics")
-            $ready = [bool](Get-ObjectProperty -Object $manifest -Name "ready" -Default $false)
-            if ($ready) {
-                if ([string]::IsNullOrWhiteSpace($lastDetail)) {
-                    $lastDetail = "ready"
-                }
-                Write-Host "[$($Child.Name)] Camera Hub topics ready: $lastDetail"
-                return
+            else {
+                $cameraState.ValidationClass
+            }
+            if ($cameraState.Operational) {
+                Write-Host "[$($Child.Name)] Camera Hub operational: camera_state_$($cameraState.StateClass)"
+                return $cameraState.StateClass
             }
         }
 
         Start-Sleep -Milliseconds 500
     }
 
-    throw "$($Child.Name) did not report Camera Hub topics ready within ${TimeoutSeconds}s. Last detail: $lastDetail"
+    throw "$($Child.Name) did not report a valid operational Camera Hub state within ${TimeoutSeconds}s. Last class: $lastClass"
 }
 
 function Test-RecordedProcessesAlive {

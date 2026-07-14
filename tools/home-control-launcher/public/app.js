@@ -138,6 +138,8 @@ const translations = {
     'startup.elapsed': 'Elapsed',
     'startup.waiting': 'Waiting',
     'startup.ready': 'Ready',
+    'startup.operational': 'Operational',
+    'startup.degraded': 'Running without camera input',
     'startup.maxWait': 'max wait',
     'startup.maxWaitUnset': 'not set',
     'startup.service': 'Service',
@@ -368,6 +370,8 @@ const translations = {
     'startup.elapsed': '経過',
     'startup.waiting': '待機中',
     'startup.ready': '準備済み',
+    'startup.operational': '稼働',
+    'startup.degraded': 'カメラ入力なしで稼働中',
     'startup.maxWait': '最大待ち',
     'startup.maxWaitUnset': '設定なし',
     'startup.service': '機能',
@@ -1571,16 +1575,23 @@ const renderStartupTiming = (timing) => {
   }
   const waiting = timing.waitingServiceIds || []
   const ready = timing.readyServiceIds || []
+  const operational = timing.operationalServiceIds || ready
+  const degraded = timing.degradedServiceIds || []
   const critical = timing.criticalPathServiceId || '-'
   const rows = timing.expectedServiceIds.map((serviceId) => {
     const item = timing.serviceReadiness?.[serviceId] || {}
     const isWaiting = waiting.includes(serviceId)
-    const stateLabel = isWaiting ? t('startup.waiting') : t('startup.ready')
+    const isDegraded = degraded.includes(serviceId)
+    const stateLabel = isWaiting
+      ? t('startup.waiting')
+      : isDegraded
+        ? t('startup.degraded')
+        : t('startup.ready')
     const actualElapsed = isWaiting
       ? formatElapsed(item.waitingElapsedMs)
-      : formatElapsed(item.firstReadyElapsedMs)
+      : formatElapsed(isDegraded ? item.firstOperationalElapsedMs : item.firstReadyElapsedMs)
     return `
-      <div class="startup-timing-row" data-state-group="${isWaiting ? 'warn' : 'ok'}">
+      <div class="startup-timing-row" data-state-group="${isWaiting || isDegraded ? 'warn' : 'ok'}">
         <span class="startup-service">${escapeHtml(serviceDisplayName(serviceId))}</span>
         <span class="startup-state">${escapeHtml(stateLabel)}</span>
         <span class="startup-elapsed">${escapeHtml(actualElapsed)}</span>
@@ -1591,7 +1602,7 @@ const renderStartupTiming = (timing) => {
   container.innerHTML = `
     <div class="diagnostic-summary-grid">
       <div><span>${escapeHtml(t('startup.elapsed'))}</span><strong>${escapeHtml(formatElapsed(timing.elapsedMs))}</strong></div>
-      <div><span>${escapeHtml(t('startup.ready'))}</span><strong>${escapeHtml(String(ready.length))}/${escapeHtml(String(timing.expectedServiceIds.length))}</strong></div>
+      <div><span>${escapeHtml(t('startup.operational'))}</span><strong>${escapeHtml(String(operational.length))}/${escapeHtml(String(timing.expectedServiceIds.length))}</strong></div>
       <div><span>${escapeHtml(t('startup.critical'))}</span><strong>${escapeHtml(serviceDisplayName(critical))}</strong></div>
     </div>
     <div class="startup-timing-table" role="table" aria-label="${escapeHtml(t('startup.title'))}">
