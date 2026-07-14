@@ -179,6 +179,10 @@ class AiTalkCoreWebDefaultsTest(TestCase):
                 "result_class": "thought_core_turninput_accepted",
                 "submission_count": 1,
                 "thought_core_turninput_count": 1,
+                "presentation_class": "aituber_presentation_not_forwarded",
+                "assistant_event_id": None,
+                "thought_core_first_event_elapsed_ms": None,
+                "raw_private_publication_flags": False,
             },
         )
         self.assertEqual(len(client.calls), 1)
@@ -199,8 +203,12 @@ class AiTalkCoreWebDefaultsTest(TestCase):
         factory_turn_ids: list[str] = []
 
         class FakeForwarder:
+            dispatch_count = 0
+            error_count = 0
+
             def __call__(self, event: object) -> None:
                 forwarded_events.append(event)
+                self.dispatch_count += 1
 
             def close(self) -> None:
                 closed.append(True)
@@ -224,7 +232,10 @@ class AiTalkCoreWebDefaultsTest(TestCase):
                         turn_id=turn_id,
                     )
                 )
-                return Mock(conversation_id=turn_id)
+                return Mock(
+                    conversation_id=turn_id,
+                    raw={"_streaming": {"first_event_elapsed_s": 0.125}},
+                )
 
         def build_forwarder(turn_id: str) -> FakeForwarder:
             factory_turn_ids.append(turn_id)
@@ -236,6 +247,9 @@ class AiTalkCoreWebDefaultsTest(TestCase):
         )(accepted_candidate_audit(), private_marker)
 
         self.assertEqual(result["thought_core_turninput_count"], 1)
+        self.assertEqual(result["presentation_class"], "aituber_presentation_forwarded")
+        self.assertEqual(result["assistant_event_id"], "evt-live-1")
+        self.assertEqual(result["thought_core_first_event_elapsed_ms"], 125)
         self.assertEqual(len(factory_turn_ids), 1)
         self.assertRegex(factory_turn_ids[0], r"^turn_live_speech_[0-9a-f]{32}$")
         self.assertEqual(len(forwarded_events), 1)
@@ -272,7 +286,10 @@ class AiTalkCoreWebDefaultsTest(TestCase):
                         turn_id=turn_id,
                     )
                 )
-                return Mock(conversation_id=turn_id)
+                return Mock(
+                    conversation_id=turn_id,
+                    raw={"_streaming": {"first_event_elapsed_s": 0.25}},
+                )
 
         with patch.dict(
             "os.environ",
@@ -291,6 +308,9 @@ class AiTalkCoreWebDefaultsTest(TestCase):
             )
 
         self.assertEqual(result["thought_core_turninput_count"], 1)
+        self.assertEqual(result["presentation_class"], "aituber_presentation_forwarded")
+        self.assertEqual(result["assistant_event_id"], "evt-live-post-1")
+        self.assertEqual(result["thought_core_first_event_elapsed_ms"], 250)
         self.assertEqual(urlopen.call_count, 1)
         payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
         self.assertEqual(urlopen.call_count, 1)
@@ -302,6 +322,54 @@ class AiTalkCoreWebDefaultsTest(TestCase):
             "thought_core_assistant_message",
         )
         self.assertNotIn("private-do-not-publish", repr(payload))
+
+    def test_private_turn_sink_keeps_forwarded_id_but_marks_invalid_first_event_timing(
+        self,
+    ) -> None:
+        private_marker = "private-timing-do-not-echo"
+
+        class FakeForwarder:
+            dispatch_count = 0
+            error_count = 0
+
+            def __call__(self, _event: object) -> None:
+                self.dispatch_count += 1
+
+            def close(self) -> None:
+                return None
+
+        for elapsed in (None, True, float("nan"), -0.1, 20.1):
+            with self.subTest(elapsed=elapsed):
+                class FakeClient:
+                    def send_turn_streaming(self, payload, *, on_event):
+                        turn_id = payload["private_turn"]["turn_id"]
+                        on_event(
+                            Mock(
+                                is_message=True,
+                                is_completed=False,
+                                turn_id=turn_id,
+                                event_id="evt-live-timing-1",
+                                speech="公開応答です",
+                            )
+                        )
+                        on_event(Mock(is_message=False, is_completed=True, turn_id=turn_id))
+                        return Mock(
+                            conversation_id=turn_id,
+                            raw={"_streaming": {"first_event_elapsed_s": elapsed}},
+                        )
+
+                result = build_live_private_turn_sink(
+                    FakeClient(),
+                    aituber_forwarder_factory=lambda _turn_id: FakeForwarder(),
+                )(accepted_candidate_audit(), private_marker)
+
+                self.assertEqual(
+                    result["presentation_class"],
+                    "aituber_presentation_forwarded_timing_unavailable",
+                )
+                self.assertEqual(result["assistant_event_id"], "evt-live-timing-1")
+                self.assertIsNone(result["thought_core_first_event_elapsed_ms"])
+                self.assertNotIn(private_marker, repr(result))
 
     @patch("sword_voice_agent.apps.watch_handoff_to_thought_core.request.urlopen")
     def test_private_turn_sink_rejects_over_limit_presentation_without_rewriting_acceptance(
@@ -356,6 +424,10 @@ class AiTalkCoreWebDefaultsTest(TestCase):
                 "result_class": "thought_core_turninput_accepted",
                 "submission_count": 1,
                 "thought_core_turninput_count": 1,
+                "presentation_class": "aituber_presentation_not_forwarded",
+                "assistant_event_id": None,
+                "thought_core_first_event_elapsed_ms": None,
+                "raw_private_publication_flags": False,
             },
         )
         self.assertEqual(len(created_forwarders), 1)
@@ -546,6 +618,10 @@ class AiTalkCoreWebDefaultsTest(TestCase):
                         "result_class": "thought_core_turninput_accepted",
                         "submission_count": 1,
                         "thought_core_turninput_count": 1,
+                        "presentation_class": "aituber_presentation_not_forwarded",
+                        "assistant_event_id": None,
+                        "thought_core_first_event_elapsed_ms": None,
+                        "raw_private_publication_flags": False,
                     },
                 )
                 self.assertNotIn(private_marker, repr(result))
@@ -577,6 +653,10 @@ class AiTalkCoreWebDefaultsTest(TestCase):
                         "result_class": "thought_core_turninput_rejected",
                         "submission_count": 0,
                         "thought_core_turninput_count": 0,
+                        "presentation_class": "presentation_not_attempted",
+                        "assistant_event_id": None,
+                        "thought_core_first_event_elapsed_ms": None,
+                        "raw_private_publication_flags": False,
                     },
                 )
                 self.assertEqual(client.send_turn_streaming.call_count, 1)

@@ -6,6 +6,7 @@ import argparse
 from collections.abc import Callable, Mapping
 import hashlib
 import importlib
+import math
 import os
 import re
 import secrets
@@ -47,11 +48,19 @@ THOUGHT_CORE_TURNINPUT_ACCEPTED = {
     "result_class": "thought_core_turninput_accepted",
     "submission_count": 1,
     "thought_core_turninput_count": 1,
+    "presentation_class": "aituber_presentation_not_forwarded",
+    "assistant_event_id": None,
+    "thought_core_first_event_elapsed_ms": None,
+    "raw_private_publication_flags": False,
 }
 THOUGHT_CORE_TURNINPUT_REJECTED = {
     "result_class": "thought_core_turninput_rejected",
     "submission_count": 0,
     "thought_core_turninput_count": 0,
+    "presentation_class": "presentation_not_attempted",
+    "assistant_event_id": None,
+    "thought_core_first_event_elapsed_ms": None,
+    "raw_private_publication_flags": False,
 }
 
 
@@ -399,14 +408,30 @@ def build_live_private_turn_sink(
                     assistant_message_event_count == 1
                     and len(assistant_message_events) == 1
                 ):
-                    _forward_live_assistant_message(
-                        assistant_message_events[0],
+                    assistant_event = assistant_message_events[0]
+                    presentation_forwarded = _forward_live_assistant_message(
+                        assistant_event,
                         turn_id=turn_id,
                         forwarder_factory=(
                             aituber_forwarder_factory
                             or _build_live_aituber_forwarder
                         ),
                     )
+                    if presentation_forwarded:
+                        first_event_elapsed_ms = _thought_core_first_event_elapsed_ms(
+                            response
+                        )
+                        result = dict(THOUGHT_CORE_TURNINPUT_ACCEPTED)
+                        result["presentation_class"] = (
+                            "aituber_presentation_forwarded"
+                            if first_event_elapsed_ms is not None
+                            else "aituber_presentation_forwarded_timing_unavailable"
+                        )
+                        result["assistant_event_id"] = assistant_event.event_id
+                        result["thought_core_first_event_elapsed_ms"] = (
+                            first_event_elapsed_ms
+                        )
+                        return result
                 return dict(THOUGHT_CORE_TURNINPUT_ACCEPTED)
             return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
         except Exception:
@@ -450,23 +475,48 @@ def _forward_live_assistant_message(
     *,
     turn_id: str,
     forwarder_factory: Callable[[str], Any],
-) -> None:
+) -> bool:
     forwarder: Any = None
+    presentation_forwarded = False
     try:
         forwarder = forwarder_factory(turn_id)
-        if forwarder is not None:
-            forwarder(event)
+        if forwarder is None:
+            return False
+        forwarder(event)
+        presentation_forwarded = bool(
+            getattr(forwarder, "dispatch_count", None) == 1
+            and getattr(forwarder, "error_count", None) == 0
+        )
     except Exception:
         # The Thought Core turn has already been accepted. Presentation delivery
         # is a separate proof layer and must not rewrite TurnInput counts.
-        return
+        return False
     finally:
         close = getattr(forwarder, "close", None)
         if callable(close):
             try:
                 close()
             except Exception:
-                pass
+                presentation_forwarded = False
+    return presentation_forwarded
+
+
+def _thought_core_first_event_elapsed_ms(response: Any) -> int | None:
+    raw = getattr(response, "raw", None)
+    if not isinstance(raw, Mapping):
+        return None
+    streaming = raw.get("_streaming")
+    if not isinstance(streaming, Mapping):
+        return None
+    elapsed_s = streaming.get("first_event_elapsed_s")
+    if (
+        isinstance(elapsed_s, bool)
+        or not isinstance(elapsed_s, (int, float))
+        or not math.isfinite(float(elapsed_s))
+        or not 0 <= float(elapsed_s) <= 20
+    ):
+        return None
+    return min(20_000, max(0, round(float(elapsed_s) * 1000)))
 
 
 def _is_canonical_gate_accepted_candidate(
