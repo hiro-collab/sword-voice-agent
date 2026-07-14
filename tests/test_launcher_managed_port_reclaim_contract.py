@@ -1195,6 +1195,9 @@ class LauncherManagedPortReclaimContractTest(unittest.TestCase):
                 self.assertLess(output.index(listener_marker), output.index(root_marker))
             self.assertFalse(port_is_listening(port))
             self.assertFalse((fixture.state_dir / "pids.json").exists())
+            self.assertFalse(
+                (fixture.state_dir / "modules" / "camera-hub" / "processes.json").exists()
+            )
             self.assertIsNone(unrelated_python.poll())
 
     def test_camera_hub_managed_tree_retains_registry_when_revalidation_refuses_targets(self) -> None:
@@ -1217,6 +1220,9 @@ class LauncherManagedPortReclaimContractTest(unittest.TestCase):
             self.assertIn("stop incomplete", (result.stdout + result.stderr).lower())
             self.assertTrue(port_is_listening(port))
             self.assertTrue((fixture.state_dir / "pids.json").exists())
+            self.assertTrue(
+                (fixture.state_dir / "modules" / "camera-hub" / "processes.json").exists()
+            )
             self.assertIsNone(root.poll())
             self.assertTrue(
                 all(
@@ -1237,6 +1243,26 @@ class LauncherManagedPortReclaimContractTest(unittest.TestCase):
                 )
             )
             self.assertIsNone(unrelated_python.poll())
+
+    def test_camera_hub_child_manifest_outside_state_modules_is_never_deleted(self) -> None:
+        with LauncherFixture() as fixture:
+            port = unused_loopback_port()
+            _, _ = fixture.start_managed_camera_tree_fixture(port=port)
+            outside_manifest = fixture.root / "outside-processes.json"
+            outside_manifest.write_text(json.dumps({"processes": []}), encoding="utf-8")
+            pid_state = json.loads((fixture.state_dir / "pids.json").read_text(encoding="utf-8"))
+            pid_state["processes"][0]["child_process_file"] = str(outside_manifest)
+            (fixture.state_dir / "pids.json").write_text(
+                json.dumps(pid_state), encoding="utf-8"
+            )
+
+            result = fixture.stop_partial_stack()
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(result.returncode, 0, output)
+            self.assertIn("outside_state_modules", output)
+            self.assertTrue(outside_manifest.exists())
+            self.assertTrue((fixture.state_dir / "pids.json").exists())
 
     def test_camera_hub_managed_tree_retains_snapshot_depth_when_current_tree_omits_listener(self) -> None:
         with LauncherFixture() as fixture:

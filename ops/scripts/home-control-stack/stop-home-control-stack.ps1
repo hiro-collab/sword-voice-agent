@@ -208,6 +208,83 @@ function Read-ChildProcessIds {
     }
 }
 
+function Remove-OwnedChildProcessFile {
+    param(
+        [Parameter(Mandatory = $true)][object]$Entry,
+        [Parameter(Mandatory = $true)][object[]]$TargetPlan
+    )
+
+    $path = [string](Get-ObjectProperty -Object $Entry -Name "child_process_file" -Default "")
+    if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        return
+    }
+
+    $stateModulesRoot = [System.IO.Path]::GetFullPath(
+        (Join-Path $StateDir "modules")
+    ).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+    $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+    $resolvedPath = [System.IO.Path]::GetFullPath($item.FullName)
+    $requiredPrefix = $stateModulesRoot + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $resolvedPath.StartsWith($requiredPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Owned child process manifest cleanup blocked: outside_state_modules"
+    }
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Owned child process manifest cleanup blocked: manifest_reparse_point"
+    }
+
+    $cursor = $item.Directory
+    $moduleRootReached = $false
+    while ($null -ne $cursor) {
+        $cursorPath = [System.IO.Path]::GetFullPath($cursor.FullName).TrimEnd(
+            [System.IO.Path]::DirectorySeparatorChar
+        )
+        if (($cursor.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Owned child process manifest cleanup blocked: parent_reparse_point"
+        }
+        if ($cursorPath -eq $stateModulesRoot) {
+            $moduleRootReached = $true
+            break
+        }
+        $cursor = $cursor.Parent
+    }
+    if (-not $moduleRootReached) {
+        throw "Owned child process manifest cleanup blocked: modules_root_not_reached"
+    }
+
+    try {
+        $manifest = Get-Content -LiteralPath $resolvedPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        throw "Owned child process manifest cleanup blocked: invalid_json"
+    }
+    if ($null -eq $manifest.PSObject.Properties["processes"]) {
+        throw "Owned child process manifest cleanup blocked: processes_missing"
+    }
+
+    $rootPid = [int](Get-ObjectProperty -Object $Entry -Name "pid" -Default 0)
+    $manifestOwnerPid = [int](Get-ObjectProperty -Object $manifest -Name "owner_pid" -Default 0)
+    if ($manifestOwnerPid -gt 0 -and $manifestOwnerPid -ne $rootPid) {
+        throw "Owned child process manifest cleanup blocked: owner_pid_mismatch"
+    }
+
+    $targetIds = @($TargetPlan | ForEach-Object { [int]$_.ProcessId })
+    foreach ($child in @($manifest.processes)) {
+        $childPid = [int](Get-ObjectProperty -Object $child -Name "pid" -Default 0)
+        if (
+            $childPid -gt 0 -and
+            $targetIds -notcontains $childPid -and
+            $null -ne (Get-Process -Id $childPid -ErrorAction SilentlyContinue)
+        ) {
+            throw "Owned child process manifest cleanup blocked: live_unowned_child"
+        }
+    }
+
+    Remove-Item -LiteralPath $resolvedPath -Force -ErrorAction Stop
+    if (Test-Path -LiteralPath $resolvedPath) {
+        throw "Owned child process manifest cleanup incomplete"
+    }
+}
+
 function ConvertTo-OwnershipTimestamp {
     param([object]$Value)
     if ($Value -is [DateTimeOffset]) {
@@ -594,6 +671,12 @@ if (-not $DryRun) {
     )
     if ($remainingTargetIds.Count -gt 0) {
         throw "Managed process stop incomplete; retained PID registry for verification: $($remainingTargetIds -join ', ')"
+    }
+
+    foreach ($managedTarget in $managedTargets) {
+        Remove-OwnedChildProcessFile `
+            -Entry $managedTarget.Entry `
+            -TargetPlan @($managedTarget.TargetPlan)
     }
 }
 
