@@ -71,7 +71,16 @@ class ActionDriverCatalogTest(unittest.TestCase):
         catalog_actions = load_catalog()["actions"]
         bridge_actions = load_home_control_actions()
 
-        self.assertEqual(set(catalog_actions), set(bridge_actions))
+        self.assertEqual(
+            set(bridge_actions),
+            set(catalog_actions) | {"aircon_restore_original"},
+            {
+                "missing_from_bridge": sorted(set(catalog_actions) - set(bridge_actions)),
+                "unclassified_bridge_only": sorted(
+                    set(bridge_actions) - set(catalog_actions) - {"aircon_restore_original"}
+                ),
+            },
+        )
         for action_id, catalog_action in catalog_actions.items():
             bridge_action = bridge_actions[action_id]
             execution = catalog_action["execution"]
@@ -169,17 +178,24 @@ class ActionDriverCatalogTest(unittest.TestCase):
             except ValueError:
                 pass
 
-        for text in ("エアコンを止めて", "エアコンを消して"):
-            intent = detect_home_action_intent(text)
-            self.assertIsNotNone(intent, text)
-            self.assertEqual(intent.action_id, "aircon_off", text)
-            self.assertEqual(intent.target, "aircon", text)
-
-        for text in ("エアコンを停止して", "エアコン停止して"):
+        for text in (
+            "エアコンを止めて",
+            "エアコンを消して",
+            "エアコンを停止して",
+            "エアコン停止して",
+        ):
             intent = detect_home_action_intent(text)
             self.assertIsNotNone(intent, text)
             self.assertEqual(intent.action_id, "aircon_hvac_off", text)
             self.assertEqual(intent.target, "aircon", text)
+
+        for text in ("エアコンをつけて", "エアコンを入れて", "空調をつけて"):
+            intent = detect_home_action_intent(text)
+            self.assertIsNotNone(intent, text)
+            self.assertEqual(intent.action_id, "aircon_cool", text)
+            self.assertEqual(intent.target, "aircon", text)
+
+        self.assertIsNone(detect_home_action_intent("暖房をつけて"))
 
         intent = detect_home_action_intent("中扉を止めて")
         self.assertIsNotNone(intent)
@@ -190,6 +206,10 @@ class ActionDriverCatalogTest(unittest.TestCase):
         catalog_actions = load_catalog()["actions"]
 
         for action_id in ("aircon_on", "aircon_off"):
+            action = catalog_actions[action_id]
+            self.assertEqual(action["aliases"], [])
+            self.assertEqual(action["intent_examples"], [])
+            self.assertEqual(action["natural_language_status"], "retired_compatibility_only")
             expected_effect = catalog_actions[action_id]["expected_effect"]
             self.assertEqual(expected_effect["control_type"], "stateless_command")
             self.assertEqual(expected_effect["state_authority"], "submitted_only")

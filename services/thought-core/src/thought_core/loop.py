@@ -3152,6 +3152,18 @@ class ThoughtLoop:
                 "auto_retries": 0,
                 "checkpoint_ms": [8000, 15000, 25000],
             },
+            "aircon_cool": {
+                "settle_ms": 8000,
+                "observation_attempts": 3,
+                "auto_retries": 0,
+                "checkpoint_ms": [8000, 15000, 25000],
+            },
+            "aircon_hvac_off": {
+                "settle_ms": 8000,
+                "observation_attempts": 3,
+                "auto_retries": 0,
+                "checkpoint_ms": [8000, 15000, 25000],
+            },
             "door_open": {"settle_ms": 5000, "observation_attempts": 2, "auto_retries": 0},
             "door_close": {"settle_ms": 5000, "observation_attempts": 2, "auto_retries": 0},
             "door_stop": {"settle_ms": 1500, "observation_attempts": 2, "auto_retries": 0},
@@ -6595,6 +6607,14 @@ class ThoughtLoop:
             "fan_off": ("扇風機を消す", "扇風機を消す操作を送信したよ。"),
             "aircon_on": ("エアコンをつける", "エアコンをつける操作を送信したよ。"),
             "aircon_off": ("エアコンを消す", "エアコンを消す操作を送信したよ。"),
+            "aircon_cool": (
+                "エアコンを冷房にする",
+                "エアコンを冷房にするね。",
+            ),
+            "aircon_hvac_off": (
+                "エアコンを停止する",
+                "エアコンを止めるね。",
+            ),
             "door_open": ("中扉を開ける", "中扉を開ける操作を送信したよ。"),
             "door_close": ("中扉を閉める", "中扉を閉める操作を送信したよ。"),
             "door_stop": ("中扉を止める", "中扉を止める操作を送信したよ。"),

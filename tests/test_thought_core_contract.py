@@ -1007,7 +1007,12 @@ class ThoughtCoreContractTest(TestCase):
         )
 
         for action_id, action in catalog["actions"].items():
-            phrase = action["intent_examples"][0]
+            examples = action.get("intent_examples", [])
+            if action.get("natural_language_status") == "retired_compatibility_only":
+                self.assertEqual(examples, [], action_id)
+                continue
+            self.assertTrue(examples, action_id)
+            phrase = examples[0]
             with self.subTest(action_id=action_id, phrase=phrase):
                 intent = detect_home_action_intent(phrase)
 
@@ -2192,11 +2197,14 @@ class ThoughtCoreContractTest(TestCase):
                 )
 
                 self.assertIn("action.review_superseded", event_types)
-                self.assertEqual(action_event["data"]["action"]["action_id"], "aircon_off")
+                self.assertEqual(
+                    action_event["data"]["action"]["action_id"],
+                    "aircon_hvac_off",
+                )
                 self.assertEqual(action_event["data"]["action"]["target"], "aircon")
                 self.assertEqual(action_event["data"]["action"]["target_name"], "エアコン")
                 self.assertEqual(len(tools.execute_calls), 1)
-                self.assertEqual(tools.execute_calls[0]["action_id"], "aircon_off")
+                self.assertEqual(tools.execute_calls[0]["action_id"], "aircon_hvac_off")
                 self.assertEqual(tools.execute_calls[0]["target"], "aircon")
                 self.assertNotIn("中扉", assistant_text)
                 self.assertNotIn("door_stop", json.dumps(tools.execute_calls, ensure_ascii=False))

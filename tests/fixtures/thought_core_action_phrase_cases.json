@@ -93,15 +93,15 @@
       }
     },
     {
-      "name": "aircon_on",
+      "name": "aircon_on_uses_tracked_cool_mode",
       "text": "エアコンをつけて",
       "initial_appliance_states": {"aircon": "off"},
       "expect": {
-        "action_id": "aircon_on",
+        "action_id": "aircon_cool",
         "target": "aircon",
-        "expected_state": "on",
+        "expected_state": "cool",
         "event_types": ["action.proposed", "tool.started", "turn.completed"],
-        "speech_contains": ["エアコンをつけるね"],
+        "speech_contains": ["エアコンを冷房にするね"],
         "speech_not_contains": ["中扉"],
         "speech_occurrences_max": {"エアコン": 2},
         "execute_calls": 1,
@@ -109,15 +109,15 @@
       }
     },
     {
-      "name": "aircon_off",
+      "name": "aircon_off_uses_tracked_hvac_off",
       "text": "エアコンを消して",
       "initial_appliance_states": {"aircon": "on"},
       "expect": {
-        "action_id": "aircon_off",
+        "action_id": "aircon_hvac_off",
         "target": "aircon",
         "expected_state": "off",
         "event_types": ["action.proposed", "tool.started", "turn.completed"],
-        "speech_contains": ["エアコンを消すね"],
+        "speech_contains": ["エアコンを停止するね"],
         "speech_not_contains": ["中扉"],
         "speech_occurrences_max": {"エアコン": 2},
         "execute_calls": 1,
@@ -230,16 +230,16 @@
       }
     },
     {
-      "name": "aircon_off_already_off",
+      "name": "aircon_hvac_off_already_off",
       "text": "エアコンを消して",
       "initial_appliance_states": {"aircon": "off"},
       "expect": {
-        "action_id": "aircon_off",
+        "action_id": "aircon_hvac_off",
         "target": "aircon",
         "expected_state": "off",
         "event_not_types": ["action.executed"],
         "speech_contains": ["エアコンはすでに消えています"],
-        "speech_not_contains": ["エアコンを消したよ", "了解、エアコンを消すね", "中扉"],
+        "speech_not_contains": ["エアコンを停止したよ", "了解、エアコンを停止するね", "中扉"],
         "execute_calls": 0,
         "completed_status": "noop"
       }

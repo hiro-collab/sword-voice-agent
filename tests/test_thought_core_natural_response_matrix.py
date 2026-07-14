@@ -71,8 +71,10 @@ class NaturalMatrixResponder:
             return "リビングの電気は点灯に向けて進めるね。"
         if "エアコン" in draft and "消した" in draft:
             return "オフになったところまで確認できたよ。"
-        if "エアコン" in draft and "消す" in draft:
+        if "エアコン" in draft and ("消す" in draft or "停止する" in draft):
             return "エアコンをオフにするね。"
+        if "カメラ推定" in draft and "電気的な状態" in draft:
+            return "部屋は明るく見えているよ。ただ、電気がついているかまでは断定できない。"
         if "ついている" in draft and "電気" in draft:
             return "電気はついているように見えるよ。"
         return "状況に合わせて、短く自然に返すね。"

@@ -170,15 +170,9 @@
       "target": "aircon",
       "target_label": "エアコン",
       "verb": "つける",
-      "aliases": [
-        "エアコンをつけて",
-        "エアコンつけて",
-        "エアコンを入れて",
-        "エアコン入れて",
-        "冷房をつけて",
-        "暖房をつけて",
-        "空調をつけて"
-      ],
+      "aliases": [],
+      "natural_language_status": "retired_compatibility_only",
+      "replacement_action_id": "aircon_cool",
       "pre_action_phrase": "エアコンをつける",
       "expected_state": "on",
       "expected_effect": {
@@ -202,27 +196,16 @@
         "appliance_id": "aircon",
         "state_path": "environment.appliances.aircon.state"
       },
-      "intent_examples": ["エアコンをつけて"]
+      "intent_examples": []
     },
     "aircon_off": {
       "label": "エアコンを消す",
       "target": "aircon",
       "target_label": "エアコン",
       "verb": "消す",
-      "aliases": [
-        "エアコンを消して",
-        "エアコン消して",
-        "エアコンを切って",
-        "エアコン切って",
-        "エアコンを止めて",
-        "エアコン止めて",
-        "冷房を消して",
-        "冷房を止めて",
-        "暖房を消して",
-        "暖房を止めて",
-        "空調を消して",
-        "空調を止めて"
-      ],
+      "aliases": [],
+      "natural_language_status": "retired_compatibility_only",
+      "replacement_action_id": "aircon_hvac_off",
       "pre_action_phrase": "エアコンを消す",
       "expected_state": "off",
       "expected_effect": {
@@ -246,7 +229,7 @@
         "appliance_id": "aircon",
         "state_path": "environment.appliances.aircon.state"
       },
-      "intent_examples": ["エアコンを消して"]
+      "intent_examples": []
     },
     "aircon_cool": {
       "label": "エアコンを冷房にする",
@@ -257,7 +240,12 @@
         "エアコンを冷房にして",
         "エアコン冷房にして",
         "冷房にして",
-        "冷房をつけて"
+        "冷房をつけて",
+        "エアコンをつけて",
+        "エアコンつけて",
+        "エアコンを入れて",
+        "エアコン入れて",
+        "空調をつけて"
       ],
       "pre_action_phrase": "エアコンを冷房にする",
       "expected_state": "cool",
@@ -284,7 +272,7 @@
         "appliance_id": "aircon",
         "state_path": "environment.appliances.aircon.state"
       },
-      "intent_examples": ["エアコンを冷房にして"]
+      "intent_examples": ["エアコンを冷房にして", "エアコンをつけて"]
     },
     "aircon_hvac_off": {
       "label": "エアコンを停止する",
@@ -293,7 +281,19 @@
       "verb": "停止する",
       "aliases": [
         "エアコンを停止して",
-        "エアコン停止して"
+        "エアコン停止して",
+        "エアコンを消して",
+        "エアコン消して",
+        "エアコンを切って",
+        "エアコン切って",
+        "エアコンを止めて",
+        "エアコン止めて",
+        "冷房を消して",
+        "冷房を止めて",
+        "暖房を消して",
+        "暖房を止めて",
+        "空調を消して",
+        "空調を止めて"
       ],
       "pre_action_phrase": "エアコンを停止する",
       "expected_state": "off",
@@ -320,7 +320,7 @@
         "appliance_id": "aircon",
         "state_path": "environment.appliances.aircon.state"
       },
-      "intent_examples": ["エアコンを停止して"]
+      "intent_examples": ["エアコンを停止して", "エアコンを消して"]
     },
     "door_open": {
       "label": "中扉を開ける",
