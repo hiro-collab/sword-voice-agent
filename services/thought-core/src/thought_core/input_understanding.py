@@ -18,6 +18,79 @@ from .tools import detect_home_action_intent
 
 INPUT_UNDERSTANDING_BOUNDARY = "thought-core.input_understanding.v0"
 
+SEMANTIC_MOTION_REQUEST_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "show_full_body",
+        (
+            "全身を見せて",
+            "全身見せて",
+            "showyourfullbody",
+            "showfullbody",
+        ),
+    ),
+    (
+        "greeting",
+        (
+            "挨拶して",
+            "挨拶をして",
+            "あいさつして",
+            "あいさつをして",
+            "greetme",
+            "sayhello",
+        ),
+    ),
+    (
+        "peace_sign",
+        (
+            "vサインして",
+            "ｖサインして",
+            "ピースして",
+            "ピースサインして",
+            "makeapeacesign",
+            "showapeacesign",
+        ),
+    ),
+    (
+        "shoot_pose",
+        (
+            "撃つポーズして",
+            "射撃ポーズして",
+            "銃を撃つポーズして",
+            "doashootingpose",
+        ),
+    ),
+    (
+        "spin",
+        (
+            "回ってみて",
+            "回って",
+            "一回転して",
+            "くるっと回って",
+            "spinaround",
+            "doaspin",
+        ),
+    ),
+    (
+        "model_pose",
+        (
+            "モデルポーズして",
+            "モデルのポーズして",
+            "ポーズを決めて",
+            "doamodelpose",
+        ),
+    ),
+    (
+        "squat",
+        (
+            "屈伸して",
+            "屈伸運動して",
+            "スクワットして",
+            "dosquats",
+            "squat",
+        ),
+    ),
+)
+
 
 @dataclass(frozen=True)
 class InputFrame:
@@ -188,7 +261,7 @@ class LocalInputUnderstanding:
                 is_command=True,
                 confidence=0.82,
                 reason=str(motion_request["reason"]),
-                metadata={"normalized": normalized, "motion_request": motion_request},
+                metadata={"motion_request": motion_request},
             )
 
         return InputFrame(
@@ -270,6 +343,26 @@ def _motion_request_metadata(text: str) -> dict[str, Any] | None:
         base["reason"] = "dance_motion_request"
         return base
 
+    semantic_motion_intent = _semantic_motion_intent(normalized, lowered)
+    if semantic_motion_intent:
+        base.update(
+            {
+                "kind": "semantic_motion",
+                "motion_intent": semantic_motion_intent,
+                "duration_ms": 12000,
+                "body_priority": [
+                    "body_root",
+                    "spine",
+                    "arms",
+                    "hands",
+                    "head",
+                    "balance",
+                ],
+                "reason": f"{semantic_motion_intent}_motion_request",
+            }
+        )
+        return base
+
     happy_markers = ("うれしそう", "嬉しそう", "楽しそう", "喜んで", "はしゃいで")
     move_markers = ("動いて", "動きを", "動作", "身振り", "ジェスチャ")
     if any(marker in normalized for marker in happy_markers) and any(
@@ -286,6 +379,13 @@ def _motion_request_metadata(text: str) -> dict[str, Any] | None:
         return base
 
     return None
+
+
+def _semantic_motion_intent(normalized: str, lowered: str) -> str:
+    for semantic, markers in SEMANTIC_MOTION_REQUEST_MARKERS:
+        if any(marker in lowered or marker in normalized for marker in markers):
+            return semantic
+    return ""
 
 
 def _looks_like_motion_stop_request(normalized: str, lowered: str) -> bool:

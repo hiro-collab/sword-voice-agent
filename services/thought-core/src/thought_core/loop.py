@@ -101,6 +101,37 @@ DRIVER_RESULT_AUTHORITIES = {
     "driver_result_contract",
 }
 CONTEXT_VALUE_MAX_CHARS = 180
+SEMANTIC_MOTION_INTENTS = {
+    "show_full_body",
+    "greeting",
+    "peace_sign",
+    "shoot_pose",
+    "spin",
+    "model_pose",
+    "squat",
+}
+SEMANTIC_MOTION_POSTURE_INTENTS = {"show_full_body", "model_pose"}
+SEMANTIC_MOTION_SAFE_DISPLAY_NAMES = {
+    "show_full_body": "Show full body",
+    "greeting": "Greeting gesture",
+    "peace_sign": "Peace sign gesture",
+    "shoot_pose": "Shooting pose",
+    "spin": "Spin motion",
+    "model_pose": "Model pose",
+    "squat": "Squat motion",
+}
+PUBLIC_MOTION_REQUEST_KINDS = {
+    "cancel",
+    "dance",
+    "expression_motion",
+    "semantic_motion",
+}
+PUBLIC_MOTION_REQUEST_SEMANTICS = {
+    "stop",
+    "dance",
+    "happy_motion",
+    *SEMANTIC_MOTION_INTENTS,
+}
 
 
 class _EventBuffer(list[ThoughtEvent]):
@@ -4386,6 +4417,37 @@ class ThoughtLoop:
         input_frame: InputFrame,
     ) -> None:
         payload = input_frame.to_dict()
+        if input_frame.kind == "motion_request":
+            motion_kind = (
+                input_frame.target
+                if input_frame.target in PUBLIC_MOTION_REQUEST_KINDS
+                else "unavailable"
+            )
+            motion_semantic = (
+                input_frame.desired_state
+                if input_frame.desired_state in PUBLIC_MOTION_REQUEST_SEMANTICS
+                else "unavailable"
+            )
+            payload.update(
+                {
+                    "target": motion_kind,
+                    "asserted_state": "",
+                    "desired_state": motion_semantic,
+                    "is_question": False,
+                    "is_feedback": False,
+                    "is_command": True,
+                    "action_id": "",
+                    "action_target": "",
+                    "action_expected_state": "",
+                    "reason": "bounded_motion_request",
+                    "continued_as_command": False,
+                    "metadata": {
+                        "publication_class": "bounded_motion_semantic_summary",
+                        "motion_kind": motion_kind,
+                        "motion_semantic": motion_semantic,
+                    },
+                }
+            )
         payload["adapter"] = describe_input_understanding(self.input_understanding)
         events.append(factory.emit("input.understood", payload))
 
@@ -5434,7 +5496,7 @@ class ThoughtLoop:
         request = dict(metadata) if isinstance(metadata, dict) else {}
         turn_key = self._speech_fragment_key(turn_input.turn_id or "turn")
         legacy_kind = str(request.get("kind") or "expression_motion")
-        motion_kind = self._motion_stimulus_kind(legacy_kind)
+        motion_kind = self._motion_stimulus_kind(legacy_kind, request)
         tracks = self._motion_track_mask(legacy_kind)
         required_tracks = self._motion_required_tracks(legacy_kind)
         priority_tracks = self._motion_priority_tracks(legacy_kind)
@@ -5475,7 +5537,7 @@ class ThoughtLoop:
                 required_tracks,
             ),
             "requirements": requirements,
-            "payload_ref": self._motion_payload_ref(legacy_kind),
+            "payload_ref": self._motion_payload_ref(legacy_kind, request),
             "intensity": self._motion_intensity(str(request.get("intensity") or "medium")),
             "duration_ms": self._motion_duration_ms(request.get("duration_ms")),
             "loop": False,
@@ -5510,13 +5572,20 @@ class ThoughtLoop:
             },
         }
 
-    def _motion_stimulus_kind(self, legacy_kind: str) -> str:
+    def _motion_stimulus_kind(
+        self,
+        legacy_kind: str,
+        request: dict[str, Any] | None = None,
+    ) -> str:
         if legacy_kind == "dance":
             return "dance_sequence"
         if legacy_kind == "expression_motion":
             return "expression"
         if legacy_kind == "cancel":
             return "stop"
+        if legacy_kind == "semantic_motion":
+            semantic = self._motion_semantic_intent(legacy_kind, request)
+            return "posture" if semantic in SEMANTIC_MOTION_POSTURE_INTENTS else "gesture"
         return "action_indicator" if legacy_kind == "action_indicator" else "gesture"
 
     def _motion_safe_display_name(
@@ -5532,6 +5601,12 @@ class ThoughtLoop:
             return "Happy expression" if style == "happy" else "Expression motion"
         if legacy_kind == "cancel":
             return "Stop motion"
+        if legacy_kind == "semantic_motion":
+            semantic = self._motion_semantic_intent(legacy_kind, request)
+            return SEMANTIC_MOTION_SAFE_DISPLAY_NAMES.get(
+                semantic,
+                "Semantic motion unavailable",
+            )
         return "Action indicator"
 
     def _motion_request_mode(self, legacy_kind: str) -> str:
@@ -5559,6 +5634,19 @@ class ThoughtLoop:
             return {"scope": "face_head", "channels": ["expression_weight"]}
         if legacy_kind == "cancel":
             return ["body_root", "spine", "head", "face"]
+        if legacy_kind == "semantic_motion":
+            return [
+                "body_root",
+                "spine",
+                "chest",
+                "neck",
+                "head",
+                "left_arm",
+                "right_arm",
+                "left_hand",
+                "right_hand",
+                "balance",
+            ]
         return ["head", "face"]
 
     def _motion_priority_tracks(self, legacy_kind: str) -> list[str]:
@@ -5574,6 +5662,8 @@ class ThoughtLoop:
             return ["face"]
         if legacy_kind == "cancel":
             return ["body_root"]
+        if legacy_kind == "semantic_motion":
+            return ["body_root", "spine"]
         return ["head"]
 
     def _motion_interrupt_policy(self, legacy_kind: str) -> str:
@@ -5612,14 +5702,35 @@ class ThoughtLoop:
             return 10000
         return min(max(duration_ms, 0), 600000)
 
-    def _motion_payload_ref(self, legacy_kind: str) -> str:
+    def _motion_payload_ref(
+        self,
+        legacy_kind: str,
+        request: dict[str, Any] | None = None,
+    ) -> str:
         if legacy_kind == "dance":
             return "motion.thought_core.dance_sequence.v0"
         if legacy_kind == "expression_motion":
             return "motion.thought_core.expression_visible.v0"
         if legacy_kind == "cancel":
             return "motion.thought_core.stop.v0"
+        if legacy_kind == "semantic_motion":
+            semantic = self._motion_semantic_intent(legacy_kind, request)
+            if semantic:
+                return f"motion.thought_core.semantic_motion.{semantic}.v0"
         return "motion.thought_core.action_indicator.v0"
+
+    def _motion_semantic_intent(
+        self,
+        legacy_kind: str,
+        request: dict[str, Any] | None = None,
+    ) -> str:
+        if legacy_kind != "semantic_motion":
+            return ""
+        source = request
+        if source is None:
+            return ""
+        semantic = str(source.get("motion_intent") or "")
+        return semantic if semantic in SEMANTIC_MOTION_INTENTS else ""
 
     def _motion_expression_visible_requirements(
         self,

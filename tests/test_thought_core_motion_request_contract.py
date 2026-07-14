@@ -176,6 +176,91 @@ class ThoughtCoreMotionRequestContractTest(TestCase):
         self.assert_parent_required_fields(payload)
         self.assert_no_home_action(events, tools)
 
+    def test_evidence_backed_semantic_motion_phrases_emit_exact_bounded_contracts(self) -> None:
+        cases = (
+            (
+                "全身を見せて",
+                "show_full_body",
+                "posture",
+                "Show full body",
+            ),
+            ("挨拶して", "greeting", "gesture", "Greeting gesture"),
+            ("Vサインして", "peace_sign", "gesture", "Peace sign gesture"),
+            ("撃つポーズして", "shoot_pose", "gesture", "Shooting pose"),
+            ("一回転して", "spin", "gesture", "Spin motion"),
+            ("モデルポーズして", "model_pose", "posture", "Model pose"),
+            ("屈伸運動して", "squat", "gesture", "Squat motion"),
+        )
+        for text, semantic, kind, display_name in cases:
+            with self.subTest(text=text, semantic=semantic):
+                events, tools = self._run(text)
+                payload = self._motion_payload(events)
+
+                self.assertIsNotNone(payload)
+                assert payload is not None
+                self.assertEqual(payload["kind"], kind)
+                self.assertEqual(payload["request_mode"], "play")
+                self.assertEqual(payload["safe_display_name"], display_name)
+                self.assertEqual(
+                    payload["payload_ref"],
+                    f"motion.thought_core.semantic_motion.{semantic}.v0",
+                )
+                self.assertEqual(payload["loop"], False)
+                self.assertEqual(payload["loop_count"], 0)
+                self.assertEqual(payload["interrupt_policy"], "replace_same_track")
+                self.assertEqual(payload["fallback_state"], "neutral_idle")
+                self.assertIn("body_root", payload["track_mask"])
+                self.assertEqual(
+                    payload["requirements"]["required_tracks"],
+                    ["body_root", "spine"],
+                )
+                self.assertEqual(payload["safety"]["raw_user_text_shared"], False)
+                self.assertEqual(payload["safety"]["raw_path_shared"], False)
+                self.assertEqual(payload["safety"]["home_assistant_route"], False)
+                self.assertNotIn(text, json.dumps(payload, ensure_ascii=False))
+                self.assert_no_home_action(events, tools)
+
+    def test_generic_greeting_and_unsafe_shoot_wording_do_not_mint_motion(self) -> None:
+        for text in ("こんにちは", "元気？", "撃って"):
+            with self.subTest(text=text):
+                events, tools = self._run(text)
+                self.assertIsNone(self._motion_payload(events))
+                self.assert_no_home_action(events, tools)
+
+    def test_motion_understanding_publication_is_bounded_and_non_echoing(self) -> None:
+        private_markers = (
+            "path-private-marker.vrma",
+            "license-private-marker",
+            "model-private-marker",
+            "local-private-marker",
+        )
+        text = "挨拶して " + " ".join(private_markers)
+
+        events, tools = self._run(text)
+        understood = next(
+            event for event in events if event["type"] == "input.understood"
+        )
+        published = json.dumps(events, ensure_ascii=False)
+
+        self.assertEqual(understood["data"]["kind"], "motion_request")
+        self.assertEqual(understood["data"]["target"], "semantic_motion")
+        self.assertEqual(understood["data"]["desired_state"], "greeting")
+        self.assertEqual(understood["data"]["reason"], "bounded_motion_request")
+        self.assertEqual(
+            understood["data"]["metadata"],
+            {
+                "publication_class": "bounded_motion_semantic_summary",
+                "motion_kind": "semantic_motion",
+                "motion_semantic": "greeting",
+            },
+        )
+        self.assertNotIn(text, published)
+        for marker in private_markers:
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, published)
+        self.assertIsNotNone(self._motion_payload(events))
+        self.assert_no_home_action(events, tools)
+
     def test_dance_stop_requests_emit_stop_contract_without_home_action(self) -> None:
         for text in (
             "踊りをやめて",
@@ -199,7 +284,7 @@ class ThoughtCoreMotionRequestContractTest(TestCase):
                 self.assertEqual(understood["data"]["kind"], "motion_request")
                 self.assertEqual(understood["data"]["target"], "cancel")
                 self.assertEqual(understood["data"]["desired_state"], "stop")
-                self.assertEqual(understood["data"]["reason"], "dance_motion_stop_request")
+                self.assertEqual(understood["data"]["reason"], "bounded_motion_request")
                 self.assertIsNotNone(payload)
                 assert payload is not None
                 self.assertEqual(payload["schema_version"], "motion_stimulus.v0")
@@ -277,7 +362,18 @@ class ThoughtCoreMotionRequestContractTest(TestCase):
             / "motion_stimulus"
             / "motion_stimulus.v0.schema.json",
         ]
-        for text in ("踊って", "うれしそうに動いて", "踊りをやめて"):
+        for text in (
+            "踊って",
+            "うれしそうに動いて",
+            "踊りをやめて",
+            "全身を見せて",
+            "挨拶して",
+            "Vサインして",
+            "撃つポーズして",
+            "一回転して",
+            "モデルポーズして",
+            "屈伸運動して",
+        ):
             events, _tools = self._run(text)
             payload = self._motion_payload(events)
 
