@@ -595,7 +595,7 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("$mediapipeCameraHubChild = $null", stack_start)
         self.assertIn("$delayedVisionSnapshotSpecs = @()", stack_start)
         self.assertIn('$spec.Name -eq "vision_snapshot_processor"', stack_start)
-        self.assertIn("$mediapipeCameraHubChild = $children[-1]", stack_start)
+        self.assertIn("$mediapipeCameraHubChild = $rootChild", stack_start)
         self.assertIn("if ($null -ne $mediapipeCameraHubChild)", stack_start)
         self.assertIn("foreach ($spec in $delayedVisionSnapshotSpecs)", stack_start)
 
