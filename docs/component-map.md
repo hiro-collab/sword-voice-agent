@@ -105,7 +105,6 @@ Current:
 
 - `start-home-control-stack.bat`
 - `control-plane/core/ops/scripts/home-control-stack/`
-- `control-plane/core/scripts/home-control-stack/` compatibility wrappers
 - `.cache/home-control-stack/`
 - launcher process registry and status files
 

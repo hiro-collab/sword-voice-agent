@@ -13,10 +13,10 @@ system cell 直下の `.bat` は押しやすい入口です。実際の起動定
 | profile定義 | `ops/manifests/profiles/` |
 | service定義 | `ops/manifests/services/` |
 | rootショートカット生成 | `ops/scripts/home-control-stack/install-root-shortcuts.ps1` |
-| 互換wrapper | `scripts/home-control-stack/` |
 | Launcher server | `tools/home-control-launcher/` |
 
-新しい起動管理の作業は `ops/scripts/` と `ops/manifests/` に追加します。互換wrapperは、外部参照が残る間だけ維持します。
+新しい起動管理の作業は `ops/scripts/` と `ops/manifests/` に追加します。
+root shortcut も同じ `ops` 実装を直接呼び、別の転送 wrapper は持ちません。
 
 ## よく使うコマンド
 

@@ -12,7 +12,6 @@ The active lifecycle entrypoints are:
 | Ops facade | `ops/scripts/system.ps1` | Profile-aware start/status/stop entrypoint. |
 | Root shortcuts | `<cell>/start-home-control-stack.bat`, `status-home-control-stack.bat`, `stop-home-control-stack.bat` | Human-friendly compatibility entrypoints. |
 | Stack scripts | `ops/scripts/home-control-stack/start-home-control-stack.ps1`, `status-home-control-stack.ps1`, `stop-home-control-stack.ps1` | Authoritative inherited supervisor implementation. |
-| Legacy wrappers | `scripts/home-control-stack/` | Compatibility wrappers that forward to `ops`. |
 | Launcher | `tools/home-control-launcher/` | Browser UI that calls the ops facade. |
 | Runtime registry | `.cache/home-control-stack/pids.json` by default | Current process ownership record. |
 
@@ -164,7 +163,8 @@ Phase D: Make root shortcuts and launcher call the ops facade.
 - Done: root `.bat` shortcuts stay as human-friendly aliases and are generated
   by `ops/scripts/home-control-stack/install-root-shortcuts.ps1`.
 - Done: launcher start/status/stop calls `ops/scripts/system.ps1`.
-- Done: `scripts/home-control-stack/*.ps1` are compatibility wrappers.
+- Done: root launcher shortcuts call `ops/scripts/home-control-stack/` directly;
+  the superseded `scripts/home-control-stack/*.ps1` forwarding layer is removed.
 
 Phase E: Optional manifest-native process manager.
 

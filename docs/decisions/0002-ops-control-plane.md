@@ -14,7 +14,8 @@ between scripts, launcher UI, status checks, and docs.
 Introduce an `ops` control-plane concept before moving scripts. The current
 `ops/scripts/home-control-stack/` holds the inherited supervisor engine, and
 `ops/scripts/system.ps1` is the profile-aware facade for start/status/stop.
-`scripts/home-control-stack/` remains only as compatibility wrappers.
+Root shortcuts call the `ops` scripts directly; the former
+`scripts/home-control-stack/` forwarding layer has been retired.
 
 ## Consequences
 
@@ -27,5 +28,5 @@ Introduce an `ops` control-plane concept before moving scripts. The current
   paths, and ownership.
 - Stop logic must use owned process records first and avoid killing unrelated
   user processes.
-- Script movement waits until wrappers, launcher, tests, and docs are updated
-  together.
+- Script movement completed with root shortcuts, launcher, tests, and docs
+  updated together.

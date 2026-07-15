@@ -79,6 +79,7 @@ class OpsManifestTest(TestCase):
 
     def test_lifecycle_scripts_are_consolidated_under_ops(self) -> None:
         script_names = {
+            "check-environment-state-server.ps1",
             "start-home-control-stack.ps1",
             "status-home-control-stack.ps1",
             "stop-home-control-stack.ps1",
@@ -93,16 +94,18 @@ class OpsManifestTest(TestCase):
         for script_name in script_names:
             with self.subTest(script_name=script_name):
                 self.assertTrue((ops_script_dir / script_name).is_file())
-                self.assertTrue((wrapper_dir / script_name).is_file())
+        self.assertEqual(list(wrapper_dir.glob("*.ps1")), [])
 
-        for script_name, command in {
-            "start-home-control-stack.ps1": "start",
-            "status-home-control-stack.ps1": "status",
-            "stop-home-control-stack.ps1": "stop",
+        for shortcut_name, script_name in {
+            "start-home-control-launcher.bat": "start-home-control-launcher.ps1",
+            "stop-home-control-launcher.bat": "stop-home-control-launcher.ps1",
         }.items():
-            text = (wrapper_dir / script_name).read_text(encoding="utf-8")
-            self.assertIn("ops\\scripts\\system.ps1", text)
-            self.assertIn(command, text)
+            text = (REPO_ROOT / shortcut_name).read_text(encoding="utf-8")
+            expected_target = (
+                'set "TARGET=%~dp0ops\\scripts\\home-control-stack\\'
+                f'{script_name}"'
+            )
+            self.assertIn(expected_target, text)
 
 
 def _allowed_layers() -> set[str]:
