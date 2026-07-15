@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import Any, Protocol
 from urllib import error, request
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
@@ -17,6 +18,7 @@ from .execution_deadline import (
     TurnDeadlineExceeded,
     clamp_execution_timeout,
     ensure_execution_active,
+    remaining_execution_seconds,
 )
 from .schema import TurnInput
 
@@ -536,9 +538,21 @@ class HomeControlHttpTools:
                 "error": "home_control_api_token_missing",
             }
 
+        deadline_remaining = remaining_execution_seconds()
+        if deadline_remaining is None:
+            return {
+                "status": "failed",
+                "retryable": False,
+                "error": "turn_execution_deadline_missing",
+            }
+
         attempt = self.execute_attempts_by_turn.get(turn.turn_id, 0) + 1
         self.execute_attempts_by_turn[turn.turn_id] = attempt
-        body = _bridge_body(turn, request_id=f"{turn.turn_id}-attempt-{attempt}")
+        body = _bridge_body(
+            turn,
+            request_id=f"{turn.turn_id}-attempt-{attempt}",
+            deadline_monotonic_s=monotonic() + deadline_remaining,
+        )
         if bool(action.get("confirmed")):
             body["confirmed"] = True
         confirmation_token = str(action.get("confirmation_token") or "").strip()
@@ -554,25 +568,34 @@ class HomeControlHttpTools:
         except HomeControlToolError as exc:
             return {
                 "status": "failed",
-                "retryable": True,
+                "retryable": False,
                 "error": exc.code,
                 "detail": exc.safe_detail,
                 "attempt": attempt,
+                "execution_lifecycle_class": "bridge_request_outcome_unknown",
             }
 
-        issued_at = str(
-            payload.get("issued_at")
-            or payload.get("started_at")
-            or datetime.now(UTC).isoformat()
-        )
-        self.last_execute_issued_at_by_turn[turn.turn_id] = issued_at
+        lifecycle = str(payload.get("execution_lifecycle_class") or "")
+        submission_count = payload.get("submission_count")
+        issued_at_value = payload.get("issued_at") or payload.get("started_at")
+        issued_at = str(issued_at_value or datetime.now(UTC).isoformat())
+        if lifecycle == "submission_completed" and submission_count == 1:
+            self.last_execute_issued_at_by_turn[turn.turn_id] = issued_at
         bridge_status = str(payload.get("status") or "unknown")
         executed = bool(payload.get("executed"))
         ok = bool(payload.get("ok", executed))
+        non_retryable_lifecycles = {
+            "submission_in_flight",
+            "submission_completed",
+            "failed_before_submit",
+            "submission_outcome_unknown",
+            "expired_before_submit",
+        }
         return {
             "status": "accepted" if ok and executed else bridge_status,
             "retryable": not ok
-            and bridge_status not in {"confirmation_required", "dry_run"},
+            and bridge_status not in {"confirmation_required", "dry_run", "duplicate"}
+            and lifecycle not in non_retryable_lifecycles,
             "executed": executed,
             "verified_by_bridge": ok and executed,
             "command_id": payload.get("execution_id"),
@@ -588,6 +611,9 @@ class HomeControlHttpTools:
             "verification_mode": payload.get("verification_mode"),
             "state_tracking": payload.get("state_tracking"),
             "expected_effect": payload.get("expected_effect"),
+            "execution_lifecycle_class": lifecycle or None,
+            "submission_count": submission_count,
+            "terminal": payload.get("terminal"),
         }
 
     def state_query_feedback(
@@ -1420,12 +1446,20 @@ def _mock_action_message(action: dict[str, Any]) -> str:
     return f"テストモード上では、{action_text}。実家電には送っていません。"
 
 
-def _bridge_body(turn: TurnInput, *, request_id: str) -> dict[str, Any]:
-    return {
+def _bridge_body(
+    turn: TurnInput,
+    *,
+    request_id: str,
+    deadline_monotonic_s: float | None = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
         "source": "thought-core",
         "request_id": request_id,
         "user_text": turn.text,
     }
+    if deadline_monotonic_s is not None:
+        body["deadline_monotonic_s"] = deadline_monotonic_s
+    return body
 
 
 def _safe_http_error_detail(exc: error.HTTPError) -> str:

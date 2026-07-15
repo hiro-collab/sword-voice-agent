@@ -17,7 +17,10 @@ THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core" / "src"
 sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 
 from thought_core.loop import ThoughtLoop  # noqa: E402
-from thought_core.execution_deadline import issue_turn_execution_deadline  # noqa: E402
+from thought_core.execution_deadline import (  # noqa: E402
+    execution_deadline_scope,
+    issue_turn_execution_deadline,
+)
 from thought_core.reasoning import LocalActionReasoner  # noqa: E402
 from thought_core.responders import ResponderResult, _response_context_prompt  # noqa: E402
 from thought_core.schema import TurnInput  # noqa: E402
@@ -1204,7 +1207,8 @@ class ThoughtCoreContractTest(TestCase):
                     **TURN,
                     "text": "リビングの電気を消して",
                     "turn_id": "turn_bridge_light_off",
-                }
+                },
+                execution_deadline=issue_turn_execution_deadline(time.monotonic() + 5.0),
             )
             review_events = loop.run_dicts(
                 {
@@ -1240,6 +1244,11 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(execute_call["authorization"], "Bearer bridge-token")
         self.assertEqual(execute_call["body"]["source"], "thought-core")
         self.assertEqual(execute_call["body"]["request_id"], "turn_bridge_light_off-attempt-1")
+        self.assertGreater(execute_call["body"]["deadline_monotonic_s"], time.monotonic())
+        self.assertLessEqual(
+            execute_call["body"]["deadline_monotonic_s"] - time.monotonic(),
+            5.0,
+        )
 
     def test_home_control_http_tools_sanitizes_non_finite_feedback_payload(self) -> None:
         calls: list[dict[str, object]] = []
@@ -1316,6 +1325,55 @@ class ThoughtCoreContractTest(TestCase):
         self.assertIsNone(evidence["electric_on_probability"])
         self.assertIsNone(evidence["confidence"])
         self.assertEqual(calls[0]["authorization"], "Bearer environment-token")
+
+    def test_home_control_execute_requires_current_turn_deadline_before_network(self) -> None:
+        tools = HomeControlHttpTools(
+            HomeControlToolConfig(
+                bridge_base_url="http://127.0.0.1:1",
+                api_token="bridge-token",
+            )
+        )
+        turn = TurnInput.from_mapping({**TURN, "turn_id": "turn_deadline_missing"})
+        with patch.object(tools, "_json_request") as request_mock:
+            result = tools.home_execute(turn, {"action_id": "light_on"})
+
+        self.assertEqual(result["error"], "turn_execution_deadline_missing")
+        self.assertFalse(result["retryable"])
+        request_mock.assert_not_called()
+
+    def test_home_control_execute_maps_unknown_submission_to_non_retryable(self) -> None:
+        tools = HomeControlHttpTools(
+            HomeControlToolConfig(
+                bridge_base_url="http://127.0.0.1:1",
+                api_token="bridge-token",
+            )
+        )
+        turn = TurnInput.from_mapping({**TURN, "turn_id": "turn_outcome_unknown"})
+        payload = {
+            "ok": False,
+            "executed": False,
+            "status": "outcome_unknown",
+            "execution_id": "opaque-execution",
+            "execution_lifecycle_class": "submission_outcome_unknown",
+            "submission_count": None,
+            "terminal": True,
+        }
+        with execution_deadline_scope(
+            issue_turn_execution_deadline(time.monotonic() + 5.0)
+        ):
+            with patch.object(tools, "_json_request", return_value=payload) as request_mock:
+                result = tools.home_execute(turn, {"action_id": "light_on"})
+
+        self.assertEqual(result["status"], "outcome_unknown")
+        self.assertEqual(
+            result["execution_lifecycle_class"],
+            "submission_outcome_unknown",
+        )
+        self.assertIsNone(result["submission_count"])
+        self.assertFalse(result["retryable"])
+        sent_body = request_mock.call_args.kwargs["body"]
+        self.assertEqual(sent_body["request_id"], "turn_outcome_unknown-attempt-1")
+        self.assertGreater(sent_body["deadline_monotonic_s"], time.monotonic())
 
     def test_action_review_checkpoints_use_two_and_five_second_snapshots(self) -> None:
         tools = HomeControlHttpTools(
@@ -1483,7 +1541,8 @@ class ThoughtCoreContractTest(TestCase):
                     **TURN,
                     "text": "お願い",
                     "turn_id": "turn_door_close_confirm",
-                }
+                },
+                execution_deadline=issue_turn_execution_deadline(time.monotonic() + 5.0),
             )
             third_events = loop.run_dicts(
                 {
