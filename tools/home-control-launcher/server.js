@@ -151,6 +151,7 @@ const DEFAULT_OPTIONS = {
   // The ordinary Launcher route has no tracked camera selection. A local
   // operator selection is persisted under the launcher state directory.
   MediapipeCameraName: '',
+  MediapipeCameraSelectionKey: '',
   MediapipeCameraWidth: 1920,
   MediapipeCameraHeight: 1080,
   MediapipeCameraFps: 30,
@@ -211,6 +212,7 @@ const STRING_FIELDS = new Set([
   'HomeControlConfigPath',
   'MediapipeMode',
   'MediapipeCameraName',
+  'MediapipeCameraSelectionKey',
   'MediapipeCameraInputCodec'
 ])
 
@@ -874,9 +876,24 @@ const normalizeOptions = (profileId, overrides = {}) => {
   if (!['configured', 'openai-compatible', 'codex-cli', 'codex-cli-luna'].includes(normalized.ThoughtCoreLlmProvider)) {
     normalized.ThoughtCoreLlmProvider = DEFAULT_OPTIONS.ThoughtCoreLlmProvider
   }
+  const requestedCameraName = String(
+    normalized.MediapipeCameraName || ''
+  ).trim()
   normalized.MediapipeCameraName = sanitizeVideoInputDeviceName(
-    normalized.MediapipeCameraName
+    requestedCameraName
   )
+  if (requestedCameraName && !normalized.MediapipeCameraName) {
+    throw new Error('invalid_camera_name')
+  }
+  const requestedCameraSelectionKey = String(
+    normalized.MediapipeCameraSelectionKey || ''
+  ).trim()
+  normalized.MediapipeCameraSelectionKey = sanitizeVideoInputSelectionKey(
+    requestedCameraSelectionKey
+  )
+  if (requestedCameraSelectionKey && !normalized.MediapipeCameraSelectionKey) {
+    throw new Error('invalid_camera_selection_key')
+  }
   if (normalized.MediapipeOpenBrowser) {
     normalized.MediapipeNoBrowser = false
   }
@@ -919,28 +936,112 @@ const psExecutable = () =>
 
 const sanitizeVideoInputDeviceName = (value) => {
   const name = String(value || '').trim()
-  if (!name || name.length > 256 || /[\u0000-\u001f\u007f]/.test(name)) {
+  if (
+    !name ||
+    name.length > 256 ||
+    /[\u0000-\u001f\u007f]/.test(name) ||
+    /@device_(?:pnp|cm)_/i.test(name)
+  ) {
     return ''
   }
   return name
 }
 
+const sanitizeVideoInputCaptureName = (value) => {
+  const name = String(value || '').trim()
+  if (!name || name.length > 1024 || /[\u0000-\u001f\u007f]/.test(name)) {
+    return ''
+  }
+  return name
+}
+
+const sanitizeVideoInputSelectionKey = (value) => {
+  const key = String(value || '').trim().toLowerCase()
+  return /^camera_[a-f0-9]{24}$/.test(key) ? key : ''
+}
+
+const videoInputSelectionKey = ({ name, alternativeName }) => {
+  const authorityValue = alternativeName || name
+  const authorityClass = alternativeName ? 'dshow-alternative' : 'dshow-name'
+  return `camera_${crypto
+    .createHash('sha256')
+    .update(`${authorityClass}\u0000${authorityValue}`, 'utf8')
+    .digest('hex')
+    .slice(0, 24)}`
+}
+
+const createVideoInputDevice = (nameValue, alternativeNameValue = '') => {
+  const name = sanitizeVideoInputDeviceName(nameValue)
+  const alternativeName = sanitizeVideoInputCaptureName(alternativeNameValue)
+  if (!name) {
+    return null
+  }
+  return {
+    name,
+    alternativeName,
+    captureName: alternativeName || name,
+    selectionKey: videoInputSelectionKey({ name, alternativeName })
+  }
+}
+
 const parseVideoInputDevices = (content) => {
   const devices = []
-  const seen = new Set()
+  let pending = null
+  const flushPending = () => {
+    if (pending && devices.length < 64) {
+      devices.push(pending)
+    }
+    pending = null
+  }
   for (const line of String(content || '').split(/\r?\n/)) {
-    const match = line.match(/^\[[^\]]+]\s+"(.*)"\s+\(video\)\s*$/)
-    const name = sanitizeVideoInputDeviceName(match && match[1])
-    if (!name || seen.has(name)) {
+    const videoMatch = line.match(/^\[[^\]]+]\s+"(.*)"\s+\(video\)\s*$/)
+    if (videoMatch) {
+      flushPending()
+      pending = createVideoInputDevice(videoMatch[1])
       continue
     }
-    seen.add(name)
-    devices.push(name)
-    if (devices.length >= 64) {
-      break
+    const alternativeMatch = line.match(
+      /^\[[^\]]+]\s+Alternative name\s+"(.*)"\s*$/
+    )
+    if (pending && alternativeMatch) {
+      pending = createVideoInputDevice(pending.name, alternativeMatch[1])
+      flushPending()
     }
   }
+  flushPending()
   return devices
+}
+
+const parseVideoInputFixture = (content) => {
+  try {
+    const fixture = JSON.parse(content)
+    if (!Array.isArray(fixture)) {
+      return []
+    }
+    const devices = []
+    const seenNameOnly = new Set()
+    for (const item of fixture) {
+      const device = typeof item === 'string'
+        ? createVideoInputDevice(item)
+        : createVideoInputDevice(item?.name, item?.alternative_name)
+      if (!device) {
+        continue
+      }
+      if (!device.alternativeName) {
+        if (seenNameOnly.has(device.name)) {
+          continue
+        }
+        seenNameOnly.add(device.name)
+      }
+      devices.push(device)
+      if (devices.length >= 64) {
+        break
+      }
+    }
+    return devices
+  } catch {
+    return parseVideoInputDevices(content)
+  }
 }
 
 const enumerateVideoInputDevices = () => {
@@ -966,20 +1067,10 @@ const enumerateVideoInputDevices = () => {
         })()
       : process.env.HOME_CONTROL_LAUNCHER_TEST_VIDEO_INPUTS
   if (process.env.NODE_ENV === 'test' && testVideoInputFixture) {
-    try {
-      const fixture = JSON.parse(testVideoInputFixture)
-      const devices = Array.isArray(fixture)
-        ? Array.from(new Set(fixture.map(sanitizeVideoInputDeviceName).filter(Boolean))).slice(0, 64)
-        : []
-      return {
-        result_class: devices.length > 0 ? 'video_inputs_enumerated' : 'video_inputs_none',
-        devices
-      }
-    } catch {
-      return {
-        result_class: 'video_input_enumeration_unavailable',
-        devices: []
-      }
+    const devices = parseVideoInputFixture(testVideoInputFixture)
+    return {
+      result_class: devices.length > 0 ? 'video_inputs_enumerated' : 'video_inputs_none',
+      devices
     }
   }
 
@@ -1029,21 +1120,104 @@ const getVideoInputDevicesPayload = ({ includeLocalCameraSelection = true } = {}
   }
   const enumeration = enumerateVideoInputDevices()
   const config = readLauncherConfig()
-  const selected = sanitizeVideoInputDeviceName(config.options?.MediapipeCameraName)
-  const selectedMatch = Boolean(selected && enumeration.devices.includes(selected))
+  const selectedName = sanitizeVideoInputDeviceName(config.options?.MediapipeCameraName)
+  const selectedKey = sanitizeVideoInputSelectionKey(
+    config.options?.MediapipeCameraSelectionKey
+  )
+  const selectedKeyMatches = selectedKey
+    ? enumeration.devices.filter((device) => device.selectionKey === selectedKey)
+    : []
+  const selectedNameMatches = !selectedKey && selectedName
+    ? enumeration.devices.filter((device) => device.name === selectedName)
+    : []
+  const selectedMatch = selectedKey
+    ? selectedKeyMatches.length === 1
+    : selectedNameMatches.length === 1
+  const selectionClass = selectedKey
+    ? selectedKeyMatches.length === 1
+      ? 'selected_available'
+      : selectedKeyMatches.length > 1
+        ? 'selected_ambiguous'
+        : 'selected_unresolvable'
+    : selectedName
+      ? selectedNameMatches.length > 1
+        ? 'selected_ambiguous'
+        : selectedNameMatches.length === 1
+          ? 'selected_available'
+          : 'manual_selection'
+      : 'no_selection'
   return {
     ok: true,
     result_class: enumeration.result_class,
     count: enumeration.devices.length,
-    devices: enumeration.devices.map((name) => ({ value: name, label: name })),
-    selection_class: selected
-      ? selectedMatch
-        ? 'selected_available'
-        : 'selected_missing'
-      : 'no_selection',
+    devices: enumeration.devices.map((device, index, allDevices) => ({
+      value: device.selectionKey,
+      label: allDevices.filter((candidate) => candidate.name === device.name).length > 1
+        ? `${device.name} (${index + 1})`
+        : device.name
+    })),
+    selection_class: selectionClass,
     selected_match: selectedMatch,
     device_start_count: 0,
     capture_count: 0
+  }
+}
+
+const resolveVideoInputSelectionForStart = (options) => {
+  if (options?.SkipMediapipe) {
+    return { ok: true, captureName: '', selection_class: 'camera_disabled' }
+  }
+  const selectedName = sanitizeVideoInputDeviceName(options?.MediapipeCameraName)
+  const selectedKey = sanitizeVideoInputSelectionKey(
+    options?.MediapipeCameraSelectionKey
+  )
+  const enumeration = enumerateVideoInputDevices()
+  if (selectedKey) {
+    const matches = enumeration.devices.filter(
+      (device) => device.selectionKey === selectedKey
+    )
+    if (matches.length !== 1) {
+      return {
+        ok: false,
+        error: matches.length > 1
+          ? 'selected_camera_ambiguous'
+          : 'selected_camera_unresolvable',
+        selection_class: matches.length > 1
+          ? 'selected_ambiguous'
+          : 'selected_unresolvable',
+        device_start_count: 0,
+        capture_count: 0
+      }
+    }
+    return {
+      ok: true,
+      captureName: matches[0].captureName,
+      selection_class: 'selected_available'
+    }
+  }
+  if (!selectedName) {
+    return { ok: true, captureName: '', selection_class: 'no_selection' }
+  }
+  const nameMatches = enumeration.devices.filter(
+    (device) => device.name === selectedName
+  )
+  if (nameMatches.length > 1) {
+    return {
+      ok: false,
+      error: 'selected_camera_ambiguous',
+      selection_class: 'selected_ambiguous',
+      device_start_count: 0,
+      capture_count: 0
+    }
+  }
+  return {
+    ok: true,
+    captureName: nameMatches.length === 1
+      ? nameMatches[0].captureName
+      : selectedName,
+    selection_class: nameMatches.length === 1
+      ? 'selected_available'
+      : 'manual_selection'
   }
 }
 
@@ -1072,6 +1246,9 @@ const redactCameraSelectionInCommandText = (value) =>
   String(value || '').replace(
     /((?:-MediapipeCameraName|--camera-name)(?:\s+|=))(?:"(?:\\.|[^"])*"|'(?:''|[^'])*'|[^\s]+)/gi,
     `$1${CAMERA_SELECTION_REDACTION}`
+  ).replace(
+    /@device_(?:pnp|cm)_[^\s"'<>]+/gi,
+    CAMERA_SELECTION_REDACTION
   )
 
 const publicCommandPreview = (preview) => {
@@ -1087,7 +1264,11 @@ const publicCommandPreview = (preview) => {
 }
 
 const withoutLocalCameraSelection = (options) => {
-  const { MediapipeCameraName, ...publicOptions } = options || {}
+  const {
+    MediapipeCameraName,
+    MediapipeCameraSelectionKey,
+    ...publicOptions
+  } = options || {}
   return publicOptions
 }
 
@@ -1097,7 +1278,8 @@ const withPreservedLocalCameraSelection = (profileId, requestedOptions = {}) => 
   const savedOptions = normalizeOptions(savedProfileId, saved.options || {})
   return {
     ...(requestedOptions || {}),
-    MediapipeCameraName: savedOptions.MediapipeCameraName
+    MediapipeCameraName: savedOptions.MediapipeCameraName,
+    MediapipeCameraSelectionKey: savedOptions.MediapipeCameraSelectionKey
   }
 }
 
@@ -1227,13 +1409,25 @@ const buildPowerShellCommand = (scriptPath, scriptArgs = []) => [
   ...scriptArgs
 ]
 
-const previewCommand = (profileId, optionOverrides = {}) => {
+const previewCommand = (
+  profileId,
+  optionOverrides = {},
+  { resolvedCameraName = '' } = {}
+) => {
   const profileError = requireKnownProfile(profileId)
   if (profileError) {
     return profileError
   }
   const options = normalizeOptions(profileId, optionOverrides)
-  const command = buildPowerShellCommand(SYSTEM_SCRIPT, buildSystemStartArgs(profileId, options))
+  const executionOptions = {
+    ...options,
+    MediapipeCameraName:
+      sanitizeVideoInputCaptureName(resolvedCameraName) || options.MediapipeCameraName
+  }
+  const command = buildPowerShellCommand(
+    SYSTEM_SCRIPT,
+    buildSystemStartArgs(profileId, executionOptions)
+  )
   return {
     ok: true,
     profileId,
@@ -1306,11 +1500,18 @@ const runExclusiveStackOperation = async (type, action) => {
 
 const startStack = (profileId, optionOverrides = {}) => {
   ensureRuntimeDirs()
-  const preview = previewCommand(profileId, optionOverrides)
+  const persistedOptions = normalizeOptions(profileId, optionOverrides)
+  const cameraSelection = resolveVideoInputSelectionForStart(persistedOptions)
+  if (!cameraSelection.ok) {
+    return cameraSelection
+  }
+  const preview = previewCommand(profileId, persistedOptions, {
+    resolvedCameraName: cameraSelection.captureName
+  })
   if (!preview.ok) {
     return preview
   }
-  saveConfig(profileId, preview.options)
+  saveConfig(profileId, persistedOptions)
 
   appendStackLog(
     [
@@ -3861,12 +4062,34 @@ const handleApi = async (request, response, requestUrl) => {
         )
       : suppliedTestOptions
     const requested = sanitizeVideoInputDeviceName(testOptions.MediapipeCameraName)
-    const preview = previewCommand(body.profileId || PRIMARY_PROFILE_ID, testOptions)
+    const normalizedTestOptions = normalizeOptions(
+      body.profileId || PRIMARY_PROFILE_ID,
+      testOptions
+    )
+    const cameraSelection = body.resolveSelection
+      ? resolveVideoInputSelectionForStart(normalizedTestOptions)
+      : {
+          ok: true,
+          captureName: requested,
+          selection_class: requested ? 'manual_selection' : 'no_selection'
+        }
+    const preview = previewCommand(
+      body.profileId || PRIMARY_PROFILE_ID,
+      normalizedTestOptions,
+      { resolvedCameraName: cameraSelection.ok ? cameraSelection.captureName : '' }
+    )
     const cameraArgumentIndex = preview.command.indexOf('-MediapipeCameraName')
     const publicPreview = publicCommandPreview(preview)
     const publicSerialized = JSON.stringify(publicPreview)
     sendJson(response, 200, {
       ok: true,
+      selection_resolution_ok: cameraSelection.ok,
+      selection_class: cameraSelection.selection_class,
+      selection_error: cameraSelection.ok ? null : cameraSelection.error,
+      selection_resolved_exact: body.expectedResolvedCameraName
+        ? cameraArgumentIndex >= 0 &&
+          preview.command[cameraArgumentIndex + 1] === body.expectedResolvedCameraName
+        : null,
       input_accepted: Boolean(requested),
       execution_argv_exact:
         cameraArgumentIndex >= 0 && preview.command[cameraArgumentIndex + 1] === requested,
@@ -3979,7 +4202,11 @@ const handleApi = async (request, response, requestUrl) => {
       'start',
       async () => startStack(profileId, requestedOptions)
     )
-    sendJson(response, result.statusCode, result.payload)
+    sendJson(
+      response,
+      result.payload?.ok === false ? 409 : result.statusCode,
+      result.payload
+    )
     return
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/stop') {

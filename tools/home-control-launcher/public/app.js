@@ -35,6 +35,7 @@ const state = {
   diagnosticSurfaces: null,
   videoInputDevices: [],
   videoInputEnumerationClass: 'pending',
+  videoInputSelectionClass: 'no_selection',
   demoSafeSettings: {
     rows: [],
     summary: { total: 0, enabled: 0, enabled_appliance: 0, enabled_readiness: 0 }
@@ -73,6 +74,8 @@ const translations = {
     'launch.cameraSelectionPending': 'Checking connected cameras.',
     'launch.cameraSelectionAvailable': '{count} connected camera(s).',
     'launch.cameraSelectionMissing': 'The saved camera is currently missing. Selection retained.',
+    'launch.cameraSelectionAmbiguous': 'The saved camera identity is ambiguous. Start is blocked until it is reselected.',
+    'launch.cameraSelectionManual': 'Advanced manual camera name is active.',
     'launch.cameraSelectionNone': 'No connected camera is currently listed.',
     'launch.cameraSelectionUnavailable': 'Camera enumeration is unavailable. Saved selection retained.',
     'launch.cameraChoose': 'Choose a connected camera',
@@ -317,6 +320,8 @@ const translations = {
     'launch.cameraSelectionPending': '接続中のカメラを確認しています。',
     'launch.cameraSelectionAvailable': '接続中のカメラ: {count}台',
     'launch.cameraSelectionMissing': '保存済みのカメラは現在未接続です。選択は保持しています。',
+    'launch.cameraSelectionAmbiguous': '保存済みのカメラ識別が曖昧です。再選択するまで起動しません。',
+    'launch.cameraSelectionManual': '詳細設定の手動カメラ名を使用します。',
     'launch.cameraSelectionNone': '接続中のカメラは見つかりませんでした。',
     'launch.cameraSelectionUnavailable': 'カメラ一覧を取得できません。保存済みの選択は保持しています。',
     'launch.cameraChoose': '接続中のカメラを選択',
@@ -1009,16 +1014,21 @@ const currentOptions = () => ({
 
 const applyPreviewOptions = (previewOptions) => {
   const cameraSelection = state.options.MediapipeCameraName
+  const cameraSelectionKey = state.options.MediapipeCameraSelectionKey
   state.options = {
     ...(previewOptions || {}),
-    MediapipeCameraName: cameraSelection
+    MediapipeCameraName: cameraSelection,
+    MediapipeCameraSelectionKey: cameraSelectionKey
   }
 }
 
-const videoInputDeviceNames = () =>
+const videoInputDevices = () =>
   (state.videoInputDevices || [])
-    .map((device) => String(device?.value || '').trim())
-    .filter(Boolean)
+    .map((device) => ({
+      value: String(device?.value || '').trim(),
+      label: String(device?.label || '').trim()
+    }))
+    .filter((device) => device.value && device.label)
 
 const normalizeCameraSelection = (value) => {
   const name = String(value || '').trim()
@@ -1026,34 +1036,43 @@ const normalizeCameraSelection = (value) => {
 }
 
 const renderCameraSelector = () => {
-  const select = $('MediapipeCameraName')
-  const selected = String(state.options.MediapipeCameraName || '').trim()
-  const devices = videoInputDeviceNames()
-  const selectedMatch = Boolean(selected && devices.includes(selected))
+  const select = $('MediapipeCameraSelectionKey')
+  const selectedKey = String(state.options.MediapipeCameraSelectionKey || '').trim()
+  const selectedLabel = String(state.options.MediapipeCameraName || '').trim()
+  const devices = videoInputDevices()
+  const selectedMatch = Boolean(
+    selectedKey && devices.some((device) => device.value === selectedKey)
+  )
   const options = []
 
-  if (!selected) {
+  if (!selectedKey) {
     options.push(`<option value="">${escapeHtml(t('launch.cameraChoose'))}</option>`)
   } else if (!selectedMatch) {
     options.push(
-      `<option value="${escapeHtml(selected)}">${escapeHtml(selected)} (${escapeHtml(t('launch.cameraMissingSuffix'))})</option>`
+      `<option value="${escapeHtml(selectedKey)}">${escapeHtml(selectedLabel || t('launch.cameraName'))} (${escapeHtml(t('launch.cameraMissingSuffix'))})</option>`
     )
   }
-  for (const name of devices) {
-    options.push(`<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
+  for (const device of devices) {
+    options.push(
+      `<option value="${escapeHtml(device.value)}">${escapeHtml(device.label)}</option>`
+    )
   }
   select.innerHTML = options.join('')
-  select.value = selected
+  select.value = selectedKey
 
   let statusKey = 'launch.cameraSelectionPending'
   let statusValues = {}
-  if (state.videoInputEnumerationClass === 'video_inputs_enumerated') {
-    statusKey = selected && !selectedMatch
+  if (state.videoInputSelectionClass === 'selected_ambiguous') {
+    statusKey = 'launch.cameraSelectionAmbiguous'
+  } else if (state.videoInputSelectionClass === 'manual_selection') {
+    statusKey = 'launch.cameraSelectionManual'
+  } else if (state.videoInputEnumerationClass === 'video_inputs_enumerated') {
+    statusKey = selectedKey && !selectedMatch
       ? 'launch.cameraSelectionMissing'
       : 'launch.cameraSelectionAvailable'
     statusValues = { count: devices.length }
   } else if (state.videoInputEnumerationClass === 'video_inputs_none') {
-    statusKey = selected ? 'launch.cameraSelectionMissing' : 'launch.cameraSelectionNone'
+    statusKey = selectedKey ? 'launch.cameraSelectionMissing' : 'launch.cameraSelectionNone'
   } else if (state.videoInputEnumerationClass !== 'pending') {
     statusKey = 'launch.cameraSelectionUnavailable'
   }
@@ -1067,9 +1086,11 @@ const refreshVideoInputDevices = async () => {
     const payload = await api('/api/video-input-devices')
     state.videoInputDevices = Array.isArray(payload.devices) ? payload.devices : []
     state.videoInputEnumerationClass = payload.result_class || 'video_input_enumeration_unavailable'
+    state.videoInputSelectionClass = payload.selection_class || 'no_selection'
   } catch {
     state.videoInputDevices = []
     state.videoInputEnumerationClass = 'video_input_enumeration_unavailable'
+    state.videoInputSelectionClass = 'no_selection'
   }
   renderCameraSelector()
 }
@@ -2415,8 +2436,23 @@ const bindControls = () => {
       setOption(field, event.target.value)
     })
   }
-  $('MediapipeCameraName').addEventListener('change', (event) => {
-    setOption('MediapipeCameraName', event.target.value)
+  $('MediapipeCameraSelectionKey').addEventListener('change', (event) => {
+    const selectionKey = String(event.target.value || '').trim()
+    const matchingDevices = videoInputDevices().filter(
+      (device) => device.value === selectionKey
+    )
+    const selectedDevice = matchingDevices[0]
+    state.options.MediapipeCameraSelectionKey = selectionKey
+    state.options.MediapipeCameraName = selectedDevice?.label || ''
+    state.videoInputSelectionClass = !selectionKey
+      ? 'no_selection'
+      : matchingDevices.length === 1
+        ? 'selected_available'
+        : matchingDevices.length > 1
+          ? 'selected_ambiguous'
+          : 'selected_unresolvable'
+    renderControls()
+    refreshPreview()
   })
   $('refresh-camera-devices').addEventListener('click', () => {
     refreshVideoInputDevices().catch(showError)
@@ -2427,6 +2463,8 @@ const bindControls = () => {
     if (!value) {
       return
     }
+    state.options.MediapipeCameraSelectionKey = ''
+    state.videoInputSelectionClass = 'manual_selection'
     setOption('MediapipeCameraName', value)
     manualInput.value = ''
   })

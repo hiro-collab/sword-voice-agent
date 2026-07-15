@@ -652,7 +652,6 @@ class LauncherUiContractTest(TestCase):
         stack = read_stack_start_script()
 
         for field in (
-            "MediapipeCameraName",
             "MediapipeCameraWidth",
             "MediapipeCameraHeight",
             "MediapipeCameraFps",
@@ -664,6 +663,12 @@ class LauncherUiContractTest(TestCase):
             self.assertIn(field, system)
             self.assertIn(field, stack)
 
+        self.assertIn('id="MediapipeCameraSelectionKey"', html)
+        self.assertIn('id="MediapipeCameraNameManual"', html)
+        self.assertIn("MediapipeCameraName", app)
+        self.assertIn("MediapipeCameraName", server)
+        self.assertIn("MediapipeCameraName", system)
+        self.assertIn("MediapipeCameraName", stack)
         self.assertIn("MediapipeCameraName: ''", server)
         self.assertIn("MediapipeCameraWidth: 1920", server)
         self.assertIn("MediapipeCameraHeight: 1080", server)
@@ -688,7 +693,7 @@ class LauncherUiContractTest(TestCase):
         app = read_public("app.js")
         server = read_launcher_server()
 
-        self.assertIn('<select id="MediapipeCameraName"></select>', html)
+        self.assertIn('<select id="MediapipeCameraSelectionKey"></select>', html)
         self.assertIn('id="refresh-camera-devices"', html)
         self.assertIn('id="MediapipeCameraNameManual"', html)
         self.assertIn('maxlength="256"', html)
@@ -696,9 +701,17 @@ class LauncherUiContractTest(TestCase):
         self.assertNotIn('id="MediapipeCameraName" type="text"', html)
         self.assertIn("const refreshVideoInputDevices = async () =>", app)
         self.assertIn("api('/api/video-input-devices')", app)
-        self.assertIn("selected && !selectedMatch", app)
+        self.assertIn("selectedKey && !selectedMatch", app)
         self.assertIn("launch.cameraSelectionMissing", app)
-        self.assertIn("setOption('MediapipeCameraName', event.target.value)", app)
+        self.assertIn("state.options.MediapipeCameraSelectionKey = selectionKey", app)
+        self.assertIn("state.options.MediapipeCameraName = selectedDevice?.label", app)
+        self.assertIn("const matchingDevices = videoInputDevices().filter", app)
+        self.assertIn("matchingDevices.length === 1", app)
+        self.assertIn("matchingDevices.length > 1", app)
+        self.assertIn("'selected_ambiguous'", app)
+        self.assertIn("'selected_unresolvable'", app)
+        self.assertIn("state.options.MediapipeCameraSelectionKey = ''", app)
+        self.assertIn("state.videoInputSelectionClass = 'manual_selection'", app)
         self.assertIn("setOption('MediapipeCameraName', value)", app)
         self.assertIn("const normalizeCameraSelection = (value) =>", app)
         self.assertNotIn("'MediapipeCameraName',\n  'MediapipeCameraInputCodec'", app)
@@ -708,6 +721,12 @@ class LauncherUiContractTest(TestCase):
         self.assertIn("capture_count: 0", server)
         self.assertIn("video_input_enumeration_unavailable", server)
         self.assertIn("normalized.MediapipeCameraName = sanitizeVideoInputDeviceName", server)
+        self.assertIn("normalized.MediapipeCameraSelectionKey = sanitizeVideoInputSelectionKey", server)
+        self.assertIn("resolveVideoInputSelectionForStart", server)
+        self.assertIn("selected_camera_unresolvable", server)
+        self.assertIn("selected_camera_ambiguous", server)
+        self.assertIn("@device_(?:pnp|cm)_", server)
+        self.assertIn("redactCameraSelectionInCommandText", server)
 
     def test_launcher_camera_enumeration_endpoint_has_no_device_side_effects(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_root:
@@ -772,11 +791,22 @@ class LauncherUiContractTest(TestCase):
                 self.assertEqual(
                     initial_state["config"]["options"]["MediapipeCameraName"], ""
                 )
+                self.assertEqual(
+                    initial_state["config"]["options"]["MediapipeCameraSelectionKey"],
+                    "",
+                )
+
+                camera_a = next(
+                    device for device in payload["devices"] if device["label"] == "camera-a"
+                )
 
                 save_body = json.dumps(
                     {
                         "profileId": "thought-core-v0",
-                        "options": {"MediapipeCameraName": "camera-a"},
+                        "options": {
+                            "MediapipeCameraName": "camera-a",
+                            "MediapipeCameraSelectionKey": camera_a["value"],
+                        },
                     }
                 ).encode("utf-8")
                 save_request = urllib.request.Request(
@@ -788,6 +818,10 @@ class LauncherUiContractTest(TestCase):
                 with urllib.request.urlopen(save_request, timeout=5) as response:
                     saved = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(saved["options"]["MediapipeCameraName"], "camera-a")
+                self.assertEqual(
+                    saved["options"]["MediapipeCameraSelectionKey"],
+                    camera_a["value"],
+                )
 
                 retired_mode_body = json.dumps(
                     {
@@ -818,13 +852,19 @@ class LauncherUiContractTest(TestCase):
                     reloaded_state["config"]["options"]["MediapipeCameraName"],
                     "camera-a",
                 )
+                self.assertEqual(
+                    reloaded_state["config"]["options"]["MediapipeCameraSelectionKey"],
+                    camera_a["value"],
+                )
 
                 video_input_fixture.write_text(
                     json.dumps(["camera-b"]), encoding="utf-8"
                 )
                 with urllib.request.urlopen(url, timeout=5) as response:
                     missing_payload = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(missing_payload["selection_class"], "selected_missing")
+                self.assertEqual(
+                    missing_payload["selection_class"], "selected_unresolvable"
+                )
                 self.assertFalse(missing_payload["selected_match"])
                 with urllib.request.urlopen(
                     f"http://127.0.0.1:{launcher_port}/api/state", timeout=5
@@ -833,6 +873,10 @@ class LauncherUiContractTest(TestCase):
                 self.assertEqual(
                     missing_state["config"]["options"]["MediapipeCameraName"],
                     "camera-a",
+                )
+                self.assertEqual(
+                    missing_state["config"]["options"]["MediapipeCameraSelectionKey"],
+                    camera_a["value"],
                 )
 
                 video_input_fixture.write_text(
@@ -846,7 +890,12 @@ class LauncherUiContractTest(TestCase):
                 self.assertTrue(returned_payload["selected_match"])
 
                 saved_boundary_body = json.dumps(
-                    {"profileId": "thought-core-v0", "useSavedOptions": True}
+                    {
+                        "profileId": "thought-core-v0",
+                        "useSavedOptions": True,
+                        "resolveSelection": True,
+                        "expectedResolvedCameraName": "camera-a",
+                    }
                 ).encode("utf-8")
                 saved_boundary_request = urllib.request.Request(
                     f"http://127.0.0.1:{launcher_port}/api/test/camera-command-boundary",
@@ -859,6 +908,8 @@ class LauncherUiContractTest(TestCase):
                 ) as response:
                     saved_boundary = json.loads(response.read().decode("utf-8"))
                 self.assertTrue(saved_boundary["saved_selection_exact"])
+                self.assertTrue(saved_boundary["selection_resolution_ok"])
+                self.assertTrue(saved_boundary["selection_resolved_exact"])
                 self.assertFalse((state_dir / "pids.json").exists())
                 self.assertFalse((state_dir / "launcher-state.json").exists())
 
@@ -899,22 +950,201 @@ class LauncherUiContractTest(TestCase):
                 self.assertNotIn("command", public_preview)
                 self.assertIn("<local-camera-selection>", public_preview["commandLine"])
 
-                invalid_body = json.dumps(
+                for invalid_camera_name in (
+                    "camera\ncontrol",
+                    r"@device_pnp_\\?\usb#must-not-enter-manual-state",
+                ):
+                    invalid_body = json.dumps(
+                        {
+                            "profileId": "thought-core-v0",
+                            "options": {
+                                "MediapipeCameraName": invalid_camera_name,
+                                "MediapipeCameraSelectionKey": "",
+                            },
+                        }
+                    ).encode("utf-8")
+                    invalid_request = urllib.request.Request(
+                        f"http://127.0.0.1:{launcher_port}/api/start",
+                        data=invalid_body,
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with self.assertRaises(HTTPError) as invalid_error:
+                        urllib.request.urlopen(invalid_request, timeout=5)
+                    self.assertEqual(invalid_error.exception.code, 500)
+                    invalid_boundary = json.loads(
+                        invalid_error.exception.read().decode("utf-8")
+                    )
+                    self.assertEqual(invalid_boundary["error"], "invalid_camera_name")
+                    self.assertNotIn(invalid_camera_name, json.dumps(invalid_boundary))
+                    self.assertFalse((state_dir / "pids.json").exists())
+                    self.assertFalse((state_dir / "launcher-state.json").exists())
+            finally:
+                launcher.terminate()
+                try:
+                    launcher.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    launcher.kill()
+                    launcher.wait(timeout=5)
+
+    def test_launcher_camera_selector_distinguishes_same_name_without_identity_leak(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_root:
+            state_dir = Path(temporary_root) / "state"
+            video_input_fixture = Path(temporary_root) / "video-inputs.txt"
+            first_alternative = r"@device_pnp_\\?\usb#camera-one"
+            second_alternative = r"@device_pnp_\\?\usb#camera-two"
+
+            def write_fixture(first: str, second: str) -> None:
+                video_input_fixture.write_text(
+                    "\n".join(
+                        (
+                            '[dshow @ 0001] "Twin Camera" (video)',
+                            f'[dshow @ 0001] Alternative name "{first}"',
+                            '[dshow @ 0001] "Twin Camera" (video)',
+                            f'[dshow @ 0001] Alternative name "{second}"',
+                        )
+                    ),
+                    encoding="utf-8",
+                )
+
+            write_fixture(first_alternative, second_alternative)
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            probe.bind(("127.0.0.1", 0))
+            launcher_port = probe.getsockname()[1]
+            probe.close()
+            env = os.environ.copy()
+            env["NODE_ENV"] = "test"
+            env["HOME_CONTROL_LAUNCHER_TEST_VIDEO_INPUTS_FILE"] = str(
+                video_input_fixture
+            )
+            launcher = subprocess.Popen(
+                [
+                    "node",
+                    str(LAUNCHER_SERVER),
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(launcher_port),
+                    "--workspace",
+                    str(ROOT.parents[1]),
+                    "--state-dir",
+                    str(state_dir),
+                ],
+                cwd=ROOT,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                devices_url = (
+                    f"http://127.0.0.1:{launcher_port}/api/video-input-devices"
+                )
+                payload = None
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    try:
+                        with urllib.request.urlopen(devices_url, timeout=2) as response:
+                            payload = json.loads(response.read().decode("utf-8"))
+                        break
+                    except Exception:
+                        time.sleep(0.05)
+                self.assertIsNotNone(payload)
+                self.assertEqual(payload["count"], 2)
+                self.assertEqual(len({row["value"] for row in payload["devices"]}), 2)
+                self.assertTrue(
+                    all(
+                        row["value"].startswith("camera_")
+                        for row in payload["devices"]
+                    )
+                )
+                serialized_devices = json.dumps(payload)
+                self.assertNotIn(first_alternative, serialized_devices)
+                self.assertNotIn(second_alternative, serialized_devices)
+                self.assertNotIn("@device_pnp_", serialized_devices)
+
+                selected = payload["devices"][0]
+                save_body = json.dumps(
                     {
                         "profileId": "thought-core-v0",
-                        "options": {"MediapipeCameraName": "camera\ncontrol"},
+                        "options": {
+                            "MediapipeCameraName": selected["label"],
+                            "MediapipeCameraSelectionKey": selected["value"],
+                        },
                     }
                 ).encode("utf-8")
-                invalid_request = urllib.request.Request(
-                    f"http://127.0.0.1:{launcher_port}/api/test/camera-command-boundary",
-                    data=invalid_body,
+                save_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/save-config",
+                    data=save_body,
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
-                with urllib.request.urlopen(invalid_request, timeout=5) as response:
-                    invalid_boundary = json.loads(response.read().decode("utf-8"))
-                self.assertFalse(invalid_boundary["input_accepted"])
-                self.assertTrue(invalid_boundary["execution_argv_exact"])
+                with urllib.request.urlopen(save_request, timeout=5) as response:
+                    saved = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(
+                    saved["options"]["MediapipeCameraSelectionKey"],
+                    selected["value"],
+                )
+                self.assertNotIn("@device_pnp_", json.dumps(saved))
+
+                boundary_body = json.dumps(
+                    {
+                        "profileId": "thought-core-v0",
+                        "useSavedOptions": True,
+                        "resolveSelection": True,
+                        "expectedResolvedCameraName": first_alternative,
+                    }
+                ).encode("utf-8")
+                boundary_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/test/camera-command-boundary",
+                    data=boundary_body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(boundary_request, timeout=5) as response:
+                    boundary = json.loads(response.read().decode("utf-8"))
+                self.assertTrue(boundary["selection_resolution_ok"])
+                self.assertTrue(boundary["selection_resolved_exact"])
+                self.assertTrue(boundary["review_command_redacted"])
+                self.assertNotIn("@device_pnp_", json.dumps(boundary))
+
+                write_fixture(first_alternative, first_alternative)
+                with urllib.request.urlopen(devices_url, timeout=5) as response:
+                    ambiguous = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(ambiguous["selection_class"], "selected_ambiguous")
+                start_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/start",
+                    data=json.dumps(
+                        {
+                            "profileId": "thought-core-v0",
+                            "options": saved["options"],
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as start_error:
+                    urllib.request.urlopen(start_request, timeout=5)
+                self.assertEqual(start_error.exception.code, 409)
+                start_payload = json.loads(
+                    start_error.exception.read().decode("utf-8")
+                )
+                self.assertEqual(start_payload["error"], "selected_camera_ambiguous")
+                self.assertEqual(start_payload["device_start_count"], 0)
+                self.assertEqual(start_payload["capture_count"], 0)
+                self.assertFalse((state_dir / "pids.json").exists())
+                self.assertFalse((state_dir / "launcher-state.json").exists())
+
+                video_input_fixture.write_text("[]", encoding="utf-8")
+                with urllib.request.urlopen(devices_url, timeout=5) as response:
+                    missing = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(missing["selection_class"], "selected_unresolvable")
+                self.assertFalse(missing["selected_match"])
+
+                write_fixture(first_alternative, second_alternative)
+                with urllib.request.urlopen(devices_url, timeout=5) as response:
+                    returned = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(returned["selection_class"], "selected_available")
+                self.assertTrue(returned["selected_match"])
             finally:
                 launcher.terminate()
                 try:
