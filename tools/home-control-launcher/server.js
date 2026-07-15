@@ -865,11 +865,8 @@ const normalizeOptions = (profileId, overrides = {}) => {
     }
     normalized[key] = Boolean(value)
   }
-  // "headless" maps to the legacy serve_websocket.py path in the stack script.
-  // Keep accepting it for saved configs and direct API calls, but do not expose it
-  // as a normal launcher mode.
-  if (!['gui', 'headless', 'camera-hub', 'mediamtx'].includes(normalized.MediapipeMode)) {
-    normalized.MediapipeMode = DEFAULT_OPTIONS.MediapipeMode
+  if (!['gui', 'camera-hub', 'mediamtx'].includes(normalized.MediapipeMode)) {
+    throw new Error('invalid_mediapipe_mode')
   }
   if (!['auto', 'mjpeg'].includes(normalized.MediapipeCameraInputCodec)) {
     normalized.MediapipeCameraInputCodec = DEFAULT_OPTIONS.MediapipeCameraInputCodec
@@ -3455,7 +3452,6 @@ const getStatus = async () => {
   const mediapipeEntry =
     pids.mediapipe_camera_hub_stack ||
     pids.mediapipe_camera_hub ||
-    pids.mediapipe_ws ||
     pids.mediapipe_camera_hub_gui
   const voicevoxUrl = getVoicevoxUrl(options).replace(/\/$/, '')
   const thoughtCoreHost =

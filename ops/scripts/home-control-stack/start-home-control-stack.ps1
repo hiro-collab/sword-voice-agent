@@ -29,7 +29,7 @@ param(
     [string]$ThoughtCoreWatchAituberHttpTimeout = "",
     [string]$VoicevoxUrl = "",
     [int]$VoicevoxReadyTimeoutSeconds = 45,
-    [ValidateSet("gui", "headless", "camera-hub", "mediamtx")]
+    [ValidateSet("gui", "camera-hub", "mediamtx")]
     [string]$MediapipeMode = "mediamtx",
     [string]$MediapipeCameraName = "Logitech StreamCam",
     [ValidateRange(160, 3840)]
@@ -1975,7 +1975,6 @@ $specs = @()
 $mediapipeCameraHubLaunched = $false
 $mediapipeMediaMtxStackLaunched = $false
 $mediapipeMonitorGuiLaunched = $false
-$mediapipeLegacyWebSocketLaunched = $false
 if (-not $SkipHomeAssistantBridge) {
     $homeAssistantBridgeEnvironment = @{
         HOME_CONTROL_CONFIG = $HomeControlConfigPath
@@ -2238,7 +2237,6 @@ if (-not $SkipMediapipe) {
     $cameraHubServerPath = Join-Path $MediapipeRoot "apps\serve_camera_hub.py"
     $cameraHubGuiPath = Join-Path $MediapipeRoot "apps\camera_hub_gui.py"
     $cameraHubStackPath = Join-Path $MediapipeRoot "scripts\camera_hub_stack.py"
-    $legacyWebSocketPath = Join-Path $MediapipeRoot "apps\serve_websocket.py"
 
     if ($MediapipeMode -eq "mediamtx") {
         if (-not (Test-Path -LiteralPath $cameraHubStackPath -PathType Leaf)) {
@@ -2332,28 +2330,6 @@ if (-not $SkipMediapipe) {
                 -AllowedProcessNames @("uv", "python")
             $mediapipeMonitorGuiLaunched = $true
         }
-    }
-    else {
-        if (-not (Test-Path -LiteralPath $legacyWebSocketPath -PathType Leaf)) {
-            throw "No compatible MediaPipe entrypoint found. Missing: apps\serve_camera_hub.py and apps\serve_websocket.py"
-        }
-        $specs += New-ServiceSpec `
-            -Name "mediapipe_ws" `
-            -FilePath $uv `
-            -Arguments @(
-                "run",
-                "python",
-                "apps\serve_websocket.py",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                [string]$MediapipePort
-            ) `
-            -WorkingDirectory $MediapipeRoot `
-            -Module "mediapipe-sword-sign" `
-            -Role "legacy_websocket" `
-            -AllowedProcessNames @("uv", "python")
-        $mediapipeLegacyWebSocketLaunched = $true
     }
 }
 if ($LaunchVisionSnapshotProcessor) {

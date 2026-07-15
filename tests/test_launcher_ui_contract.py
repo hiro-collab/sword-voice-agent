@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+from urllib.error import HTTPError
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import TestCase
@@ -788,6 +789,27 @@ class LauncherUiContractTest(TestCase):
                     saved = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(saved["options"]["MediapipeCameraName"], "camera-a")
 
+                retired_mode_body = json.dumps(
+                    {
+                        "profileId": "thought-core-v0",
+                        "options": {"MediapipeMode": "headless"},
+                    }
+                ).encode("utf-8")
+                retired_mode_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/save-config",
+                    data=retired_mode_body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as retired_error:
+                    urllib.request.urlopen(retired_mode_request, timeout=5)
+                self.assertEqual(retired_error.exception.code, 500)
+                retired_payload = json.loads(
+                    retired_error.exception.read().decode("utf-8")
+                )
+                self.assertEqual(retired_payload["error"], "invalid_mediapipe_mode")
+                self.assertFalse((state_dir / "pids.json").exists())
+
                 with urllib.request.urlopen(
                     f"http://127.0.0.1:{launcher_port}/api/state", timeout=5
                 ) as response:
@@ -1424,12 +1446,22 @@ class LauncherUiContractTest(TestCase):
     def test_launcher_review_ui_has_no_legacy_compatibility_controls(self) -> None:
         html = read_public("index.html")
         app = read_public("app.js")
+        server = read_launcher_server()
+        system = read_system_script()
+        stack = read_stack_start_script()
+        status = read_stack_status_script()
 
         self.assertNotIn("compatibility-switch-grid", html)
         self.assertNotIn("runtime-drawer-summary", html)
         self.assertNotIn("renderSwitchGroup('compatibility-switch-grid'", app)
         self.assertNotIn("Legacy paths active", app)
         self.assertNotIn("Legacy paths off", app)
+        self.assertNotIn("'headless'", server)
+        self.assertNotIn('"headless"', system)
+        self.assertNotIn('"headless"', stack)
+        self.assertNotIn("serve_websocket.py", stack)
+        self.assertNotIn("pids.mediapipe_ws", server)
+        self.assertNotIn('pidState["mediapipe_ws"]', status)
 
     def test_launcher_public_ui_supports_english_and_japanese_language_mode(self) -> None:
         html = read_public("index.html")

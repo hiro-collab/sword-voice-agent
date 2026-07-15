@@ -23,7 +23,7 @@ param(
     [string]$ThoughtCoreWatchAituberHttpTimeout = "",
     [string]$VoicevoxUrl = "",
     [int]$VoicevoxReadyTimeoutSeconds = 45,
-    [ValidateSet("gui", "headless", "camera-hub", "mediamtx")]
+    [ValidateSet("gui", "camera-hub", "mediamtx")]
     [string]$MediapipeMode = "mediamtx",
     [string]$MediapipeCameraName = "",
     [ValidateRange(160, 3840)]
