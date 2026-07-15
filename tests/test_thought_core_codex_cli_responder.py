@@ -23,7 +23,9 @@ from thought_core.responders import (  # noqa: E402
     _default_codex_cwd,
     _run_codex_command,
 )
+from thought_core.owned_process import OwnedProcessCleanupError  # noqa: E402
 from thought_core.execution_deadline import (  # noqa: E402
+    ensure_execution_active,
     execution_deadline_scope,
     issue_turn_execution_deadline,
 )
@@ -33,6 +35,36 @@ from thought_core.server import create_server  # noqa: E402
 
 
 class ThoughtCoreCodexCliResponderTests(TestCase):
+    def test_cleanup_incomplete_never_publishes_local_fallback(self) -> None:
+        runner_calls = {"count": 0}
+
+        def cleanup_failing_runner(args, timeout_s, prompt):  # type: ignore[no-untyped-def]
+            runner_calls["count"] += 1
+            raise OwnedProcessCleanupError("owned_process_cleanup_incomplete")
+
+        environment = EnvironmentTurnResponder(
+            primary=CodexCliChatResponder(
+                command="codex",
+                model="codex-cli",
+                cwd=REPO_ROOT,
+                runner=cleanup_failing_runner,
+            )
+        )
+        with patch.object(environment.fallback, "respond") as fallback:
+            with self.assertRaisesRegex(
+                OwnedProcessCleanupError,
+                "owned_process_cleanup_incomplete",
+            ):
+                environment.respond(
+                    TurnInput(
+                        text="cleanup failure must stop",
+                        turn_id="turn_cleanup_incomplete",
+                        session_id="session_cleanup_incomplete",
+                    )
+                )
+        fallback.assert_not_called()
+        self.assertEqual(runner_calls["count"], 1)
+
     def test_codex_child_timeouts_are_clamped_to_turn_deadline(self) -> None:
         clock = {"now": 100.0}
         observed_timeouts: list[float] = []
@@ -387,7 +419,7 @@ class ThoughtCoreCodexCliResponderTests(TestCase):
         self.assertEqual(result.metadata["codex_cli_version_policy"], "warn")
 
     def test_codex_command_runner_sends_prompt_as_utf8(self) -> None:
-        with patch("thought_core.responders.subprocess.run") as run:
+        with patch("thought_core.responders.run_owned_process") as run:
             run.return_value = subprocess.CompletedProcess(
                 ["codex", "--version"],
                 0,
@@ -398,10 +430,9 @@ class ThoughtCoreCodexCliResponderTests(TestCase):
             _run_codex_command(["codex", "--version"], 3.0, "日本語の入力")
 
         kwargs = run.call_args.kwargs
-        self.assertEqual(kwargs["input"], "日本語の入力")
-        self.assertEqual(kwargs["encoding"], "utf-8")
-        self.assertEqual(kwargs["errors"], "replace")
-        self.assertTrue(kwargs["text"])
+        self.assertEqual(kwargs["input_text"], "日本語の入力")
+        self.assertEqual(kwargs["timeout_s"], 3.0)
+        self.assertIs(kwargs["active_check"], ensure_execution_active)
 
     def test_codex_cli_respond_mode_uses_secret_free_child_environment(self) -> None:
         observed_envs: list[dict[str, str]] = []
@@ -429,7 +460,7 @@ class ThoughtCoreCodexCliResponderTests(TestCase):
                 "THOUGHT_CORE_LLM_API_KEY": "must-not-reach-child",
             },
             clear=False,
-        ), patch("thought_core.responders.subprocess.run", side_effect=fake_run):
+        ), patch("thought_core.responders.run_owned_process", side_effect=fake_run):
             responder = CodexCliChatResponder(
                 command="codex",
                 model="codex-cli",

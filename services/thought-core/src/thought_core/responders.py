@@ -21,6 +21,7 @@ from urllib import error, request
 from urllib.parse import urlparse
 
 from .execution_deadline import clamp_execution_timeout, ensure_execution_active
+from .owned_process import OwnedProcessCleanupError, run_owned_process
 from .persona import persona_system_prompt_from_env
 from .schema import TurnInput
 
@@ -468,6 +469,8 @@ class CodexCliChatResponder:
         try:
             args = [*_codex_command_prefix(self.command), "--version"]
             result = self._run(args, self.version_timeout_s, "")
+        except OwnedProcessCleanupError:
+            raise
         except (OSError, subprocess.SubprocessError, ValueError):
             return metadata
 
@@ -558,6 +561,8 @@ class EnvironmentTurnResponder:
             )
         try:
             return self.primary.respond(turn, response_context=response_context)
+        except OwnedProcessCleanupError:
+            raise
         except (
             OSError,
             ValueError,
@@ -801,18 +806,13 @@ def _run_codex_command(
     *,
     env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    run_kwargs: dict[str, Any] = {
-        "check": False,
-        "capture_output": True,
-        "input": prompt,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "timeout": timeout_s,
-    }
-    if env is not None:
-        run_kwargs["env"] = dict(env)
-    return subprocess.run(list(args), **run_kwargs)
+    return run_owned_process(
+        list(args),
+        input_text=prompt,
+        timeout_s=timeout_s,
+        env=env,
+        active_check=ensure_execution_active,
+    )
 
 
 def _codex_response_child_environment() -> dict[str, str]:
