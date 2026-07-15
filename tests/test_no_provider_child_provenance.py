@@ -270,7 +270,7 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.turns: list[TurnInput] = []
 
-            def run_dicts(self, turn, *, event_sink=None):
+            def run_dicts(self, turn, *, event_sink=None, execution_deadline=None):
                 self.turns.append(turn)
                 events = [
                     {
@@ -449,6 +449,41 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
             self.assertEqual(json.loads(body), {"error": "turn_deadline_expired"})
             materialize.assert_not_called()
             loop.run_dicts.assert_not_called()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_server_returns_fixed_error_when_deadline_expires_inside_loop(self) -> None:
+        class CancellingLoop:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def run_dicts(self, turn, *, event_sink=None, execution_deadline=None):
+                self.calls += 1
+                execution_deadline.cancel()
+                execution_deadline.ensure_current()
+                return []
+
+        marker = "private-mid-loop-marker"
+        loop = CancellingLoop()
+        payload = self._accepted_candidate_payload(
+            "ausc_live:cid_44444444444444444444444444444444"
+        )
+        payload["private_turn"]["text"] = marker
+        server = create_server("127.0.0.1", 0, thought_loop=loop)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, body = self._post_turn(
+                server.server_address[1],
+                payload,
+                deadline_header=str(time.monotonic() + 5.0),
+            )
+            self.assertEqual(status, 408)
+            self.assertEqual(json.loads(body), {"error": "turn_deadline_exceeded"})
+            self.assertNotIn(marker, body)
+            self.assertEqual(loop.calls, 1)
         finally:
             server.shutdown()
             server.server_close()

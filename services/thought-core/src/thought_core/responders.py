@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib import error, request
 from urllib.parse import urlparse
 
+from .execution_deadline import clamp_execution_timeout, ensure_execution_active
 from .persona import persona_system_prompt_from_env
 from .schema import TurnInput
 
@@ -190,8 +191,13 @@ class OpenAICompatibleChatResponder:
             headers=headers,
             method="POST",
         )
-        with request.urlopen(req, timeout=self.timeout_s) as response:
+        ensure_execution_active()
+        with request.urlopen(
+            req,
+            timeout=clamp_execution_timeout(self.timeout_s),
+        ) as response:
             response_payload = json.loads(response.read().decode("utf-8"))
+        ensure_execution_active()
 
         speech = _extract_chat_completion_text(response_payload)
         if not speech:
@@ -419,6 +425,7 @@ class CodexCliChatResponder:
 
             speech = ""
             if output_path.exists():
+                ensure_execution_active()
                 speech = output_path.read_text(encoding="utf-8", errors="replace")
             if not speech:
                 speech = result.stdout
@@ -490,14 +497,20 @@ class CodexCliChatResponder:
         timeout_s: float,
         prompt: str,
     ) -> subprocess.CompletedProcess[str]:
+        timeout_s = clamp_execution_timeout(timeout_s)
+        ensure_execution_active()
         if self.runner is not None:
-            return self.runner(args, timeout_s, prompt)
+            result = self.runner(args, timeout_s, prompt)
+            ensure_execution_active()
+            return result
         child_env = (
             _codex_response_child_environment()
             if self.mode == "respond"
             else None
         )
-        return _run_codex_command(args, timeout_s, prompt, env=child_env)
+        result = _run_codex_command(args, timeout_s, prompt, env=child_env)
+        ensure_execution_active()
+        return result
 
 
 class EnvironmentTurnResponder:
@@ -552,6 +565,7 @@ class EnvironmentTurnResponder:
             error.URLError,
             subprocess.SubprocessError,
         ) as exc:
+            ensure_execution_active()
             detail = (
                 _codex_cli_safe_exception_detail(exc)
                 if isinstance(self.primary, CodexCliChatResponder)

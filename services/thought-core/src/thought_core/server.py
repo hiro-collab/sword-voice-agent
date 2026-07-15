@@ -20,6 +20,14 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 
 from .event_journal import journal_from_env
+from .execution_deadline import (
+    TURN_DEADLINE_EXCEEDED,
+    TURN_DEADLINE_INVALID,
+    TurnDeadlineExceeded,
+    TurnDeadlineInvalid,
+    TurnExecutionDeadline,
+    issue_turn_execution_deadline,
+)
 from .loop import ThoughtLoop
 from .provenance_diagnostics import build_child_provenance_diagnostics
 from .schema import TurnInput
@@ -390,22 +398,57 @@ def create_server(
             stream: bool,
             deadline_monotonic: float | None,
         ) -> None:
+            execution_deadline: TurnExecutionDeadline | None = None
+            self._turn_response_started = False
             try:
                 _ensure_route_deadline_current(deadline_monotonic)
                 turn = materialize_turn_input(payload)
                 _ensure_route_deadline_current(deadline_monotonic)
                 accepted_candidate_registry.reserve(turn)
                 _ensure_route_deadline_current(deadline_monotonic)
+                execution_deadline = (
+                    issue_turn_execution_deadline(
+                        deadline_monotonic,
+                        turn_key=(turn.turn_id, turn.session_id),
+                    )
+                    if deadline_monotonic is not None
+                    else None
+                )
                 if stream:
                     self._send_sse_live(
                         turn,
-                        deadline_monotonic=deadline_monotonic,
+                        execution_deadline=execution_deadline,
                     )
                     return
-                events = [
-                    _decorate_correlated_event_with_conversation_attempt_ref(event, turn)
-                    for event in loop.run_dicts(turn)
-                ]
+                run_kwargs = (
+                    {"execution_deadline": execution_deadline}
+                    if execution_deadline is not None
+                    else {}
+                )
+                events = []
+                for event in loop.run_dicts(turn, **run_kwargs):
+                    if execution_deadline is not None:
+                        execution_deadline.ensure_current()
+                    events.append(
+                        _decorate_correlated_event_with_conversation_attempt_ref(
+                            event,
+                            turn,
+                        )
+                    )
+            except TurnDeadlineExceeded:
+                if not self._turn_response_started:
+                    self._send_json(
+                        {"error": TURN_DEADLINE_EXCEEDED},
+                        status=HTTPStatus.REQUEST_TIMEOUT,
+                    )
+                return
+            except TurnDeadlineInvalid:
+                if not self._turn_response_started:
+                    self._send_json(
+                        {"error": TURN_DEADLINE_INVALID},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                return
             except TurnRequestRejected as exc:
                 self._send_json(
                     {"error": exc.result_class},
@@ -415,8 +458,15 @@ def create_server(
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
-            _write_journal_safely(event_journal, events)
-            self._send_json({"events": events})
+            _write_journal_safely(
+                event_journal,
+                events,
+                execution_deadline=execution_deadline,
+            )
+            self._send_json(
+                {"events": events},
+                execution_deadline=execution_deadline,
+            )
 
         def _read_json_body(self) -> dict[str, Any]:
             length_raw = self.headers.get("Content-Length", "0")
@@ -443,14 +493,20 @@ def create_server(
             status: HTTPStatus = HTTPStatus.OK,
             *,
             headers: dict[str, str] | None = None,
+            execution_deadline: TurnExecutionDeadline | None = None,
         ) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            if execution_deadline is not None:
+                execution_deadline.ensure_current()
+            self._turn_response_started = True
             self.send_response(status.value)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             for name, value in (headers or {}).items():
                 self.send_header(name, value)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            if execution_deadline is not None:
+                execution_deadline.ensure_current()
             self.wfile.write(body)
 
         def _send_sse(self, events: list[dict[str, Any]]) -> None:
@@ -466,8 +522,11 @@ def create_server(
             self,
             turn: TurnInput | Mapping[str, Any],
             *,
-            deadline_monotonic: float | None,
+            execution_deadline: TurnExecutionDeadline | None,
         ) -> None:
+            if execution_deadline is not None:
+                execution_deadline.ensure_current()
+            self._turn_response_started = True
             self.send_response(HTTPStatus.OK.value)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
@@ -475,16 +534,33 @@ def create_server(
             self.end_headers()
 
             def write_event(event: dict[str, Any]) -> None:
+                if execution_deadline is not None:
+                    execution_deadline.ensure_current()
                 event = _decorate_correlated_event_with_conversation_attempt_ref(
                     event,
                     turn,
                 )
-                _write_journal_event_safely(event_journal, event)
-                self._write_sse_event(event)
+                _write_journal_event_safely(
+                    event_journal,
+                    event,
+                    execution_deadline=execution_deadline,
+                )
+                self._write_sse_event(
+                    event,
+                    execution_deadline=execution_deadline,
+                )
 
             try:
-                _ensure_route_deadline_current(deadline_monotonic)
-                loop.run_dicts(turn, event_sink=write_event)
+                run_kwargs = (
+                    {"execution_deadline": execution_deadline}
+                    if execution_deadline is not None
+                    else {}
+                )
+                loop.run_dicts(turn, event_sink=write_event, **run_kwargs)
+            except TurnDeadlineExceeded:
+                return
+            except TurnDeadlineInvalid:
+                return
             except TurnRequestRejected as exc:
                 write_event(
                     _error_event(
@@ -502,12 +578,25 @@ def create_server(
                     )
                 )
             except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                if execution_deadline is not None:
+                    execution_deadline.cancel()
                 return
 
-        def _write_sse_event(self, event: dict[str, Any]) -> None:
+        def _write_sse_event(
+            self,
+            event: dict[str, Any],
+            *,
+            execution_deadline: TurnExecutionDeadline | None = None,
+        ) -> None:
+            if execution_deadline is not None:
+                execution_deadline.ensure_current()
             self.wfile.write(f"id: {event['event_id']}\n".encode("utf-8"))
+            if execution_deadline is not None:
+                execution_deadline.ensure_current()
             self.wfile.write(f"event: {event['type']}\n".encode("utf-8"))
             data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+            if execution_deadline is not None:
+                execution_deadline.ensure_current()
             self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
             self.wfile.flush()
 
@@ -575,20 +664,38 @@ def _error_event(payload: dict[str, Any], *, code: str, message: str) -> dict[st
     }
 
 
-def _write_journal_safely(event_journal: Any, events: list[dict[str, Any]]) -> None:
+def _write_journal_safely(
+    event_journal: Any,
+    events: list[dict[str, Any]],
+    *,
+    execution_deadline: TurnExecutionDeadline | None = None,
+) -> None:
     if event_journal is None:
         return
     try:
+        if execution_deadline is not None:
+            execution_deadline.ensure_current()
         event_journal.write_many(events)
+        if execution_deadline is not None:
+            execution_deadline.ensure_current()
     except (OSError, TypeError, ValueError):
         return
 
 
-def _write_journal_event_safely(event_journal: Any, event: dict[str, Any]) -> None:
+def _write_journal_event_safely(
+    event_journal: Any,
+    event: dict[str, Any],
+    *,
+    execution_deadline: TurnExecutionDeadline | None = None,
+) -> None:
     if event_journal is None:
         return
     try:
+        if execution_deadline is not None:
+            execution_deadline.ensure_current()
         event_journal.write_event(event)
+        if execution_deadline is not None:
+            execution_deadline.ensure_current()
     except (OSError, TypeError, ValueError):
         return
 

@@ -23,12 +23,54 @@ from thought_core.responders import (  # noqa: E402
     _default_codex_cwd,
     _run_codex_command,
 )
+from thought_core.execution_deadline import (  # noqa: E402
+    execution_deadline_scope,
+    issue_turn_execution_deadline,
+)
 from thought_core.schema import TurnInput  # noqa: E402
 from thought_core.loop import ThoughtLoop  # noqa: E402
 from thought_core.server import create_server  # noqa: E402
 
 
 class ThoughtCoreCodexCliResponderTests(TestCase):
+    def test_codex_child_timeouts_are_clamped_to_turn_deadline(self) -> None:
+        clock = {"now": 100.0}
+        observed_timeouts: list[float] = []
+
+        def fake_runner(args, timeout_s, prompt):  # type: ignore[no-untyped-def]
+            observed_timeouts.append(timeout_s)
+            if "--version" in args:
+                return subprocess.CompletedProcess(args, 0, stdout="codex 1.0\n", stderr="")
+            output_path = Path(args[args.index("--output-last-message") + 1])
+            output_path.write_text("期限内です。", encoding="utf-8")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        responder = CodexCliChatResponder(
+            command="codex",
+            model="test",
+            cwd=REPO_ROOT,
+            timeout_s=30.0,
+            version_timeout_s=3.0,
+            runner=fake_runner,
+        )
+        with patch(
+            "thought_core.execution_deadline.time.monotonic",
+            side_effect=lambda: clock["now"],
+        ):
+            deadline = issue_turn_execution_deadline(102.0)
+            with execution_deadline_scope(deadline):
+                result = responder.respond(
+                    TurnInput(
+                        text="短く答えて。",
+                        turn_id="turn_codex_deadline",
+                        session_id="session_codex_deadline",
+                    )
+                )
+
+        self.assertEqual(result.speech, "期限内です。")
+        self.assertEqual(len(observed_timeouts), 2)
+        self.assertTrue(all(0 < value <= 2.0 for value in observed_timeouts))
+
     def test_default_codex_cwd_is_system_root_not_nested_control_plane(self) -> None:
         self.assertEqual(_default_codex_cwd(), REPO_ROOT.parents[1])
         self.assertTrue((_default_codex_cwd() / "control-plane").is_dir())

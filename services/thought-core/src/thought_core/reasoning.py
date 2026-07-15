@@ -13,6 +13,7 @@ from typing import Any, Protocol
 from urllib import error, request
 from urllib.parse import urlparse
 
+from .execution_deadline import clamp_execution_timeout, ensure_execution_active
 from .schema import TurnInput
 from .tools import detect_home_action_intent
 
@@ -389,6 +390,7 @@ class OpenAICompatibleActionReviewer:
         }
 
     def _chat_json(self, payload: dict[str, Any]) -> dict[str, Any]:
+        ensure_execution_active()
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -402,8 +404,12 @@ class OpenAICompatibleActionReviewer:
             headers=headers,
             method="POST",
         )
-        with request.urlopen(req, timeout=self.timeout_s) as response:
+        with request.urlopen(
+            req,
+            timeout=clamp_execution_timeout(self.timeout_s),
+        ) as response:
             response_payload = json.loads(response.read().decode("utf-8"))
+        ensure_execution_active()
         content = _extract_chat_completion_text(response_payload).strip()
         return _parse_json_object(content)
 

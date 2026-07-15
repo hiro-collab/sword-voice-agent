@@ -1,6 +1,7 @@
 import json
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,6 +17,7 @@ THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core" / "src"
 sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 
 from thought_core.loop import ThoughtLoop  # noqa: E402
+from thought_core.execution_deadline import issue_turn_execution_deadline  # noqa: E402
 from thought_core.reasoning import LocalActionReasoner  # noqa: E402
 from thought_core.responders import ResponderResult, _response_context_prompt  # noqa: E402
 from thought_core.schema import TurnInput  # noqa: E402
@@ -122,6 +124,18 @@ class VisiblePhraseResponder:
 
 
 class ThoughtCoreContractTest(TestCase):
+    def test_execution_deadline_preserves_normal_turn_event_contract(self) -> None:
+        baseline = ThoughtLoop(responder=StaticResponder()).run_dicts(GENERAL_TURN)
+        bounded = ThoughtLoop(responder=StaticResponder()).run_dicts(
+            GENERAL_TURN,
+            execution_deadline=issue_turn_execution_deadline(time.monotonic() + 5.0),
+        )
+
+        self.assertEqual(
+            [event["type"] for event in bounded],
+            [event["type"] for event in baseline],
+        )
+
     def test_common_metadata_is_carried_by_all_events(self) -> None:
         events = ThoughtLoop().run_dicts(TURN)
 

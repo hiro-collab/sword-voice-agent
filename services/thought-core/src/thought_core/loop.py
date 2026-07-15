@@ -4,9 +4,18 @@ from __future__ import annotations
 
 import json
 import os
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
+from .execution_deadline import (
+    TurnDeadlineExceeded,
+    TurnExecutionDeadline,
+    ensure_execution_active,
+    execution_deadline_scope,
+)
 from .events import EventFactory, ThoughtEvent
 from .input_understanding import (
     InputFrame,
@@ -140,9 +149,115 @@ class _EventBuffer(list[ThoughtEvent]):
         self._event_sink = event_sink
 
     def append(self, event: ThoughtEvent) -> None:
+        ensure_execution_active()
         super().append(event)
         if self._event_sink is not None:
+            ensure_execution_active()
             self._event_sink(event)
+
+
+class _DeadlineGuardedList(list[Any]):
+    def append(self, value: Any) -> None:
+        ensure_execution_active()
+        super().append(value)
+
+    def extend(self, values: Any) -> None:
+        ensure_execution_active()
+        super().extend(values)
+
+    def insert(self, index: int, value: Any) -> None:
+        ensure_execution_active()
+        super().insert(index, value)
+
+    def pop(self, index: int = -1) -> Any:
+        ensure_execution_active()
+        return super().pop(index)
+
+    def clear(self) -> None:
+        ensure_execution_active()
+        super().clear()
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        ensure_execution_active()
+        super().__setitem__(key, value)
+
+    def __delitem__(self, key: Any) -> None:
+        ensure_execution_active()
+        super().__delitem__(key)
+
+
+_MISSING = object()
+
+
+class _DeadlineGuardedDict(dict[str, Any]):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        values = dict(*args, **kwargs)
+        super().__init__(
+            {key: self._guarded_value(value) for key, value in values.items()}
+        )
+
+    @staticmethod
+    def _guarded_value(value: Any) -> Any:
+        if isinstance(value, list):
+            return _DeadlineGuardedList(value)
+        if isinstance(value, dict):
+            return _DeadlineGuardedDict(value)
+        return value
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        ensure_execution_active()
+        super().__setitem__(key, self._guarded_value(value))
+
+    def __delitem__(self, key: str) -> None:
+        ensure_execution_active()
+        super().__delitem__(key)
+
+    def pop(self, key: str, default: Any = _MISSING) -> Any:
+        ensure_execution_active()
+        if default is _MISSING:
+            return super().pop(key)
+        return super().pop(key, default)
+
+    def popitem(self) -> tuple[str, Any]:
+        ensure_execution_active()
+        return super().popitem()
+
+    def clear(self) -> None:
+        ensure_execution_active()
+        super().clear()
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        ensure_execution_active()
+        values = dict(*args, **kwargs)
+        super().update(
+            {key: self._guarded_value(value) for key, value in values.items()}
+        )
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        ensure_execution_active()
+        return super().setdefault(key, self._guarded_value(default))
+
+
+def _execution_turn_key(
+    turn: TurnInput | Mapping[str, Any],
+) -> tuple[str, str]:
+    if isinstance(turn, TurnInput):
+        return (turn.turn_id, turn.session_id)
+    return (str(turn.get("turn_id") or ""), str(turn.get("session_id") or ""))
+
+
+@dataclass(frozen=True)
+class _TurnRequestContext:
+    session_id: str
+    issue_key: str
+    turn_input: TurnInput
+    working_memory_context: Mapping[str, Any]
+
+
+_TURN_REQUEST_CONTEXT: ContextVar[_TurnRequestContext | None] = ContextVar(
+    "thought_core_turn_request_context",
+    default=None,
+)
 
 
 class ThoughtLoop:
@@ -168,15 +283,11 @@ class ThoughtLoop:
             input_understanding or build_input_understanding_from_env()
         )
         self.persona = persona or build_persona_from_env()
-        self.pending_confirmations: dict[str, dict[str, Any]] = {}
-        self.pending_action_reviews: dict[str, dict[str, Any]] = {}
-        self.pending_state_queries: dict[str, dict[str, Any]] = {}
-        self.recent_speech_by_session: dict[str, list[str]] = {}
-        self.recent_speech_by_issue: dict[str, list[str]] = {}
-        self._active_session_id = ""
-        self._active_issue_key = ""
-        self._active_turn_input: TurnInput | None = None
-        self._active_working_memory_context: dict[str, Any] = {}
+        self.pending_confirmations: dict[str, dict[str, Any]] = _DeadlineGuardedDict()
+        self.pending_action_reviews: dict[str, dict[str, Any]] = _DeadlineGuardedDict()
+        self.pending_state_queries: dict[str, dict[str, Any]] = _DeadlineGuardedDict()
+        self.recent_speech_by_session: dict[str, list[str]] = _DeadlineGuardedDict()
+        self.recent_speech_by_issue: dict[str, list[str]] = _DeadlineGuardedDict()
         self.llm_visible_speech = (
             _env_bool("THOUGHT_CORE_LLM_VISIBLE_SPEECH_ENABLED", False)
             if llm_visible_speech is None
@@ -188,7 +299,49 @@ class ThoughtLoop:
             else require_llm_visible_speech
         )
 
+    def _request_context(self) -> _TurnRequestContext | None:
+        return _TURN_REQUEST_CONTEXT.get()
+
+    def _replace_request_context(self, **changes: Any) -> None:
+        current = self._request_context()
+        if current is None:
+            raise RuntimeError("turn_request_context_unavailable")
+        _TURN_REQUEST_CONTEXT.set(replace(current, **changes))
+
+    @property
+    def _active_session_id(self) -> str:
+        current = self._request_context()
+        return current.session_id if current is not None else ""
+
+    @property
+    def _active_issue_key(self) -> str:
+        current = self._request_context()
+        return current.issue_key if current is not None else ""
+
+    @property
+    def _active_turn_input(self) -> TurnInput | None:
+        current = self._request_context()
+        return current.turn_input if current is not None else None
+
+    @property
+    def _active_working_memory_context(self) -> Mapping[str, Any]:
+        current = self._request_context()
+        return current.working_memory_context if current is not None else MappingProxyType({})
+
     def run(
+        self,
+        turn: TurnInput | Mapping[str, Any],
+        *,
+        event_sink: Callable[[ThoughtEvent], None] | None = None,
+        execution_deadline: TurnExecutionDeadline | None = None,
+    ) -> list[ThoughtEvent]:
+        with execution_deadline_scope(
+            execution_deadline,
+            turn_key=_execution_turn_key(turn),
+        ):
+            return self._run_active(turn, event_sink=event_sink)
+
+    def _run_active(
         self,
         turn: TurnInput | Mapping[str, Any],
         *,
@@ -197,20 +350,27 @@ class ThoughtLoop:
         turn_input = turn if isinstance(turn, TurnInput) else TurnInput.from_mapping(turn)
         factory = EventFactory(turn_input.turn_id, turn_input.session_id, source=self.source)
         events: list[ThoughtEvent] = _EventBuffer(event_sink)
-        previous_active_session_id = self._active_session_id
-        previous_active_issue_key = self._active_issue_key
-        previous_active_turn_input = self._active_turn_input
-        previous_active_working_memory_context = self._active_working_memory_context
-        self._active_session_id = turn_input.session_id
-        self._active_turn_input = turn_input
-        self._active_working_memory_context = {}
+        request_context_token = _TURN_REQUEST_CONTEXT.set(
+            _TurnRequestContext(
+                session_id=turn_input.session_id,
+                issue_key="",
+                turn_input=turn_input,
+                working_memory_context=MappingProxyType({}),
+            )
+        )
         try:
             input_frame = self._understand_input(turn_input)
-            self._active_issue_key = self._speech_issue_key(turn_input, input_frame)
+            ensure_execution_active()
+            self._replace_request_context(
+                issue_key=self._speech_issue_key(turn_input, input_frame)
+            )
             self._emit_input_ack(events, factory, turn_input, input_frame)
             self._emit_input_understood(events, factory, input_frame)
             working_memory_context = self._build_working_memory_context(turn_input)
-            self._active_working_memory_context = working_memory_context
+            ensure_execution_active()
+            self._replace_request_context(
+                working_memory_context=MappingProxyType(dict(working_memory_context))
+            )
             self._emit_context_trace_events(events, factory, working_memory_context)
             memory_context = self._retrieve_memory_context(events, factory, turn_input)
             self._hydrate_pending_action_review_from_memory(
@@ -218,7 +378,10 @@ class ThoughtLoop:
                 memory_context,
                 input_frame,
             )
-            self._active_issue_key = self._speech_issue_key(turn_input, input_frame)
+            ensure_execution_active()
+            self._replace_request_context(
+                issue_key=self._speech_issue_key(turn_input, input_frame)
+            )
             if self._handle_pending_confirmation_if_needed(events, factory, turn_input):
                 return events
             if input_frame.kind == "state_query":
@@ -747,6 +910,8 @@ class ThoughtLoop:
                     )
                 )
                 return events
+        except TurnDeadlineExceeded:
+            raise
         except Exception as exc:  # pragma: no cover - defensive boundary
             events.append(
                 factory.emit(
@@ -759,22 +924,25 @@ class ThoughtLoop:
             )
             return events
         finally:
-            self._active_session_id = previous_active_session_id
-            self._active_issue_key = previous_active_issue_key
-            self._active_turn_input = previous_active_turn_input
-            self._active_working_memory_context = previous_active_working_memory_context
+            _TURN_REQUEST_CONTEXT.reset(request_context_token)
 
     def run_dicts(
         self,
         turn: TurnInput | Mapping[str, Any],
         *,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
+        execution_deadline: TurnExecutionDeadline | None = None,
     ) -> list[dict[str, Any]]:
         def _sink(event: ThoughtEvent) -> None:
             if event_sink is not None:
                 event_sink(event.to_dict())
 
-        return [event.to_dict() for event in self.run(turn, event_sink=_sink)]
+        with execution_deadline_scope(
+            execution_deadline,
+            turn_key=_execution_turn_key(turn),
+        ):
+            events = self._run_active(turn, event_sink=_sink)
+            return [event.to_dict() for event in events]
 
     def _handle_state_query_feedback_if_needed(
         self,
@@ -2799,10 +2967,14 @@ class ThoughtLoop:
         observation: dict[str, Any],
     ) -> dict[str, Any]:
         try:
+            ensure_execution_active()
             target_state = self.action_reasoner.imagine_target_state(
                 turn_input,
                 observation,
             )
+            ensure_execution_active()
+        except TurnDeadlineExceeded:
+            raise
         except Exception as exc:  # pragma: no cover - defensive boundary
             target_state = {
                 "schema": ACTION_REASONER_BOUNDARY,
@@ -2834,12 +3006,16 @@ class ThoughtLoop:
         preview: dict[str, Any],
     ) -> dict[str, Any]:
         try:
+            ensure_execution_active()
             command_plan = self.action_reasoner.plan_command(
                 turn_input,
                 observation,
                 target_state,
                 preview,
             )
+            ensure_execution_active()
+        except TurnDeadlineExceeded:
+            raise
         except Exception as exc:  # pragma: no cover - defensive boundary
             command_plan = {
                 "schema": ACTION_REASONER_BOUNDARY,
@@ -2946,6 +3122,7 @@ class ThoughtLoop:
         target_state = self._target_state_from_action(action)
         if self._target_state_is_reviewable(target_state):
             try:
+                ensure_execution_active()
                 review = self.action_reasoner.review_target_state(
                     turn_input,
                     action,
@@ -2953,6 +3130,9 @@ class ThoughtLoop:
                     observation,
                     execute_result,
                 )
+                ensure_execution_active()
+            except TurnDeadlineExceeded:
+                raise
             except Exception as exc:  # pragma: no cover - defensive boundary
                 review = {
                     "status": "pending",
@@ -3262,7 +3442,13 @@ class ThoughtLoop:
             policy=policy,
             observations_done=int(pending.get("observations_done") or 0),
         )
-        return self.tools.environment_observe(turn_input, reason="after_action")
+        ensure_execution_active()
+        observation = self.tools.environment_observe(
+            turn_input,
+            reason="after_action",
+        )
+        ensure_execution_active()
+        return observation
 
     def _prepare_action_review_checkpoint(
         self,
@@ -3752,7 +3938,10 @@ class ThoughtLoop:
                 },
             )
         )
-        self._active_issue_key = self._speech_issue_key(turn_input, input_frame)
+        ensure_execution_active()
+        self._replace_request_context(
+            issue_key=self._speech_issue_key(turn_input, input_frame)
+        )
 
     def _action_targets(self, action: dict[str, Any]) -> set[str]:
         target = action.get("target")
@@ -4416,11 +4605,14 @@ class ThoughtLoop:
             )
 
     def _understand_input(self, turn_input: TurnInput) -> InputFrame:
-        return self.input_understanding.understand(
+        ensure_execution_active()
+        frame = self.input_understanding.understand(
             turn_input,
             pending_state_query=self.pending_state_queries.get(turn_input.session_id),
             pending_action_review=self.pending_action_reviews.get(turn_input.session_id),
         )
+        ensure_execution_active()
+        return frame
 
     def _emit_input_understood(
         self,
@@ -4687,6 +4879,7 @@ class ThoughtLoop:
         tool_name: str,
         call: Callable[[], dict[str, Any]],
     ) -> dict[str, Any]:
+        ensure_execution_active()
         tool_call_id = factory.next_tool_call_id()
         events.append(
             factory.emit(
@@ -4697,7 +4890,10 @@ class ThoughtLoop:
                 },
             )
         )
-        result = self._sanitize_tool_result(tool_name, call())
+        ensure_execution_active()
+        raw_result = call()
+        ensure_execution_active()
+        result = self._sanitize_tool_result(tool_name, raw_result)
         status = result.get("status", "ok")
         events.append(
             factory.emit(
@@ -5378,10 +5574,12 @@ class ThoughtLoop:
             events,
             current_stage="general_responder",
         )
+        ensure_execution_active()
         result = self.responder.respond(
             turn_input,
             response_context=response_context,
         )
+        ensure_execution_active()
         fallback_used = str(result.status or "").startswith("local_fallback")
         events.append(
             factory.emit(
@@ -6041,10 +6239,14 @@ class ThoughtLoop:
             }
         )
         try:
+            ensure_execution_active()
             result = self.responder.respond(
                 turn_input,
                 response_context=response_context,
             )
+            ensure_execution_active()
+        except TurnDeadlineExceeded:
+            raise
         except Exception as exc:  # pragma: no cover - defensive responder boundary
             return {
                 "enabled": True,

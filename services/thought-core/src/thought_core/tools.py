@@ -13,6 +13,11 @@ from typing import Any, Protocol
 from urllib import error, request
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
+from .execution_deadline import (
+    TurnDeadlineExceeded,
+    clamp_execution_timeout,
+    ensure_execution_active,
+)
 from .schema import TurnInput
 
 
@@ -224,10 +229,12 @@ class MockThoughtTools:
         }
 
     def short_memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
+        ensure_execution_active()
         self.short_memory_write_calls.append(dict(item))
         return {"status": "ok", "written": True}
 
     def memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
+        ensure_execution_active()
         self.memory_write_calls.append(dict(item))
         return {"status": "ok", "written": True, "candidate": True}
 
@@ -635,6 +642,7 @@ class HomeControlHttpTools:
         }
 
     def short_memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
+        ensure_execution_active()
         if not self.config.memory_root:
             return {
                 "status": "skipped",
@@ -650,7 +658,9 @@ class HomeControlHttpTools:
         payload.setdefault("created_at", datetime.now(UTC).isoformat())
         path = Path(self.config.memory_root) / "short_memory.jsonl"
         try:
+            ensure_execution_active()
             _append_jsonl(path, payload)
+            ensure_execution_active()
         except OSError as exc:
             return {
                 "status": "failed",
@@ -667,6 +677,7 @@ class HomeControlHttpTools:
         }
 
     def memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
+        ensure_execution_active()
         if item.get("type") == "short_memory" or item.get("kind") == "retry_budget":
             return self.short_memory_write(turn, item)
         candidate = dict(item)
@@ -688,7 +699,9 @@ class HomeControlHttpTools:
         except ImportError as exc:  # pragma: no cover - standalone thought-core fallback
             path = Path(self.config.memory_root) / "candidates.jsonl"
             try:
+                ensure_execution_active()
                 _append_jsonl(path, candidate)
+                ensure_execution_active()
             except OSError:
                 return {
                     "status": "failed",
@@ -705,7 +718,11 @@ class HomeControlHttpTools:
                 "detail": str(exc)[:240],
             }
         try:
+            ensure_execution_active()
             result = store.write_candidate(requester="thought_core_api", item=candidate)
+            ensure_execution_active()
+        except TurnDeadlineExceeded:
+            raise
         except Exception as exc:  # pragma: no cover - defensive adapter boundary
             return {
                 "status": "failed",
@@ -797,8 +814,13 @@ class HomeControlHttpTools:
             headers["Content-Type"] = "application/json"
         req = request.Request(url, data=data, headers=headers, method=method)
         try:
-            with request.urlopen(req, timeout=self.config.timeout_s) as response:
+            ensure_execution_active()
+            with request.urlopen(
+                req,
+                timeout=clamp_execution_timeout(self.config.timeout_s),
+            ) as response:
                 raw = response.read().decode("utf-8")
+            ensure_execution_active()
         except error.HTTPError as exc:
             detail = _safe_http_error_detail(exc)
             raise HomeControlToolError("home_control_http_error", detail) from exc

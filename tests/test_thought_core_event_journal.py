@@ -13,7 +13,11 @@ THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core" / "src"
 sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 
 from thought_core.event_journal import journal_entry_from_event  # noqa: E402
-from thought_core.server import create_server  # noqa: E402
+from thought_core.execution_deadline import (  # noqa: E402
+    TurnDeadlineExceeded,
+    issue_turn_execution_deadline,
+)
+from thought_core.server import _write_journal_safely, create_server  # noqa: E402
 
 
 TURN = {
@@ -26,6 +30,31 @@ TURN = {
 
 
 class ThoughtCoreEventJournalTest(TestCase):
+    def test_expired_turn_deadline_blocks_journal_write(self) -> None:
+        class RecordingJournal:
+            def __init__(self) -> None:
+                self.writes = 0
+
+            def write_many(self, events):  # type: ignore[no-untyped-def]
+                self.writes += 1
+
+        clock = {"now": 10.0}
+        journal = RecordingJournal()
+        with patch(
+            "thought_core.execution_deadline.time.monotonic",
+            side_effect=lambda: clock["now"],
+        ):
+            deadline = issue_turn_execution_deadline(11.0)
+            clock["now"] = 12.0
+            with self.assertRaises(TurnDeadlineExceeded):
+                _write_journal_safely(
+                    journal,
+                    [{"type": "assistant.message"}],
+                    execution_deadline=deadline,
+                )
+
+        self.assertEqual(journal.writes, 0)
+
     def test_event_journal_entry_keeps_summary_without_raw_text(self) -> None:
         entry = journal_entry_from_event(
             {
