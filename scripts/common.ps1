@@ -271,7 +271,7 @@ function Get-SwordPortUsers {
 function Show-SwordPortConflictHelp {
     param(
         [Parameter(Mandatory = $true)][object[]]$Conflicts,
-        [string]$StopScript = ".\scripts\stop-full-stack.ps1 -Force"
+        [string]$StopScript = ".\ops\scripts\system.ps1 stop"
     )
 
     Write-Host "Required port is already in use." -ForegroundColor Yellow
@@ -282,8 +282,9 @@ function Show-SwordPortConflictHelp {
         Write-Host
 
     Write-Host "The port user is shown for diagnosis only." -ForegroundColor Yellow
-    Write-Host "If it is a stale Sword Voice Agent process, run:"
+    Write-Host "If it is a stale process owned by the canonical stack registry, run:"
     Write-Host "  $StopScript"
+    Write-Host "If it was started directly, stop it through its owning launcher or terminal; the canonical stack stop does not own it."
     foreach ($conflict in @($Conflicts | Sort-Object PID -Unique)) {
         if (Test-SwordProtectedProcess `
                 -ProcessId ([int]$conflict.PID) `
@@ -299,7 +300,7 @@ function Assert-SwordPortsAvailable {
     param(
         [int[]]$TcpPorts = @(),
         [int[]]$UdpPorts = @(),
-        [string]$StopScript = ".\scripts\stop-full-stack.ps1 -Force"
+        [string]$StopScript = ".\ops\scripts\system.ps1 stop"
     )
 
     $conflicts = @()

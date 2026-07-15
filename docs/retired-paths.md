@@ -5,7 +5,6 @@
 | Path | Status |
 | --- | --- |
 | `<cell>\services\thought-core\` | 空の local placeholder が残っている場合は退役扱い。正規実装は `<cell>\control-plane\core\services\thought-core\`。 |
-| `scripts\start-full-stack.ps1` / `start-full-stack-supervisor.ps1` | 旧 full-stack 起動。通常は Home Control Stack を使う。 |
 | `mediapipe-sword-sign\apps\publish_udp.py` | 旧 UDP gesture 連携。通常は Camera Hub WebSocket topic を使う。 |
 | Camera Hub Python JPEG topic | Python 画像 transport の検証用。通常映像は MediaMTX を使う。 |
 | AITuberKit external WebSocket mode | 評価済み互換導線。通常 speech path は `POST /api/messages?...type=direct_send`。 |

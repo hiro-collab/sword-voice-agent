@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PRODUCT_ROOT = ROOT.parents[1]
 SYSTEM = ROOT / "ops" / "scripts" / "system.ps1"
 STACK_START = ROOT / "ops" / "scripts" / "home-control-stack" / "start-home-control-stack.ps1"
+COMMON = ROOT / "scripts" / "common.ps1"
 POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 
 
@@ -96,6 +97,27 @@ def run_system(*arguments: str, cwd: Path) -> subprocess.CompletedProcess[str]:
 
 @skipUnless(POWERSHELL, "PowerShell is required for launcher dry-run contract tests")
 class LauncherNativeLayoutTest(TestCase):
+    def test_retired_full_stack_entrypoints_are_absent(self) -> None:
+        for relative_path in (
+            "scripts/start-full-stack.ps1",
+            "scripts/start-full-stack-supervisor.ps1",
+            "scripts/stop-full-stack.ps1",
+        ):
+            self.assertFalse((ROOT / relative_path).exists())
+
+        common = COMMON.read_text(encoding="utf-8")
+        retired_docs = (ROOT / "docs" / "retired-paths.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("stop-full-stack.ps1", common)
+        self.assertIn(r".\ops\scripts\system.ps1 stop", common)
+        self.assertIn("owned by the canonical stack registry", common)
+        self.assertIn("through its owning launcher or terminal", common)
+        self.assertIn("the canonical stack stop does not own it", common)
+        self.assertNotIn("start-full-stack.ps1", retired_docs)
+        self.assertTrue(SYSTEM.exists())
+        self.assertTrue(STACK_START.exists())
+
     def test_system_default_workspace_matches_explicit_product_root_independent_of_cwd(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sword-system-default-status-") as temp_dir:
             temp_root = Path(temp_dir)
