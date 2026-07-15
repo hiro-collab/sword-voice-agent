@@ -148,7 +148,9 @@ const DEFAULT_OPTIONS = {
   VoicevoxUrl: '',
   HomeControlConfigPath: '',
   MediapipeMode: 'mediamtx',
-  MediapipeCameraName: 'Logitech StreamCam',
+  // The ordinary Launcher route has no tracked camera selection. A local
+  // operator selection is persisted under the launcher state directory.
+  MediapipeCameraName: '',
   MediapipeCameraWidth: 1920,
   MediapipeCameraHeight: 1080,
   MediapipeCameraFps: 30,
@@ -312,8 +314,10 @@ const stripAnsiControlSequences = (content) =>
 
 const appendStackLog = (content) => {
   ensureRuntimeDirs()
-  const sanitizedContent = stripAnsiControlSequences(
-    Buffer.isBuffer(content) ? content.toString('utf8') : content
+  const sanitizedContent = redactCameraSelectionInCommandText(
+    stripAnsiControlSequences(
+      Buffer.isBuffer(content) ? content.toString('utf8') : content
+    )
   )
   const incomingBytes = Buffer.byteLength(sanitizedContent, 'utf8')
   rotateStackLogIfNeeded(incomingBytes)
@@ -766,7 +770,13 @@ const isLoopbackAddress = (address) => {
   return normalized === '' || isLoopbackHost(normalized)
 }
 
-const getRemoteAddress = (request) => normalizeIpAddress(request.socket.remoteAddress)
+const getRemoteAddress = (request) =>
+  normalizeIpAddress(
+    process.env.NODE_ENV === 'test' &&
+      process.env.HOME_CONTROL_LAUNCHER_TEST_REMOTE_ADDRESS
+      ? process.env.HOME_CONTROL_LAUNCHER_TEST_REMOTE_ADDRESS
+      : request.socket.remoteAddress
+  )
 
 const isTrustedOrigin = (request) => {
   const originHeader = request.headers.origin
@@ -945,9 +955,23 @@ const enumerateVideoInputDevices = () => {
     }
   }
 
-  if (process.env.NODE_ENV === 'test' && process.env.HOME_CONTROL_LAUNCHER_TEST_VIDEO_INPUTS) {
+  const testVideoInputFixture =
+    process.env.NODE_ENV === 'test' &&
+    process.env.HOME_CONTROL_LAUNCHER_TEST_VIDEO_INPUTS_FILE
+      ? (() => {
+          try {
+            return fs.readFileSync(
+              process.env.HOME_CONTROL_LAUNCHER_TEST_VIDEO_INPUTS_FILE,
+              'utf8'
+            )
+          } catch {
+            return '[]'
+          }
+        })()
+      : process.env.HOME_CONTROL_LAUNCHER_TEST_VIDEO_INPUTS
+  if (process.env.NODE_ENV === 'test' && testVideoInputFixture) {
     try {
-      const fixture = JSON.parse(process.env.HOME_CONTROL_LAUNCHER_TEST_VIDEO_INPUTS)
+      const fixture = JSON.parse(testVideoInputFixture)
       const devices = Array.isArray(fixture)
         ? Array.from(new Set(fixture.map(sanitizeVideoInputDeviceName).filter(Boolean))).slice(0, 64)
         : []
@@ -994,7 +1018,19 @@ const enumerateVideoInputDevices = () => {
   }
 }
 
-const getVideoInputDevicesPayload = () => {
+const getVideoInputDevicesPayload = ({ includeLocalCameraSelection = true } = {}) => {
+  if (!includeLocalCameraSelection) {
+    return {
+      ok: true,
+      result_class: 'local_video_input_enumeration_redacted',
+      count: 0,
+      devices: [],
+      selection_class: 'local_selection_private',
+      selected_match: false,
+      device_start_count: 0,
+      capture_count: 0
+    }
+  }
   const enumeration = enumerateVideoInputDevices()
   const config = readLauncherConfig()
   const selected = sanitizeVideoInputDeviceName(config.options?.MediapipeCameraName)
@@ -1047,10 +1083,25 @@ const publicCommandPreview = (preview) => {
     return preview
   }
   const { command, options, ...publicFields } = preview
-  const { MediapipeCameraName, ...publicOptions } = options || {}
+  const publicOptions = withoutLocalCameraSelection(options)
   return {
     ...publicFields,
     options: publicOptions
+  }
+}
+
+const withoutLocalCameraSelection = (options) => {
+  const { MediapipeCameraName, ...publicOptions } = options || {}
+  return publicOptions
+}
+
+const withPreservedLocalCameraSelection = (profileId, requestedOptions = {}) => {
+  const saved = readLauncherConfig()
+  const savedProfileId = saved.selectedProfileId || profileId || PRIMARY_PROFILE_ID
+  const savedOptions = normalizeOptions(savedProfileId, saved.options || {})
+  return {
+    ...(requestedOptions || {}),
+    MediapipeCameraName: savedOptions.MediapipeCameraName
   }
 }
 
@@ -3581,13 +3632,15 @@ const readTextTail = (filePath, maxBytes = 128 * 1024) => {
     const buffer = Buffer.alloc(size)
     fs.readSync(fd, buffer, 0, size, stat.size - size)
     fs.closeSync(fd)
-    return stripAnsiControlSequences(buffer.toString('utf8'))
+    return redactCameraSelectionInCommandText(
+      stripAnsiControlSequences(buffer.toString('utf8'))
+    )
   } catch {
     return ''
   }
 }
 
-const getState = async () => {
+const getState = async ({ includeLocalCameraSelection = true } = {}) => {
   const config = readLauncherConfig()
   const selectedProfileId = config.selectedProfileId || PRIMARY_PROFILE_ID
   const options = normalizeOptions(selectedProfileId, config.options || {})
@@ -3600,12 +3653,27 @@ const getState = async () => {
     workspaceRoot: WORKSPACE_ROOT,
     stateDir: STATE_DIR,
     portMode: PORT_MODE,
-    profiles: readProfiles(),
+    profiles: readProfiles().map((profile) => ({
+      ...profile,
+      options: includeLocalCameraSelection
+        ? profile.options
+        : withoutLocalCameraSelection(profile.options)
+    })),
     config: {
       selectedProfileId,
-      options
+      options: includeLocalCameraSelection
+        ? options
+        : withoutLocalCameraSelection(options)
     },
-    launcherState: readLauncherState(),
+    launcherState: (() => {
+      const launcherState = readLauncherState()
+      return {
+        ...launcherState,
+        commandLine: launcherState.commandLine
+          ? redactCameraSelectionInCommandText(launcherState.commandLine)
+          : launcherState.commandLine
+      }
+    })(),
     operation: operationState(),
     status,
     startupTiming: status.startupTiming,
@@ -3764,6 +3832,7 @@ const serveStatic = (request, response, requestUrl) => {
 }
 
 const handleApi = async (request, response, requestUrl) => {
+  const includeLocalCameraSelection = isLoopbackAddress(getRemoteAddress(request))
   if (request.method === 'OPTIONS') {
     const headers =
       requestUrl.pathname === '/api/status' ? launcherStatusCorsHeaders() : {}
@@ -3787,8 +3856,17 @@ const handleApi = async (request, response, requestUrl) => {
     requestUrl.pathname === '/api/test/camera-command-boundary'
   ) {
     const body = await readBody(request)
-    const requested = sanitizeVideoInputDeviceName(body.options?.MediapipeCameraName)
-    const preview = previewCommand(body.profileId || PRIMARY_PROFILE_ID, body.options || {})
+    const suppliedTestOptions = body.useSavedOptions
+      ? readLauncherConfig().options || {}
+      : body.options || {}
+    const testOptions = body.applyRequestCameraBoundary && !includeLocalCameraSelection
+      ? withPreservedLocalCameraSelection(
+          body.profileId || PRIMARY_PROFILE_ID,
+          suppliedTestOptions
+        )
+      : suppliedTestOptions
+    const requested = sanitizeVideoInputDeviceName(testOptions.MediapipeCameraName)
+    const preview = previewCommand(body.profileId || PRIMARY_PROFILE_ID, testOptions)
     const cameraArgumentIndex = preview.command.indexOf('-MediapipeCameraName')
     const publicPreview = publicCommandPreview(preview)
     const publicSerialized = JSON.stringify(publicPreview)
@@ -3806,12 +3884,24 @@ const handleApi = async (request, response, requestUrl) => {
       launcher_state_command_redacted:
         preview.commandLine.includes(CAMERA_SELECTION_REDACTION),
       log_command_redacted:
-        preview.commandLine.includes(CAMERA_SELECTION_REDACTION)
+        preview.commandLine.includes(CAMERA_SELECTION_REDACTION),
+      saved_selection_exact: body.useSavedOptions
+        ? cameraArgumentIndex >= 0 && preview.command[cameraArgumentIndex + 1] === requested
+        : null,
+      request_camera_boundary_preserved: body.applyRequestCameraBoundary
+        ? requested === sanitizeVideoInputDeviceName(
+            readLauncherConfig().options?.MediapipeCameraName
+          )
+        : null
     })
     return
   }
   if (request.method === 'GET' && requestUrl.pathname === '/api/state') {
-    sendJson(response, 200, await getState())
+    sendJson(
+      response,
+      200,
+      await getState({ includeLocalCameraSelection })
+    )
     return
   }
   if (request.method === 'GET' && requestUrl.pathname === '/api/status') {
@@ -3819,7 +3909,11 @@ const handleApi = async (request, response, requestUrl) => {
     return
   }
   if (request.method === 'GET' && requestUrl.pathname === '/api/video-input-devices') {
-    sendJson(response, 200, getVideoInputDevicesPayload())
+    sendJson(
+      response,
+      200,
+      getVideoInputDevicesPayload({ includeLocalCameraSelection })
+    )
     return
   }
   if (request.method === 'GET' && requestUrl.pathname === '/api/startup-timing') {
@@ -3857,12 +3951,22 @@ const handleApi = async (request, response, requestUrl) => {
       sendJson(response, 400, profileError)
       return
     }
-    const options = normalizeOptions(profileId, body.options || {})
+    const requestedOptions = includeLocalCameraSelection
+      ? body.options || {}
+      : withPreservedLocalCameraSelection(profileId, body.options || {})
+    const options = normalizeOptions(profileId, requestedOptions)
     saveConfig(profileId, options)
     const demoSafeSettings = body.demoSettings
       ? saveDemoSafeSettings(body.demoSettings)
       : effectiveDemoSafeSettings()
-    sendJson(response, 200, { ok: true, profileId, options, demoSafeSettings })
+    sendJson(response, 200, {
+      ok: true,
+      profileId,
+      options: includeLocalCameraSelection
+        ? options
+        : withoutLocalCameraSelection(options),
+      demoSafeSettings
+    })
     return
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/start') {
@@ -3873,9 +3977,12 @@ const handleApi = async (request, response, requestUrl) => {
       sendJson(response, 400, profileError)
       return
     }
+    const requestedOptions = includeLocalCameraSelection
+      ? body.options || {}
+      : withPreservedLocalCameraSelection(profileId, body.options || {})
     const result = await runExclusiveStackOperation(
       'start',
-      async () => startStack(profileId, body.options || {})
+      async () => startStack(profileId, requestedOptions)
     )
     sendJson(response, result.statusCode, result.payload)
     return

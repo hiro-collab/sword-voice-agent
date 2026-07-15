@@ -813,7 +813,7 @@ function Resolve-PortConflicts {
 
     Write-Host "Processes are already using required ports:"
     $conflicts |
-        Select-Object Label, Port, PID, ProcessName, CommandLine |
+        Select-Object Label, Port, PID, ProcessName |
         Format-Table -AutoSize |
         Out-String -Width 240 |
         Write-Host
@@ -1152,6 +1152,21 @@ function Format-CommandLine {
     }) -join " "
 }
 
+function Protect-CameraSelectionCommand {
+    param([Parameter(Mandatory = $true)][string[]]$Command)
+    $protected = @($Command)
+    for ($index = 0; $index -lt $protected.Count; $index++) {
+        if (
+            $protected[$index] -in @("-MediapipeCameraName", "--camera-name") -and
+            $index + 1 -lt $protected.Count
+        ) {
+            $protected[$index + 1] = "<local-camera-selection>"
+            $index++
+        }
+    }
+    return [string[]]$protected
+}
+
 function Write-GuideItem {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -1298,7 +1313,8 @@ function Invoke-External {
         [Parameter(Mandatory = $true)][string]$WorkingDirectory,
         [Parameter(Mandatory = $true)][string]$Label
     )
-    Write-Host "[$Label] $(Format-CommandLine -Command (@($FilePath) + $Arguments))"
+    $displayCommand = Protect-CameraSelectionCommand -Command (@($FilePath) + $Arguments)
+    Write-Host "[$Label] $(Format-CommandLine -Command $displayCommand)"
     if ($DryRun) {
         return
     }
@@ -1396,29 +1412,49 @@ function Start-SupervisedProcess {
     $stdoutEvent = Register-ObjectEvent `
         -InputObject $process `
         -EventName OutputDataReceived `
-        -MessageData @{ Prefix = $Spec.Name } `
+        -MessageData @{
+            Prefix = $Spec.Name
+            CameraSelection = [string]$MediapipeCameraName
+        } `
         -Action {
             $line = $EventArgs.Data
             if ($null -ne $line) {
                 $cleanLine = [regex]::Replace($line, "`e\[[0-?]*[ -/]*[@-~]", "")
+                if (-not [string]::IsNullOrWhiteSpace([string]$Event.MessageData.CameraSelection)) {
+                    $cleanLine = $cleanLine.Replace(
+                        [string]$Event.MessageData.CameraSelection,
+                        "<local-camera-selection>"
+                    )
+                }
                 [Console]::Out.WriteLine("[{0}] {1}", $Event.MessageData.Prefix, $cleanLine)
             }
         }
     $stderrEvent = Register-ObjectEvent `
         -InputObject $process `
         -EventName ErrorDataReceived `
-        -MessageData @{ Prefix = $Spec.Name } `
+        -MessageData @{
+            Prefix = $Spec.Name
+            CameraSelection = [string]$MediapipeCameraName
+        } `
         -Action {
             $line = $EventArgs.Data
             if ($null -ne $line) {
                 $cleanLine = [regex]::Replace($line, "`e\[[0-?]*[ -/]*[@-~]", "")
+                if (-not [string]::IsNullOrWhiteSpace([string]$Event.MessageData.CameraSelection)) {
+                    $cleanLine = $cleanLine.Replace(
+                        [string]$Event.MessageData.CameraSelection,
+                        "<local-camera-selection>"
+                    )
+                }
                 [Console]::Error.WriteLine("[{0}] {1}", $Event.MessageData.Prefix, $cleanLine)
             }
         }
 
     $process.BeginOutputReadLine()
     $process.BeginErrorReadLine()
-    $commandLine = Format-CommandLine -Command (@($Spec.FilePath) + $Spec.Arguments)
+    $commandLine = Format-CommandLine -Command (
+        Protect-CameraSelectionCommand -Command (@($Spec.FilePath) + $Spec.Arguments)
+    )
     Write-Host "[$($Spec.Name)] started PID $($process.Id)"
 
     return [pscustomobject]@{
@@ -2479,7 +2515,8 @@ if (-not $SkipTouchDesignerGui) {
 
 if ($DryRun) {
     foreach ($spec in $specs) {
-        Write-Host "[$($spec.Name)] $(Format-CommandLine -Command (@($spec.FilePath) + $spec.Arguments))"
+        $displayCommand = Protect-CameraSelectionCommand -Command (@($spec.FilePath) + $spec.Arguments)
+        Write-Host "[$($spec.Name)] $(Format-CommandLine -Command $displayCommand)"
     }
     return
 }
