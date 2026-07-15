@@ -3355,8 +3355,8 @@ const getEndpoints = (options) => {
     },
     {
       group: 'Open in browser',
-      name: 'Expression cube vault',
-      url: `http://127.0.0.1:${options.AituberPort}/cube-vault-background?fov=60&scale=1`,
+      name: 'Body map inspector',
+      url: `http://127.0.0.1:${options.AituberPort}/body-map-inspector?fov=60&scale=1`,
       enabled: !options.SkipAituber
     },
     {

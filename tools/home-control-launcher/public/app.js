@@ -1747,8 +1747,7 @@ const endpointDisplayName = (name) => {
   const labels = {
     'AITuber Kit': 'Expression runtime',
     'Expression runtime': 'Operator',
-    'AITuber Cube Vault': 'Expression cube vault',
-    'Expression cube vault': 'Avatar vault',
+    'Body map inspector': 'Diagnostics body map',
     'Display control GUI/API': 'Display runtime GUI/API',
     'Display runtime GUI/API': 'Display',
     'Action bridge operator': 'Action operator',
@@ -1776,8 +1775,7 @@ const endpointDisplayName = (name) => {
   const labelsJa = {
     'AITuber Kit': '表情表示',
     'Expression runtime': '操作画面',
-    'AITuber Cube Vault': '表情キューブ保管庫',
-    'Expression cube vault': 'アバター保管庫',
+    'Body map inspector': '自己状態マップ',
     'Display control GUI/API': '投影表示GUI/API',
     'Display runtime GUI/API': '表示',
     'Action bridge operator': '家電操作面',

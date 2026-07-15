@@ -77,6 +77,22 @@ def extract_between(text: str, start: str, end: str) -> str:
 
 
 class LauncherUiContractTest(TestCase):
+    def test_body_map_inspector_is_the_only_launcher_diagnostics_route(self) -> None:
+        server = read_launcher_server()
+        public_app = read_public("app.js")
+        stack_start = read_stack_start_script()
+
+        self.assertIn("name: 'Body map inspector'", server)
+        self.assertIn("/body-map-inspector?fov=60&scale=1", server)
+        self.assertIn("'Body map inspector': 'Diagnostics body map'", public_app)
+        self.assertIn("'Body map inspector': '自己状態マップ'", public_app)
+        self.assertIn('-Name "Body map inspector"', stack_start)
+        self.assertIn("/body-map-inspector?fov=60&scale=1", stack_start)
+        for source in (server, public_app, stack_start):
+            self.assertNotIn("cube-vault-background", source)
+            self.assertNotIn("Cube Vault", source)
+            self.assertNotIn("cube vault", source)
+
     def test_launcher_runtime_copies_camera_state_and_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_root:
             state_dir = Path(temporary_root) / "state"

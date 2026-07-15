@@ -1202,9 +1202,9 @@ function Write-StackEndpointGuide {
             -Target $AituberProjectionVisualUrl `
             -Description "HUD なしの passive 表示。Display Runtime GUI の Stage preview 用。"
         Write-GuideItem `
-            -Name "AITuber Cube Vault" `
-            -Target ("http://{0}:{1}/cube-vault-background?fov=60&scale=1" -f $AituberClientHost, $AituberPort) `
-            -Description "AITuber のキューブ背景確認用。必要なときだけ開く。"
+            -Name "Body map inspector" `
+            -Target ("http://{0}:{1}/body-map-inspector?fov=60&scale=1" -f $AituberClientHost, $AituberPort) `
+            -Description "Body Schema と各 organ の状態を表示専用で確認する。必要なときだけ開く。"
     }
     if ($EnableThoughtCore) {
         Write-GuideItem `
