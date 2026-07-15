@@ -25,7 +25,7 @@ param(
     [int]$VoicevoxReadyTimeoutSeconds = 45,
     [ValidateSet("gui", "headless", "camera-hub", "mediamtx")]
     [string]$MediapipeMode = "mediamtx",
-    [string]$MediapipeCameraName = "Logitech StreamCam",
+    [string]$MediapipeCameraName = "",
     [ValidateRange(160, 3840)]
     [int]$MediapipeCameraWidth = 1920,
     [ValidateRange(120, 2160)]
@@ -373,7 +373,21 @@ function New-StackStartArguments {
     Add-NamedArgument -Arguments $arguments -Name "-VoicevoxUrl" -Value $VoicevoxUrl -SkipWhenBlank $true
     Add-NamedArgument -Arguments $arguments -Name "-VoicevoxReadyTimeoutSeconds" -Value $VoicevoxReadyTimeoutSeconds
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeMode" -Value $MediapipeMode
-    Add-NamedArgument -Arguments $arguments -Name "-MediapipeCameraName" -Value $MediapipeCameraName
+    $mediapipeSelected = Test-ServiceSelected -Services $Services -ServiceId "mediapipe_camera_hub_stack"
+    if (
+        $mediapipeSelected -and
+        $MediapipeVideoSource -eq "dshow" -and
+        [string]::IsNullOrWhiteSpace($MediapipeCameraName)
+    ) {
+        throw "MediapipeCameraName is required for a dshow camera profile. Select a connected camera before start."
+    }
+    if (
+        $mediapipeSelected -and
+        $MediapipeVideoSource -eq "dshow" -and
+        -not [string]::IsNullOrWhiteSpace($MediapipeCameraName)
+    ) {
+        Add-NamedArgument -Arguments $arguments -Name "-MediapipeCameraName" -Value $MediapipeCameraName
+    }
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeCameraWidth" -Value $MediapipeCameraWidth
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeCameraHeight" -Value $MediapipeCameraHeight
     Add-NamedArgument -Arguments $arguments -Name "-MediapipeCameraFps" -Value $MediapipeCameraFps
@@ -447,7 +461,13 @@ function Invoke-StackScript {
     $powerShell = Resolve-CurrentPowerShell
     Write-Host ("[ops] delegate={0} layer=ops script={1}" -f $Operation, $scriptPath)
     if ($DryRun) {
-        Write-Host ("[ops] delegate_args={0}" -f ($Arguments -join " "))
+        $protectedArguments = @($Arguments)
+        for ($index = 0; $index -lt ($protectedArguments.Count - 1); $index++) {
+            if ($protectedArguments[$index] -eq "-MediapipeCameraName") {
+                $protectedArguments[$index + 1] = "<local-camera-selection>"
+            }
+        }
+        Write-Host ("[ops] delegate_args={0}" -f ($protectedArguments -join " "))
     }
     & $powerShell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $scriptPath @Arguments
     $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }

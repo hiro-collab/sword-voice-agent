@@ -174,6 +174,110 @@ class LauncherNativeLayoutTest(TestCase):
             self.assertEqual(list((state_dir / "logs").iterdir()), [])
             self.assertFalse((state_dir / "pids.json").exists())
 
+    def test_system_camera_selection_is_required_only_for_camera_profiles(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sword-system-camera-selection-") as temp_dir:
+            temp_root = Path(temp_dir)
+            non_camera_state = temp_root / "aituber-only-state"
+            non_camera_result = run_system(
+                "start",
+                "-Profile",
+                "aituber-only",
+                "-WorkspaceRoot",
+                str(PRODUCT_ROOT),
+                "-StackStateDir",
+                str(non_camera_state),
+                "-MediapipeCameraName",
+                "",
+                "-SkipVoicevoxCheck",
+                "-DryRun",
+                cwd=temp_root,
+            )
+            non_camera_output = (
+                f"{non_camera_result.stdout}\n{non_camera_result.stderr}"
+            )
+
+            self.assertEqual(non_camera_result.returncode, 0, non_camera_output)
+            self.assertIn("delegate=start", non_camera_output)
+            self.assertNotIn("-MediapipeCameraName", non_camera_output)
+            self.assertFalse((non_camera_state / "pids.json").exists())
+
+            for case_name, selection_arguments in (
+                ("omitted", ()),
+                ("explicit-blank", ("-MediapipeCameraName", "")),
+            ):
+                with self.subTest(case=case_name):
+                    camera_state = temp_root / f"camera-debug-{case_name}-state"
+                    camera_result = run_system(
+                        "start",
+                        "-Profile",
+                        "camera-debug",
+                        "-WorkspaceRoot",
+                        str(PRODUCT_ROOT),
+                        "-StackStateDir",
+                        str(camera_state),
+                        *selection_arguments,
+                        "-DryRun",
+                        cwd=temp_root,
+                    )
+                    camera_output = (
+                        f"{camera_result.stdout}\n{camera_result.stderr}"
+                    )
+
+                    self.assertNotEqual(
+                        camera_result.returncode, 0, camera_output
+                    )
+                    self.assertIn(
+                        "MediapipeCameraName is required for a dshow camera profile",
+                        camera_output,
+                    )
+                    self.assertFalse((camera_state / "pids.json").exists())
+
+            testsrc_state = temp_root / "camera-debug-testsrc-state"
+            testsrc_result = run_system(
+                "start",
+                "-Profile",
+                "camera-debug",
+                "-WorkspaceRoot",
+                str(PRODUCT_ROOT),
+                "-StackStateDir",
+                str(testsrc_state),
+                "-MediapipeVideoSource",
+                "testsrc",
+                "-DryRun",
+                cwd=temp_root,
+            )
+            testsrc_output = f"{testsrc_result.stdout}\n{testsrc_result.stderr}"
+
+            self.assertEqual(testsrc_result.returncode, 0, testsrc_output)
+            self.assertIn("delegate=start", testsrc_output)
+            self.assertNotIn("-MediapipeCameraName", testsrc_output)
+            self.assertFalse((testsrc_state / "pids.json").exists())
+
+            selected_state = temp_root / "camera-debug-selected-state"
+            selected_camera = "private-camera-selection"
+            selected_result = run_system(
+                "start",
+                "-Profile",
+                "camera-debug",
+                "-WorkspaceRoot",
+                str(PRODUCT_ROOT),
+                "-StackStateDir",
+                str(selected_state),
+                "-MediapipeCameraName",
+                selected_camera,
+                "-DryRun",
+                cwd=temp_root,
+            )
+            selected_output = f"{selected_result.stdout}\n{selected_result.stderr}"
+
+            self.assertEqual(selected_result.returncode, 0, selected_output)
+            self.assertIn(
+                "-MediapipeCameraName <local-camera-selection>",
+                selected_output,
+            )
+            self.assertNotIn(selected_camera, selected_output)
+            self.assertFalse((selected_state / "pids.json").exists())
+
     def test_stack_dry_run_accepts_native_agent_os_layout_without_legacy_aliases(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sword-launch-native-layout-") as temp_dir:
             workspace = Path(temp_dir) / "sword-agent-os"
