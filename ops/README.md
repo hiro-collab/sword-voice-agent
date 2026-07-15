@@ -43,7 +43,6 @@ cd <workspace>\sword-agent-os\control-plane\core
 | Profile | 用途 |
 |---|---|
 | `thought-core-v0` | 現在の主経路。Thought Core API と watcher を使う。 |
-| `thought-core-experimental` | 旧名の互換エイリアス。新しい手順では `thought-core-v0` を使う。 |
 | `camera-debug` | Camera Hub と Vision Snapshot Processor だけを確認する。 |
 | `aituber-only` | AITuber Kit 表示だけを確認する。 |
 

@@ -100,7 +100,6 @@ LAUNCHER_PROFILE_TO_OPS_PROFILE = {
     "full-stack": "thought-core-v0",
     "no-touchdesigner": "thought-core-v0",
     "thought-core-v0": "thought-core-v0",
-    "thought-core-experimental": "thought-core-experimental",
     "aituber-only": "aituber-only",
     "camera-debug": "camera-debug",
 }

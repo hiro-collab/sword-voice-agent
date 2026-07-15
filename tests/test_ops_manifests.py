@@ -57,10 +57,7 @@ class OpsManifestTest(TestCase):
         thought_core = _resolve_profile_services("thought-core-v0", profiles)
         self.assertIn("thought_core_api", thought_core)
         self.assertIn("thought_core_watcher", thought_core)
-        self.assertEqual(
-            _resolve_profile_services("thought-core-experimental", profiles),
-            thought_core,
-        )
+        self.assertNotIn("thought-core-experimental", profiles)
 
         demo_fast = set(profiles["demo-fast"]["services"])
         self.assertEqual(demo_fast, {"thought_core_api", "aituber_kit"})

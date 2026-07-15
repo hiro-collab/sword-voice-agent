@@ -178,7 +178,6 @@ const OPS_PROFILE_BY_LAUNCHER_PROFILE = {
   'demo-fast-action': 'demo-fast-action',
   'no-touchdesigner': 'thought-core-v0',
   'thought-core-v0': 'thought-core-v0',
-  'thought-core-experimental': 'thought-core-experimental',
   'aituber-only': 'aituber-only',
   'camera-debug': 'camera-debug'
 }
