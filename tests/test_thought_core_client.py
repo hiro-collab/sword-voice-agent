@@ -1,8 +1,10 @@
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 import json
+from urllib import error
 
 from sword_voice_agent.adapters.thought_core import (
+    ROUTE_DEADLINE_HEADER,
     ThoughtCoreClient,
     ThoughtCoreClientError,
     build_turn_payload,
@@ -95,6 +97,166 @@ class ThoughtCoreClientTest(TestCase):
                     "context_refs": {},
                 }
             )
+
+    @patch("sword_voice_agent.adapters.thought_core.request.urlopen")
+    @patch("sword_voice_agent.adapters.thought_core.time.monotonic", return_value=100.0)
+    def test_expired_deadline_refuses_open(
+        self,
+        _monotonic: MagicMock,
+        urlopen: MagicMock,
+    ) -> None:
+        client = ThoughtCoreClient(base_url="http://127.0.0.1:18787")
+
+        with self.assertRaisesRegex(ThoughtCoreClientError, "deadline expired"):
+            list(client.stream_turn({}, deadline_monotonic=100.0))
+
+        urlopen.assert_not_called()
+
+    @patch("sword_voice_agent.adapters.thought_core.request.urlopen")
+    @patch("sword_voice_agent.adapters.thought_core.time.monotonic", return_value=100.0)
+    def test_urlopen_uses_minimum_configured_and_remaining_timeout(
+        self,
+        _monotonic: MagicMock,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        stream = MagicMock()
+        stream.__iter__.return_value = iter([])
+        response.__enter__.return_value = stream
+        urlopen.return_value = response
+        client = ThoughtCoreClient(
+            base_url="http://127.0.0.1:18787",
+            timeout_s=5.0,
+        )
+
+        self.assertEqual(
+            list(client.stream_turn({}, deadline_monotonic=102.0)),
+            [],
+        )
+
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 2.0)
+        req = urlopen.call_args.args[0]
+        request_headers = {
+            name.lower(): value for name, value in req.header_items()
+        }
+        self.assertEqual(
+            request_headers[ROUTE_DEADLINE_HEADER.lower()],
+            "102.000000000",
+        )
+        self.assertEqual(json.loads(req.data.decode("utf-8")), {})
+
+    @patch("sword_voice_agent.adapters.thought_core.request.urlopen")
+    @patch("sword_voice_agent.adapters.thought_core.time.monotonic", return_value=100.0)
+    def test_remote_deadline_is_rejected_before_request_creation(
+        self,
+        _monotonic: MagicMock,
+        urlopen: MagicMock,
+    ) -> None:
+        client = ThoughtCoreClient(base_url="https://thought.example.test")
+
+        with self.assertRaisesRegex(ThoughtCoreClientError, "same-host"):
+            list(client.stream_turn({}, deadline_monotonic=102.0))
+
+        urlopen.assert_not_called()
+
+    @patch("sword_voice_agent.adapters.thought_core.request.urlopen")
+    def test_remote_request_without_deadline_preserves_legacy_compatibility(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        stream = MagicMock()
+        stream.__iter__.return_value = iter([])
+        response.__enter__.return_value = stream
+        urlopen.return_value = response
+        client = ThoughtCoreClient(base_url="https://thought.example.test")
+
+        self.assertEqual(list(client.stream_turn({})), [])
+        request_headers = {
+            name.lower(): value
+            for name, value in urlopen.call_args.args[0].header_items()
+        }
+        self.assertNotIn(ROUTE_DEADLINE_HEADER.lower(), request_headers)
+
+    @patch("sword_voice_agent.adapters.thought_core.request.urlopen")
+    @patch("sword_voice_agent.adapters.thought_core.time.monotonic")
+    def test_event_at_deadline_is_rejected_before_callback(
+        self,
+        monotonic: MagicMock,
+        urlopen: MagicMock,
+    ) -> None:
+        monotonic.side_effect = (100.0, 100.0, 100.0, 100.0, 100.0, 105.0)
+        response = MagicMock()
+        stream = MagicMock()
+        stream.__iter__.return_value = iter(
+            [
+                b"event: assistant.message\n",
+                b'data: {"type":"assistant.message","turn_id":"turn-1",'
+                b'"session_id":"living","data":{"speech":"private"}}\n',
+                b"\n",
+            ]
+        )
+        response.__enter__.return_value = stream
+        urlopen.return_value = response
+        callback = MagicMock()
+        client = ThoughtCoreClient(base_url="http://127.0.0.1:18787")
+
+        with self.assertRaisesRegex(ThoughtCoreClientError, "deadline expired"):
+            client.send_turn_streaming(
+                {},
+                on_event=callback,
+                deadline_monotonic=105.0,
+            )
+
+        callback.assert_not_called()
+
+    @patch("sword_voice_agent.adapters.thought_core.request.urlopen")
+    @patch("sword_voice_agent.adapters.thought_core.time.monotonic", return_value=100.0)
+    def test_first_event_before_deadline_reaches_callback(
+        self,
+        _monotonic: MagicMock,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        stream = MagicMock()
+        stream.__iter__.return_value = iter(
+            [
+                b"event: assistant.message\n",
+                b'data: {"type":"assistant.message","turn_id":"turn-1",'
+                b'"session_id":"living","data":{"speech":"public"}}\n',
+                b"\n",
+            ]
+        )
+        response.__enter__.return_value = stream
+        urlopen.return_value = response
+        callback = MagicMock()
+        client = ThoughtCoreClient(base_url="http://127.0.0.1:18787")
+
+        result = client.send_turn_streaming(
+            {},
+            on_event=callback,
+            deadline_monotonic=105.0,
+        )
+
+        self.assertEqual(result.text, "public")
+        callback.assert_called_once()
+
+    @patch("sword_voice_agent.adapters.thought_core.request.urlopen")
+    def test_http_error_does_not_echo_response_body(self, urlopen: MagicMock) -> None:
+        marker = "private-deadline-candidate-marker"
+        urlopen.side_effect = error.HTTPError(
+            "http://127.0.0.1:18787/turn",
+            409,
+            marker,
+            {},
+            MagicMock(read=lambda: marker.encode("utf-8")),
+        )
+        client = ThoughtCoreClient(base_url="http://127.0.0.1:18787")
+
+        with self.assertRaises(ThoughtCoreClientError) as raised:
+            list(client.stream_turn({}))
+
+        self.assertNotIn(marker, str(raised.exception))
 
     def test_build_turn_payload_maps_agent_request_context(self) -> None:
         payload = build_turn_payload(

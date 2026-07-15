@@ -12,6 +12,7 @@ import re
 import secrets
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -57,6 +58,15 @@ THOUGHT_CORE_TURNINPUT_REJECTED = {
     "result_class": "thought_core_turninput_rejected",
     "submission_count": 0,
     "thought_core_turninput_count": 0,
+    "presentation_class": "presentation_not_attempted",
+    "assistant_event_id": None,
+    "thought_core_first_event_elapsed_ms": None,
+    "raw_private_publication_flags": False,
+}
+THOUGHT_CORE_TURNINPUT_OUTCOME_UNKNOWN = {
+    "result_class": "thought_core_turninput_outcome_unknown",
+    "submission_count": None,
+    "thought_core_turninput_count": None,
     "presentation_class": "presentation_not_attempted",
     "assistant_event_id": None,
     "thought_core_first_event_elapsed_ms": None,
@@ -324,7 +334,7 @@ def build_live_private_turn_sink(
     client: ThoughtCoreClient | None = None,
     *,
     aituber_forwarder_factory: Callable[[str], Any] | None = None,
-) -> Callable[[Mapping[str, object], str], Mapping[str, object]]:
+) -> Callable[..., Mapping[str, object]]:
     """Build a process-local one-shot sink for a gate-consumed private turn."""
     thought_core = client or ThoughtCoreClient.from_env()
     claim_key = secrets.token_bytes(32)
@@ -334,7 +344,11 @@ def build_live_private_turn_sink(
     def submit_private_turn(
         candidate: Mapping[str, object],
         transcript: str,
+        *,
+        deadline_monotonic: float | None = None,
     ) -> Mapping[str, object]:
+        if not _live_deadline_allows_new_work(deadline_monotonic):
+            return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
         if not _is_canonical_gate_accepted_candidate(candidate):
             return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
         if not isinstance(transcript, str) or not transcript.strip():
@@ -359,6 +373,8 @@ def build_live_private_turn_sink(
                 return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
             claimed_candidate_fingerprints.add(fingerprint)
         candidate_id = ""
+        if not _live_deadline_allows_new_work(deadline_monotonic):
+            return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
 
         correlation_suffix = uuid4().hex
         turn_id = f"turn_live_speech_{correlation_suffix}"
@@ -379,6 +395,8 @@ def build_live_private_turn_sink(
 
         def observe_event(event: Any) -> None:
             nonlocal assistant_message_event_count
+            if not _live_deadline_allows_new_work(deadline_monotonic):
+                return
             event_id = getattr(event, "event_id", None)
             if bool(getattr(event, "is_message", False)) and bool(
                 getattr(event, "speech", "")
@@ -395,15 +413,26 @@ def build_live_private_turn_sink(
             if bool(getattr(event, "is_completed", False)):
                 completed_turn_ids.append(str(getattr(event, "turn_id", "")))
 
+        dispatch_started = False
         try:
-            response = thought_core.send_turn_streaming(
-                envelope,
-                on_event=observe_event,
-            )
-            if (
+            if not _live_deadline_allows_new_work(deadline_monotonic):
+                return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
+            dispatch_started = True
+            send_kwargs: dict[str, object] = {"on_event": observe_event}
+            if deadline_monotonic is not None:
+                send_kwargs["deadline_monotonic"] = deadline_monotonic
+            response = thought_core.send_turn_streaming(envelope, **send_kwargs)
+            exact_completion_observed = (
                 completed_turn_ids == [turn_id]
                 and getattr(response, "conversation_id", None) == turn_id
-            ):
+            )
+            if exact_completion_observed:
+                accepted_result = dict(THOUGHT_CORE_TURNINPUT_ACCEPTED)
+                if not _live_deadline_allows_new_work(deadline_monotonic):
+                    accepted_result["presentation_class"] = (
+                        "aituber_presentation_skipped_deadline"
+                    )
+                    return accepted_result
                 if (
                     assistant_message_event_count == 1
                     and len(assistant_message_events) == 1
@@ -416,6 +445,7 @@ def build_live_private_turn_sink(
                             aituber_forwarder_factory
                             or _build_live_aituber_forwarder
                         ),
+                        deadline_monotonic=deadline_monotonic,
                     )
                     if presentation_forwarded:
                         first_event_elapsed_ms = _thought_core_first_event_elapsed_ms(
@@ -432,9 +462,21 @@ def build_live_private_turn_sink(
                             first_event_elapsed_ms
                         )
                         return result
-                return dict(THOUGHT_CORE_TURNINPUT_ACCEPTED)
-            return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
+                return accepted_result
+            return dict(THOUGHT_CORE_TURNINPUT_OUTCOME_UNKNOWN)
         except Exception:
+            if completed_turn_ids == [turn_id]:
+                accepted_result = dict(THOUGHT_CORE_TURNINPUT_ACCEPTED)
+                accepted_result["presentation_class"] = (
+                    "aituber_presentation_skipped_after_completion"
+                )
+                return accepted_result
+            if dispatch_started:
+                # The blocking client does not expose a safe cancellation handle.
+                # Once dispatch starts, an exception or deadline can only leave the
+                # remote materialization outcome unknown until a canonical owned
+                # completion is observed.
+                return dict(THOUGHT_CORE_TURNINPUT_OUTCOME_UNKNOWN)
             return dict(THOUGHT_CORE_TURNINPUT_REJECTED)
         finally:
             envelope_private_turn = envelope.get("private_turn")
@@ -447,8 +489,26 @@ def build_live_private_turn_sink(
     return submit_private_turn
 
 
+def _live_deadline_allows_new_work(deadline_monotonic: float | None) -> bool:
+    if deadline_monotonic is None:
+        # Compatibility: maintainer/test callers may invoke this sink without the
+        # live candidate endpoint. Production ai-talk-core supplies its request-owned
+        # absolute monotonic deadline; remove this branch when all direct callers do.
+        return True
+    if (
+        isinstance(deadline_monotonic, bool)
+        or not isinstance(deadline_monotonic, (int, float))
+        or not math.isfinite(float(deadline_monotonic))
+    ):
+        return False
+    remaining_s = float(deadline_monotonic) - time.monotonic()
+    return 0 < remaining_s <= 10.0
+
+
 def _build_live_aituber_forwarder(
     turn_id: str,
+    *,
+    timeout_s_limit: float | None = None,
 ) -> ThoughtCoreAituberForwarder | None:
     message_url = str(os.environ.get("AITUBER_MESSAGE_URL", "") or "").strip()
     if not message_url:
@@ -458,6 +518,10 @@ def _build_live_aituber_forwarder(
             0.05,
             float(os.environ.get("AITUBER_HTTP_TIMEOUT_S", "0.75")),
         )
+        if timeout_s_limit is not None:
+            if not math.isfinite(timeout_s_limit) or timeout_s_limit < 0.05:
+                return None
+            timeout_s = min(timeout_s, timeout_s_limit)
         return ThoughtCoreAituberForwarder(
             message_url,
             timeout_s=timeout_s,
@@ -474,15 +538,31 @@ def _forward_live_assistant_message(
     event: Any,
     *,
     turn_id: str,
-    forwarder_factory: Callable[[str], Any],
+    forwarder_factory: Callable[..., Any],
+    deadline_monotonic: float | None = None,
 ) -> bool:
     forwarder: Any = None
     presentation_forwarded = False
     try:
-        forwarder = forwarder_factory(turn_id)
+        remaining_s = _live_remaining_deadline_seconds(deadline_monotonic)
+        if deadline_monotonic is not None and (
+            remaining_s is None or remaining_s < 0.05
+        ):
+            return False
+        if forwarder_factory is _build_live_aituber_forwarder:
+            forwarder = forwarder_factory(
+                turn_id,
+                timeout_s_limit=remaining_s,
+            )
+        else:
+            forwarder = forwarder_factory(turn_id)
         if forwarder is None:
             return False
         forwarder(event)
+        if deadline_monotonic is not None and _live_remaining_deadline_seconds(
+            deadline_monotonic
+        ) is None:
+            return False
         presentation_forwarded = bool(
             getattr(forwarder, "dispatch_count", None) == 1
             and getattr(forwarder, "error_count", None) == 0
@@ -499,6 +579,23 @@ def _forward_live_assistant_message(
             except Exception:
                 presentation_forwarded = False
     return presentation_forwarded
+
+
+def _live_remaining_deadline_seconds(
+    deadline_monotonic: float | None,
+) -> float | None:
+    if deadline_monotonic is None:
+        return None
+    if (
+        isinstance(deadline_monotonic, bool)
+        or not isinstance(deadline_monotonic, (int, float))
+        or not math.isfinite(float(deadline_monotonic))
+    ):
+        return None
+    remaining_s = float(deadline_monotonic) - time.monotonic()
+    if not 0 < remaining_s <= 10.0:
+        return None
+    return remaining_s
 
 
 def _thought_core_first_event_elapsed_ms(response: Any) -> int | None:

@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import ipaddress
 import json
+import math
 import os
+import socket
 import time
 from typing import Any, Callable, ClassVar, Iterable, Iterator, Mapping
-from urllib import error, request
+from urllib import error, parse, request
 
 from sword_voice_agent.adapters.auth import validate_http_url
 from sword_voice_agent.protocol.messages import AgentRequest, AgentResponse, now_timestamp
 
 
 DEFAULT_THOUGHT_CORE_BASE_URL = "http://127.0.0.1:18787"
+ROUTE_DEADLINE_HEADER = "X-Sword-Route-Deadline-Monotonic"
+MAX_ROUTE_DEADLINE_SECONDS = 10.0
 
 
 class ThoughtCoreClientError(RuntimeError):
@@ -132,15 +137,27 @@ class ThoughtCoreClient:
         timeout_s = float(os.environ.get("THOUGHT_CORE_TIMEOUT_S", "60"))
         return cls(base_url=base_url, timeout_s=timeout_s)
 
-    def stream_turn(self, turn_payload: Mapping[str, Any]) -> Iterator[ThoughtCoreStreamEvent]:
-        yield from self._post_json_stream("/turn?stream=true", dict(turn_payload))
+    def stream_turn(
+        self,
+        turn_payload: Mapping[str, Any],
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> Iterator[ThoughtCoreStreamEvent]:
+        _remaining_deadline_seconds(deadline_monotonic)
+        yield from self._post_json_stream(
+            "/turn?stream=true",
+            dict(turn_payload),
+            deadline_monotonic=deadline_monotonic,
+        )
 
     def send_turn_streaming(
         self,
         turn_payload: Mapping[str, Any],
         *,
         on_event: Callable[[ThoughtCoreStreamEvent], None] | None = None,
+        deadline_monotonic: float | None = None,
     ) -> AgentResponse:
+        _remaining_deadline_seconds(deadline_monotonic)
         messages: list[str] = []
         event_count = 0
         first_event_elapsed_s: float | None = None
@@ -148,7 +165,11 @@ class ThoughtCoreClient:
         turn_id: str | None = None
         last_raw: Mapping[str, Any] = {}
 
-        for event_payload in self.stream_turn(turn_payload):
+        for event_payload in self.stream_turn(
+            turn_payload,
+            deadline_monotonic=deadline_monotonic,
+        ):
+            _remaining_deadline_seconds(deadline_monotonic)
             event_count += 1
             if first_event_elapsed_s is None:
                 first_event_elapsed_s = event_payload.elapsed_s
@@ -159,10 +180,12 @@ class ThoughtCoreClient:
             if event_payload.is_message and event_payload.speech:
                 messages.append(event_payload.speech)
             if on_event is not None:
+                _remaining_deadline_seconds(deadline_monotonic)
                 on_event(event_payload)
             if event_payload.is_error:
                 raise ThoughtCoreClientError(thought_core_error_message(event_payload.raw))
 
+        _remaining_deadline_seconds(deadline_monotonic)
         raw = dict(last_raw)
         raw["_streaming"] = {
             "event_count": event_count,
@@ -200,33 +223,87 @@ class ThoughtCoreClient:
         self,
         path: str,
         payload: Mapping[str, Any],
+        *,
+        deadline_monotonic: float | None = None,
     ) -> Iterator[ThoughtCoreStreamEvent]:
+        remaining_s = _remaining_deadline_seconds(deadline_monotonic)
+        if deadline_monotonic is not None and not _is_same_host_deadline_target(
+            self.base_url
+        ):
+            raise ThoughtCoreClientError(
+                "thought-core route deadline requires a same-host target"
+            )
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        if deadline_monotonic is not None:
+            headers[ROUTE_DEADLINE_HEADER] = format(deadline_monotonic, ".9f")
         req = request.Request(
             url=f"{self.base_url}{path}",
             data=body,
             method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "text/event-stream",
-            },
+            headers=headers,
         )
-        started_monotonic = time.perf_counter()
+        started_monotonic = time.monotonic()
 
         try:
-            with request.urlopen(req, timeout=self.timeout_s) as response:
+            remaining_s = _remaining_deadline_seconds(deadline_monotonic)
+            timeout_s = (
+                self.timeout_s
+                if remaining_s is None
+                else min(self.timeout_s, remaining_s)
+            )
+            with request.urlopen(req, timeout=timeout_s) as response:
                 for payload_chunk in iter_sse_json_payloads(response):
+                    _remaining_deadline_seconds(deadline_monotonic)
                     yield ThoughtCoreStreamEvent.from_payload(
                         payload_chunk,
-                        elapsed_s=time.perf_counter() - started_monotonic,
+                        elapsed_s=time.monotonic() - started_monotonic,
                     )
         except error.HTTPError as exc:
-            details = exc.read().decode("utf-8", errors="replace")
             raise ThoughtCoreClientError(
-                f"thought-core returned HTTP {exc.code}: {details}"
+                f"thought-core returned HTTP {exc.code}"
             ) from exc
         except error.URLError as exc:
-            raise ThoughtCoreClientError(f"failed to connect to thought-core: {exc}") from exc
+            raise ThoughtCoreClientError("failed to connect to thought-core") from exc
+
+
+def _remaining_deadline_seconds(deadline_monotonic: float | None) -> float | None:
+    if deadline_monotonic is None:
+        # Compatibility: the current two-argument ai-talk-core private-turn callback
+        # cannot yet pass a deadline. Remove this branch after that named consumer
+        # supplies deadline_monotonic for every accepted candidate.
+        return None
+    if (
+        isinstance(deadline_monotonic, bool)
+        or not isinstance(deadline_monotonic, (int, float))
+        or not math.isfinite(float(deadline_monotonic))
+    ):
+        raise ThoughtCoreClientError("thought-core route deadline invalid")
+    remaining_s = float(deadline_monotonic) - time.monotonic()
+    if remaining_s <= 0:
+        raise ThoughtCoreClientError("thought-core route deadline expired")
+    if remaining_s > MAX_ROUTE_DEADLINE_SECONDS:
+        raise ThoughtCoreClientError("thought-core route deadline invalid")
+    return remaining_s
+
+
+def _is_same_host_deadline_target(base_url: str) -> bool:
+    hostname = (parse.urlsplit(base_url).hostname or "").lower().rstrip(".")
+    if not hostname:
+        return False
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        local_names = {
+            socket.gethostname().lower().rstrip("."),
+            socket.getfqdn().lower().rstrip("."),
+        }
+        return hostname in local_names
 
 
 def validate_base_url(base_url: str) -> str:

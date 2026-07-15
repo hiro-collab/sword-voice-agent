@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
+import secrets
 import sys
+import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Mapping
@@ -20,6 +25,9 @@ from .provenance_diagnostics import build_child_provenance_diagnostics
 from .schema import TurnInput
 
 DEFAULT_MAX_BODY_BYTES = 64 * 1024
+ROUTE_DEADLINE_HEADER = "X-Sword-Route-Deadline-Monotonic"
+MAX_ROUTE_DEADLINE_SECONDS = 10.0
+MAX_ACCEPTED_CANDIDATE_RESERVATIONS = 4096
 
 _ACCEPTED_SPEECH_ENVELOPE_KEYS = {
     "accepted_user_speech_candidate",
@@ -28,10 +36,60 @@ _ACCEPTED_SPEECH_ENVELOPE_KEYS = {
 _OPAQUE_CONVERSATION_ATTEMPT_REF = re.compile(
     r"^m4\.prepared_sample_attempt:[0-9a-f]{32}$"
 )
+_ACCEPTED_CANDIDATE_REF = re.compile(r"^ausc_[A-Za-z0-9_.:-]{1,115}$")
 
 
 class RequestBodyTooLarge(ValueError):
     pass
+
+
+class TurnRequestRejected(ValueError):
+    def __init__(self, result_class: str, status: HTTPStatus) -> None:
+        super().__init__(result_class)
+        self.result_class = result_class
+        self.status = status
+
+
+class _AcceptedCandidateRegistry:
+    """Bounded server-lifetime replay authority without retaining raw ids."""
+
+    def __init__(self) -> None:
+        self._key = secrets.token_bytes(32)
+        self._fingerprints: set[bytes] = set()
+        self._lock = threading.Lock()
+
+    def reserve(self, turn: TurnInput | Mapping[str, Any]) -> None:
+        if not isinstance(turn, TurnInput):
+            return
+        candidate_ref = turn.context_refs.get(
+            "accepted_user_speech_candidate_ref"
+        )
+        if (
+            not isinstance(candidate_ref, str)
+            or _ACCEPTED_CANDIDATE_REF.fullmatch(candidate_ref) is None
+        ):
+            raise TurnRequestRejected(
+                "accepted_candidate_invalid",
+                HTTPStatus.BAD_REQUEST,
+            )
+        fingerprint = hashlib.blake2s(
+            candidate_ref.encode("utf-8"),
+            key=self._key,
+            digest_size=16,
+        ).digest()
+        candidate_ref = ""
+        with self._lock:
+            if fingerprint in self._fingerprints:
+                raise TurnRequestRejected(
+                    "accepted_candidate_duplicate",
+                    HTTPStatus.CONFLICT,
+                )
+            if len(self._fingerprints) >= MAX_ACCEPTED_CANDIDATE_RESERVATIONS:
+                raise TurnRequestRejected(
+                    "accepted_candidate_registry_full",
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+            self._fingerprints.add(fingerprint)
 
 
 def materialize_turn_input(payload: Mapping[str, Any]) -> TurnInput | Mapping[str, Any]:
@@ -105,6 +163,48 @@ def _is_opaque_conversation_attempt_ref(value: object) -> bool:
     )
 
 
+def _parse_route_deadline_header(value: str | None) -> float | None:
+    if value is None:
+        # Compatibility: the current ai-talk-core two-argument private-turn sink
+        # cannot yet forward a deadline. Remove absence support after that named
+        # consumer always sends ROUTE_DEADLINE_HEADER.
+        return None
+    try:
+        deadline_monotonic = float(value)
+    except (TypeError, ValueError) as exc:
+        raise TurnRequestRejected(
+            "turn_deadline_invalid",
+            HTTPStatus.BAD_REQUEST,
+        ) from exc
+    if not math.isfinite(deadline_monotonic):
+        raise TurnRequestRejected(
+            "turn_deadline_invalid",
+            HTTPStatus.BAD_REQUEST,
+        )
+    remaining_s = deadline_monotonic - time.monotonic()
+    if remaining_s <= 0:
+        raise TurnRequestRejected(
+            "turn_deadline_expired",
+            HTTPStatus.REQUEST_TIMEOUT,
+        )
+    if remaining_s > MAX_ROUTE_DEADLINE_SECONDS:
+        raise TurnRequestRejected(
+            "turn_deadline_invalid",
+            HTTPStatus.BAD_REQUEST,
+        )
+    return deadline_monotonic
+
+
+def _ensure_route_deadline_current(deadline_monotonic: float | None) -> None:
+    if deadline_monotonic is None:
+        return
+    if deadline_monotonic - time.monotonic() <= 0:
+        raise TurnRequestRejected(
+            "turn_deadline_expired",
+            HTTPStatus.REQUEST_TIMEOUT,
+        )
+
+
 def create_server(
     host: str = "127.0.0.1",
     port: int = 18787,
@@ -117,6 +217,7 @@ def create_server(
     require_api_token = _env_bool("THOUGHT_CORE_REQUIRE_API_TOKEN")
     api_token = os.environ.get("THOUGHT_CORE_API_TOKEN", "").strip()
     max_body_bytes = _env_int("THOUGHT_CORE_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)
+    accepted_candidate_registry = _AcceptedCandidateRegistry()
 
     class ThoughtCoreHandler(BaseHTTPRequestHandler):
         server_version = "thought-core/0"
@@ -189,7 +290,21 @@ def create_server(
                 or _first(params, "stream", "").lower() == "true"
                 or "text/event-stream" in accept
             )
-            self._handle_turn(payload, stream=stream)
+            try:
+                deadline_monotonic = _parse_route_deadline_header(
+                    self.headers.get(ROUTE_DEADLINE_HEADER)
+                )
+            except TurnRequestRejected as exc:
+                self._send_json(
+                    {"error": exc.result_class},
+                    status=exc.status,
+                )
+                return
+            self._handle_turn(
+                payload,
+                stream=stream,
+                deadline_monotonic=deadline_monotonic,
+            )
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             return
@@ -268,16 +383,35 @@ def create_server(
             )
             return bool(actual) and hmac.compare_digest(actual, api_token)
 
-        def _handle_turn(self, payload: dict[str, Any], *, stream: bool) -> None:
-            if stream:
-                self._send_sse_live(payload)
-                return
+        def _handle_turn(
+            self,
+            payload: dict[str, Any],
+            *,
+            stream: bool,
+            deadline_monotonic: float | None,
+        ) -> None:
             try:
+                _ensure_route_deadline_current(deadline_monotonic)
                 turn = materialize_turn_input(payload)
+                _ensure_route_deadline_current(deadline_monotonic)
+                accepted_candidate_registry.reserve(turn)
+                _ensure_route_deadline_current(deadline_monotonic)
+                if stream:
+                    self._send_sse_live(
+                        turn,
+                        deadline_monotonic=deadline_monotonic,
+                    )
+                    return
                 events = [
                     _decorate_correlated_event_with_conversation_attempt_ref(event, turn)
                     for event in loop.run_dicts(turn)
                 ]
+            except TurnRequestRejected as exc:
+                self._send_json(
+                    {"error": exc.result_class},
+                    status=exc.status,
+                )
+                return
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
@@ -328,14 +462,17 @@ def create_server(
             for event in events:
                 self._write_sse_event(event)
 
-        def _send_sse_live(self, payload: dict[str, Any]) -> None:
+        def _send_sse_live(
+            self,
+            turn: TurnInput | Mapping[str, Any],
+            *,
+            deadline_monotonic: float | None,
+        ) -> None:
             self.send_response(HTTPStatus.OK.value)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "close")
             self.end_headers()
-
-            turn: TurnInput | Mapping[str, Any] = payload
 
             def write_event(event: dict[str, Any]) -> None:
                 event = _decorate_correlated_event_with_conversation_attempt_ref(
@@ -346,12 +483,20 @@ def create_server(
                 self._write_sse_event(event)
 
             try:
-                turn = materialize_turn_input(payload)
+                _ensure_route_deadline_current(deadline_monotonic)
                 loop.run_dicts(turn, event_sink=write_event)
+            except TurnRequestRejected as exc:
+                write_event(
+                    _error_event(
+                        {},
+                        code=exc.result_class,
+                        message=exc.result_class,
+                    )
+                )
             except ValueError as exc:
                 write_event(
                     _error_event(
-                        payload,
+                        {},
                         code="bad_request",
                         message=str(exc),
                     )

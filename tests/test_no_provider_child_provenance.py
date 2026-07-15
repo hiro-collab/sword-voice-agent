@@ -5,10 +5,12 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
-from urllib import request
+from urllib import error, request
 
 from sword_voice_agent.adapters.no_provider_child_provenance import (
     build_no_provider_child_provenance_diagnostics,
@@ -24,6 +26,7 @@ sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 from thought_core.provenance_diagnostics import (  # noqa: E402
     build_child_provenance_diagnostics,
 )
+from thought_core import server as thought_core_server  # noqa: E402
 from thought_core.schema import TurnInput  # noqa: E402
 from thought_core.server import (  # noqa: E402
     _decorate_correlated_event_with_conversation_attempt_ref,
@@ -59,6 +62,56 @@ def load_shared_attempt_vectors() -> dict[str, object] | None:
 
 
 class NoProviderChildProvenanceTests(unittest.TestCase):
+    def _accepted_candidate_payload(self, candidate_id: str) -> dict[str, object]:
+        candidate = json.loads(
+            (
+                REPO_ROOT.parents[1]
+                / "contracts"
+                / "accepted_user_speech_candidate_input_gate"
+                / "examples"
+                / "source_static_accepted_private_user_speech_candidate.example.json"
+            ).read_text(encoding="utf-8")
+        )
+        candidate["candidate_id"] = candidate_id
+        payload = {
+            "accepted_user_speech_candidate": candidate,
+            "private_turn": {
+                "text": "private turn",
+                "turn_id": "turn_deadline_test",
+                "session_id": "session_deadline_test",
+                "locale": "ja-JP",
+                "context_refs": {},
+            },
+        }
+        self.assertEqual(
+            set(payload),
+            {"accepted_user_speech_candidate", "private_turn"},
+        )
+        return payload
+
+    def _post_turn(
+        self,
+        port: int,
+        payload: dict[str, object],
+        *,
+        deadline_header: str | None = None,
+        path: str = "/turn",
+    ) -> tuple[int, str]:
+        headers = {"Content-Type": "application/json"}
+        if deadline_header is not None:
+            headers["X-Sword-Route-Deadline-Monotonic"] = deadline_header
+        req = request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers=headers,
+        )
+        try:
+            with request.urlopen(req, timeout=5) as response:
+                return response.status, response.read().decode("utf-8")
+        except error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8")
+
     def test_shared_vectors_decorate_only_the_canonical_ref_when_configured(self) -> None:
         vectors = load_shared_attempt_vectors()
         if vectors is None:
@@ -291,14 +344,28 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
         try:
             port = server.server_address[1]
             rendered_outputs = []
-            for suffix in ("/turn", "/turn/stream"):
+            expected_candidate_refs = []
+            for index, suffix in enumerate(("/turn", "/turn/stream"), start=1):
                 with self.subTest(path=suffix):
-                    body = json.dumps(payload).encode("utf-8")
+                    request_payload = json.loads(json.dumps(payload))
+                    request_candidate = request_payload[
+                        "accepted_user_speech_candidate"
+                    ]
+                    request_candidate["candidate_id"] = (
+                        f"ausc_live:cid_{index:032x}"
+                    )
+                    expected_candidate_refs.append(request_candidate["candidate_id"])
+                    body = json.dumps(request_payload).encode("utf-8")
                     req = request.Request(
                         f"http://127.0.0.1:{port}{suffix}",
                         data=body,
                         method="POST",
-                        headers={"Content-Type": "application/json"},
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-Sword-Route-Deadline-Monotonic": str(
+                                time.monotonic() + 5
+                            ),
+                        },
                     )
                     with request.urlopen(req, timeout=5) as response:
                         self.assertEqual(response.status, 200)
@@ -335,12 +402,16 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
                             )
 
             self.assertEqual(len(loop.turns), 2)
-            for turn in loop.turns:
+            for turn, expected_candidate_ref in zip(
+                loop.turns,
+                expected_candidate_refs,
+                strict=True,
+            ):
                 self.assertIsInstance(turn, TurnInput)
                 self.assertEqual(turn.turn_id, "turn_candidate_server_001")
                 self.assertEqual(
                     turn.context_refs["accepted_user_speech_candidate_ref"],
-                    candidate["candidate_id"],
+                    expected_candidate_ref,
                 )
                 self.assertEqual(
                     turn.context_refs["conversation_attempt_ref"],
@@ -353,6 +424,242 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_server_rejects_expired_deadline_before_materialization(self) -> None:
+        loop = unittest.mock.Mock()
+        payload = self._accepted_candidate_payload(
+            "ausc_live:cid_11111111111111111111111111111111"
+        )
+        server = create_server("127.0.0.1", 0, thought_loop=loop)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            with patch.object(
+                thought_core_server,
+                "materialize_turn_input",
+                wraps=thought_core_server.materialize_turn_input,
+            ) as materialize:
+                status, body = self._post_turn(
+                    port,
+                    payload,
+                    deadline_header=str(time.monotonic() - 1),
+                )
+            self.assertEqual(status, 408)
+            self.assertEqual(json.loads(body), {"error": "turn_deadline_expired"})
+            materialize.assert_not_called()
+            loop.run_dicts.assert_not_called()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_server_expiry_after_materialize_does_not_reserve_candidate(self) -> None:
+        class CountingLoop:
+            def __init__(self) -> None:
+                self.count = 0
+
+            def run_dicts(self, turn, *, event_sink=None):
+                self.count += 1
+                return []
+
+        loop = CountingLoop()
+        payload = self._accepted_candidate_payload(
+            "ausc_live:cid_22222222222222222222222222222222"
+        )
+        server = create_server("127.0.0.1", 0, thought_loop=loop)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            with (
+                patch.object(
+                    thought_core_server.time,
+                    "monotonic",
+                    side_effect=(100.0, 100.5, 102.0),
+                ),
+                patch.object(
+                    thought_core_server,
+                    "materialize_turn_input",
+                    wraps=thought_core_server.materialize_turn_input,
+                ) as materialize,
+            ):
+                status, body = self._post_turn(
+                    port,
+                    payload,
+                    deadline_header="101.5",
+                )
+            self.assertEqual(status, 408)
+            self.assertEqual(json.loads(body), {"error": "turn_deadline_expired"})
+            materialize.assert_called_once()
+            retry_status, _ = self._post_turn(port, payload)
+            self.assertEqual(retry_status, 200)
+            self.assertEqual(loop.count, 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_server_rejects_malformed_and_overlong_deadlines_without_echo(self) -> None:
+        marker = "private-deadline-marker"
+        loop = unittest.mock.Mock()
+        server = create_server("127.0.0.1", 0, thought_loop=loop)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            for deadline_header in (marker, str(time.monotonic() + 11)):
+                with self.subTest(deadline_header=deadline_header):
+                    payload = self._accepted_candidate_payload(
+                        "ausc_live:cid_33333333333333333333333333333333"
+                    )
+                    status, body = self._post_turn(
+                        port,
+                        payload,
+                        deadline_header=deadline_header,
+                    )
+                    self.assertEqual(status, 400)
+                    self.assertEqual(
+                        json.loads(body),
+                        {"error": "turn_deadline_invalid"},
+                    )
+                    self.assertNotIn(marker, body)
+            loop.run_dicts.assert_not_called()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_server_reserves_candidate_once_across_sequential_requests(self) -> None:
+        class CountingLoop:
+            def __init__(self) -> None:
+                self.count = 0
+
+            def run_dicts(self, turn, *, event_sink=None):
+                self.count += 1
+                return []
+
+        candidate_id = "ausc_live:cid_44444444444444444444444444444444"
+        payload = self._accepted_candidate_payload(candidate_id)
+        loop = CountingLoop()
+        server = create_server("127.0.0.1", 0, thought_loop=loop)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            first_status, _ = self._post_turn(port, payload, path="/turn")
+            replay_status, replay_body = self._post_turn(
+                port,
+                payload,
+                path="/turn/stream",
+            )
+            self.assertEqual(first_status, 200)
+            self.assertEqual(replay_status, 409)
+            self.assertEqual(
+                json.loads(replay_body),
+                {"error": "accepted_candidate_duplicate"},
+            )
+            self.assertNotIn(candidate_id, replay_body)
+            self.assertEqual(loop.count, 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_server_reserves_candidate_once_across_concurrent_requests(self) -> None:
+        class CountingLoop:
+            def __init__(self) -> None:
+                self.count = 0
+                self.lock = threading.Lock()
+
+            def run_dicts(self, turn, *, event_sink=None):
+                with self.lock:
+                    self.count += 1
+                return []
+
+        payload = self._accepted_candidate_payload(
+            "ausc_live:cid_55555555555555555555555555555555"
+        )
+        loop = CountingLoop()
+        server = create_server("127.0.0.1", 0, thought_loop=loop)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(
+                    executor.map(
+                        lambda _: self._post_turn(
+                            port,
+                            payload,
+                            path="/turn/stream",
+                        ),
+                        range(2),
+                    )
+                )
+            self.assertEqual(sorted(status for status, _ in results), [200, 409])
+            self.assertEqual(loop.count, 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_server_rejects_invalid_envelope_without_reserving_candidate(self) -> None:
+        class CountingLoop:
+            def __init__(self) -> None:
+                self.count = 0
+
+            def run_dicts(self, turn, *, event_sink=None):
+                self.count += 1
+                return []
+
+        payload = self._accepted_candidate_payload(
+            "ausc_live:cid_66666666666666666666666666666666"
+        )
+        invalid_payload = dict(payload)
+        invalid_payload["unexpected"] = "private"
+        loop = CountingLoop()
+        server = create_server("127.0.0.1", 0, thought_loop=loop)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            invalid_status, _ = self._post_turn(port, invalid_payload)
+            valid_status, _ = self._post_turn(port, payload)
+            self.assertEqual(invalid_status, 400)
+            self.assertEqual(valid_status, 200)
+            self.assertEqual(loop.count, 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_server_registry_full_is_fixed_and_does_not_enter_loop(self) -> None:
+        loop = unittest.mock.Mock()
+        payload = self._accepted_candidate_payload(
+            "ausc_live:cid_77777777777777777777777777777777"
+        )
+        with patch.object(
+            thought_core_server,
+            "MAX_ACCEPTED_CANDIDATE_RESERVATIONS",
+            0,
+        ):
+            server = create_server("127.0.0.1", 0, thought_loop=loop)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                status, body = self._post_turn(server.server_address[1], payload)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+        self.assertEqual(status, 503)
+        self.assertEqual(
+            json.loads(body),
+            {"error": "accepted_candidate_registry_full"},
+        )
+        loop.run_dicts.assert_not_called()
 
     def test_assistant_ref_uses_only_validated_turn_context_and_strips_envelope(
         self,

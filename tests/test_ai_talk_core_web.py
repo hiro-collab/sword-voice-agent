@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest import TestCase
 from argparse import Namespace
 import json
+import os
 from pathlib import Path
 import shutil
 import threading
@@ -650,9 +651,9 @@ class AiTalkCoreWebDefaultsTest(TestCase):
                 self.assertEqual(
                     result,
                     {
-                        "result_class": "thought_core_turninput_rejected",
-                        "submission_count": 0,
-                        "thought_core_turninput_count": 0,
+                        "result_class": "thought_core_turninput_outcome_unknown",
+                        "submission_count": None,
+                        "thought_core_turninput_count": None,
                         "presentation_class": "presentation_not_attempted",
                         "assistant_event_id": None,
                         "thought_core_first_event_elapsed_ms": None,
@@ -688,6 +689,204 @@ class AiTalkCoreWebDefaultsTest(TestCase):
         self.assertEqual(replay["thought_core_turninput_count"], 0)
         self.assertEqual(client.send_turn_streaming.call_count, 1)
 
+    @patch(
+        "sword_voice_agent.apps.ai_talk_core_web.time.monotonic",
+        return_value=100.0,
+    )
+    def test_private_turn_sink_expired_deadline_refuses_send(
+        self,
+        _monotonic: MagicMock,
+    ) -> None:
+        client = Mock()
+        sink = build_live_private_turn_sink(client)
+
+        result = sink(
+            accepted_candidate_audit(),
+            "private",
+            deadline_monotonic=100.0,
+        )
+
+        self.assertEqual(result["submission_count"], 0)
+        self.assertEqual(result["thought_core_turninput_count"], 0)
+        client.send_turn_streaming.assert_not_called()
+
+    @patch("sword_voice_agent.apps.ai_talk_core_web.time.monotonic")
+    def test_private_turn_sink_completion_after_deadline_has_no_presentation(
+        self,
+        monotonic: MagicMock,
+    ) -> None:
+        monotonic.side_effect = (100.0, 100.0, 100.0, 100.0, 100.0, 105.0)
+        forwarder_factory = Mock()
+
+        class FakeClient:
+            def send_turn_streaming(
+                self,
+                payload,
+                *,
+                on_event,
+                deadline_monotonic,
+            ):
+                self.deadline_monotonic = deadline_monotonic
+                turn_id = payload["private_turn"]["turn_id"]
+                on_event(
+                    Mock(
+                        is_message=True,
+                        is_completed=False,
+                        turn_id=turn_id,
+                        event_id="evt-live-before-deadline",
+                        speech="public response",
+                    )
+                )
+                on_event(Mock(is_message=False, is_completed=True, turn_id=turn_id))
+                return Mock(conversation_id=turn_id)
+
+        client = FakeClient()
+        result = build_live_private_turn_sink(
+            client,
+            aituber_forwarder_factory=forwarder_factory,
+        )(
+            accepted_candidate_audit(),
+            "private",
+            deadline_monotonic=105.0,
+        )
+
+        self.assertEqual(client.deadline_monotonic, 105.0)
+        self.assertEqual(result["submission_count"], 1)
+        self.assertEqual(result["thought_core_turninput_count"], 1)
+        self.assertEqual(
+            result["presentation_class"],
+            "aituber_presentation_skipped_deadline",
+        )
+        forwarder_factory.assert_not_called()
+
+    @patch("sword_voice_agent.apps.ai_talk_core_web.time.monotonic")
+    def test_private_turn_sink_deadline_during_stream_is_unknown_not_zero(
+        self,
+        monotonic: MagicMock,
+    ) -> None:
+        monotonic.side_effect = (100.0, 100.0, 100.0, 105.0)
+
+        class DeadlineDuringStreamClient:
+            def send_turn_streaming(
+                self,
+                payload,
+                *,
+                on_event,
+                deadline_monotonic,
+            ):
+                turn_id = payload["private_turn"]["turn_id"]
+                on_event(
+                    Mock(
+                        is_message=False,
+                        is_completed=True,
+                        turn_id=turn_id,
+                    )
+                )
+                return Mock(conversation_id=turn_id)
+
+        result = build_live_private_turn_sink(DeadlineDuringStreamClient())(
+            accepted_candidate_audit(),
+            "private",
+            deadline_monotonic=105.0,
+        )
+
+        self.assertEqual(
+            result["result_class"],
+            "thought_core_turninput_outcome_unknown",
+        )
+        self.assertIsNone(result["submission_count"])
+        self.assertIsNone(result["thought_core_turninput_count"])
+
+    def test_private_turn_sink_completion_then_client_error_preserves_acceptance(
+        self,
+    ) -> None:
+        class CompletedThenFailedClient:
+            def send_turn_streaming(self, payload, *, on_event):
+                turn_id = payload["private_turn"]["turn_id"]
+                on_event(Mock(is_completed=True, turn_id=turn_id))
+                raise RuntimeError("private")
+
+        result = build_live_private_turn_sink(CompletedThenFailedClient())(
+            accepted_candidate_audit(),
+            "private",
+        )
+
+        self.assertEqual(result["submission_count"], 1)
+        self.assertEqual(result["thought_core_turninput_count"], 1)
+        self.assertEqual(
+            result["presentation_class"],
+            "aituber_presentation_skipped_after_completion",
+        )
+
+    @patch("sword_voice_agent.apps.ai_talk_core_web.time.monotonic", return_value=100.0)
+    @patch("sword_voice_agent.apps.ai_talk_core_web.ThoughtCoreAituberForwarder")
+    def test_private_turn_sink_clamps_default_presentation_timeout_to_remaining(
+        self,
+        forwarder_class: MagicMock,
+        _monotonic: MagicMock,
+    ) -> None:
+        forwarder = forwarder_class.return_value
+        forwarder.dispatch_count = 1
+        forwarder.error_count = 0
+        forwarder.close.return_value = None
+        client = completed_turn_client(include_message=True)
+
+        with patch.dict(
+            os.environ,
+            {
+                "AITUBER_MESSAGE_URL": "http://127.0.0.1:3000/api/message",
+                "AITUBER_HTTP_TIMEOUT_S": "0.75",
+            },
+        ):
+            result = build_live_private_turn_sink(client)(
+                accepted_candidate_audit(),
+                "private",
+                deadline_monotonic=100.4,
+            )
+
+        self.assertEqual(result["submission_count"], 1)
+        self.assertEqual(result["thought_core_turninput_count"], 1)
+        self.assertAlmostEqual(
+            forwarder_class.call_args.kwargs["timeout_s"],
+            0.4,
+        )
+
+    def test_private_turn_sink_late_forwarder_does_not_claim_presentation(
+        self,
+    ) -> None:
+        clock = {"now": 100.0}
+
+        class LateForwarder:
+            dispatch_count = 0
+            error_count = 0
+
+            def __call__(self, _event) -> None:
+                self.dispatch_count = 1
+                clock["now"] = 106.0
+
+            def close(self) -> None:
+                return None
+
+        with patch(
+            "sword_voice_agent.apps.ai_talk_core_web.time.monotonic",
+            side_effect=lambda: clock["now"],
+        ):
+            result = build_live_private_turn_sink(
+                completed_turn_client(include_message=True),
+                aituber_forwarder_factory=lambda _turn_id: LateForwarder(),
+            )(
+                accepted_candidate_audit(),
+                "private",
+                deadline_monotonic=105.0,
+            )
+
+        self.assertEqual(result["submission_count"], 1)
+        self.assertEqual(result["thought_core_turninput_count"], 1)
+        self.assertEqual(
+            result["presentation_class"],
+            "aituber_presentation_not_forwarded",
+        )
+
     def test_private_turn_sink_rejects_concurrent_candidate_replay(self) -> None:
         client = completed_turn_client(delay_seconds=0.02)
         sink = build_live_private_turn_sink(client)
@@ -716,7 +915,7 @@ class AiTalkCoreWebDefaultsTest(TestCase):
         failed = sink(candidate, "private first")
         retry = sink(candidate, "private retry")
 
-        self.assertEqual(failed["thought_core_turninput_count"], 0)
+        self.assertIsNone(failed["thought_core_turninput_count"])
         self.assertEqual(retry["thought_core_turninput_count"], 0)
         self.assertEqual(client.send_turn_streaming.call_count, 1)
 
@@ -761,16 +960,38 @@ def accepted_candidate_audit() -> dict[str, object]:
     }
 
 
-def completed_turn_client(*, delay_seconds: float = 0.0) -> Mock:
+def completed_turn_client(
+    *,
+    delay_seconds: float = 0.0,
+    include_message: bool = False,
+) -> Mock:
     client = Mock()
     call_lock = threading.Lock()
 
-    def send(payload, *, on_event):
+    def send(payload, *, on_event, deadline_monotonic=None):
         with call_lock:
             turn_id = payload["private_turn"]["turn_id"]
         if delay_seconds:
             time.sleep(delay_seconds)
-        on_event(Mock(is_completed=True, turn_id=turn_id))
+        if include_message:
+            on_event(
+                Mock(
+                    is_message=True,
+                    is_completed=False,
+                    turn_id=turn_id,
+                    event_id="evt-live-timeout-clamp",
+                    speech="public response",
+                )
+            )
+        on_event(
+            Mock(
+                is_message=False,
+                is_completed=True,
+                turn_id=turn_id,
+                event_id=None,
+                speech="",
+            )
+        )
         return Mock(conversation_id=turn_id)
 
     client.send_turn_streaming.side_effect = send
