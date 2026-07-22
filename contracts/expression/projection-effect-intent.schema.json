@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-agent.local/contracts/expression/projection-effect-intent.schema.json",
+  "title": "Projection Effect Intent",
+  "description": "Privacy-safe fixed intent emitted by Thought Core for the Projection Effects transport boundary.",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["schemaVersion", "action", "effectId"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "action": { "const": "start" },
+        "effectId": { "enum": ["fire", "thunderBall"] }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["schemaVersion", "action"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "action": { "enum": ["stop", "reset"] }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

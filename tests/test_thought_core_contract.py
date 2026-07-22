@@ -2623,6 +2623,14 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(second_events[-1]["data"]["status"], "needs_feedback")
         self.assertEqual(len(tools.execute_calls), 1)
 
+    def test_home_action_route_precedes_projection_effect_detector(self) -> None:
+        events = ThoughtLoop(tools=MockThoughtTools()).run_dicts(TURN)
+        event_types = [event["type"] for event in events]
+
+        self.assertIn("action.proposed", event_types)
+        self.assertIn("action.reviewed", event_types)
+        self.assertNotIn("projection.effect.requested", event_types)
+
     def test_general_turn_uses_responder_boundary(self) -> None:
         events = ThoughtLoop(responder=StaticResponder()).run_dicts(GENERAL_TURN)
         event_types = [event["type"] for event in events]

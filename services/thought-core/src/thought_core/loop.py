@@ -25,6 +25,10 @@ from .input_understanding import (
     describe_input_understanding,
 )
 from .persona import AssistantPersona, build_persona_from_env, strip_persona_tags
+from .projection_effect_intent import (
+    ProjectionEffectIntentDecision,
+    detect_projection_effect_intent,
+)
 from .responders import (
     TURN_RESPONDER_BOUNDARY,
     EnvironmentTurnResponder,
@@ -474,6 +478,23 @@ class ThoughtLoop:
 
             action_intent = detect_home_action_intent(turn_input.text)
             if action_intent is None:
+                projection_effect_intent = detect_projection_effect_intent(
+                    turn_input.text
+                )
+                if projection_effect_intent.accepted:
+                    self._handle_projection_effect_intent(
+                        events,
+                        factory,
+                        projection_effect_intent,
+                    )
+                    return events
+                if projection_effect_intent.status == "clarification_required":
+                    self._handle_projection_effect_clarification(
+                        events,
+                        factory,
+                        projection_effect_intent,
+                    )
+                    return events
                 self._handle_general_turn(events, factory, turn_input)
                 return events
 
@@ -5722,6 +5743,66 @@ class ThoughtLoop:
                     "boundary": TURN_RESPONDER_BOUNDARY,
                     "adapter_kind": result.adapter_kind,
                     "used_llm": result.used_llm,
+                },
+            )
+        )
+
+    def _handle_projection_effect_intent(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        intent: ProjectionEffectIntentDecision,
+    ) -> None:
+        payload = intent.event_payload()
+        events.append(factory.emit("projection.effect.requested", payload))
+        action = str(payload["action"])
+        if action == "start":
+            effect_name = "炎" if payload.get("effectId") == "fire" else "雷"
+            speech = f"{effect_name}のエフェクトを出します。"
+        elif action == "stop":
+            speech = "エフェクトを止めます。"
+        else:
+            speech = "エフェクトをリセットします。"
+        self._emit_message(
+            events,
+            factory,
+            speech=speech,
+            display=speech,
+            emotion="focused",
+            motion="small_nod",
+            priority="normal",
+            reflex=True,
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {"status": "projection_effect_requested"},
+            )
+        )
+
+    def _handle_projection_effect_clarification(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        intent: ProjectionEffectIntentDecision,
+    ) -> None:
+        speech = "炎か雷の開始、停止、リセットのどれか一つを指定してください。"
+        self._emit_message(
+            events,
+            factory,
+            speech=speech,
+            display=speech,
+            emotion="attentive",
+            motion="small_nod",
+            priority="normal",
+            reflex=True,
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {
+                    "status": "needs_clarification",
+                    "reason": intent.reason or "projection_effect_request_not_bounded",
                 },
             )
         )
