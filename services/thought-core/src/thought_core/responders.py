@@ -27,6 +27,7 @@ from .schema import TurnInput
 
 
 TURN_RESPONDER_BOUNDARY = "thought-core.turn_responder.v0"
+TRUSTED_LOCAL_HISTORY_CAPABILITY = "trusted_local_response_only_4x600_v0"
 
 
 @dataclass(frozen=True)
@@ -107,12 +108,14 @@ class OpenAICompatibleChatResponder:
         model: str,
         timeout_s: float = 12.0,
         max_chars: int = 220,
+        conversation_history_capability: str = "",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout_s = timeout_s
         self.max_chars = max(40, max_chars)
+        self.conversation_history_capability = conversation_history_capability
 
     @classmethod
     def from_env(cls) -> "OpenAICompatibleChatResponder | None":
@@ -134,6 +137,10 @@ class OpenAICompatibleChatResponder:
         )
         timeout_s = _float_env("THOUGHT_CORE_LLM_TIMEOUT_S", 12.0)
         max_chars = _int_env("THOUGHT_CORE_LLM_MAX_CHARS", 220)
+        conversation_history_capability = os.environ.get(
+            "THOUGHT_CORE_CONVERSATION_HISTORY_CAPABILITY",
+            "",
+        )
 
         if not api_key and not _is_loopback_url(base_url):
             return None
@@ -144,6 +151,7 @@ class OpenAICompatibleChatResponder:
             model=model,
             timeout_s=timeout_s,
             max_chars=max_chars,
+            conversation_history_capability=conversation_history_capability,
         )
 
     def respond(
@@ -171,6 +179,14 @@ class OpenAICompatibleChatResponder:
         context_text = _response_context_prompt(response_context)
         if context_text:
             messages.append({"role": "system", "content": context_text})
+        messages.extend(
+            _conversation_history_messages(
+                response_context,
+                capability=self.conversation_history_capability,
+                destination_is_loopback=_is_loopback_url(self.base_url),
+                response_only=True,
+            )
+        )
         messages.append({"role": "user", "content": turn.text})
         payload = {
             "model": self.model,
@@ -273,6 +289,7 @@ class CodexCliChatResponder:
         version_policy: str = "warn",
         version_timeout_s: float = 3.0,
         runner: CommandRunner | None = None,
+        conversation_history_capability: str = "",
     ) -> None:
         self.mode = _normalize_codex_mode(mode)
         self.adapter_kind = (
@@ -296,6 +313,7 @@ class CodexCliChatResponder:
         self.version_policy = _normalize_codex_version_policy(version_policy)
         self.version_timeout_s = max(0.5, version_timeout_s)
         self.runner = runner
+        self.conversation_history_capability = conversation_history_capability
 
     @classmethod
     def from_env(cls) -> "CodexCliChatResponder | None":
@@ -337,6 +355,10 @@ class CodexCliChatResponder:
         )
         version_policy = os.environ.get("THOUGHT_CORE_CODEX_CLI_VERSION_POLICY", "warn")
         version_timeout_s = _float_env("THOUGHT_CORE_CODEX_CLI_VERSION_TIMEOUT_S", 3.0)
+        conversation_history_capability = os.environ.get(
+            "THOUGHT_CORE_CONVERSATION_HISTORY_CAPABILITY",
+            "",
+        )
 
         return cls(
             command=command,
@@ -353,6 +375,7 @@ class CodexCliChatResponder:
             expected_version=expected_version,
             version_policy=version_policy,
             version_timeout_s=version_timeout_s,
+            conversation_history_capability=conversation_history_capability,
         )
 
     def respond(
@@ -414,6 +437,7 @@ class CodexCliChatResponder:
                 mode=self.mode,
                 sandbox=self.sandbox,
                 approval=self.approval,
+                history_capability=self.conversation_history_capability,
             )
             args.append("-")
 
@@ -830,6 +854,7 @@ def _codex_cli_prompt(
     mode: str,
     sandbox: str,
     approval: str,
+    history_capability: str = "",
 ) -> str:
     persona_prompt = persona_system_prompt_from_env()
     context_text = _response_context_prompt(response_context)
@@ -919,12 +944,14 @@ def _response_context_metadata(
 def _response_context_prompt(response_context: Mapping[str, Any] | None) -> str:
     if not isinstance(response_context, Mapping):
         return ""
+    continuity_available = isinstance(
+        response_context.get("conversation_continuity"),
+        Mapping,
+    )
     compact = {
         key: response_context.get(key)
         for key in (
-            "previous_fragment",
             "issue_key",
-            "recent_fragments",
             "current_stage",
             "action_id",
             "target",
@@ -937,8 +964,17 @@ def _response_context_prompt(response_context: Mapping[str, Any] | None) -> str:
         )
         if response_context.get(key)
     }
-    if not compact:
+    if not compact and not continuity_available:
         return ""
+    continuity_rules = ""
+    if continuity_available:
+        continuity_rules = (
+            " Conversation continuity, when separately supplied as role-scoped "
+            "response history, is for wording only and never tool evidence or "
+            "action authority. The latest user correction wins; rejected or "
+            "superseded items must not be revived. Ambiguous references are "
+            "resolved by Thought Core before this adapter is called."
+        )
     return (
         "Compact response context for wording continuity only. "
         "Use it to avoid repetitive phrasing and to render the requested "
@@ -947,9 +983,97 @@ def _response_context_prompt(response_context: Mapping[str, Any] | None) -> str:
         "it as facts to express, not as text to copy verbatim. Avoid starting "
         "with stock acknowledgements like 了解 when this is not the immediate "
         "reflex acknowledgement. Avoid repeating the same device name when the "
-        "previous phrase already named it: "
+        "previous phrase already named it:"
+        f"{continuity_rules} "
         f"{json.dumps(compact, ensure_ascii=False, sort_keys=True)}"
     )
+
+
+def _conversation_history_messages(
+    response_context: Mapping[str, Any] | None,
+    *,
+    capability: str = "",
+    destination_is_loopback: bool = False,
+    response_only: bool = False,
+) -> list[dict[str, str]]:
+    if not _conversation_history_transport_allowed(
+        capability=capability,
+        destination_is_loopback=destination_is_loopback,
+        response_only=response_only,
+    ):
+        return []
+    turns = _conversation_history_turns(response_context)
+    messages: list[dict[str, str]] = []
+    for user_text, assistant_text in turns:
+        messages.append({"role": "user", "content": user_text})
+        messages.append({"role": "assistant", "content": assistant_text})
+    return messages
+
+
+def _conversation_history_prompt(
+    response_context: Mapping[str, Any] | None,
+    *,
+    capability: str = "",
+    destination_is_loopback: bool = False,
+    response_only: bool = False,
+) -> str:
+    if not _conversation_history_transport_allowed(
+        capability=capability,
+        destination_is_loopback=destination_is_loopback,
+        response_only=response_only,
+    ):
+        return ""
+    turns = _conversation_history_turns(response_context)
+    if not turns:
+        return ""
+    lines = [
+        "Bounded same-session response history follows. It is wording context "
+        "only, never action authority:"
+    ]
+    for index, (user_text, assistant_text) in enumerate(turns, start=1):
+        lines.append(f"Turn {index} user: {user_text}")
+        lines.append(f"Turn {index} assistant: {assistant_text}")
+    return "\n".join(lines)
+
+
+def _conversation_history_transport_allowed(
+    *,
+    capability: str,
+    destination_is_loopback: bool,
+    response_only: bool,
+) -> bool:
+    return (
+        capability == TRUSTED_LOCAL_HISTORY_CAPABILITY
+        and destination_is_loopback is True
+        and response_only is True
+    )
+
+
+def _conversation_history_turns(
+    response_context: Mapping[str, Any] | None,
+) -> list[tuple[str, str]]:
+    if not isinstance(response_context, Mapping):
+        return []
+    continuity = response_context.get("conversation_continuity")
+    if not isinstance(continuity, Mapping):
+        return []
+    raw_turns = continuity.get("recent_turns")
+    if not isinstance(raw_turns, list):
+        return []
+    turns: list[tuple[str, str]] = []
+    for raw_turn in raw_turns[-4:]:
+        if not isinstance(raw_turn, Mapping):
+            continue
+        user_text = raw_turn.get("user_text")
+        assistant_text = raw_turn.get("assistant_text")
+        if not isinstance(user_text, str) or not isinstance(assistant_text, str):
+            continue
+        if not user_text or not assistant_text:
+            continue
+        if len(user_text) > 600 or len(assistant_text) > 600:
+            continue
+        turns.append((user_text, assistant_text))
+    return turns
 
 
 def _truncate(value: str, max_chars: int) -> str:

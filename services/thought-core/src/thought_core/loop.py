@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
+from .conversation_continuity import ConversationContinuity
 from .execution_deadline import (
     TurnDeadlineExceeded,
     TurnExecutionDeadline,
@@ -27,6 +28,7 @@ from .persona import AssistantPersona, build_persona_from_env, strip_persona_tag
 from .responders import (
     TURN_RESPONDER_BOUNDARY,
     EnvironmentTurnResponder,
+    ResponderResult,
     TurnResponder,
     describe_responder,
 )
@@ -271,6 +273,7 @@ class ThoughtLoop:
         action_reasoner: ActionReasoner | None = None,
         input_understanding: InputUnderstanding | None = None,
         persona: AssistantPersona | None = None,
+        conversation_continuity: ConversationContinuity | None = None,
         llm_visible_speech: bool | None = None,
         require_llm_visible_speech: bool | None = None,
     ) -> None:
@@ -283,6 +286,9 @@ class ThoughtLoop:
             input_understanding or build_input_understanding_from_env()
         )
         self.persona = persona or build_persona_from_env()
+        self.conversation_continuity = (
+            conversation_continuity or ConversationContinuity()
+        )
         self.pending_confirmations: dict[str, dict[str, Any]] = _DeadlineGuardedDict()
         self.pending_action_reviews: dict[str, dict[str, Any]] = _DeadlineGuardedDict()
         self.pending_state_queries: dict[str, dict[str, Any]] = _DeadlineGuardedDict()
@@ -348,6 +354,11 @@ class ThoughtLoop:
         event_sink: Callable[[ThoughtEvent], None] | None = None,
     ) -> list[ThoughtEvent]:
         turn_input = turn if isinstance(turn, TurnInput) else TurnInput.from_mapping(turn)
+        self.conversation_continuity.begin_turn(
+            session_id=turn_input.session_id,
+            turn_id=turn_input.turn_id,
+            user_text=turn_input.text,
+        )
         factory = EventFactory(turn_input.turn_id, turn_input.session_id, source=self.source)
         events: list[ThoughtEvent] = _EventBuffer(event_sink)
         request_context_token = _TURN_REQUEST_CONTEXT.set(
@@ -372,7 +383,20 @@ class ThoughtLoop:
                 working_memory_context=MappingProxyType(dict(working_memory_context))
             )
             self._emit_context_trace_events(events, factory, working_memory_context)
-            memory_context = self._retrieve_memory_context(events, factory, turn_input)
+            continuity_context = self.conversation_continuity.context_for_response(
+                session_id=turn_input.session_id
+            )
+            if input_frame.kind == "general":
+                memory_context = self._disabled_legacy_memory_context(
+                    events,
+                    factory,
+                )
+            else:
+                memory_context = self._retrieve_memory_context(
+                    events,
+                    factory,
+                    turn_input,
+                )
             self._hydrate_pending_action_review_from_memory(
                 turn_input,
                 memory_context,
@@ -4182,6 +4206,31 @@ class ThoughtLoop:
         )
         return context
 
+    def _disabled_legacy_memory_context(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+    ) -> dict[str, Any]:
+        context = {
+            "status": "disabled_for_conversation_continuity",
+            "item_count": 0,
+            "items": [],
+            "summary": "older_history_retrieval_disabled",
+            "source": "conversation_continuity_gate",
+        }
+        events.append(
+            factory.emit(
+                "memory.retrieved",
+                {
+                    "status": context["status"],
+                    "item_count": 0,
+                    "summary": context["summary"],
+                    "source": context["source"],
+                },
+            )
+        )
+        return context
+
     def _hydrate_pending_action_review_from_memory(
         self,
         turn_input: TurnInput,
@@ -5569,16 +5618,54 @@ class ThoughtLoop:
         factory: EventFactory,
         turn_input: TurnInput,
     ) -> None:
-        events.append(factory.emit("responder.started", describe_responder(self.responder)))
+        continuity_context = self.conversation_continuity.context_for_response(
+            session_id=turn_input.session_id
+        )
+        clarification_required = (
+            continuity_context.get("referent_resolution")
+            == "clarification_required"
+        )
+        events.append(
+            factory.emit(
+                "responder.started",
+                (
+                    {
+                        "boundary": TURN_RESPONDER_BOUNDARY,
+                        "adapter_kind": "thought_core_continuity_guard",
+                        "provider": "local",
+                        "model": "deterministic",
+                    }
+                    if clarification_required
+                    else describe_responder(self.responder)
+                ),
+            )
+        )
         response_context = self._response_context(
             events,
             current_stage="general_responder",
+            include_legacy_history=False,
         )
+        responder_context = dict(response_context)
+        if continuity_context:
+            responder_context["conversation_continuity"] = continuity_context
         ensure_execution_active()
-        result = self.responder.respond(
-            turn_input,
-            response_context=response_context,
-        )
+        if clarification_required:
+            speech = "どの話や項目を指しているか、もう少し具体的に教えてください。"
+            result = ResponderResult(
+                speech=speech,
+                display=speech,
+                status="continuity_clarification_required",
+                adapter_kind="thought_core_continuity_guard",
+                provider="local",
+                model="deterministic",
+                used_llm=False,
+                metadata={"conversation_continuity_clarification": True},
+            )
+        else:
+            result = self.responder.respond(
+                turn_input,
+                response_context=responder_context,
+            )
         ensure_execution_active()
         fallback_used = str(result.status or "").startswith("local_fallback")
         events.append(
@@ -5593,7 +5680,11 @@ class ThoughtLoop:
                     "used_llm": result.used_llm,
                     "detail": result.detail,
                     "metadata": result.metadata,
-                    "response_context": response_context,
+                    "response_context": self._public_response_context(
+                        response_context,
+                        turn_input=turn_input,
+                        continuity_used=bool(continuity_context),
+                    ),
                 },
             )
         )
@@ -5960,15 +6051,21 @@ class ThoughtLoop:
         *,
         current_stage: str,
         action: dict[str, Any] | None = None,
+        include_legacy_history: bool = True,
     ) -> dict[str, Any]:
-        previous_fragment = self._last_spoken_fragment(events) or self._last_issue_fragment()
-        recent_fragments = self._compact_recent_fragments()
         context: dict[str, Any] = {
-            "previous_fragment": self._compact_speech_fragment(previous_fragment),
             "issue_key": self._active_issue_key,
-            "recent_fragments": recent_fragments,
             "current_stage": current_stage,
         }
+        if include_legacy_history:
+            previous_fragment = (
+                self._last_spoken_fragment(events) or self._last_issue_fragment()
+            )
+            recent_fragments = self._compact_recent_fragments()
+            context["previous_fragment"] = self._compact_speech_fragment(
+                previous_fragment
+            )
+            context["recent_fragments"] = recent_fragments
         if self._active_working_memory_context.get("safe_for_thought_core_use") is True:
             context["working_memory_context"] = dict(self._active_working_memory_context)
         if action:
@@ -5976,6 +6073,22 @@ class ThoughtLoop:
             context["target"] = str(action.get("target") or "")
             context["expected_state"] = str(action.get("expected_state") or "")
         return {key: value for key, value in context.items() if value not in ("", [], {})}
+
+    def _public_response_context(
+        self,
+        response_context: Mapping[str, Any],
+        *,
+        turn_input: TurnInput,
+        continuity_used: bool,
+    ) -> dict[str, Any]:
+        public = dict(response_context)
+        if continuity_used:
+            public["conversation_continuity_summary"] = (
+                self.conversation_continuity.public_summary(
+                    session_id=turn_input.session_id
+                )
+            )
+        return public
 
     def _compact_recent_fragments(self) -> list[str]:
         fragments: list[str] = []
@@ -6434,6 +6547,13 @@ class ThoughtLoop:
     def _remember_stream_speech(self, speech: str) -> None:
         if not self._active_session_id:
             return
+        active_turn = self._active_turn_input
+        if active_turn is not None:
+            self.conversation_continuity.record_assistant(
+                session_id=active_turn.session_id,
+                turn_id=active_turn.turn_id,
+                assistant_text=speech,
+            )
         fragments = self._speech_fragments(speech)
         if not fragments:
             return

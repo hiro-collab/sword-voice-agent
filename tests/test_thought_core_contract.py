@@ -2283,7 +2283,7 @@ class ThoughtCoreContractTest(TestCase):
                 self.assertNotIn("door_stop", json.dumps(tools.execute_calls, ensure_ascii=False))
                 self.assertNotIn(TURN["session_id"], loop.pending_action_reviews)
 
-    def test_general_expression_does_not_continue_pending_action_review(self) -> None:
+    def test_fresh_general_turn_does_not_rehydrate_legacy_action_review(self) -> None:
         tools = MockThoughtTools(light_on=True)
         loop = ThoughtLoop(tools=tools, responder=StaticResponder())
         previous_action = {
@@ -2293,20 +2293,33 @@ class ThoughtCoreContractTest(TestCase):
             "expected_state": "on",
             "pre_action_phrase": "リビングの電気をつける",
         }
-        loop.pending_action_reviews[TURN["session_id"]] = {
-            "action": previous_action,
-            "execute_result": {"status": "accepted", "executed": True},
-            "last_review": {"status": "pending"},
-            "observations_done": 1,
-            "execute_attempts": 1,
-            "policy": {"settle_ms": 1500, "observation_attempts": 2, "auto_retries": 1},
-        }
-
         events = loop.run_dicts(
             {
                 **TURN,
-                "text": "笑ってみてください",
-                "turn_id": "turn_expression_with_pending_review",
+                "text": "以前の選択肢をもう一度考え直して、雑談したい",
+                "turn_id": "turn_fresh_general_with_legacy_review",
+                "context_refs": {
+                    "mock_memory_items": [
+                        {
+                            "memory_type": "action_review",
+                            "status": "open",
+                            "content": {
+                                "action": previous_action,
+                                "last_review": {"status": "pending"},
+                                "retry_budget": {
+                                    "status": "review_budget_opened",
+                                    "settle_ms": 1500,
+                                    "observation_attempts": 2,
+                                    "auto_retries": 1,
+                                    "progress": {
+                                        "observations_done": 1,
+                                        "execute_attempts": 1,
+                                    },
+                                },
+                            },
+                        }
+                    ]
+                },
             }
         )
         event_types = [event["type"] for event in events]
@@ -2322,13 +2335,18 @@ class ThoughtCoreContractTest(TestCase):
 
         self.assertEqual(understood["data"]["kind"], "general")
         self.assertIn("responder.started", event_types)
+        self.assertNotIn("action.proposed", event_types)
         self.assertNotIn("action.reviewed", event_types)
         self.assertNotIn("action.retrying", event_types)
         self.assertNotIn("feedback.requested", event_types)
-        self.assertEqual(tool_names, ["memory.retrieve"])
+        self.assertEqual(tool_names, [])
         self.assertEqual(acknowledged["data"]["speech"], "うん、聞いたよ。")
-        self.assertIn(TURN["session_id"], loop.pending_action_reviews)
-        self.assertEqual(events[-1]["data"]["status"], "llm_response")
+        self.assertNotIn(TURN["session_id"], loop.pending_action_reviews)
+        self.assertEqual(tools.execute_calls, [])
+        self.assertEqual(
+            events[-1]["data"]["status"],
+            "continuity_clarification_required",
+        )
 
     def test_dance_request_does_not_continue_pending_action_review(self) -> None:
         tools = MockThoughtTools(light_on=True)
@@ -2616,9 +2634,6 @@ class ThoughtCoreContractTest(TestCase):
                 "assistant.speech_delta",
                 "assistant.message",
                 "input.understood",
-                "thought.stage",
-                "tool.started",
-                "tool.result",
                 "memory.retrieved",
                 "responder.started",
                 "responder.completed",
@@ -2762,6 +2777,16 @@ class ThoughtCoreContractTest(TestCase):
                 self.assertTrue(visible_speech.strip())
                 self.assertTrue(visible_display.strip())
                 self.assertEqual(route["data"]["response_route"], "ordinary_conversation")
+                if case_name == "follow_up_question":
+                    self.assertFalse(route["data"]["fallback_used"])
+                    self.assertFalse(route["data"]["used_llm"])
+                    self.assertEqual(
+                        completed["data"]["adapter_kind"],
+                        "thought_core_continuity_guard",
+                    )
+                    self.assertEqual(completed["data"]["provider"], "local")
+                    self.assertIn("もう少し具体的に", visible_text)
+                    continue
                 self.assertTrue(route["data"]["fallback_used"])
                 self.assertFalse(route["data"]["used_llm"])
                 self.assertEqual(completed["data"]["adapter_kind"], "local_fallback")
@@ -2844,7 +2869,7 @@ class ThoughtCoreContractTest(TestCase):
         self.assertIn("phrase.generation_failed", event_types)
         self.assertNotIn("了解、リビングの電気をつけるね", visible_speech)
 
-    def test_responder_receives_compact_previous_phrase_context(self) -> None:
+    def test_responder_receives_bounded_role_scoped_continuity_context(self) -> None:
         tools = MockThoughtTools()
         responder = RecordingContextResponder()
         loop = ThoughtLoop(tools=tools, responder=responder)
@@ -2875,17 +2900,36 @@ class ThoughtCoreContractTest(TestCase):
         )
 
         self.assertEqual(context["current_stage"], "general_responder")
-        self.assertEqual(context["previous_fragment"], "うん、聞いたよ。")
+        self.assertNotIn("previous_fragment", context)
+        self.assertNotIn("recent_fragments", context)
         self.assertIn("issue_key", context)
         self.assertTrue(
             any(
-                "応答境界の確認 1" in str(fragment)
-                for fragment in context["recent_fragments"]
+                "応答境界の確認 1" in str(turn["assistant_text"])
+                for turn in context["conversation_continuity"]["recent_turns"]
             )
         )
-        self.assertEqual(completed["data"]["response_context"], context)
+        public_context = completed["data"]["response_context"]
+        self.assertEqual(
+            {
+                key: value
+                for key, value in context.items()
+                if key != "conversation_continuity"
+            },
+            {
+                key: value
+                for key, value in public_context.items()
+                if key != "conversation_continuity_summary"
+            },
+        )
+        self.assertNotIn("conversation_continuity", public_context)
+        self.assertTrue(
+            public_context["conversation_continuity_summary"]["raw_text_persisted"]
+            is False
+        )
         self.assertNotIn("action.proposed", event_types)
         self.assertNotIn("home.execute", tool_names)
+        self.assertNotIn("memory.retrieve", tool_names)
         self.assertEqual(tools.execute_calls, [])
 
     def test_response_context_prompt_carries_phrase_feedback_constraints(self) -> None:
@@ -2906,8 +2950,8 @@ class ThoughtCoreContractTest(TestCase):
         self.assertIn("wording continuity", prompt)
         self.assertIn("avoid repetitive phrasing", prompt)
         self.assertIn("permission to execute actions", prompt)
-        self.assertIn("エアコンを確認しています。", prompt)
-        self.assertIn("応答境界の確認 1 です。", prompt)
+        self.assertNotIn("エアコンを確認しています。", prompt)
+        self.assertNotIn("応答境界の確認 1 です。", prompt)
         self.assertIn("aircon_off", prompt)
         self.assertNotIn("expected_state", prompt)
 
