@@ -2650,7 +2650,21 @@ class ThoughtCoreContractTest(TestCase):
             {"schemaVersion": 1, "action": "start", "effectId": "thunderBall"},
         )
         self.assertNotIn(text, json.dumps(requested[0]["data"], ensure_ascii=False))
-        self.assertNotIn("responder.started", [event["type"] for event in events])
+        self.assertEqual(
+            sum(event["type"] == "responder.started" for event in events),
+            1,
+        )
+        self.assertEqual(
+            sum(event["type"] == "responder.completed" for event in events),
+            1,
+        )
+        route = next(
+            event
+            for event in events
+            if event["type"] == "thought_core.response_route_classified"
+        )
+        self.assertEqual(route["data"]["response_route"], "projection_effect_companion")
+        self.assertEqual(route["data"]["intent_kind"], "projection_effect")
         self.assertEqual(events[-1]["data"]["status"], "projection_effect_requested")
 
     def test_general_turn_uses_responder_boundary(self) -> None:

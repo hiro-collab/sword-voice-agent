@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import unicodedata
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -116,6 +117,158 @@ DRIVER_RESULT_AUTHORITIES = {
     "driver_result_contract",
 }
 CONTEXT_VALUE_MAX_CHARS = 180
+PROJECTION_EFFECT_COMPANION_MAX_CHARS = 120
+PROJECTION_EFFECT_COMPANION_CONTEXT_TEXT_KEYS = {
+    "assistant_text",
+    "proposition",
+    "question",
+    "user_text",
+}
+PROJECTION_EFFECT_COMPANION_PARAMETER_MARKERS = (
+    "右",
+    "左",
+    "上へ",
+    "下へ",
+    "中央",
+    "位置",
+    "大き",
+    "小さ",
+    "強く",
+    "弱く",
+    "明る",
+    "暗く",
+    "秒",
+    "分間",
+    "長く",
+    "短く",
+    "色",
+    "赤く",
+    "青く",
+    "白く",
+    "黄色",
+    "速度",
+    "速く",
+    "遅く",
+    "方向",
+    "近く",
+    "遠く",
+    "倍",
+    "パーセント",
+    "%",
+    "anchor",
+    "duration",
+    "intensity",
+    "parameter",
+    "position",
+    "scale",
+    "speed",
+)
+PROJECTION_EFFECT_COMPANION_UNPROVED_CLAIMS = (
+    "表示しました",
+    "表示されました",
+    "表示されています",
+    "表示済み",
+    "出しました",
+    "出ています",
+    "出ている",
+    "見えています",
+    "見えている",
+    "発動しました",
+    "発動済み",
+    "完了しました",
+    "完了です",
+    "終わりました",
+    "消えました",
+    "停止しました",
+    "リセットしました",
+    "反映しました",
+    "成功しました",
+)
+PROJECTION_EFFECT_FIRE_MARKERS = ("炎", "火炎", "ファイア", "fire")
+PROJECTION_EFFECT_THUNDER_MARKERS = (
+    "雷",
+    "サンダー",
+    "thunder",
+    "thunderball",
+)
+PROJECTION_EFFECT_START_AFFIRMATIVE_MARKERS = (
+    "出します",
+    "出すね",
+    "出すよ",
+    "出そう",
+    "表示します",
+    "表示するね",
+    "見せます",
+    "見せるね",
+    "発動します",
+    "発動するね",
+    "呼び出します",
+    "召喚します",
+)
+PROJECTION_EFFECT_START_REJECTED_FORMS = (
+    "出さない",
+    "出しません",
+    "出すな",
+    "出せません",
+    "出すなら",
+    "出せたら",
+    "出す場合",
+    "出すかもしれ",
+    "表示しない",
+    "表示しません",
+    "表示するなら",
+    "表示できたら",
+    "見せない",
+    "見せません",
+    "見せるなら",
+    "発動しない",
+    "発動しません",
+    "発動するなら",
+    "召喚しない",
+    "召喚しません",
+    "召喚するなら",
+)
+PROJECTION_EFFECT_STOP_AFFIRMATIVE_MARKERS = (
+    "止めます",
+    "止めるね",
+    "止めるよ",
+    "止めよう",
+    "停止します",
+    "消します",
+    "消すね",
+)
+PROJECTION_EFFECT_STOP_REJECTED_FORMS = (
+    "止めない",
+    "止めません",
+    "止めるなら",
+    "止められたら",
+    "停止しない",
+    "停止しません",
+    "停止するなら",
+    "消さない",
+    "消しません",
+    "消すなら",
+    "消せたら",
+)
+PROJECTION_EFFECT_RESET_AFFIRMATIVE_MARKERS = (
+    "リセットします",
+    "リセットするね",
+    "リセットするよ",
+    "初期化します",
+    "元に戻します",
+)
+PROJECTION_EFFECT_RESET_REJECTED_FORMS = (
+    "リセットしない",
+    "リセットしません",
+    "リセットするなら",
+    "リセットできたら",
+    "初期化しない",
+    "初期化しません",
+    "初期化するなら",
+    "元に戻さない",
+    "元に戻しません",
+    "元に戻せたら",
+)
 SEMANTIC_MOTION_INTENTS = {
     "show_full_body",
     "greeting",
@@ -485,6 +638,7 @@ class ThoughtLoop:
                     self._handle_projection_effect_intent(
                         events,
                         factory,
+                        turn_input,
                         projection_effect_intent,
                     )
                     return events
@@ -5751,33 +5905,323 @@ class ThoughtLoop:
         self,
         events: list[ThoughtEvent],
         factory: EventFactory,
+        turn_input: TurnInput,
         intent: ProjectionEffectIntentDecision,
     ) -> None:
         payload = intent.event_payload()
-        events.append(factory.emit("projection.effect.requested", payload))
         action = str(payload["action"])
         if action == "start":
             effect_name = "炎" if payload.get("effectId") == "fire" else "雷"
-            speech = f"{effect_name}のエフェクトを出します。"
+            fallback_speech = f"{effect_name}のエフェクトを出します。"
+            semantic_draft = f"{effect_name}のエフェクトを一つ出す依頼を受理した"
         elif action == "stop":
-            speech = "エフェクトを止めます。"
+            fallback_speech = "エフェクトを止めます。"
+            semantic_draft = "現在のエフェクトを止める依頼を受理した"
         else:
-            speech = "エフェクトをリセットします。"
+            fallback_speech = "エフェクトをリセットします。"
+            semantic_draft = "エフェクトをリセットする依頼を受理した"
+
+        continuity_context = self.conversation_continuity.context_for_response(
+            session_id=turn_input.session_id
+        )
+        response_context = self._response_context(
+            events,
+            current_stage="projection_effect_companion_response",
+            include_legacy_history=False,
+        )
+        response_context.update(
+            {
+                "response_goal": (
+                    "Express the already-accepted fixed projection-effect request "
+                    "as one short, natural Japanese companion response. The fixed "
+                    "request is authoritative; do not reinterpret or expand it."
+                ),
+                "semantic_draft": semantic_draft,
+                "required_facts": [
+                    "one fixed projection-effect request was accepted",
+                    f"fixed action is {action}",
+                ],
+                "forbidden_claims": [
+                    "do not change the action or effect",
+                    "do not add parameters, timing, position, strength, or another effect",
+                    "do not claim the effect is already visible or completed",
+                    "do not mention internal event names or response machinery",
+                ],
+                "visible_phrase_contract": "projection-effect-companion-response-v1",
+            }
+        )
+        if action == "start":
+            response_context["required_facts"].append(
+                f"fixed effect is {payload['effectId']}"
+            )
+        if continuity_context:
+            response_context["conversation_continuity"] = continuity_context
+
+        events.append(
+            factory.emit(
+                "responder.started",
+                describe_responder(self.responder),
+            )
+        )
+        try:
+            ensure_execution_active()
+            result = self.responder.respond(
+                turn_input,
+                response_context=response_context,
+            )
+            ensure_execution_active()
+        except TurnDeadlineExceeded:
+            raise
+        except Exception:
+            result = self._projection_effect_companion_fallback(
+                fallback_speech,
+                detail="projection_effect_companion_responder_failed",
+            )
+        else:
+            validated_result = self._validated_projection_effect_companion(
+                result,
+                payload=payload,
+                continuity_context=continuity_context,
+            )
+            if validated_result is None:
+                result = self._projection_effect_companion_fallback(
+                    fallback_speech,
+                    detail="projection_effect_companion_postcondition_rejected",
+                )
+            else:
+                result = validated_result
+
+        fallback_used = str(result.status or "").startswith("local_fallback")
+        events.append(
+            factory.emit(
+                "responder.completed",
+                {
+                    "boundary": TURN_RESPONDER_BOUNDARY,
+                    "adapter_kind": result.adapter_kind,
+                    "provider": result.provider,
+                    "model": result.model,
+                    "status": result.status,
+                    "used_llm": result.used_llm,
+                    "fallback_used": fallback_used,
+                    "response_context": self._public_response_context(
+                        response_context,
+                        turn_input=turn_input,
+                        continuity_used=bool(continuity_context),
+                    ),
+                },
+            )
+        )
+        self._emit_response_route_classified(
+            events,
+            factory,
+            turn_input=turn_input,
+            response_route="projection_effect_companion",
+            intent_kind="projection_effect",
+            responder_status=result.status,
+            fallback_used=fallback_used,
+            provider_route=result.provider,
+            used_llm=result.used_llm,
+            non_claims=[
+                "projection_effect_visible",
+                "projection_effect_completed",
+                "projection_effect_parameters_changed",
+                "device_action_proven",
+            ],
+        )
+        events.append(factory.emit("projection.effect.requested", payload))
         self._emit_message(
             events,
             factory,
-            speech=speech,
-            display=speech,
+            speech=result.speech,
+            display=result.display,
             emotion="focused",
             motion="small_nod",
             priority="normal",
-            reflex=True,
+            phrase_generation_override={
+                "enabled": True,
+                "used_llm": result.used_llm,
+                "status": result.status,
+                "adapter_kind": result.adapter_kind,
+                "provider": result.provider,
+                "model": result.model,
+            },
         )
         events.append(
             factory.emit(
                 "turn.completed",
                 {"status": "projection_effect_requested"},
             )
+        )
+
+    def _projection_effect_companion_fallback(
+        self,
+        fallback_speech: str,
+        *,
+        detail: str,
+    ) -> ResponderResult:
+        return ResponderResult(
+            speech=fallback_speech,
+            display=fallback_speech,
+            status="local_fallback_projection_effect_companion",
+            adapter_kind="thought_core_projection_effect_fallback",
+            provider="thought-core",
+            model="local-rule-v0",
+            used_llm=False,
+            detail=detail,
+            metadata={"projection_effect_companion_fallback": True},
+        )
+
+    def _validated_projection_effect_companion(
+        self,
+        result: ResponderResult,
+        *,
+        payload: Mapping[str, Any],
+        continuity_context: Mapping[str, Any],
+    ) -> ResponderResult | None:
+        texts = tuple(
+            unicodedata.normalize(
+                "NFKC",
+                strip_persona_tags(str(value or "")),
+            ).strip()
+            for value in (result.speech, result.display)
+        )
+        if any(
+            not text
+            or len(text) > PROJECTION_EFFECT_COMPANION_MAX_CHARS
+            or "\n" in text
+            or "\r" in text
+            for text in texts
+        ):
+            return None
+
+        normalized_texts = tuple(self._normalize_text(text) for text in texts)
+        if any(
+            any(
+                marker in normalized
+                for marker in PROJECTION_EFFECT_COMPANION_PARAMETER_MARKERS
+            )
+            or any(char.isdigit() for char in normalized)
+            or any(
+                marker in normalized
+                for marker in PROJECTION_EFFECT_COMPANION_UNPROVED_CLAIMS
+            )
+            for normalized in normalized_texts
+        ):
+            return None
+        if any(
+            "?" in text
+            or "？" in text
+            or any(
+                marker in normalized
+                for marker in ("ますか", "でしょうか", "るかな", "るかね", "るかい")
+            )
+            for text, normalized in zip(texts, normalized_texts, strict=True)
+        ):
+            return None
+
+        action = str(payload.get("action") or "")
+        effect_id = str(payload.get("effectId") or "")
+        for normalized in normalized_texts:
+            mentions_fire = any(
+                marker in normalized for marker in PROJECTION_EFFECT_FIRE_MARKERS
+            )
+            mentions_thunder = any(
+                marker in normalized for marker in PROJECTION_EFFECT_THUNDER_MARKERS
+            )
+            if action == "start":
+                if (
+                    any(
+                        marker in normalized
+                        for marker in PROJECTION_EFFECT_START_REJECTED_FORMS
+                    )
+                    or not any(
+                        marker in normalized
+                        for marker in PROJECTION_EFFECT_START_AFFIRMATIVE_MARKERS
+                    )
+                ):
+                    return None
+                if effect_id == "fire" and (not mentions_fire or mentions_thunder):
+                    return None
+                if effect_id == "thunderBall" and (
+                    not mentions_thunder or mentions_fire
+                ):
+                    return None
+            elif action == "stop":
+                if (
+                    mentions_fire
+                    or mentions_thunder
+                    or any(
+                        marker in normalized
+                        for marker in PROJECTION_EFFECT_STOP_REJECTED_FORMS
+                    )
+                    or not any(
+                        marker in normalized
+                        for marker in PROJECTION_EFFECT_STOP_AFFIRMATIVE_MARKERS
+                    )
+                    or any(marker in normalized for marker in ("リセット", "初期化"))
+                ):
+                    return None
+            elif action == "reset":
+                if (
+                    mentions_fire
+                    or mentions_thunder
+                    or any(
+                        marker in normalized
+                        for marker in PROJECTION_EFFECT_RESET_REJECTED_FORMS
+                    )
+                    or not any(
+                        marker in normalized
+                        for marker in PROJECTION_EFFECT_RESET_AFFIRMATIVE_MARKERS
+                    )
+                    or any(marker in normalized for marker in ("止め", "停止"))
+                ):
+                    return None
+            else:
+                return None
+
+        published = self._normalize_projection_companion_text(" ".join(texts))
+        for fragment in self._projection_companion_context_fragments(
+            continuity_context
+        ):
+            normalized_fragment = self._normalize_projection_companion_text(fragment)
+            if len(normalized_fragment) >= 8 and normalized_fragment in published:
+                return None
+
+        return replace(result, speech=texts[0], display=texts[1])
+
+    def _projection_companion_context_fragments(
+        self,
+        value: Any,
+        *,
+        text_key: bool = False,
+    ) -> list[str]:
+        fragments: list[str] = []
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                fragments.extend(
+                    self._projection_companion_context_fragments(
+                        item,
+                        text_key=(
+                            str(key)
+                            in PROJECTION_EFFECT_COMPANION_CONTEXT_TEXT_KEYS
+                        ),
+                    )
+                )
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                fragments.extend(
+                    self._projection_companion_context_fragments(
+                        item,
+                        text_key=text_key,
+                    )
+                )
+        elif text_key and isinstance(value, str):
+            fragments.append(value)
+        return fragments
+
+    def _normalize_projection_companion_text(self, text: str) -> str:
+        return "".join(
+            unicodedata.normalize("NFKC", str(text or "")).lower().split()
         )
 
     def _handle_projection_effect_clarification(
@@ -6163,6 +6607,7 @@ class ThoughtLoop:
         continuity_used: bool,
     ) -> dict[str, Any]:
         public = dict(response_context)
+        public.pop("conversation_continuity", None)
         if continuity_used:
             public["conversation_continuity_summary"] = (
                 self.conversation_continuity.public_summary(
@@ -6293,15 +6738,20 @@ class ThoughtLoop:
         motion: str,
         priority: str,
         reflex: bool = False,
+        phrase_generation_override: Mapping[str, Any] | None = None,
     ) -> None:
-        phrase_generation = self._generate_visible_phrase(
-            events,
-            speech=speech,
-            display=display,
-            emotion=emotion,
-            motion=motion,
-            priority=priority,
-            reflex=reflex,
+        phrase_generation = (
+            dict(phrase_generation_override)
+            if phrase_generation_override is not None
+            else self._generate_visible_phrase(
+                events,
+                speech=speech,
+                display=display,
+                emotion=emotion,
+                motion=motion,
+                priority=priority,
+                reflex=reflex,
+            )
         )
         if phrase_generation.get("required_failed"):
             events.append(

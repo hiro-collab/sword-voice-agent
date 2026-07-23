@@ -21,8 +21,12 @@ class _FailingResponder:
     provider = "test"
     model = "test"
 
+    def __init__(self) -> None:
+        self.calls = 0
+
     def respond(self, turn, *, response_context=None):  # type: ignore[no-untyped-def]
-        raise AssertionError("projection effect intent must not call responder")
+        self.calls += 1
+        raise RuntimeError("PRIVATE_PROJECTION_RESPONDER_FAILURE")
 
 
 class _StaticResponder:
@@ -32,12 +36,49 @@ class _StaticResponder:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.response_contexts: list[dict[str, object]] = []
+
+    def respond(self, turn, *, response_context=None):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        self.response_contexts.append(dict(response_context or {}))
+        compact = str(turn.text or "").replace(" ", "").replace("　", "")
+        if any(marker in compact for marker in ("炎", "火炎", "ファイア")):
+            speech = "会話の流れに合わせて、炎のエフェクトを出しますね。"
+        elif any(marker in compact for marker in ("雷", "サンダー")):
+            speech = "会話の流れに合わせて、雷のエフェクトを出しますね。"
+        elif compact == "止めて":
+            speech = "わかりました。エフェクトを止めます。"
+        elif compact == "リセットして":
+            speech = "わかりました。エフェクトをリセットします。"
+        else:
+            speech = f"会話に合わせた応答 {self.calls} です。"
+        return ResponderResult(
+            speech=speech,
+            display=speech,
+            status="llm_response",
+            adapter_kind=self.adapter_kind,
+            provider=self.provider,
+            model=self.model,
+            used_llm=True,
+            metadata={},
+        )
+
+
+class _SuccessfulMutatingResponder:
+    adapter_kind = "projection_effect_mutating_responder"
+    provider = "test"
+    model = "test"
+
+    def __init__(self, *, speech: str, display: str | None = None) -> None:
+        self.calls = 0
+        self.speech = speech
+        self.display = speech if display is None else display
 
     def respond(self, turn, *, response_context=None):  # type: ignore[no-untyped-def]
         self.calls += 1
         return ResponderResult(
-            speech="通常会話として応答します。",
-            display="通常会話として応答します。",
+            speech=self.speech,
+            display=self.display,
             status="llm_response",
             adapter_kind=self.adapter_kind,
             provider=self.provider,
@@ -94,7 +135,7 @@ class ProjectionEffectIntentTest(TestCase):
 
                 if expected_route == "requested":
                     self.assertEqual(requested_count, 1)
-                    self.assertEqual(responder.calls, 0)
+                    self.assertEqual(responder.calls, 1)
                     self.assertEqual(completed_status, "projection_effect_requested")
                 elif expected_route == "clarified":
                     self.assertEqual(requested_count, 0)
@@ -172,7 +213,8 @@ class ProjectionEffectIntentTest(TestCase):
 
         for index, (text, expected) in enumerate(cases.items(), start=1):
             with self.subTest(text=text):
-                events = ThoughtLoop(responder=_FailingResponder()).run_dicts(
+                responder = _StaticResponder()
+                events = ThoughtLoop(responder=responder).run_dicts(
                     self._turn(index, text)
                 )
                 requested = [
@@ -192,13 +234,352 @@ class ProjectionEffectIntentTest(TestCase):
                 self.assertTrue(forbidden.isdisjoint(requested[0]["data"]))
                 self.assertNotIn(text, json.dumps(requested[0]["data"], ensure_ascii=False))
                 self.assertNotIn("memory.retrieve", tool_names)
-                self.assertFalse(
-                    any(event["type"] == "responder.started" for event in events)
+                self.assertEqual(responder.calls, 1)
+                self.assertEqual(
+                    sum(event["type"] == "responder.started" for event in events),
+                    1,
+                )
+                self.assertEqual(
+                    sum(event["type"] == "responder.completed" for event in events),
+                    1,
                 )
                 message = [
                     event for event in events if event["type"] == "assistant.message"
                 ][-1]
+                self.assertTrue(message["data"]["phrase_generation"]["used_llm"])
+                self.assertEqual(
+                    events[-1]["data"]["status"],
+                    "projection_effect_requested",
+                )
+
+    def test_accepted_request_uses_bounded_continuity_for_companion_wording_only(
+        self,
+    ) -> None:
+        responder = _StaticResponder()
+        loop = ThoughtLoop(responder=responder)
+        history_marker = "今日は少し雑談しましょう。"
+        loop.run_dicts(self._turn(10, history_marker))
+
+        events = loop.run_dicts(
+            {
+                **self._turn(11, "それなら、炎を見せてもらえますか？"),
+                "session_id": "projection_effect_session_10",
+            }
+        )
+
+        requested = [
+            event for event in events if event["type"] == "projection.effect.requested"
+        ]
+        completed = next(
+            event for event in events if event["type"] == "responder.completed"
+        )
+        companion_context = responder.response_contexts[-1]
+        serialized_completed = json.dumps(completed, ensure_ascii=False)
+
+        self.assertEqual(
+            requested[0]["data"],
+            {"schemaVersion": 1, "action": "start", "effectId": "fire"},
+        )
+        self.assertEqual(responder.calls, 2)
+        self.assertEqual(
+            companion_context["current_stage"],
+            "projection_effect_companion_response",
+        )
+        self.assertIn("conversation_continuity", companion_context)
+        self.assertNotIn("conversation_continuity", completed["data"]["response_context"])
+        self.assertIn(
+            "conversation_continuity_summary",
+            completed["data"]["response_context"],
+        )
+        self.assertNotIn(history_marker, serialized_completed)
+
+    def test_responder_failure_uses_fixed_non_echoing_companion_without_retry(
+        self,
+    ) -> None:
+        responder = _FailingResponder()
+        events = ThoughtLoop(responder=responder).run_dicts(
+            self._turn(12, "雷を見せて")
+        )
+        serialized_publication = json.dumps(
+            [
+                event
+                for event in events
+                if event["type"]
+                in {
+                    "responder.completed",
+                    "thought_core.response_route_classified",
+                    "projection.effect.requested",
+                    "assistant.speech_delta",
+                    "assistant.message",
+                    "turn.completed",
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        self.assertEqual(responder.calls, 1)
+        self.assertEqual(
+            sum(event["type"] == "projection.effect.requested" for event in events),
+            1,
+        )
+        self.assertNotIn("PRIVATE_PROJECTION_RESPONDER_FAILURE", serialized_publication)
+        message = [
+            event for event in events if event["type"] == "assistant.message"
+        ][-1]
+        self.assertEqual(message["data"]["speech"], "雷のエフェクトを出します。")
+        self.assertFalse(message["data"]["phrase_generation"]["used_llm"])
+        self.assertEqual(events[-1]["data"]["status"], "projection_effect_requested")
+
+    def test_safe_contextual_companions_remain_varied_and_publish_once(self) -> None:
+        cases = (
+            (
+                "炎を出して",
+                "そうですね。では、炎のエフェクトを出します。",
+                {"schemaVersion": 1, "action": "start", "effectId": "fire"},
+            ),
+            (
+                "雷を見せて",
+                "会話の流れに合わせて、雷のエフェクトを出しますね。",
+                {
+                    "schemaVersion": 1,
+                    "action": "start",
+                    "effectId": "thunderBall",
+                },
+            ),
+        )
+
+        for index, (text, companion, expected_payload) in enumerate(
+            cases,
+            start=58,
+        ):
+            with self.subTest(text=text):
+                responder = _SuccessfulMutatingResponder(speech=companion)
+                events = ThoughtLoop(responder=responder).run_dicts(
+                    self._turn(index, text)
+                )
+                requested = [
+                    event
+                    for event in events
+                    if event["type"] == "projection.effect.requested"
+                ]
+                messages = [
+                    event
+                    for event in events
+                    if event["type"] == "assistant.message"
+                ]
+
+                self.assertEqual(responder.calls, 1)
+                self.assertEqual(len(requested), 1)
+                self.assertEqual(requested[0]["data"], expected_payload)
+                self.assertEqual(messages[-1]["data"]["speech"], companion)
+                self.assertEqual(messages[-1]["data"]["display"], companion)
+                self.assertTrue(
+                    messages[-1]["data"]["phrase_generation"]["used_llm"]
+                )
+                self.assertEqual(
+                    events[-1]["data"]["status"],
+                    "projection_effect_requested",
+                )
+
+    def test_successful_untrusted_companion_fails_closed_to_fixed_fallback(
+        self,
+    ) -> None:
+        private_marker = "PRIVATE_CONTINUITY_MARKER"
+        cases = (
+            (
+                "private continuity echo",
+                "炎のエフェクトを出します。",
+                f"{private_marker} 炎のエフェクトを出します。",
+            ),
+            (
+                "opposite effect",
+                "雷のエフェクトを出します。",
+                None,
+            ),
+            (
+                "unsupported parameter",
+                "炎を右側に5秒出します。",
+                None,
+            ),
+            (
+                "unproved completion claim",
+                "炎のエフェクトを出します。",
+                "炎のエフェクトはもう表示されました。",
+            ),
+        )
+
+        for index, (label, speech, display) in enumerate(cases, start=60):
+            with self.subTest(label=label):
+                responder = _SuccessfulMutatingResponder(
+                    speech=speech,
+                    display=display,
+                )
+                loop = ThoughtLoop(responder=responder)
+                session_id = f"projection_effect_postcondition_{index}"
+                if label == "private continuity echo":
+                    loop.conversation_continuity.begin_turn(
+                        session_id=session_id,
+                        turn_id=f"prior_{index}",
+                        user_text=private_marker,
+                    )
+                    loop.conversation_continuity.record_assistant(
+                        session_id=session_id,
+                        turn_id=f"prior_{index}",
+                        assistant_text="確認しました。",
+                    )
+
+                events = loop.run_dicts(
+                    {
+                        **self._turn(index, "炎を出して"),
+                        "session_id": session_id,
+                    }
+                )
+                requested = [
+                    event
+                    for event in events
+                    if event["type"] == "projection.effect.requested"
+                ]
+                messages = [
+                    event
+                    for event in events
+                    if event["type"] == "assistant.message"
+                ]
+                serialized_presentation = json.dumps(
+                    [
+                        event
+                        for event in events
+                        if event["type"]
+                        in {
+                            "responder.completed",
+                            "thought_core.response_route_classified",
+                            "assistant.speech_delta",
+                            "assistant.message",
+                            "turn.completed",
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+
+                self.assertEqual(responder.calls, 1)
+                self.assertEqual(len(requested), 1)
+                self.assertEqual(
+                    requested[0]["data"],
+                    {
+                        "schemaVersion": 1,
+                        "action": "start",
+                        "effectId": "fire",
+                    },
+                )
+                self.assertEqual(
+                    messages[-1]["data"]["speech"],
+                    "炎のエフェクトを出します。",
+                )
+                self.assertEqual(
+                    messages[-1]["data"]["display"],
+                    "炎のエフェクトを出します。",
+                )
+                self.assertFalse(
+                    messages[-1]["data"]["phrase_generation"]["used_llm"]
+                )
+                self.assertNotIn(private_marker, serialized_presentation)
+                self.assertNotIn("雷のエフェクトを出します", serialized_presentation)
+                self.assertNotIn("右側に5秒", serialized_presentation)
+                self.assertNotIn("表示されました", serialized_presentation)
+                self.assertEqual(
+                    events[-1]["data"]["status"],
+                    "projection_effect_requested",
+                )
+
+    def test_negated_or_conditional_companions_cannot_reverse_fixed_action(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "炎を出して",
+                "炎は出しません。",
+                "炎のエフェクトを出します。",
+                {"schemaVersion": 1, "action": "start", "effectId": "fire"},
+            ),
+            (
+                "炎を出して",
+                "炎を出せたら出します。",
+                "炎のエフェクトを出します。",
+                {"schemaVersion": 1, "action": "start", "effectId": "fire"},
+            ),
+            (
+                "止めて",
+                "エフェクトは止めません。",
+                "エフェクトを止めます。",
+                {"schemaVersion": 1, "action": "stop"},
+            ),
+            (
+                "リセットして",
+                "エフェクトはリセットしません。",
+                "エフェクトをリセットします。",
+                {"schemaVersion": 1, "action": "reset"},
+            ),
+            (
+                "炎を出して",
+                "炎を出しますか？",
+                "炎のエフェクトを出します。",
+                {"schemaVersion": 1, "action": "start", "effectId": "fire"},
+            ),
+            (
+                "止めて",
+                "エフェクトを止めますか？",
+                "エフェクトを止めます。",
+                {"schemaVersion": 1, "action": "stop"},
+            ),
+            (
+                "リセットして",
+                "エフェクトをリセットしますか？",
+                "エフェクトをリセットします。",
+                {"schemaVersion": 1, "action": "reset"},
+            ),
+        )
+
+        for index, (request, rejected, fallback, expected_payload) in enumerate(
+            cases,
+            start=64,
+        ):
+            with self.subTest(request=request, rejected=rejected):
+                responder = _SuccessfulMutatingResponder(speech=rejected)
+                events = ThoughtLoop(responder=responder).run_dicts(
+                    self._turn(index, request)
+                )
+                requested = [
+                    event
+                    for event in events
+                    if event["type"] == "projection.effect.requested"
+                ]
+                message = [
+                    event
+                    for event in events
+                    if event["type"] == "assistant.message"
+                ][-1]
+                serialized_presentation = json.dumps(
+                    [
+                        event
+                        for event in events
+                        if event["type"]
+                        in {
+                            "responder.completed",
+                            "thought_core.response_route_classified",
+                            "assistant.speech_delta",
+                            "assistant.message",
+                            "turn.completed",
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+
+                self.assertEqual(responder.calls, 1)
+                self.assertEqual(len(requested), 1)
+                self.assertEqual(requested[0]["data"], expected_payload)
+                self.assertEqual(message["data"]["speech"], fallback)
+                self.assertEqual(message["data"]["display"], fallback)
                 self.assertFalse(message["data"]["phrase_generation"]["used_llm"])
+                self.assertNotIn(rejected, serialized_presentation)
                 self.assertEqual(
                     events[-1]["data"]["status"],
                     "projection_effect_requested",
@@ -251,7 +632,7 @@ class ProjectionEffectIntentTest(TestCase):
 
     def test_context_filler_limit_is_bounded_and_non_echoing(self) -> None:
         accepted_text = ("すみません、" * MAX_CONTEXT_FILLERS) + "炎を出して"
-        accepted_events = ThoughtLoop(responder=_FailingResponder()).run_dicts(
+        accepted_events = ThoughtLoop(responder=_StaticResponder()).run_dicts(
             self._turn(70, accepted_text)
         )
         accepted_requests = [
