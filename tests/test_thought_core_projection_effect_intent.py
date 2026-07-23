@@ -2,6 +2,7 @@ import json
 import sys
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +13,10 @@ from thought_core.loop import ThoughtLoop  # noqa: E402
 from thought_core.projection_effect_intent import (  # noqa: E402
     MAX_CONTEXT_FILLERS,
     detect_projection_effect_intent,
+)
+from thought_core.projection_effect_plan import (  # noqa: E402
+    ProjectionPerformancePlanValidationError,
+    validate_projection_performance_plan,
 )
 from thought_core.responders import ResponderResult  # noqa: E402
 
@@ -732,6 +737,414 @@ class ProjectionEffectIntentTest(TestCase):
                 )
                 self.assertEqual(events[-1]["data"]["status"], "llm_response")
 
+    def test_planned_static_and_movement_wishes_emit_one_exact_v2_request(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "右上に小さめの炎を3秒",
+                "fire",
+                (0.65, 0.55),
+                3_000,
+                1,
+            ),
+            (
+                "雷を中央より少し上に、弱めで5秒見せてもらえますか？",
+                "thunderBall",
+                (0.0, 0.3),
+                5_000,
+                1,
+            ),
+            (
+                "炎を左下から右上へ移動させながら4秒",
+                "fire",
+                (-0.65, -0.55),
+                4_000,
+                2,
+            ),
+        )
+
+        for index, (
+            text,
+            effect_id,
+            position,
+            duration_ms,
+            keyframe_count,
+        ) in enumerate(cases, start=120):
+            with self.subTest(text=text):
+                responder = _StaticResponder()
+                turn = self._turn(index, text)
+                events = ThoughtLoop(responder=responder).run_dicts(turn)
+                requested = [
+                    event
+                    for event in events
+                    if event["type"] == "projection.effect.requested"
+                ]
+
+                self.assertEqual(len(requested), 1)
+                request = requested[0]
+                self.assertEqual(
+                    set(request["data"]),
+                    {"schemaVersion", "action", "plan"},
+                )
+                self.assertEqual(request["data"]["schemaVersion"], 2)
+                self.assertEqual(request["data"]["action"], "start")
+                self.assertEqual(request["turn_id"], turn["turn_id"])
+                self.assertEqual(request["session_id"], turn["session_id"])
+                self.assertEqual(request["source"], "thought-core")
+
+                plan = validate_projection_performance_plan(
+                    request["data"]["plan"]
+                )
+                self.assertEqual(plan.effect_id, effect_id)
+                self.assertEqual(
+                    (plan.position.x, plan.position.y),
+                    position,
+                )
+                self.assertEqual(plan.duration_ms, duration_ms)
+                self.assertEqual(len(plan.keyframes), keyframe_count)
+                self.assertEqual(plan.session_id, turn["session_id"])
+                self.assertEqual(plan.revision, 1)
+                self.assertEqual(responder.calls, 1)
+                self.assertEqual(
+                    sum(event["type"] == "responder.started" for event in events),
+                    1,
+                )
+                self.assertEqual(
+                    sum(event["type"] == "responder.completed" for event in events),
+                    1,
+                )
+                event_types = [event["type"] for event in events]
+                self.assertLess(
+                    event_types.index("projection.effect.requested"),
+                    event_types.index("responder.started"),
+                )
+                self.assertLess(
+                    event_types.index("responder.started"),
+                    event_types.index("responder.completed"),
+                )
+                self.assertEqual(
+                    events[-1]["data"]["status"],
+                    "projection_effect_requested",
+                )
+
+                serialized_authority = json.dumps(
+                    [
+                        request,
+                        *[
+                            event
+                            for event in events
+                            if event["type"]
+                            in {
+                                "responder.completed",
+                                "thought_core.response_route_classified",
+                                "assistant.message",
+                            }
+                        ],
+                    ],
+                    ensure_ascii=False,
+                )
+                self.assertNotIn(text, serialized_authority)
+                for forbidden in (
+                    "raw_utterance",
+                    "conversation_history",
+                    "responder_authority",
+                    "params",
+                    "shader",
+                    "url",
+                    "code",
+                ):
+                    self.assertNotIn(forbidden, serialized_authority.casefold())
+
+    def test_plan_identity_is_deterministic_from_session_and_turn_only(self) -> None:
+        text = "右上に小さめの炎を3秒"
+        turn = self._turn(130, text)
+        first = self._requested_plan(
+            ThoughtLoop(responder=_StaticResponder()).run_dicts(turn)
+        )
+        second = self._requested_plan(
+            ThoughtLoop(responder=_StaticResponder()).run_dicts(turn)
+        )
+        other_turn = {
+            **turn,
+            "turn_id": "projection_effect_turn_131",
+        }
+        third = self._requested_plan(
+            ThoughtLoop(responder=_StaticResponder()).run_dicts(other_turn)
+        )
+
+        self.assertEqual(first["planId"], second["planId"])
+        self.assertEqual(first["seed"], second["seed"])
+        self.assertNotEqual(first["planId"], third["planId"])
+        self.assertNotEqual(first["seed"], third["seed"])
+        self.assertNotIn(text, first["planId"])
+
+    def test_invalid_planned_wishes_fail_closed_before_fixed_or_general_routes(
+        self,
+    ) -> None:
+        cases = (
+            ("右上に小さめの炎と雷を3秒出して", None),
+            ("右上に小さめの炎を3秒出さないで", None),
+            ("右上に赤い炎を3秒出して", None),
+            ("右上に小さめの炎を3秒", "invalid session"),
+        )
+        private_marker = "PRIVATE_PLANNED_FAILURE"
+
+        for index, (text, session_id) in enumerate(cases, start=140):
+            with self.subTest(text=text, session_id=session_id):
+                responder = _FailingResponder()
+                turn = self._turn(index, text)
+                if session_id is not None:
+                    turn["session_id"] = session_id
+                events = ThoughtLoop(responder=responder).run_dicts(turn)
+                serialized_authority_presentation = json.dumps(
+                    [
+                        event
+                        for event in events
+                        if event["type"]
+                        in {
+                            "projection.effect.requested",
+                            "responder.started",
+                            "responder.completed",
+                            "thought_core.response_route_classified",
+                            "assistant.speech_delta",
+                            "assistant.message",
+                            "turn.completed",
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+                event_types = [event["type"] for event in events]
+
+                self.assertNotIn("projection.effect.requested", event_types)
+                self.assertNotIn("responder.started", event_types)
+                self.assertNotIn("tool.started", event_types)
+                self.assertEqual(responder.calls, 0)
+                self.assertEqual(events[-1]["data"]["status"], "needs_clarification")
+                self.assertNotIn(text, serialized_authority_presentation)
+                self.assertNotIn(
+                    private_marker,
+                    serialized_authority_presentation,
+                )
+
+        with patch(
+            "thought_core.loop.compile_projection_effect_plan_intent",
+            side_effect=RuntimeError(private_marker),
+        ):
+            events = ThoughtLoop(responder=_FailingResponder()).run_dicts(
+                self._turn(146, "右上に小さめの炎を3秒")
+            )
+        serialized = json.dumps(events, ensure_ascii=False)
+        self.assertFalse(
+            any(event["type"] == "projection.effect.requested" for event in events)
+        )
+        self.assertFalse(
+            any(event["type"] == "responder.started" for event in events)
+        )
+        self.assertEqual(events[-1]["data"]["status"], "needs_clarification")
+        self.assertNotIn(private_marker, serialized)
+
+    def test_planned_companion_rejection_keeps_one_plan_event_without_retry(
+        self,
+    ) -> None:
+        cases = (
+            "PRIVATE_PLAN_CONTEXT 炎のエフェクトを出します。",
+            "雷のエフェクトを出します。",
+            "炎を右側に5秒出します。",
+            "炎のエフェクトはもう表示されました。",
+        )
+        for index, companion in enumerate(cases, start=150):
+            with self.subTest(companion=companion):
+                responder = _SuccessfulMutatingResponder(speech=companion)
+                loop = ThoughtLoop(responder=responder)
+                turn = self._turn(index, "右上に小さめの炎を3秒")
+                if companion.startswith("PRIVATE_PLAN_CONTEXT"):
+                    session_id = f"projection_plan_postcondition_{index}"
+                    loop.conversation_continuity.begin_turn(
+                        session_id=session_id,
+                        turn_id=f"prior_plan_{index}",
+                        user_text="PRIVATE_PLAN_CONTEXT",
+                    )
+                    loop.conversation_continuity.record_assistant(
+                        session_id=session_id,
+                        turn_id=f"prior_plan_{index}",
+                        assistant_text="確認しました。",
+                    )
+                    turn["session_id"] = session_id
+                events = loop.run_dicts(turn)
+                requested = [
+                    event
+                    for event in events
+                    if event["type"] == "projection.effect.requested"
+                ]
+                message = [
+                    event for event in events if event["type"] == "assistant.message"
+                ][-1]
+                serialized_presentation = json.dumps(
+                    [
+                        event
+                        for event in events
+                        if event["type"]
+                        in {
+                            "responder.completed",
+                            "thought_core.response_route_classified",
+                            "assistant.speech_delta",
+                            "assistant.message",
+                            "turn.completed",
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+
+                self.assertEqual(responder.calls, 1)
+                self.assertEqual(len(requested), 1)
+                self.assertEqual(requested[0]["data"]["schemaVersion"], 2)
+                self.assertEqual(message["data"]["speech"], "炎のエフェクトを出します。")
+                self.assertEqual(message["data"]["display"], "炎のエフェクトを出します。")
+                self.assertFalse(message["data"]["phrase_generation"]["used_llm"])
+                self.assertNotIn(companion, serialized_presentation)
+
+    def test_planned_responder_failure_keeps_issued_event_without_retry(
+        self,
+    ) -> None:
+        responder = _FailingResponder()
+        events = ThoughtLoop(responder=responder).run_dicts(
+            self._turn(160, "右上に小さめの炎を3秒")
+        )
+        event_types = [event["type"] for event in events]
+        requested = [
+            event
+            for event in events
+            if event["type"] == "projection.effect.requested"
+        ]
+        message = [
+            event for event in events if event["type"] == "assistant.message"
+        ][-1]
+        serialized_publication = json.dumps(
+            [
+                event
+                for event in events
+                if event["type"]
+                in {
+                    "projection.effect.requested",
+                    "responder.completed",
+                    "thought_core.response_route_classified",
+                    "assistant.speech_delta",
+                    "assistant.message",
+                    "turn.completed",
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        self.assertEqual(responder.calls, 1)
+        self.assertEqual(len(requested), 1)
+        self.assertEqual(requested[0]["data"]["schemaVersion"], 2)
+        self.assertLess(
+            event_types.index("projection.effect.requested"),
+            event_types.index("responder.started"),
+        )
+        self.assertLess(
+            event_types.index("responder.started"),
+            event_types.index("responder.completed"),
+        )
+        self.assertEqual(message["data"]["speech"], "炎のエフェクトを出します。")
+        self.assertEqual(message["data"]["display"], "炎のエフェクトを出します。")
+        self.assertFalse(message["data"]["phrase_generation"]["used_llm"])
+        self.assertEqual(events[-1]["data"]["status"], "projection_effect_requested")
+        self.assertNotIn(
+            "PRIVATE_PROJECTION_RESPONDER_FAILURE",
+            serialized_publication,
+        )
+
+    def test_schema_v2_references_the_adopted_plan_without_field_duplication(
+        self,
+    ) -> None:
+        schema_path = (
+            REPO_ROOT / "contracts/expression/projection-effect-intent.schema.json"
+        )
+        plan_schema_path = (
+            REPO_ROOT / "contracts/expression/projection-performance-plan.schema.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        plan_schema = json.loads(plan_schema_path.read_text(encoding="utf-8"))
+        branches = schema["oneOf"]
+        v2 = next(
+            branch
+            for branch in branches
+            if branch["properties"]["schemaVersion"].get("const") == 2
+        )
+
+        self.assertEqual(
+            v2,
+            {
+                "type": "object",
+                "required": ["schemaVersion", "action", "plan"],
+                "properties": {
+                    "schemaVersion": {"const": 2},
+                    "action": {"const": "start"},
+                    "plan": {
+                        "$ref": "projection-performance-plan.schema.json",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        )
+        referenced_path = (schema_path.parent / v2["properties"]["plan"]["$ref"])
+        self.assertEqual(referenced_path.resolve(), plan_schema_path.resolve())
+        self.assertEqual(
+            plan_schema["$id"],
+            "https://sword-agent.local/contracts/expression/"
+            "projection-performance-plan.schema.json",
+        )
+        serialized_v2 = json.dumps(v2, ensure_ascii=False)
+        for duplicated in (
+            "planId",
+            "sessionId",
+            "revision",
+            "effectId",
+            "position",
+            "strength",
+            "durationMs",
+            "seed",
+            "keyframes",
+        ):
+            self.assertNotIn(duplicated, serialized_v2)
+
+        valid_plan = self._requested_plan(
+            ThoughtLoop(responder=_StaticResponder()).run_dicts(
+                self._turn(160, "右上に小さめの炎を3秒")
+            )
+        )
+        valid_payload = {
+            "schemaVersion": 2,
+            "action": "start",
+            "plan": valid_plan,
+        }
+        self.assertTrue(self._matches_projection_payload_contract(valid_payload))
+        invalid_payloads = (
+            {**valid_payload, "action": "stop"},
+            {**valid_payload, "action": "reset"},
+            {**valid_payload, "effectId": "fire"},
+            {"schemaVersion": 2, "action": "start"},
+            {**valid_payload, "update": {}},
+            {
+                **valid_payload,
+                "plan": {**valid_plan, "effectId": "unknown"},
+            },
+            {
+                **valid_payload,
+                "plan": {**valid_plan, "sessionId": ""},
+            },
+            {
+                **valid_payload,
+                "plan": {**valid_plan, "keyframes": []},
+            },
+        )
+        for payload in invalid_payloads:
+            with self.subTest(payload_keys=tuple(payload)):
+                self.assertFalse(self._matches_projection_payload_contract(payload))
+
     def test_detector_and_schema_expose_only_the_fixed_payload_vocabulary(self) -> None:
         decision = detect_projection_effect_intent("雷を出して")
         schema = json.loads(
@@ -767,3 +1180,48 @@ class ProjectionEffectIntentTest(TestCase):
             "locale": "ja-JP",
             "context_refs": {},
         }
+
+    def _requested_plan(self, events: list[dict[str, object]]) -> dict[str, object]:
+        requested = [
+            event
+            for event in events
+            if event["type"] == "projection.effect.requested"
+        ]
+        self.assertEqual(len(requested), 1)
+        payload = requested[0]["data"]
+        self.assertIsInstance(payload, dict)
+        assert isinstance(payload, dict)
+        plan = payload.get("plan")
+        self.assertIsInstance(plan, dict)
+        assert isinstance(plan, dict)
+        return plan
+
+    def _matches_projection_payload_contract(
+        self,
+        payload: object,
+    ) -> bool:
+        if type(payload) is not dict:
+            return False
+        if payload.get("schemaVersion") == 1:
+            action = payload.get("action")
+            if action == "start":
+                return (
+                    set(payload) == {"schemaVersion", "action", "effectId"}
+                    and payload.get("effectId") in {"fire", "thunderBall"}
+                )
+            return (
+                action in {"stop", "reset"}
+                and set(payload) == {"schemaVersion", "action"}
+            )
+        if payload.get("schemaVersion") != 2:
+            return False
+        if (
+            set(payload) != {"schemaVersion", "action", "plan"}
+            or payload.get("action") != "start"
+        ):
+            return False
+        try:
+            validate_projection_performance_plan(payload.get("plan"))
+        except ProjectionPerformancePlanValidationError:
+            return False
+        return True

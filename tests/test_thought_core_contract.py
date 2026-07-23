@@ -2667,6 +2667,90 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(route["data"]["intent_kind"], "projection_effect")
         self.assertEqual(events[-1]["data"]["status"], "projection_effect_requested")
 
+    def test_projection_plan_binding_precedes_fixed_and_general_fallbacks(self) -> None:
+        planned_turn = {
+            **GENERAL_TURN,
+            "text": "右上に小さめの炎を3秒",
+            "turn_id": "turn_projection_plan_binding",
+            "session_id": "session_projection_plan_binding",
+        }
+        planned_events = ThoughtLoop(
+            responder=StaticResponder(),
+            source="thought-core-contract",
+        ).run_dicts(planned_turn)
+        planned_request = next(
+            event
+            for event in planned_events
+            if event["type"] == "projection.effect.requested"
+        )
+
+        self.assertEqual(
+            set(planned_request["data"]),
+            {"schemaVersion", "action", "plan"},
+        )
+        self.assertEqual(planned_request["data"]["schemaVersion"], 2)
+        self.assertEqual(planned_request["data"]["action"], "start")
+        self.assertNotIn("effectId", planned_request["data"])
+        self.assertEqual(
+            planned_request["data"]["plan"]["sessionId"],
+            planned_turn["session_id"],
+        )
+        self.assertEqual(planned_request["turn_id"], planned_turn["turn_id"])
+        self.assertEqual(planned_request["session_id"], planned_turn["session_id"])
+        self.assertEqual(planned_request["source"], "thought-core-contract")
+        self.assertEqual(
+            sum(
+                event["type"] == "projection.effect.requested"
+                for event in planned_events
+            ),
+            1,
+        )
+
+        fixed_events = ThoughtLoop(responder=StaticResponder()).run_dicts(
+            {
+                **GENERAL_TURN,
+                "text": "炎を出して",
+                "turn_id": "turn_projection_fixed_fallback",
+            }
+        )
+        fixed_request = next(
+            event
+            for event in fixed_events
+            if event["type"] == "projection.effect.requested"
+        )
+        self.assertEqual(
+            fixed_request["data"],
+            {"schemaVersion": 1, "action": "start", "effectId": "fire"},
+        )
+
+        general_events = ThoughtLoop(responder=StaticResponder()).run_dicts(
+            {
+                **GENERAL_TURN,
+                "text": "今日は雑談を続けましょう",
+                "turn_id": "turn_projection_general_fallback",
+            }
+        )
+        self.assertFalse(
+            any(
+                event["type"] == "projection.effect.requested"
+                for event in general_events
+            )
+        )
+        self.assertEqual(general_events[-1]["data"]["status"], "llm_response")
+
+        home_events = ThoughtLoop(tools=MockThoughtTools()).run_dicts(
+            {
+                **GENERAL_TURN,
+                "text": "右上に小さめの炎を3秒出して、エアコンをつけて",
+                "turn_id": "turn_projection_home_priority",
+            }
+        )
+        home_event_types = [event["type"] for event in home_events]
+        self.assertNotIn("projection.effect.requested", home_event_types)
+        self.assertNotIn("responder.started", home_event_types)
+        self.assertIn("action.proposed", home_event_types)
+        self.assertIn("tool.started", home_event_types)
+
     def test_general_turn_uses_responder_boundary(self) -> None:
         events = ThoughtLoop(responder=StaticResponder()).run_dicts(GENERAL_TURN)
         event_types = [event["type"] for event in events]

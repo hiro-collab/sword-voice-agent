@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import unicodedata
@@ -27,9 +28,15 @@ from .input_understanding import (
 )
 from .persona import AssistantPersona, build_persona_from_env, strip_persona_tags
 from .projection_effect_intent import (
-    ProjectionEffectIntentDecision,
     detect_projection_effect_intent,
 )
+from .projection_effect_plan import (
+    MAX_SEED,
+    ProjectionPerformancePlanValidationError,
+    validate_projection_performance_plan,
+)
+from .projection_effect_plan_intent import compile_projection_effect_plan_intent
+from .projection_effect_plan_intent import MAX_UTTERANCE_CHARS
 from .responders import (
     TURN_RESPONDER_BOUNDARY,
     EnvironmentTurnResponder,
@@ -118,6 +125,33 @@ DRIVER_RESULT_AUTHORITIES = {
 }
 CONTEXT_VALUE_MAX_CHARS = 180
 PROJECTION_EFFECT_COMPANION_MAX_CHARS = 120
+PROJECTION_EFFECT_PLAN_IDENTITY_MAX_CHARS = 128
+PROJECTION_EFFECT_PLAN_ID_NAMESPACE = b"sword.projection-performance-plan.v1"
+PROJECTION_EFFECT_PLAN_EFFECT_MARKERS = (
+    "炎",
+    "火炎",
+    "ファイア",
+    "雷",
+    "稲妻",
+    "サンダー",
+)
+PROJECTION_EFFECT_PLAN_DIMENSION_MARKERS = (
+    "右",
+    "左",
+    "上",
+    "下",
+    "中央",
+    "真ん中",
+    "小さめ",
+    "大きめ",
+    "弱め",
+    "強め",
+    "中くらい",
+    "秒",
+    "移動",
+    "動かしながら",
+    "経由",
+)
 PROJECTION_EFFECT_COMPANION_CONTEXT_TEXT_KEYS = {
     "assistant_text",
     "proposition",
@@ -405,6 +439,39 @@ def _execution_turn_key(
     return (str(turn.get("turn_id") or ""), str(turn.get("session_id") or ""))
 
 
+def _projection_effect_plan_identity(turn_input: TurnInput) -> tuple[str, int]:
+    identity_parts = (turn_input.session_id, turn_input.turn_id)
+    if any(
+        type(part) is not str
+        or not 1 <= len(part) <= PROJECTION_EFFECT_PLAN_IDENTITY_MAX_CHARS
+        for part in identity_parts
+    ):
+        raise ProjectionPerformancePlanValidationError()
+
+    digest = hashlib.sha256()
+    digest.update(PROJECTION_EFFECT_PLAN_ID_NAMESPACE)
+    for part in identity_parts:
+        encoded = part.encode("utf-8")
+        digest.update(len(encoded).to_bytes(4, "big"))
+        digest.update(encoded)
+    digest_bytes = digest.digest()
+    plan_id = f"planv1_{digest_bytes[:16].hex()}"
+    seed = int.from_bytes(digest_bytes[16:24], "big") % (MAX_SEED + 1)
+    return plan_id, seed
+
+
+def _is_projection_effect_plan_candidate(text: object) -> bool:
+    if (
+        type(text) is not str
+        or not text
+        or len(text) > MAX_UTTERANCE_CHARS
+    ):
+        return False
+    return any(marker in text for marker in PROJECTION_EFFECT_PLAN_EFFECT_MARKERS) and any(
+        marker in text for marker in PROJECTION_EFFECT_PLAN_DIMENSION_MARKERS
+    )
+
+
 @dataclass(frozen=True)
 class _TurnRequestContext:
     session_id: str
@@ -631,6 +698,60 @@ class ThoughtLoop:
 
             action_intent = detect_home_action_intent(turn_input.text)
             if action_intent is None:
+                if _is_projection_effect_plan_candidate(turn_input.text):
+                    try:
+                        plan_id, plan_seed = _projection_effect_plan_identity(
+                            turn_input
+                        )
+                        plan_decision = compile_projection_effect_plan_intent(
+                            turn_input.text,
+                            plan_id=plan_id,
+                            session_id=turn_input.session_id,
+                            revision=1,
+                            seed=plan_seed,
+                        )
+                    except Exception:
+                        self._handle_projection_effect_clarification(
+                            events,
+                            factory,
+                            reason="projection_plan_needs_clarification",
+                        )
+                        return events
+
+                    if plan_decision.accepted:
+                        try:
+                            plan = validate_projection_performance_plan(
+                                plan_decision.plan
+                            )
+                            if plan.session_id != turn_input.session_id:
+                                raise ProjectionPerformancePlanValidationError()
+                            plan_payload = plan.to_payload()
+                        except ProjectionPerformancePlanValidationError:
+                            self._handle_projection_effect_clarification(
+                                events,
+                                factory,
+                                reason="projection_plan_needs_clarification",
+                            )
+                            return events
+                        self._handle_projection_effect_intent(
+                            events,
+                            factory,
+                            turn_input,
+                            {
+                                "schemaVersion": 2,
+                                "action": "start",
+                                "plan": plan_payload,
+                            },
+                        )
+                        return events
+                    if plan_decision.status == "clarification_required":
+                        self._handle_projection_effect_clarification(
+                            events,
+                            factory,
+                            reason=plan_decision.reason,
+                        )
+                        return events
+
                 projection_effect_intent = detect_projection_effect_intent(
                     turn_input.text
                 )
@@ -639,14 +760,14 @@ class ThoughtLoop:
                         events,
                         factory,
                         turn_input,
-                        projection_effect_intent,
+                        projection_effect_intent.event_payload(),
                     )
                     return events
                 if projection_effect_intent.status == "clarification_required":
                     self._handle_projection_effect_clarification(
                         events,
                         factory,
-                        projection_effect_intent,
+                        reason=projection_effect_intent.reason,
                     )
                     return events
                 self._handle_general_turn(events, factory, turn_input)
@@ -5906,12 +6027,18 @@ class ThoughtLoop:
         events: list[ThoughtEvent],
         factory: EventFactory,
         turn_input: TurnInput,
-        intent: ProjectionEffectIntentDecision,
+        event_payload: Mapping[str, Any],
     ) -> None:
-        payload = intent.event_payload()
+        payload = dict(event_payload)
         action = str(payload["action"])
+        plan_payload = payload.get("plan")
+        if isinstance(plan_payload, Mapping):
+            effect_id = str(plan_payload.get("effectId") or "")
+        else:
+            effect_id = str(payload.get("effectId") or "")
+        planned_start = payload.get("schemaVersion") == 2 and action == "start"
         if action == "start":
-            effect_name = "炎" if payload.get("effectId") == "fire" else "雷"
+            effect_name = "炎" if effect_id == "fire" else "雷"
             fallback_speech = f"{effect_name}のエフェクトを出します。"
             semantic_draft = f"{effect_name}のエフェクトを一つ出す依頼を受理した"
         elif action == "stop":
@@ -5952,11 +6079,13 @@ class ThoughtLoop:
         )
         if action == "start":
             response_context["required_facts"].append(
-                f"fixed effect is {payload['effectId']}"
+                f"fixed effect is {effect_id}"
             )
         if continuity_context:
             response_context["conversation_continuity"] = continuity_context
 
+        if planned_start:
+            events.append(factory.emit("projection.effect.requested", payload))
         events.append(
             factory.emit(
                 "responder.started",
@@ -6028,7 +6157,8 @@ class ThoughtLoop:
                 "device_action_proven",
             ],
         )
-        events.append(factory.emit("projection.effect.requested", payload))
+        if not planned_start:
+            events.append(factory.emit("projection.effect.requested", payload))
         self._emit_message(
             events,
             factory,
@@ -6120,7 +6250,11 @@ class ThoughtLoop:
             return None
 
         action = str(payload.get("action") or "")
-        effect_id = str(payload.get("effectId") or "")
+        plan_payload = payload.get("plan")
+        if isinstance(plan_payload, Mapping):
+            effect_id = str(plan_payload.get("effectId") or "")
+        else:
+            effect_id = str(payload.get("effectId") or "")
         for normalized in normalized_texts:
             mentions_fire = any(
                 marker in normalized for marker in PROJECTION_EFFECT_FIRE_MARKERS
@@ -6228,9 +6362,15 @@ class ThoughtLoop:
         self,
         events: list[ThoughtEvent],
         factory: EventFactory,
-        intent: ProjectionEffectIntentDecision,
+        *,
+        reason: str | None,
     ) -> None:
-        speech = "炎か雷の開始、停止、リセットのどれか一つを指定してください。"
+        if reason == "projection_plan_needs_clarification":
+            speech = (
+                "炎か雷を一つ選び、位置、強さ、時間を一つの依頼で指定してください。"
+            )
+        else:
+            speech = "炎か雷の開始、停止、リセットのどれか一つを指定してください。"
         self._emit_message(
             events,
             factory,
@@ -6246,7 +6386,7 @@ class ThoughtLoop:
                 "turn.completed",
                 {
                     "status": "needs_clarification",
-                    "reason": intent.reason or "projection_effect_request_not_bounded",
+                    "reason": reason or "projection_effect_request_not_bounded",
                 },
             )
         )

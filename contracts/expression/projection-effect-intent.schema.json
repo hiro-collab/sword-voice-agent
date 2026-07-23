@@ -22,6 +22,18 @@
         "action": { "enum": ["stop", "reset"] }
       },
       "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["schemaVersion", "action", "plan"],
+      "properties": {
+        "schemaVersion": { "const": 2 },
+        "action": { "const": "start" },
+        "plan": {
+          "$ref": "projection-performance-plan.schema.json"
+        }
+      },
+      "additionalProperties": false
     }
   ]
 }
