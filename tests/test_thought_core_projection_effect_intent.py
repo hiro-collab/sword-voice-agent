@@ -10,6 +10,7 @@ sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 
 from thought_core.loop import ThoughtLoop  # noqa: E402
 from thought_core.projection_effect_intent import (  # noqa: E402
+    MAX_CONTEXT_FILLERS,
     detect_projection_effect_intent,
 )
 from thought_core.responders import ResponderResult  # noqa: E402
@@ -68,6 +69,11 @@ class ProjectionEffectIntentTest(TestCase):
             ("会話を開始して", "general"),
             ("炎を出して", "requested"),
             ("雷を見せて", "requested"),
+            ("すみません、炎を出してください", "requested"),
+            ("雷を見せてもらえますか？", "requested"),
+            ("じゃあ、ちょっと火炎を表示してほしい。", "requested"),
+            ("サンダーを召喚してくれますか？", "requested"),
+            ("ファイアが見たい", "requested"),
             ("炎を出さないで", "clarified"),
             ("炎と雷を出して", "clarified"),
             ("炎を大きく出して", "clarified"),
@@ -99,7 +105,7 @@ class ProjectionEffectIntentTest(TestCase):
                     self.assertEqual(responder.calls, 1)
                     self.assertEqual(completed_status, "llm_response")
 
-    def test_bounded_phrases_emit_one_exact_privacy_safe_request(self) -> None:
+    def test_compositional_wishes_emit_one_exact_privacy_safe_request(self) -> None:
         cases = {
             "炎を出して": {
                 "schemaVersion": 1,
@@ -120,6 +126,31 @@ class ProjectionEffectIntentTest(TestCase):
                 "schemaVersion": 1,
                 "action": "start",
                 "effectId": "thunderBall",
+            },
+            "すみません、炎を出してください": {
+                "schemaVersion": 1,
+                "action": "start",
+                "effectId": "fire",
+            },
+            "雷を見せてもらえますか？": {
+                "schemaVersion": 1,
+                "action": "start",
+                "effectId": "thunderBall",
+            },
+            "じゃあ、ちょっと火炎を表示してほしい。": {
+                "schemaVersion": 1,
+                "action": "start",
+                "effectId": "fire",
+            },
+            "サンダーを召喚してくれますか？": {
+                "schemaVersion": 1,
+                "action": "start",
+                "effectId": "thunderBall",
+            },
+            "ファイアが見たい": {
+                "schemaVersion": 1,
+                "action": "start",
+                "effectId": "fire",
             },
             "止めて": {"schemaVersion": 1, "action": "stop"},
             "リセットして": {"schemaVersion": 1, "action": "reset"},
@@ -157,7 +188,9 @@ class ProjectionEffectIntentTest(TestCase):
 
                 self.assertEqual(len(requested), 1)
                 self.assertEqual(requested[0]["data"], expected)
+                self.assertEqual(set(requested[0]["data"]), set(expected))
                 self.assertTrue(forbidden.isdisjoint(requested[0]["data"]))
+                self.assertNotIn(text, json.dumps(requested[0]["data"], ensure_ascii=False))
                 self.assertNotIn("memory.retrieve", tool_names)
                 self.assertFalse(
                     any(event["type"] == "responder.started" for event in events)
@@ -174,6 +207,8 @@ class ProjectionEffectIntentTest(TestCase):
     def test_ambiguous_or_unbounded_requests_fail_closed_without_event(self) -> None:
         rejected = (
             "炎を出せますか？",
+            "雷を見せられますか？",
+            "雷が出せる？",
             "炎について話して",
             "炎を出さないで",
             "炎と雷を出して",
@@ -184,6 +219,9 @@ class ProjectionEffectIntentTest(TestCase):
             "リセットして、リセットして",
             "炎を大きく出して",
             "雷の位置を変えて",
+            "炎を出して、それから雷を見せて",
+            "炎を見せてと言って",
+            "ファイアとサンダーを見せて",
         )
 
         for index, text in enumerate(rejected, start=20):
@@ -202,6 +240,68 @@ class ProjectionEffectIntentTest(TestCase):
                     any(event["type"] == "responder.started" for event in events)
                 )
                 self.assertEqual(events[-1]["data"]["status"], "needs_clarification")
+                message = [
+                    event for event in events if event["type"] == "assistant.message"
+                ][-1]
+                self.assertEqual(
+                    message["data"]["speech"],
+                    "炎か雷の開始、停止、リセットのどれか一つを指定してください。",
+                )
+                self.assertFalse(message["data"]["phrase_generation"]["used_llm"])
+
+    def test_context_filler_limit_is_bounded_and_non_echoing(self) -> None:
+        accepted_text = ("すみません、" * MAX_CONTEXT_FILLERS) + "炎を出して"
+        accepted_events = ThoughtLoop(responder=_FailingResponder()).run_dicts(
+            self._turn(70, accepted_text)
+        )
+        accepted_requests = [
+            event
+            for event in accepted_events
+            if event["type"] == "projection.effect.requested"
+        ]
+        self.assertEqual(len(accepted_requests), 1)
+        self.assertEqual(
+            accepted_requests[0]["data"],
+            {"schemaVersion": 1, "action": "start", "effectId": "fire"},
+        )
+
+        private_marker = "PRIVATE_FILLER_SENTINEL"
+        rejected_inputs = (
+            ("すみません、" * (MAX_CONTEXT_FILLERS + 1)) + "炎を出して",
+            ("すみません、" * 10000) + f"炎を出して{private_marker}",
+        )
+        for index, text in enumerate(rejected_inputs, start=71):
+            with self.subTest(filler_count=text.count("すみません")):
+                events = ThoughtLoop(responder=_FailingResponder()).run_dicts(
+                    self._turn(index, text)
+                )
+                event_types = [event["type"] for event in events]
+                projection_publication = [
+                    event
+                    for event in events
+                    if event["type"]
+                    in {
+                        "projection.effect.requested",
+                        "assistant.speech_delta",
+                        "assistant.message",
+                        "turn.completed",
+                    }
+                ]
+                serialized_publication = json.dumps(
+                    projection_publication, ensure_ascii=False
+                )
+
+                self.assertNotIn("projection.effect.requested", event_types)
+                self.assertNotIn("responder.started", event_types)
+                self.assertNotIn("tool.started", event_types)
+                self.assertNotIn(text, serialized_publication)
+                self.assertNotIn(private_marker, serialized_publication)
+                self.assertEqual(events[-1]["type"], "turn.completed")
+                self.assertEqual(events[-1]["data"]["status"], "needs_clarification")
+                self.assertEqual(
+                    events[-1]["data"]["reason"],
+                    "projection_effect_request_not_bounded",
+                )
                 message = [
                     event for event in events if event["type"] == "assistant.message"
                 ][-1]

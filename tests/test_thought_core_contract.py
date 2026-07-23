@@ -2631,6 +2631,28 @@ class ThoughtCoreContractTest(TestCase):
         self.assertIn("action.reviewed", event_types)
         self.assertNotIn("projection.effect.requested", event_types)
 
+    def test_natural_projection_effect_request_stays_structured_and_text_free(self) -> None:
+        text = "じゃあ、ちょっとサンダーを見せてくれますか？"
+        events = ThoughtLoop(responder=StaticResponder()).run_dicts(
+            {
+                **GENERAL_TURN,
+                "text": text,
+                "turn_id": "turn_natural_projection_effect",
+            }
+        )
+        requested = [
+            event for event in events if event["type"] == "projection.effect.requested"
+        ]
+
+        self.assertEqual(len(requested), 1)
+        self.assertEqual(
+            requested[0]["data"],
+            {"schemaVersion": 1, "action": "start", "effectId": "thunderBall"},
+        )
+        self.assertNotIn(text, json.dumps(requested[0]["data"], ensure_ascii=False))
+        self.assertNotIn("responder.started", [event["type"] for event in events])
+        self.assertEqual(events[-1]["data"]["status"], "projection_effect_requested")
+
     def test_general_turn_uses_responder_boundary(self) -> None:
         events = ThoughtLoop(responder=StaticResponder()).run_dicts(GENERAL_TURN)
         event_types = [event["type"] for event in events]
