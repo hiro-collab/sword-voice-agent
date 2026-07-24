@@ -2059,7 +2059,8 @@ class LauncherUiContractTest(TestCase):
         self.assertFalse(demo_fast["StopExisting"])
         self.assertTrue(demo_fast["EnableThoughtCore"])
         self.assertFalse(demo_fast["EnableThoughtCoreWatch"])
-        self.assertTrue(demo_fast["ThoughtCoreNoProvider"])
+        self.assertEqual(demo_fast["ThoughtCoreLlmProvider"], "codex-cli")
+        self.assertFalse(demo_fast["ThoughtCoreNoProvider"])
         self.assertEqual(demo_fast["VoicevoxReadyTimeoutSeconds"], 8)
         self.assertTrue(demo_fast["SkipHomeAssistantBridge"])
         self.assertTrue(demo_fast["SkipEnvironmentState"])
@@ -2071,7 +2072,8 @@ class LauncherUiContractTest(TestCase):
         self.assertFalse(demo_fast_action["StopExisting"])
         self.assertTrue(demo_fast_action["EnableThoughtCore"])
         self.assertFalse(demo_fast_action["EnableThoughtCoreWatch"])
-        self.assertTrue(demo_fast_action["ThoughtCoreNoProvider"])
+        self.assertEqual(demo_fast_action["ThoughtCoreLlmProvider"], "codex-cli")
+        self.assertFalse(demo_fast_action["ThoughtCoreNoProvider"])
         self.assertEqual(demo_fast_action["VoicevoxReadyTimeoutSeconds"], 8)
         self.assertNotIn("SkipHomeAssistantBridge", demo_fast_action)
         self.assertTrue(demo_fast_action["SkipEnvironmentState"])
@@ -2093,6 +2095,16 @@ class LauncherUiContractTest(TestCase):
         self.assertTrue(aituber_only["SkipMediapipe"])
         self.assertTrue(aituber_only["SkipVisionSnapshotProcessor"])
         self.assertTrue(aituber_only["SkipTouchDesignerGui"])
+
+        response_provider_profiles = {
+            profile_id
+            for profile_id, profile in profiles.items()
+            if "ThoughtCoreLlmProvider" in profile["options"]
+        }
+        self.assertEqual(
+            response_provider_profiles,
+            {"demo-fast", "demo-fast-action"},
+        )
 
     def test_launcher_passes_readiness_timeouts_to_stack_scripts(self) -> None:
         server = read_launcher_server()
