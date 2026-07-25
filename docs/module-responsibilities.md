@@ -8,7 +8,7 @@ inside each module's own docs.
 | Module | Owns | Does Not Own |
 |---|---|---|
 | `sword-voice-agent` | Integration runtime, gesture gate policy, Thought Core watcher entrypoints, local status projection, launcher-facing scripts | Physical camera capture, STT implementation, Home Assistant device semantics, avatar rendering internals |
-| `control-plane/core/services/thought-core` | Canonical turn service v0, turn event stream, tool orchestration loop, responder boundary; package code under `src/thought_core` | STT, camera capture, Home Assistant implementation, display rendering |
+| `control-plane/core/services/thought-core` | Canonical turn service v0, AI-agent semantic intent, capability/tool selection, structured action proposal, turn event stream, orchestration loop, natural response; package code under `src/thought_core` | STT, camera capture, Home Assistant implementation, unsafe direct execution, display rendering |
 | `ai-talk-core` | Browser/microphone recording, STT, transcript, handoff files | Thought Core request policy, home actions, gesture inference |
 | `mediapipe-sword-sign` | Camera Hub, gesture model inference, Camera Hub topics, MediaMTX helper stack | STT, Thought Core, TTS, Home Assistant action state |
 | `vision-snapshot-processor` | Snapshot-style vision inference from MediaMTX streams | Camera ownership, gesture inference, environment aggregation |
@@ -39,6 +39,11 @@ files.
 
 ## Authority Rules
 
+- Thought Core の AI agent は通常発話の semantic intent、tool/API 選択、引数案、自然な応答を
+  所有する。validator/policy は案を許可・拒否できるが、固定語彙で別の意味へ置換しない。
+- 実行 adapter は許可済みの構造化操作だけを実行し、発話の意味を再解釈しない。
+- Emergency Stop、明示的 Reset、低遅延 reflex は AI を待たない決定的経路にできる。
+- fallback-only mode は compatibility/degraded 診断であり、通常 product route ではない。
 - Cross-module fields must be documented in `integration-contract.md`.
 - State, flag, and ID authority must be documented in `state_authority.md`.
 - A module README should explain the module itself, not the whole integration design.

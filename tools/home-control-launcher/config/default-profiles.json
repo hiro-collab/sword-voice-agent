@@ -14,9 +14,9 @@
   },
   {
     "id": "demo-fast",
-    "name": "Fast visible demo",
-    "group": "Demo",
-    "description": "Start the minimal local display/audio demo path with Thought Core and Projection Visual only.",
+    "name": "Compatibility visible demo",
+    "group": "Compatibility",
+    "description": "Start the legacy response-only display/audio path. Action intent remains deterministic, so this profile does not satisfy agentic product acceptance.",
     "options": {
       "StopExisting": false,
       "EnableThoughtCore": true,
@@ -35,9 +35,9 @@
   },
   {
     "id": "demo-fast-action",
-    "name": "Fast action demo",
-    "group": "Demo",
-    "description": "Start the minimal local display/audio path plus the Home Assistant bridge for a bounded appliance handoff.",
+    "name": "Compatibility action demo",
+    "group": "Compatibility",
+    "description": "Start the legacy response-only path plus the Home Assistant bridge. This bounded handoff does not satisfy agentic intent or product acceptance.",
     "options": {
       "StopExisting": false,
       "EnableThoughtCore": true,

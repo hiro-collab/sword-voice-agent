@@ -26,6 +26,24 @@
 - `src/sword_voice_agent/apps/`: CLI やサーバー起動など、core/protocol/adapters を組み合わせる薄い実行層にする。
 - `src/sword_voice_agent/web/`: ローカル統合コンソールの静的 UI。API 形状を変える場合は `adapters/console_status.py` とテストも確認する。
 
+## Product Invariant: Agentic Intent And Response
+
+この要件は Thought Core の通常会話、家電操作、表現・魔法操作に適用する。
+
+- 通常の自然言語入力では、Thought Core に接続された AI agent が会話文脈、利用可能な能力、
+  Environment State、必要に応じた Self Mirror を見て、意味理解、tool/API 選択、引数案、
+  応答を決める。
+- 決定的なコードは、schema 検証、allowlist、範囲制限、policy、実行、receipt、cleanup を
+  担当する。通常発話の意味を固定語彙表や完全一致 parser だけで決めてはならない。
+- AI を介さない決定的経路を許すのは、Emergency Stop、明示的 Reset、低遅延 reflex、
+  または明示された degraded/compatibility mode に限る。
+- provider 未接続時の定型 fallback は degraded evidence であり、通常運用、撮影準備、
+  product acceptance の成功条件にしてはならない。
+- 自然な応答のテストで本文の完全一致を要求しない。agent 境界を mock し、選んだ能力、
+  構造化引数、安全性、実行結果との整合、`used_llm` provenance を検証する。
+- テストを安定させる目的で production の意図判断や返答を固定語彙・固定文へ戻す変更は
+  禁止する。この invariant を弱める変更には、ユーザーの明示承認と ADR 更新が必要である。
+
 ## Implementation Rules
 
 - 外部サービスの API key、secret、個人環境の token はコード、fixture、README 例に直書きしない。環境変数で扱う。
@@ -58,3 +76,5 @@ python -m unittest discover -s tests
 - UDP/HTTP receiver の入力検証とエラー処理が十分か。
 - Thought Core、ai-talk-core、AITuberKit 連携で secret やローカルパスをログに出しすぎていないか。
 - 実機統合が必要な変更で、単体テストだけを根拠にしていないか。
+- 固定 parser や exact-response assertion が、AI agent の意味理解・tool 選択・自由な応答を
+  production 経路から置き換えていないか。

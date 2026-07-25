@@ -338,7 +338,10 @@ Home Assistant や Environment State Server の秘密情報は、基本的に or
 
 ## 家電操作の管理
 
-家電操作の意味は control plane が管理します。
+家電操作の安全な能力、許可範囲、実行契約は control plane が管理します。通常発話の意味と、
+どの能力を使うかは Thought Core の AI agent が文脈と環境から判断します。catalog の
+`aliases` や action ID は capability metadata であり、自然言語を固定語彙だけで分類する
+authority ではありません。
 
 ```text
 catalogs/actions/home-actions.json
@@ -386,14 +389,20 @@ services/thought-core/
 turn input
   -> memory.retrieve
   -> environment.observe
+  -> AI agent: understand intent and select capability/API
+  -> deterministic schema / allowlist / policy validation
   -> home.preview
   -> home.execute
   -> environment.observe
   -> evaluate
-  -> response
+  -> AI agent: natural response consistent with the receipt
 ```
 
 `home.execute` の中に意味レベルのretryは隠しません。再観測、成功判定、再試行、ユーザー確認は Thought Core が turn の中で扱います。
+
+固定語彙 parser と定型 fallback は Emergency Stop、明示的 Reset、低遅延 reflex、
+または明示された degraded/compatibility mode に限定します。テスト都合で通常経路の
+AI intent や自然な応答を固定文へ戻してはなりません。
 
 ## TouchDesigner投影
 

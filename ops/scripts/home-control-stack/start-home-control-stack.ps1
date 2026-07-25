@@ -2112,12 +2112,12 @@ if ((-not $ThoughtCoreNoProvider) -and $ThoughtCoreLlmProvider -ne "configured")
     $thoughtCoreEnvironment["THOUGHT_CORE_LLM_PROVIDER"] = $thoughtCoreRuntimeProvider
     $thoughtCoreEnvironment["THOUGHT_CORE_LLM_ADAPTER"] = $thoughtCoreRuntimeProvider
     if ($thoughtCoreRuntimeProvider -eq "codex-cli") {
-        # The launcher preset is response-only. Thought Core and Home Control retain
-        # intent/action authority; Codex CLI cannot edit the workspace in this mode.
+        # Compatibility preset only: this response-only route does not satisfy the
+        # agentic intent/product boundary in ADR 0003. It is retained while the
+        # unified capability-proposal route is implemented.
         $thoughtCoreEnvironment["THOUGHT_CORE_ACTION_LLM_ENABLED"] = "0"
-        # Codex may vary only the visible wording after Thought Core has already
-        # decided and executed the action. A responder failure keeps the canonical
-        # deterministic phrase instead of suppressing the action result.
+        # Codex may vary only visible wording in this compatibility route. Do not
+        # treat its deterministic action result as product or filming acceptance.
         $thoughtCoreEnvironment["THOUGHT_CORE_LLM_VISIBLE_SPEECH_ENABLED"] = "1"
         $thoughtCoreEnvironment["THOUGHT_CORE_REQUIRE_LLM_VISIBLE_SPEECH"] = "0"
         if ($ThoughtCoreLlmProvider -eq "codex-cli-luna") {

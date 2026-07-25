@@ -11,7 +11,12 @@ Sword Agent System は、ジェスチャー、音声入力、環境認識、家�
 - MediaPipe Camera Hub がカメラ状態と刀印状態を topic として配信する。
 - Vision Snapshot Processor が部屋の明るさなどの snapshot vision state を配信する。
 - ai-talk-core が録音、STT、handoff 保存を担当する。
-- Thought Core が turn単位の思考、状態確認、家電操作、再観測、応答を担当する。
+- Thought Core に接続された AI agent が、turn単位で会話文脈と利用可能な能力を理解し、
+  状態確認、tool/API 選択、構造化された行動案、再観測、自然な応答を担当する。
+- 家電操作と表現・魔法操作の通常経路では、AI agent が Environment State、memory、
+  必要に応じた Self Mirror を使って対象と操作をその場で導き出す。
+- 決定的な validator/policy/executor が、AI agent の行動案に対して schema、allowlist、
+  範囲、安全性、実行、receipt、cleanup を保証する。
 - Environment State Server が state query と indicator を返す。
 - Home Assistant bridge が allowlist された action を単発実行する。
 - AITuber Kit Projection Visual が会話、HUD、アバター表示、背景表示を担う。
@@ -27,6 +32,11 @@ Sword Agent System は、ジェスチャー、音声入力、環境認識、家�
 - Home Control Server が意味レベルのretryや最終成功判定を行うこと。
 - Projection Visual やHUDが制御stateのauthorityになること。
 - Thought Core が Home Assistant のservice名やentity名を直接生成すること。
+- 通常発話の意味理解や tool/API 選択を、固定語彙表、完全一致 parser、定型応答だけで
+  置き換えること。
+- 自然な応答の本文を完全一致させるために、production の AI 応答を固定文へ戻すこと。
+- provider 未接続の fallback/compatibility mode を、通常運用、撮影準備、product acceptance
+  の成功として扱うこと。
 - API key、token、個人パスをREADMEやfixtureに固定すること。
 - `archives/` 配下の履歴文書を現行仕様として使うこと。
 
@@ -55,7 +65,9 @@ Sword Agent System は、ジェスチャー、音声入力、環境認識、家�
 2. AITuber Kit Projection Visual を開く。
 3. Chrome のマイク権限を許可する。
 4. 刀印または画面操作で入力を開始する。
-5. 音声で質問や家電操作を依頼する。
-6. Thought Core が Environment State を観測し、必要なら Home Assistant bridge へ実行を依頼する。
-7. 実行後に再観測し、結果を発話とHUDに反映する。
-8. 必要に応じて TouchDesigner の `.toe` を開き、プロジェクターへ投影する。
+5. 音声で質問、家電操作、表現・魔法操作を自然な言葉で依頼する。
+6. Thought Core の AI agent が文脈、能力一覧、Environment State を見て行動案を作る。
+7. validator/policy が行動案を検証し、必要なら Home Assistant bridge や expression runtime
+   へ実行を依頼する。
+8. 実行後に再観測し、結果を AI agent の自然な発話とHUDに反映する。
+9. 必要に応じて TouchDesigner の `.toe` を開き、プロジェクターへ投影する。

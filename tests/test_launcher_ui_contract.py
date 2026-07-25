@@ -2056,6 +2056,11 @@ class LauncherUiContractTest(TestCase):
         self.assertTrue(thought_core["EnableThoughtCoreWatch"])
 
         demo_fast = profiles["demo-fast"]["options"]
+        self.assertEqual(profiles["demo-fast"]["group"], "Compatibility")
+        self.assertIn(
+            "does not satisfy agentic product acceptance",
+            profiles["demo-fast"]["description"],
+        )
         self.assertFalse(demo_fast["StopExisting"])
         self.assertTrue(demo_fast["EnableThoughtCore"])
         self.assertFalse(demo_fast["EnableThoughtCoreWatch"])
@@ -2069,6 +2074,11 @@ class LauncherUiContractTest(TestCase):
         self.assertTrue(demo_fast["SkipTouchDesignerGui"])
 
         demo_fast_action = profiles["demo-fast-action"]["options"]
+        self.assertEqual(profiles["demo-fast-action"]["group"], "Compatibility")
+        self.assertIn(
+            "does not satisfy agentic intent or product acceptance",
+            profiles["demo-fast-action"]["description"],
+        )
         self.assertFalse(demo_fast_action["StopExisting"])
         self.assertTrue(demo_fast_action["EnableThoughtCore"])
         self.assertFalse(demo_fast_action["EnableThoughtCoreWatch"])

@@ -31,6 +31,8 @@
 | transcript / command | `ai-talk-core` | handoff files | STT 結果と Thought Core へ送る既定 field |
 | Thought Core request text selection | Thought Core watcher | Thought Core API request | `command`, `transcript`, `prompt` の選択 |
 | Thought Core answer and turn metadata | Thought Core | status projection | `answer`, `turn_id`, `event_count` |
+| semantic intent / capability selection / structured action proposal | Thought Core AI agent | turn events and validated proposal boundary | conversation, capability schemas, Environment State, memory, and optional Self Mirror are reasoning inputs; this is not execution permission |
+| action permission and parameter bounds | deterministic validator / policy boundary | validation event and execution request | schema, allowlist, range, confirmation, and safety policy may accept or reject an AI proposal but must not replace ordinary semantic intent with a fixed phrase table |
 | Home Assistant action result | `home-assistant-server` / Home Assistant | bridge API, Environment State Server | 家電状態の根拠 |
 | Environment snapshots | `environment-state-server` | `/environment/current`, `/indicators/current` | 複数モジュール状態の cache |
 | TTS playback state | `tts-service` | `latest_tts_state.json`, HTTP health | 読み上げ状態 |

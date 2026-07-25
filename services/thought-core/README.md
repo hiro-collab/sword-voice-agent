@@ -16,9 +16,23 @@ OpenAI Agents SDK、LangGraph、Dify などへ差し替えやすくすること�
 - tool 実行や Home Assistant の状態捏造はしない
 - 実装は `openai_compatible_chat` / LangGraph / OpenAI Agents SDK / Dify などの Thought Core 内部 adapter に差し替える
 
+## 必須の製品境界
+
+通常会話、家電操作、表現・魔法操作では、Thought Core に接続された AI agent が
+semantic intent、利用する capability/tool/API、構造化引数案、自然な応答を決めます。
+決定的な層は schema、allowlist、範囲、policy、execution、receipt、cleanup を担当します。
+通常発話を固定語彙 parser だけで分類したり、テストを安定させるために自然な応答を
+固定文へ置換したりしてはなりません。
+
+AI を介さない決定的経路を許すのは Emergency Stop、明示的 Reset、低遅延 reflex、
+または明示された degraded/compatibility mode だけです。provider 未接続時の local
+fallback は診断用の縮退状態であり、通常運用・撮影準備・product acceptance の成功では
+ありません。詳細は `docs/decisions/0003-agentic-intent-and-response-authority.md` を参照します。
+
 最初の adapter は依存なしの OpenAI-compatible HTTP です。`.env` またはプロセス環境で
 `THOUGHT_CORE_LLM_BASE_URL`, `THOUGHT_CORE_LLM_API_KEY`, `THOUGHT_CORE_LLM_MODEL`
-を指定できます。未設定時は local fallback が短い応答を返します。
+を指定できます。未設定時は local fallback が短い応答を返しますが、これは
+明示的な degraded/compatibility evidence として扱います。
 
 Codex CLI を Thought Core 内部の応答 adapter として使う場合は、外側ランタイムや
 AITuberKit の provider を増やさず、同じ `thought-core.turn_responder.v0` を次のように
@@ -141,9 +155,9 @@ summary だけを JSONL に残します。
 `THOUGHT_CORE_EVENT_JOURNAL_PATH` を指定した場合はその単一 JSONL に追記します。
 `DIR` だけの場合は `events-YYYY-MM-DD.jsonl` に日次追記します。
 
-LLM を有効にした場合も、1回の巨大 prompt で全部を決めません。
-`THOUGHT_CORE_ACTION_LLM_ENABLED=1` のとき、Action Reasoner は次の小さな境界に分けて
-OpenAI-compatible adapter へ問い合わせます。
+通常の製品経路では action-capable AI agent を必須とし、1回の巨大 prompt で全部を
+決めません。現行 adapter で `THOUGHT_CORE_ACTION_LLM_ENABLED=1` を使う場合、Action
+Reasoner は次の小さな境界に分けて OpenAI-compatible adapter へ問い合わせます。
 
 1. prompt + Environment State + memory から Target State を作る
 2. Target State と現在状態の差分から、allowlist 済み action の中で実行内容を選ぶ
@@ -151,6 +165,19 @@ OpenAI-compatible adapter へ問い合わせます。
 
 LLM は言葉、理由、判定補助を柔軟にできますが、`home.preview` にない command や
 Home Assistant service/entity を勝手に生成することはできません。
+
+現行の local action parser や response-only launcher profile は移行中の
+compatibility/degraded path です。これらを通常の意味理解 authority や完成条件として
+扱いません。家電と表現・魔法を含む統一 capability proposal 経路が整うまで、product
+acceptance は未達です。
+
+### テスト方針
+
+- agent 境界を mock し、capability/tool/API、構造化引数、policy、receipt を決定的に検証する
+- 自然な speech/display 本文の完全一致を通常の成功条件にしない
+- live/integration では `used_llm` provenance と実行結果との意味的一致を確認する
+- provider 未接続 fallback のテストは degraded path のテストとして分離する
+- production の固定語彙・固定文を増やしてテストを通す修正を認めない
 
 ### 旧 workflow から移植した環境認識
 
