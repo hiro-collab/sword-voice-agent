@@ -8,6 +8,7 @@ implement this small port.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -27,7 +28,9 @@ from .schema import TurnInput
 
 
 TURN_RESPONDER_BOUNDARY = "thought-core.turn_responder.v0"
+STRUCTURED_COMPLETION_BOUNDARY = "thought-core.structured_completion.v0"
 TRUSTED_LOCAL_HISTORY_CAPABILITY = "trusted_local_response_only_4x600_v0"
+MAX_STRUCTURED_COMPLETION_RESPONSE_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -55,6 +58,171 @@ class TurnResponder(Protocol):
         response_context: Mapping[str, Any] | None = None,
     ) -> ResponderResult:
         """Return one assistant message for a turn."""
+
+
+class StructuredCompletionUnavailable(Exception):
+    """A structured completion transport is unavailable for this request."""
+
+
+class StructuredCompletionInvalid(Exception):
+    """A structured completion response is not one complete JSON value."""
+
+
+class StructuredCompletion(Protocol):
+    def complete_json(
+        self,
+        *,
+        system_prompt: str,
+        input_payload: Mapping[str, object],
+        max_tokens: int,
+    ) -> object:
+        """Return one untrusted JSON value without a local fallback."""
+
+
+class _RejectAllRedirects(request.HTTPRedirectHandler):
+    """Reject redirects before urllib can issue a second request."""
+
+    def redirect_request(
+        self,
+        req: request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> request.Request | None:
+        del req, fp, code, msg, headers, newurl
+        raise StructuredCompletionUnavailable(
+            "structured_completion_unavailable"
+        ) from None
+
+
+def _build_credential_free_loopback_opener(base_url: str) -> request.OpenerDirector:
+    """Build a direct opener without proxy or redirect-capable handlers."""
+
+    opener = request.OpenerDirector()
+    handlers: list[Any] = [
+        request.UnknownHandler(),
+        request.HTTPHandler(),
+        request.HTTPDefaultErrorHandler(),
+        _RejectAllRedirects(),
+        request.HTTPErrorProcessor(),
+    ]
+    if urlparse(base_url).scheme.lower() == "https":
+        handlers.append(request.HTTPSHandler())
+    for handler in handlers:
+        opener.add_handler(handler)
+    return opener
+
+
+class OpenAICompatibleStructuredCompletion:
+    """Credential-free JSON completion seam for an explicit loopback endpoint."""
+
+    adapter_kind = "openai_compatible_structured_completion"
+    provider = "openai-compatible"
+    __slots__ = ("base_url", "model", "timeout_s", "_opener")
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        model: str,
+        timeout_s: float = 12.0,
+        opener: Any | None = None,
+    ) -> None:
+        if not is_loopback_http_url(base_url) or not model.strip():
+            raise ValueError("structured_completion_configuration_unusable")
+        self.base_url = base_url.rstrip("/")
+        self.model = model.strip()
+        self.timeout_s = max(0.1, timeout_s)
+        self._opener = (
+            opener
+            if opener is not None
+            else _build_credential_free_loopback_opener(self.base_url)
+        )
+
+    def complete_json(
+        self,
+        *,
+        system_prompt: str,
+        input_payload: Mapping[str, object],
+        max_tokens: int,
+    ) -> object:
+        """Request and parse one JSON object without retaining raw content."""
+
+        if (
+            type(system_prompt) is not str
+            or not system_prompt
+            or not isinstance(input_payload, Mapping)
+            or type(max_tokens) is not int
+            or max_tokens <= 0
+        ):
+            raise StructuredCompletionInvalid("structured_completion_input_invalid")
+        try:
+            user_content = json.dumps(
+                dict(input_payload),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            body = json.dumps(
+                {
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    "temperature": 0,
+                    "max_tokens": max_tokens,
+                    "response_format": {"type": "json_object"},
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError):
+            raise StructuredCompletionInvalid(
+                "structured_completion_input_invalid"
+            ) from None
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        completion_request = request.Request(
+            f"{self.base_url}/chat/completions",
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+
+        ensure_execution_active()
+        try:
+            with self._opener.open(
+                completion_request,
+                timeout=clamp_execution_timeout(self.timeout_s),
+            ) as response:
+                raw_response = response.read(
+                    MAX_STRUCTURED_COMPLETION_RESPONSE_BYTES + 1
+                )
+        except (OSError, TimeoutError, error.URLError):
+            raise StructuredCompletionUnavailable(
+                "structured_completion_unavailable"
+            ) from None
+        ensure_execution_active()
+
+        if len(raw_response) > MAX_STRUCTURED_COMPLETION_RESPONSE_BYTES:
+            raise StructuredCompletionInvalid("structured_completion_response_invalid")
+        try:
+            response_payload = json.loads(raw_response.decode("utf-8"))
+            if type(response_payload) is not dict:
+                raise ValueError
+            content = _extract_chat_completion_text(response_payload)
+            if not content:
+                raise ValueError
+            return json.loads(content)
+        except (UnicodeError, TypeError, ValueError, json.JSONDecodeError):
+            raise StructuredCompletionInvalid(
+                "structured_completion_response_invalid"
+            ) from None
 
 
 class LocalFallbackResponder:
@@ -918,9 +1086,33 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def is_loopback_http_url(value: str) -> bool:
+    """Accept only credential-free HTTP(S) endpoints on a loopback host."""
+
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower()
+    try:
+        loopback_host = host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback_host = False
+    return (
+        parsed.scheme.lower() in {"http", "https"}
+        and bool(parsed.netloc)
+        and parsed.username is None
+        and parsed.password is None
+        and loopback_host
+        and (port is None or 1 <= port <= 65535)
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
 def _is_loopback_url(value: str) -> bool:
-    host = urlparse(value).hostname or ""
-    return host == "localhost" or host == "::1" or host.startswith("127.")
+    return is_loopback_http_url(value)
 
 
 def _safe_base_url(value: str) -> str:

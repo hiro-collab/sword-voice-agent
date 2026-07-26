@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 
+from .agentic_turn_runtime_provider import build_agentic_turn_provider_from_env
 from .event_journal import journal_from_env
 from .execution_deadline import (
     TURN_DEADLINE_EXCEEDED,
@@ -30,6 +31,8 @@ from .execution_deadline import (
 )
 from .loop import ThoughtLoop
 from .provenance_diagnostics import build_child_provenance_diagnostics
+from .reasoning import LocalActionReasoner
+from .responders import LocalFallbackResponder
 from .schema import TurnInput
 
 DEFAULT_MAX_BODY_BYTES = 64 * 1024
@@ -219,7 +222,7 @@ def create_server(
     *,
     thought_loop: ThoughtLoop | None = None,
 ) -> ThreadingHTTPServer:
-    loop = thought_loop or ThoughtLoop()
+    loop = thought_loop if thought_loop is not None else _build_default_thought_loop()
     event_journal = journal_from_env()
     allow_remote_api = _env_bool("THOUGHT_CORE_ALLOW_REMOTE_API")
     require_api_token = _env_bool("THOUGHT_CORE_REQUIRE_API_TOKEN")
@@ -601,6 +604,15 @@ def create_server(
             self.wfile.flush()
 
     return ThreadingHTTPServer((host, port), ThoughtCoreHandler)
+
+
+def _build_default_thought_loop() -> ThoughtLoop:
+    agentic_turn_provider = build_agentic_turn_provider_from_env()
+    return ThoughtLoop(
+        agentic_turn_provider=agentic_turn_provider,
+        action_reasoner=LocalActionReasoner(),
+        responder=LocalFallbackResponder(),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
