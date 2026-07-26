@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/turn/agentic-turn-decision.schema.json",
+  "title": "AgenticTurnDecision V1",
+  "description": "One bounded agent-authored turn decision. The single capability call is an atomic V1 boundary, not a permanent limit on future cybernetic composition.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "kind",
+    "response"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "conversation",
+        "clarification",
+        "hold",
+        "capability"
+      ]
+    },
+    "response": {
+      "$ref": "#/$defs/response"
+    },
+    "capability": {
+      "$ref": "#/$defs/capabilityCall"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "capability"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "capability"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "capability"
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "response": {
+      "type": "object",
+      "required": [
+        "speech",
+        "display"
+      ],
+      "properties": {
+        "speech": {
+          "$ref": "#/$defs/responseText"
+        },
+        "display": {
+          "$ref": "#/$defs/responseText"
+        }
+      },
+      "additionalProperties": false
+    },
+    "responseText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600,
+      "pattern": "\\S"
+    },
+    "capabilityCall": {
+      "type": "object",
+      "required": [
+        "id",
+        "arguments"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$"
+        },
+        "arguments": {
+          "$ref": "#/$defs/arguments"
+        }
+      },
+      "additionalProperties": false
+    },
+    "arguments": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/jsonDepth2"
+      }
+    },
+    "jsonScalar": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer",
+          "minimum": -1000000,
+          "maximum": 1000000
+        },
+        {
+          "type": "number",
+          "minimum": -1000000,
+          "maximum": 1000000
+        },
+        {
+          "type": "string",
+          "maxLength": 512
+        }
+      ]
+    },
+    "jsonDepth2": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/jsonScalar"
+        },
+        {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/jsonDepth3"
+          }
+        },
+        {
+          "type": "object",
+          "maxProperties": 16,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonDepth3"
+          }
+        }
+      ]
+    },
+    "jsonDepth3": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/jsonScalar"
+        },
+        {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/jsonDepth4"
+          }
+        },
+        {
+          "type": "object",
+          "maxProperties": 16,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonDepth4"
+          }
+        }
+      ]
+    },
+    "jsonDepth4": {
+      "$ref": "#/$defs/jsonScalar"
+    }
+  },
+  "additionalProperties": false
+}
