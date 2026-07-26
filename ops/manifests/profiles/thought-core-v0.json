@@ -5,6 +5,7 @@
   "services": [
     "home_assistant_bridge",
     "environment_state_server",
+    "openai_provider_broker",
     "thought_core_api",
     "mediapipe_camera_hub_stack",
     "vision_snapshot_processor",

@@ -25,6 +25,12 @@
       "capabilities": ["state.write.own", "events.append", "reflex.emit", "expression.interrupt", "runtime.status.write", "diagnostics.write", "config.read"],
       "denied": ["home.execute.low_risk", "memory.read.semantic", "memory.write.confirmed", "secrets.use.adapter"]
     },
+    "openai_provider_broker": {
+      "identity": "svc.openai-provider-broker",
+      "layer": "turn",
+      "capabilities": ["runtime.status.write", "config.read", "secrets.use.adapter"],
+      "denied": ["home.execute.low_risk", "memory.write.confirmed"]
+    },
     "thought_core_api": {
       "identity": "svc.thought-core",
       "layer": "turn",

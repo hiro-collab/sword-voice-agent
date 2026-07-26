@@ -2053,6 +2053,10 @@ class LauncherUiContractTest(TestCase):
 
         thought_core = profiles["thought-core-v0"]["options"]
         self.assertTrue(thought_core["EnableThoughtCore"])
+        self.assertEqual(
+            thought_core["ThoughtCoreLlmProvider"],
+            "sword-openai-broker",
+        )
         self.assertTrue(thought_core["EnableThoughtCoreWatch"])
 
         demo_fast = profiles["demo-fast"]["options"]
@@ -2113,7 +2117,7 @@ class LauncherUiContractTest(TestCase):
         }
         self.assertEqual(
             response_provider_profiles,
-            {"demo-fast", "demo-fast-action"},
+            {"thought-core-v0", "demo-fast", "demo-fast-action"},
         )
 
     def test_launcher_passes_readiness_timeouts_to_stack_scripts(self) -> None:

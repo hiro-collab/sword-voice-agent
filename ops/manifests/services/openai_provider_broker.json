@@ -1,0 +1,26 @@
+{
+  "service_id": "openai_provider_broker",
+  "layer": "turn",
+  "logical_service": "openai-provider-broker",
+  "current_owner": "ops/scripts/home-control-stack/start-home-control-stack.ps1",
+  "repo_path": "control-plane/core",
+  "service_root": "control-plane/core",
+  "contracts": ["turn", "access-control"],
+  "adapters": ["sword-openai-broker"],
+  "pid_names": ["openai_provider_broker"],
+  "secret_source_class": "thought-core-existing-env-v1",
+  "start": {
+    "type": "module",
+    "module": "sword_voice_agent.apps.openai_broker",
+    "host": "127.0.0.1",
+    "port": 18786
+  },
+  "health": {
+    "type": "http",
+    "url": "http://127.0.0.1:18786/health"
+  },
+  "stop": {
+    "strategy": "owned_pid"
+  },
+  "depends_on": []
+}

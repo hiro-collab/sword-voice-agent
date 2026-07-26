@@ -17,6 +17,7 @@
   ],
   "adapters": [
     "openai-compatible",
+    "sword-openai-broker",
     "thought-core-internal-provider-candidate"
   ],
   "memory": {
@@ -49,6 +50,7 @@
     "strategy": "owned_pid"
   },
   "depends_on": [
+    "openai_provider_broker",
     "home_assistant_bridge",
     "environment_state_server"
   ]

@@ -55,6 +55,7 @@ class OpsManifestTest(TestCase):
         profiles = _load_profile_manifests()
 
         thought_core = _resolve_profile_services("thought-core-v0", profiles)
+        self.assertIn("openai_provider_broker", thought_core)
         self.assertIn("thought_core_api", thought_core)
         self.assertIn("thought_core_watcher", thought_core)
         self.assertNotIn("thought-core-experimental", profiles)
@@ -76,6 +77,17 @@ class OpsManifestTest(TestCase):
 
         aituber_only = set(profiles["aituber-only"]["services"])
         self.assertEqual(aituber_only, {"aituber_kit"})
+
+    def test_openai_broker_manifest_is_the_thought_core_primary_dependency(self) -> None:
+        services = _load_service_manifests()
+        broker = services["openai_provider_broker"]
+        thought_core = services["thought_core_api"]
+
+        self.assertEqual(broker["health"]["url"], "http://127.0.0.1:18786/health")
+        self.assertEqual(broker["secret_source_class"], "thought-core-existing-env-v1")
+        self.assertIn("secrets.use.adapter", _load_json(REPO_ROOT / "policies" / "access" / "services.json")["services"]["openai_provider_broker"]["capabilities"])
+        self.assertIn("secrets.use.adapter", _load_json(REPO_ROOT / "policies" / "access" / "services.json")["services"]["thought_core_api"]["denied"])
+        self.assertIn("openai_provider_broker", thought_core["depends_on"])
 
     def test_lifecycle_scripts_are_consolidated_under_ops(self) -> None:
         script_names = {

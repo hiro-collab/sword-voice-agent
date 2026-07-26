@@ -3,6 +3,7 @@ param(
     [int]$Port = 18787,
     [string]$StatusDir = ".cache\sword_voice_agent",
     [string]$EnvPath = ".env",
+    [switch]$SkipEnvImport,
     [switch]$DryRun
 )
 
@@ -30,8 +31,50 @@ trap {
 
 $repoRoot = Get-SwordRepoRoot
 $resolvedEnvPath = Resolve-SwordPath -Path $EnvPath
-if (Test-Path -LiteralPath $resolvedEnvPath -PathType Leaf) {
+if ((-not $SkipEnvImport) -and (Test-Path -LiteralPath $resolvedEnvPath -PathType Leaf)) {
     Import-SwordEnv -EnvPath $resolvedEnvPath 6>$null
+}
+$canonicalBrokerEnvironment = @{}
+$isBrokerPrimary = $SkipEnvImport -and $env:THOUGHT_CORE_LLM_PROVIDER -ceq "sword-openai-broker"
+if ($isBrokerPrimary) {
+    foreach ($name in @(
+        "THOUGHT_CORE_LLM_ENABLED",
+        "THOUGHT_CORE_LLM_PROVIDER",
+        "THOUGHT_CORE_LLM_BASE_URL",
+        "THOUGHT_CORE_LLM_MODEL",
+        "THOUGHT_CORE_LLM_TIMEOUT_S",
+        "THOUGHT_CORE_ACTION_LLM_ENABLED"
+    )) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $canonicalBrokerEnvironment[$name] = $value
+        }
+    }
+    $canonicalBrokerEnvironment["THOUGHT_CORE_ACTION_LLM_ENABLED"] = "0"
+    foreach ($name in @(
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_MODEL",
+        "THOUGHT_CORE_LLM_API_KEY",
+        "THOUGHT_CORE_LLM_PROVIDER",
+        "THOUGHT_CORE_LLM_ADAPTER",
+        "THOUGHT_CORE_LLM_BASE_URL",
+        "THOUGHT_CORE_LLM_MODEL",
+        "THOUGHT_CORE_LLM_TIMEOUT_S",
+        "THOUGHT_CORE_LLM_ENABLED",
+        "THOUGHT_CORE_ACTION_LLM_API_KEY",
+        "THOUGHT_CORE_ACTION_LLM_PROVIDER",
+        "THOUGHT_CORE_ACTION_LLM_ADAPTER",
+        "THOUGHT_CORE_ACTION_LLM_BASE_URL",
+        "THOUGHT_CORE_ACTION_LLM_MODEL",
+        "THOUGHT_CORE_ACTION_LLM_TIMEOUT_S",
+        "THOUGHT_CORE_ACTION_LLM_ENABLED"
+    )) {
+        Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
+    }
+    foreach ($name in $canonicalBrokerEnvironment.Keys) {
+        Set-Item -Path "Env:$name" -Value $canonicalBrokerEnvironment[$name]
+    }
 }
 if ($env:THOUGHT_CORE_FORCE_NO_PROVIDER -match "^(1|true|yes|on)$") {
     $env:THOUGHT_CORE_LLM_ENABLED = "0"

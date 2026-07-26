@@ -8,6 +8,7 @@
       "StopExisting": true,
       "EnableThoughtCore": true,
       "EnableThoughtCoreWatch": true,
+      "ThoughtCoreLlmProvider": "sword-openai-broker",
       "MediapipeMode": "mediamtx",
       "MediapipeNoBrowser": true
     }

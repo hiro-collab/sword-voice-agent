@@ -18,7 +18,7 @@ param(
     [string]$TouchDesignerGuiHost = "127.0.0.1",
     [string]$ThoughtCoreHost = "127.0.0.1",
     [int]$ThoughtCorePort = 18787,
-    [ValidateSet("configured", "openai-compatible", "codex-cli", "codex-cli-luna")]
+    [ValidateSet("configured", "openai-compatible", "sword-openai-broker", "codex-cli", "codex-cli-luna")]
     [string]$ThoughtCoreLlmProvider = "configured",
     [string]$ThoughtCoreWatchAituberHttpTimeout = "",
     [string]$VoicevoxUrl = "",

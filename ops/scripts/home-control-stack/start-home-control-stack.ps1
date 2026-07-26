@@ -24,7 +24,7 @@ param(
     [int]$TouchDesignerUdpPort = 9001,
     [string]$ThoughtCoreHost = "127.0.0.1",
     [int]$ThoughtCorePort = 18787,
-    [ValidateSet("configured", "openai-compatible", "codex-cli", "codex-cli-luna")]
+    [ValidateSet("configured", "openai-compatible", "sword-openai-broker", "codex-cli", "codex-cli-luna")]
     [string]$ThoughtCoreLlmProvider = "configured",
     [string]$ThoughtCoreWatchAituberHttpTimeout = "",
     [string]$VoicevoxUrl = "",
@@ -229,6 +229,11 @@ $TouchDesignerGuiClientHost = if ($TouchDesignerGuiHost -eq "0.0.0.0") { "127.0.
 $TouchDesignerUdpClientHost = if ($TouchDesignerUdpHost -eq "0.0.0.0") { "127.0.0.1" } else { $TouchDesignerUdpHost }
 $ThoughtCoreClientHost = if ($ThoughtCoreHost -eq "0.0.0.0") { "127.0.0.1" } else { $ThoughtCoreHost }
 $ThoughtCoreBaseUrl = "http://{0}:{1}" -f $ThoughtCoreClientHost, $ThoughtCorePort
+$OpenAIBrokerHost = "127.0.0.1"
+$OpenAIBrokerPort = 18786
+$OpenAIBrokerBaseUrl = "http://127.0.0.1:18786/v1"
+$OpenAIBrokerHealthUrl = "http://127.0.0.1:18786/health"
+$BrokerRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..\..")).Path
 $AituberProjectionVisualUrl = "http://{0}:{1}/projection-visual/?mode=passive&hud=0" -f $AituberClientHost, $AituberPort
 $MediapipeCameraHubChildProcessFile = Join-Path $StateDir "modules\mediapipe_camera_hub_stack\processes.json"
 $StateQueryFeedbackPath = Join-Path $StateDir "feedback\state-query.jsonl"
@@ -1330,6 +1335,20 @@ function Invoke-External {
     }
 }
 
+$ProviderEnvironmentInputNames = @(
+    "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL",
+    "THOUGHT_CORE_LLM_API_KEY", "THOUGHT_CORE_LLM_PROVIDER", "THOUGHT_CORE_LLM_ADAPTER",
+    "THOUGHT_CORE_LLM_BASE_URL", "THOUGHT_CORE_LLM_MODEL", "THOUGHT_CORE_LLM_TIMEOUT_S", "THOUGHT_CORE_LLM_ENABLED",
+    "THOUGHT_CORE_ACTION_LLM_API_KEY", "THOUGHT_CORE_ACTION_LLM_PROVIDER",
+    "THOUGHT_CORE_ACTION_LLM_ADAPTER", "THOUGHT_CORE_ACTION_LLM_BASE_URL",
+    "THOUGHT_CORE_ACTION_LLM_MODEL", "THOUGHT_CORE_ACTION_LLM_TIMEOUT_S",
+    "THOUGHT_CORE_ACTION_LLM_ENABLED"
+)
+$MinimalBrokerRuntimeEnvironmentNames = @(
+    "ComSpec", "SystemRoot", "WINDIR", "PATH", "PATHEXT", "TEMP", "TMP",
+    "USERPROFILE", "LOCALAPPDATA", "APPDATA"
+)
+
 function New-ServiceSpec {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -1341,7 +1360,9 @@ function New-ServiceSpec {
         [string]$Role = "service",
         [string]$StopStrategy = "managed_tree",
         [string[]]$AllowedProcessNames = @(),
-        [string]$ChildProcessFile = ""
+        [string]$ChildProcessFile = "",
+        [string[]]$RemoveEnvironment = @(),
+        [switch]$ClearInheritedEnvironment
     )
     return [pscustomobject]@{
         Name = $Name
@@ -1354,6 +1375,8 @@ function New-ServiceSpec {
         StopStrategy = $StopStrategy
         AllowedProcessNames = @($AllowedProcessNames)
         ChildProcessFile = $ChildProcessFile
+        RemoveEnvironment = @($RemoveEnvironment)
+        ClearInheritedEnvironment = [bool]$ClearInheritedEnvironment
     }
 }
 
@@ -1380,24 +1403,44 @@ function Start-SupervisedProcess {
     $startInfo.StandardOutputEncoding = $utf8NoBom
     $startInfo.StandardErrorEncoding = $utf8NoBom
     $startInfo.CreateNoWindow = $true
+    if ($Spec.ClearInheritedEnvironment) {
+        $minimalRuntimeEnvironment = @{}
+        foreach ($name in $MinimalBrokerRuntimeEnvironmentNames) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                $minimalRuntimeEnvironment[$name] = $value
+            }
+        }
+        $startInfo.Environment.Clear()
+        foreach ($name in $minimalRuntimeEnvironment.Keys) {
+            $startInfo.Environment[$name] = [string]$minimalRuntimeEnvironment[$name]
+        }
+    }
+    foreach ($name in @($Spec.RemoveEnvironment)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$name)) {
+            $null = $startInfo.Environment.Remove([string]$name)
+        }
+    }
     $startInfo.Environment["PYTHONUTF8"] = "1"
     $startInfo.Environment["PYTHONIOENCODING"] = "utf-8"
     $startInfo.Environment["NO_COLOR"] = "1"
     $startInfo.Environment["FORCE_COLOR"] = "0"
     $startInfo.Environment["TERM"] = "dumb"
-    $startInfo.Environment["HOME_CONTROL_WORKSPACE_ROOT"] = $WorkspaceRoot
-    $startInfo.Environment["HOME_CONTROL_STACK_STATE_DIR"] = $StateDir
-    $startInfo.Environment["MEDIAPIPE_PORT"] = [string]$MediapipePort
-    $startInfo.Environment["HOME_ASSISTANT_BRIDGE_HOST"] = $HomeAssistantBridgeClientHost
-    $startInfo.Environment["HOME_ASSISTANT_BRIDGE_PORT"] = [string]$HomeAssistantBridgePort
-    $startInfo.Environment["ENVIRONMENT_STATE_HOST"] = $EnvironmentStateClientHost
-    $startInfo.Environment["ENVIRONMENT_STATE_PORT"] = [string]$EnvironmentStatePort
-    $startInfo.Environment["AITUBER_HOST"] = $AituberClientHost
-    $startInfo.Environment["AITUBER_PORT"] = [string]$AituberPort
-    $startInfo.Environment["AITUBER_URL"] = $AituberProjectionVisualUrl
-    $startInfo.Environment["TOUCHDESIGNER_GUI_PORT"] = [string]$TouchDesignerGuiPort
-    $startInfo.Environment["TOUCHDESIGNER_UDP_HOST"] = $TouchDesignerUdpClientHost
-    $startInfo.Environment["TOUCHDESIGNER_UDP_PORT"] = [string]$TouchDesignerUdpPort
+    if (-not $Spec.ClearInheritedEnvironment) {
+        $startInfo.Environment["HOME_CONTROL_WORKSPACE_ROOT"] = $WorkspaceRoot
+        $startInfo.Environment["HOME_CONTROL_STACK_STATE_DIR"] = $StateDir
+        $startInfo.Environment["MEDIAPIPE_PORT"] = [string]$MediapipePort
+        $startInfo.Environment["HOME_ASSISTANT_BRIDGE_HOST"] = $HomeAssistantBridgeClientHost
+        $startInfo.Environment["HOME_ASSISTANT_BRIDGE_PORT"] = [string]$HomeAssistantBridgePort
+        $startInfo.Environment["ENVIRONMENT_STATE_HOST"] = $EnvironmentStateClientHost
+        $startInfo.Environment["ENVIRONMENT_STATE_PORT"] = [string]$EnvironmentStatePort
+        $startInfo.Environment["AITUBER_HOST"] = $AituberClientHost
+        $startInfo.Environment["AITUBER_PORT"] = [string]$AituberPort
+        $startInfo.Environment["AITUBER_URL"] = $AituberProjectionVisualUrl
+        $startInfo.Environment["TOUCHDESIGNER_GUI_PORT"] = [string]$TouchDesignerGuiPort
+        $startInfo.Environment["TOUCHDESIGNER_UDP_HOST"] = $TouchDesignerUdpClientHost
+        $startInfo.Environment["TOUCHDESIGNER_UDP_PORT"] = [string]$TouchDesignerUdpPort
+    }
     foreach ($key in $Spec.Environment.Keys) {
         $startInfo.Environment[$key] = [string]$Spec.Environment[$key]
     }
@@ -1824,6 +1867,73 @@ function Stop-RecordedStack {
     }
 }
 
+function Test-SealedOpenAIBrokerListenerOwnership {
+    param([Parameter(Mandatory = $true)][object]$Child)
+
+    if ($Child.Process.HasExited) {
+        return $false
+    }
+    $rootPid = [int]$Child.Process.Id
+    $ownedPids = @($rootPid) + @(Get-DescendantProcessIds -RootProcessId $rootPid)
+    $owners = @(
+        Get-ListeningPortOwner -Port $OpenAIBrokerPort |
+            Where-Object { [string]$_.LocalAddress -in @("127.0.0.1", "::1") } |
+            Select-Object -ExpandProperty OwningProcess -Unique
+    )
+    if ($owners.Count -ne 1) {
+        return $false
+    }
+    $listenerPid = [int]$owners[0]
+    if ($ownedPids -notcontains $listenerPid) {
+        return $false
+    }
+    $listener = Get-Process -Id $listenerPid -ErrorAction SilentlyContinue
+    $identity = Get-CimInstance Win32_Process -Filter "ProcessId = $listenerPid" -ErrorAction SilentlyContinue
+    if ($null -eq $listener -or $null -eq $identity) {
+        return $false
+    }
+    $expectedPort = "(?i)(^|\s)--port\s+{0}(?:\s|$)" -f $OpenAIBrokerPort
+    return (
+        (Normalize-ProcessName -Name ([string]$listener.ProcessName)) -eq "python" -and
+        [string]$identity.CommandLine -match "(?i)(^|\s)-m\s+sword_voice_agent\.apps\.openai_broker(?:\s|$)" -and
+        [string]$identity.CommandLine -match $expectedPort
+    )
+}
+
+function Wait-OpenAIBrokerReady {
+    param(
+        [Parameter(Mandatory = $true)][object]$Child,
+        [int]$TimeoutSeconds = 12
+    )
+
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if ($Child.Process.HasExited) {
+            throw "openai_provider_broker_exited"
+        }
+        if (-not (Test-SealedOpenAIBrokerListenerOwnership -Child $Child)) {
+            Start-Sleep -Milliseconds 100
+            continue
+        }
+        try {
+            $response = Invoke-WebRequest `
+                -Uri $OpenAIBrokerHealthUrl `
+                -Method Get `
+                -TimeoutSec 2 `
+                -UseBasicParsing `
+                -ErrorAction Stop
+            if ($response.StatusCode -eq 200) {
+                return
+            }
+        }
+        catch {
+            # The bounded retry exposes no response body or secret-bearing detail.
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+    throw "openai_provider_broker_unavailable"
+}
+
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 Assert-Directory -Path $HomeAssistantServerRoot -Label "home-assistant-server"
@@ -1844,6 +1954,12 @@ if ($EnableThoughtCore) {
     }
     if (-not (Test-Path -LiteralPath (Join-Path $ThoughtCoreRoot "services\thought-core") -PathType Container)) {
         throw "thought-core service directory not found under: $ThoughtCoreRoot"
+    }
+    if ($ThoughtCoreLlmProvider -eq "sword-openai-broker") {
+        Assert-Directory -Path $BrokerRoot -Label "openai-provider-broker"
+        if (-not (Test-Path -LiteralPath (Join-Path $BrokerRoot "pyproject.toml") -PathType Leaf)) {
+            throw "openai provider broker project not found: $BrokerRoot"
+        }
     }
 }
 if ($EnableThoughtCoreWatch) {
@@ -1890,6 +2006,12 @@ if (Test-RecordedProcessesAlive) {
 
 if (-not $DryRun) {
     $requiredPorts = @()
+    if ($StartThoughtCoreService -and $ThoughtCoreLlmProvider -eq "sword-openai-broker") {
+        $requiredPorts += [pscustomobject]@{
+            Label = "openai-provider-broker"
+            Port = $OpenAIBrokerPort
+        }
+    }
     if (-not $SkipHomeAssistantBridge) {
         $requiredPorts += [pscustomobject]@{
             Label = "home-assistant-server"
@@ -2057,7 +2179,6 @@ foreach ($name in @(
     "THOUGHT_CORE_LLM_ADAPTER",
     "THOUGHT_CORE_ACTION_LLM_ENABLED",
     "THOUGHT_CORE_LLM_BASE_URL",
-    "THOUGHT_CORE_LLM_API_KEY",
     "THOUGHT_CORE_LLM_MODEL",
     "THOUGHT_CORE_LLM_TIMEOUT_S",
     "THOUGHT_CORE_LLM_MAX_CHARS",
@@ -2087,7 +2208,6 @@ foreach ($name in @(
     "THOUGHT_CORE_ROOM_LIGHT_WAIT_TIMEOUT_MS",
     "THOUGHT_CORE_TOOLS_ADAPTER",
     "OPENAI_BASE_URL",
-    "OPENAI_API_KEY",
     "OPENAI_MODEL"
 )) {
     $value = [Environment]::GetEnvironmentVariable($name)
@@ -2110,7 +2230,20 @@ if ((-not $ThoughtCoreNoProvider) -and $ThoughtCoreLlmProvider -ne "configured")
     $thoughtCoreEnvironment["THOUGHT_CORE_LLM_ENABLED"] = "1"
     $thoughtCoreEnvironment["THOUGHT_CORE_FORCE_NO_PROVIDER"] = ""
     $thoughtCoreEnvironment["THOUGHT_CORE_LLM_PROVIDER"] = $thoughtCoreRuntimeProvider
-    $thoughtCoreEnvironment["THOUGHT_CORE_LLM_ADAPTER"] = $thoughtCoreRuntimeProvider
+    if ($thoughtCoreRuntimeProvider -eq "sword-openai-broker") {
+        foreach ($name in $ProviderEnvironmentInputNames) {
+            $thoughtCoreEnvironment.Remove($name)
+        }
+        $thoughtCoreEnvironment["THOUGHT_CORE_LLM_ENABLED"] = "1"
+        $thoughtCoreEnvironment["THOUGHT_CORE_LLM_PROVIDER"] = "sword-openai-broker"
+        $thoughtCoreEnvironment["THOUGHT_CORE_LLM_BASE_URL"] = $OpenAIBrokerBaseUrl
+        $thoughtCoreEnvironment["THOUGHT_CORE_LLM_MODEL"] = "gpt-4o-mini"
+        $thoughtCoreEnvironment["THOUGHT_CORE_LLM_TIMEOUT_S"] = "12"
+        $thoughtCoreEnvironment["THOUGHT_CORE_ACTION_LLM_ENABLED"] = "0"
+    }
+    else {
+        $thoughtCoreEnvironment["THOUGHT_CORE_LLM_ADAPTER"] = $thoughtCoreRuntimeProvider
+    }
     if ($thoughtCoreRuntimeProvider -eq "codex-cli") {
         # Compatibility preset only: this response-only route does not satisfy the
         # agentic intent/product boundary in ADR 0003. It is retained while the
@@ -2209,6 +2342,18 @@ if ($StartThoughtCoreService) {
     $thoughtCoreEnvironment["SWORD_THOUGHT_CORE_CONTROLLER_MANIFEST"] = $ThoughtCoreControllerManifestPath
     $thoughtCoreEnvironment["SWORD_THOUGHT_CORE_LAUNCH_NONCE"] = $thoughtCoreLaunchNonce
 }
+if ($StartThoughtCoreService -and $ThoughtCoreLlmProvider -eq "sword-openai-broker") {
+    $specs += New-ServiceSpec `
+        -Name "openai_provider_broker" `
+        -FilePath $uv `
+        -Arguments @("run", "python", "-m", "sword_voice_agent.apps.openai_broker", "--port", [string]$OpenAIBrokerPort) `
+        -WorkingDirectory $BrokerRoot `
+        -Module "sword-voice-agent" `
+        -Role "openai_provider_broker" `
+        -AllowedProcessNames @("uv", "python") `
+        -RemoveEnvironment $ProviderEnvironmentInputNames `
+        -ClearInheritedEnvironment
+}
 if ($StartThoughtCoreService) {
     $specs += New-ServiceSpec `
         -Name "thought_core_api" `
@@ -2225,13 +2370,15 @@ if ($StartThoughtCoreService) {
             "-Port",
             [string]$ThoughtCorePort,
             "-StatusDir",
-            $ThoughtCoreStatusDir
+            $ThoughtCoreStatusDir,
+            "-SkipEnvImport"
         ) `
         -WorkingDirectory $ThoughtCoreRoot `
         -Environment $thoughtCoreEnvironment `
         -Module "control-plane-core" `
         -Role "thought_core_api" `
-        -AllowedProcessNames @("pwsh", "powershell", "uv", "python")
+        -AllowedProcessNames @("pwsh", "powershell", "uv", "python") `
+        -RemoveEnvironment $ProviderEnvironmentInputNames
 }
 if (-not $SkipMediapipe) {
     $cameraHubServerPath = Join-Path $MediapipeRoot "apps\serve_camera_hub.py"
@@ -2512,6 +2659,9 @@ try {
         $rootChild = Start-SupervisedProcess -Spec $spec
         $children += $rootChild
         Save-PidState -Children $children
+        if ($spec.Name -eq "openai_provider_broker") {
+            Wait-OpenAIBrokerReady -Child $rootChild -TimeoutSeconds 12
+        }
         $sealedListener = switch ($spec.Name) {
             "home_assistant_bridge" {
                 Find-SealedDescendantListenerRecord `

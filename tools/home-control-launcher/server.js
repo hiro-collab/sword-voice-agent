@@ -873,7 +873,7 @@ const normalizeOptions = (profileId, overrides = {}) => {
   if (!['auto', 'mjpeg'].includes(normalized.MediapipeCameraInputCodec)) {
     normalized.MediapipeCameraInputCodec = DEFAULT_OPTIONS.MediapipeCameraInputCodec
   }
-  if (!['configured', 'openai-compatible', 'codex-cli', 'codex-cli-luna'].includes(normalized.ThoughtCoreLlmProvider)) {
+  if (!['configured', 'openai-compatible', 'sword-openai-broker', 'codex-cli', 'codex-cli-luna'].includes(normalized.ThoughtCoreLlmProvider)) {
     normalized.ThoughtCoreLlmProvider = DEFAULT_OPTIONS.ThoughtCoreLlmProvider
   }
   const requestedCameraName = String(
