@@ -2180,3 +2180,201 @@ class LauncherUiContractTest(TestCase):
         self.assertNotIn("'test_now_count'", server)
         self.assertNotIn("'blocked_candidate_count'", server)
         self.assertNotIn("'HOME_ASSISTANT_TOKEN'", server)
+
+    def test_fixed_start_summary_is_anchored_bounded_and_private(self) -> None:
+        server = read_launcher_server()
+        system = read_system_script()
+        stack_start = read_stack_start_script()
+        collector = extract_between(
+            server,
+            "const FIXED_START_FAILURE_CLASSES",
+            "const startStack",
+        )
+        start_stack = extract_between(server, "const startStack", "const runScriptAndCollect")
+
+        classes = (
+            "camera_selection_missing",
+            "voicevox_unavailable",
+            "required_token_missing_or_short",
+            "required_port_conflict",
+            "dependency_or_tool_missing",
+            "first_service_spawn_failed",
+            "stack_start_failed_unknown",
+        )
+        for failure_class in classes:
+            self.assertIn(f"'{failure_class}'", collector)
+            self.assertIn(f'"{failure_class}"', system)
+            self.assertIn(f'"{failure_class}"', stack_start)
+
+        self.assertIn("SWORD_FIXED_START_FAILURE_CLASS:$FailureClass", system)
+        self.assertIn("SWORD_FIXED_START_FAILURE_CLASS:$FailureClass", stack_start)
+        self.assertIn(
+            "Write-FixedStartFailureMarker -FailureClass \"camera_selection_missing\"",
+            system,
+        )
+        self.assertIn(
+            "Write-FixedStartFailureMarker -FailureClass \"dependency_or_tool_missing\"",
+            system,
+        )
+        self.assertIn(
+            "Write-FixedStartFailureMarker -FailureClass \"voicevox_unavailable\"",
+            stack_start,
+        )
+        self.assertIn(
+            "Write-FixedStartFailureMarker -FailureClass \"required_token_missing_or_short\"",
+            stack_start,
+        )
+        self.assertIn(
+            "Write-FixedStartFailureMarker -FailureClass \"required_port_conflict\"",
+            stack_start,
+        )
+        self.assertIn(
+            "Write-FixedStartFailureMarker -FailureClass \"first_service_spawn_failed\"",
+            stack_start,
+        )
+        self.assertIn(
+            "Write-FixedStartFailureMarker -FailureClass \"stack_start_failed_unknown\"",
+            stack_start,
+        )
+
+        self.assertIn("/^SWORD_FIXED_START_FAILURE_CLASS:([a-z_]+)$/", collector)
+        self.assertIn("FIXED_START_MAX_PARTIAL_BYTES = 4095", collector)
+        self.assertIn("FIXED_START_MAX_CAPTURE_BYTES = 65535", collector)
+        self.assertIn("FIXED_START_MAX_LINES = 127", collector)
+        self.assertIn("FIXED_START_CAPTURE_TIMEOUT_MS = 15000", collector)
+        self.assertIn("pending = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }", collector)
+        self.assertIn("collector.consume('stdout', chunk)", start_stack)
+        self.assertIn("collector.consume('stderr', chunk)", start_stack)
+        self.assertIn("collector.finalize('stack_start_failed_unknown')", start_stack)
+        self.assertIn("timer = setTimer(() => finalize(), FIXED_START_CAPTURE_TIMEOUT_MS)", collector)
+        self.assertIn(
+            "collector.finalize(code === 0 ? null : 'stack_start_failed_unknown')",
+            start_stack,
+        )
+        self.assertIn("const summaryClass = failureClass || fallbackClass", collector)
+        self.assertIn("if (summaryClass)", collector)
+        self.assertIn("pending.stdout = Buffer.alloc(0)", collector)
+        self.assertIn("pending.stderr = Buffer.alloc(0)", collector)
+        self.assertIn("clearTimer(timer)", collector)
+        self.assertIn("onClose()", collector)
+        self.assertIn("releaseCollectorListeners", start_stack)
+        self.assertIn("onClose: () => releaseCollectorListeners()", start_stack)
+        self.assertIn("removeListener('data', onSupervisorStdout)", start_stack)
+        self.assertIn("removeListener('data', onSupervisorStderr)", start_stack)
+
+        self.assertIn("schema_version: 'launcher_fixed_start_summary.v1'", collector)
+        self.assertIn("failure_class: failureClass", collector)
+        self.assertNotIn("appendStackLog(chunk)", start_stack)
+        self.assertNotIn("error.message", start_stack)
+        self.assertNotIn("lastError:", start_stack)
+        fresh_state = extract_between(
+            start_stack,
+            "const state = {",
+            "writeJsonFile(LAUNCHER_STATE_FILE, state)",
+        )
+        self.assertNotIn("fixedStartSummary", fresh_state)
+        self.assertNotIn("readLauncherState()", fresh_state)
+
+    def test_fixed_start_summary_collector_handles_split_and_bounded_private_input(self) -> None:
+        collector = extract_between(
+            read_launcher_server(),
+            "const FIXED_START_FAILURE_CLASSES",
+            "const startStack",
+        )
+        node_program = f"""
+{collector}
+const capture = (chunks, timeout = false, fallbackClass = null, repeatFinalize = false) => {{
+  const summaries = []
+  let deadline = null
+  let closeCount = 0
+  let clearCount = 0
+  const collector = createFixedStartSummaryCollector({{
+    onSummary: (summary) => summaries.push(summary),
+    onClose: () => {{ closeCount += 1 }},
+    setTimer: (callback) => {{ deadline = callback; return 1 }},
+    clearTimer: () => {{ clearCount += 1; deadline = null }}
+  }})
+  collector.arm()
+  for (const [stream, value] of chunks) {{
+    collector.consume(stream, Buffer.from(value, 'utf8'))
+  }}
+  if (timeout) {{
+    deadline()
+  }} else {{
+    collector.finalize(fallbackClass)
+  }}
+  if (repeatFinalize) {{
+    collector.finalize(fallbackClass)
+  }}
+  return {{ summaries, closeCount, clearCount }}
+}}
+const privateSentinel = 'PRIVATE_SUPERVISOR_SENTINEL_NEVER_PUBLIC'
+const result = {{
+  split: capture([
+    ['stdout', privateSentinel + '\\nSWORD_FIXED_START_FAILURE_'],
+    ['stdout', 'CLASS:voicevox_unavailable\\n']
+  ]),
+  stderr: capture([
+    ['stderr', 'SWORD_FIXED_START_FAILURE_'],
+    ['stderr', 'CLASS:required_port_conflict\\n']
+  ]),
+  unmatched: capture([['stdout', privateSentinel + '\\n']], false, 'stack_start_failed_unknown'),
+  partial: capture([['stdout', 'x'.repeat(4096) + '\\nSWORD_FIXED_START_FAILURE_CLASS:required_port_conflict\\n']], false, 'stack_start_failed_unknown'),
+  total: capture([['stdout', 'x'.repeat(65535)], ['stderr', 'SWORD_FIXED_START_FAILURE_CLASS:required_port_conflict\\n']], false, 'stack_start_failed_unknown'),
+  lines: capture([['stdout', 'x\\n'.repeat(127) + 'SWORD_FIXED_START_FAILURE_CLASS:required_port_conflict\\n']], false, 'stack_start_failed_unknown'),
+  healthyTimeout: capture([['stdout', 'SWORD_FIXED_START_FAILURE_']], true),
+  cleanExit: capture([], false, null),
+  nonzeroExit: capture([], false, 'stack_start_failed_unknown'),
+  repeated: capture([], false, null, true)
+}}
+process.stdout.write(JSON.stringify(result))
+"""
+        completed = subprocess.run(
+            [r"C:\Program Files\nodejs\node.exe", "-e", node_program],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertNotIn("PRIVATE_SUPERVISOR_SENTINEL_NEVER_PUBLIC", completed.stdout)
+        results = json.loads(completed.stdout)
+        self.assertEqual(
+            results["split"]["summaries"],
+            [
+                {
+                    "schema_version": "launcher_fixed_start_summary.v1",
+                    "status": "failed",
+                    "failure_class": "voicevox_unavailable",
+                }
+            ],
+        )
+        self.assertEqual(
+            results["stderr"]["summaries"][0]["failure_class"], "required_port_conflict"
+        )
+        for key in ("unmatched", "partial", "total", "lines"):
+            self.assertEqual(
+                results[key]["summaries"][0]["failure_class"], "stack_start_failed_unknown"
+            )
+            self.assertEqual(len(results[key]["summaries"]), 1)
+        self.assertEqual(results["healthyTimeout"]["summaries"], [])
+        self.assertEqual(results["cleanExit"]["summaries"], [])
+        self.assertEqual(
+            results["nonzeroExit"]["summaries"][0]["failure_class"],
+            "stack_start_failed_unknown",
+        )
+        for key in (
+            "split",
+            "stderr",
+            "unmatched",
+            "partial",
+            "total",
+            "lines",
+            "healthyTimeout",
+            "cleanExit",
+            "nonzeroExit",
+            "repeated",
+        ):
+            self.assertEqual(results[key]["closeCount"], 1)
+            self.assertEqual(results[key]["clearCount"], 1)
+        self.assertEqual(results["repeated"]["summaries"], [])

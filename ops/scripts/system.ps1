@@ -69,6 +69,27 @@ $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = $utf8NoBom
 $OutputEncoding = $utf8NoBom
 
+$script:FixedStartFailureClass = ""
+
+function Write-FixedStartFailureMarker {
+    param(
+        [ValidateSet(
+            "camera_selection_missing",
+            "voicevox_unavailable",
+            "required_token_missing_or_short",
+            "required_port_conflict",
+            "dependency_or_tool_missing",
+            "first_service_spawn_failed",
+            "stack_start_failed_unknown"
+        )]
+        [string]$FailureClass
+    )
+    if ([string]::IsNullOrWhiteSpace($script:FixedStartFailureClass)) {
+        $script:FixedStartFailureClass = $FailureClass
+        [Console]::Out.WriteLine("SWORD_FIXED_START_FAILURE_CLASS:$FailureClass")
+    }
+}
+
 function Resolve-RepoRoot {
     return (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
 }
@@ -382,6 +403,7 @@ function New-StackStartArguments {
         $MediapipeVideoSource -eq "dshow" -and
         [string]::IsNullOrWhiteSpace($MediapipeCameraName)
     ) {
+        Write-FixedStartFailureMarker -FailureClass "camera_selection_missing"
         throw "MediapipeCameraName is required for a dshow camera profile. Select a connected camera before start."
     }
     if (
@@ -459,9 +481,16 @@ function Invoke-StackScript {
     )
     $scriptPath = Join-Path (Resolve-RepoRoot) "ops\scripts\home-control-stack\$ScriptName"
     if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
+        Write-FixedStartFailureMarker -FailureClass "dependency_or_tool_missing"
         throw "Stack script not found: $scriptPath"
     }
-    $powerShell = Resolve-CurrentPowerShell
+    try {
+        $powerShell = Resolve-CurrentPowerShell
+    }
+    catch {
+        Write-FixedStartFailureMarker -FailureClass "dependency_or_tool_missing"
+        throw
+    }
     Write-Host ("[ops] delegate={0} layer=ops script={1}" -f $Operation, $scriptPath)
     if ($DryRun) {
         $protectedArguments = @($Arguments)

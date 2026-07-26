@@ -1518,6 +1518,126 @@ const runExclusiveStackOperation = async (type, action) => {
   }
 }
 
+const FIXED_START_FAILURE_CLASSES = new Set([
+  'camera_selection_missing',
+  'voicevox_unavailable',
+  'required_token_missing_or_short',
+  'required_port_conflict',
+  'dependency_or_tool_missing',
+  'first_service_spawn_failed',
+  'stack_start_failed_unknown'
+])
+const FIXED_START_FAILURE_MARKER = /^SWORD_FIXED_START_FAILURE_CLASS:([a-z_]+)$/
+const FIXED_START_MAX_PARTIAL_BYTES = 4095
+const FIXED_START_MAX_CAPTURE_BYTES = 65535
+const FIXED_START_MAX_LINES = 127
+const FIXED_START_CAPTURE_TIMEOUT_MS = 15000
+
+const fixedStartSummary = (failureClass) => ({
+  schema_version: 'launcher_fixed_start_summary.v1',
+  status: 'failed',
+  failure_class: failureClass
+})
+
+const createFixedStartSummaryCollector = ({
+  onSummary,
+  onClose,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout
+}) => {
+  const pending = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }
+  let totalCaptureBytes = 0
+  let lineCount = 0
+  let failureClass = ''
+  let captureLimited = false
+  let closed = false
+  let timer = null
+
+  const considerLine = (line) => {
+    if (failureClass || captureLimited) {
+      return
+    }
+    if (lineCount >= FIXED_START_MAX_LINES || line.length > FIXED_START_MAX_PARTIAL_BYTES) {
+      captureLimited = true
+      return
+    }
+    lineCount += 1
+    const match = FIXED_START_FAILURE_MARKER.exec(line.toString('utf8').replace(/\r$/, ''))
+    if (match && FIXED_START_FAILURE_CLASSES.has(match[1])) {
+      failureClass = match[1]
+    }
+  }
+
+  const drain = (stream, includePartial) => {
+    let buffer = pending[stream]
+    while (buffer.length > 0 && lineCount < FIXED_START_MAX_LINES) {
+      const newlineIndex = buffer.indexOf(0x0a)
+      if (newlineIndex < 0) {
+        break
+      }
+      considerLine(buffer.subarray(0, newlineIndex))
+      buffer = buffer.subarray(newlineIndex + 1)
+    }
+    if (lineCount >= FIXED_START_MAX_LINES && buffer.length > 0) {
+      captureLimited = true
+      buffer = Buffer.alloc(0)
+    }
+    if (includePartial && buffer.length > 0) {
+      considerLine(buffer)
+      buffer = Buffer.alloc(0)
+    }
+    if (buffer.length > FIXED_START_MAX_PARTIAL_BYTES) {
+      captureLimited = true
+      buffer = Buffer.alloc(0)
+    }
+    pending[stream] = buffer
+  }
+
+  const finalize = (fallbackClass = null) => {
+    if (closed) {
+      return
+    }
+    closed = true
+    if (timer) {
+      clearTimer(timer)
+      timer = null
+    }
+    drain('stdout', true)
+    drain('stderr', true)
+    pending.stdout = Buffer.alloc(0)
+    pending.stderr = Buffer.alloc(0)
+    onClose()
+    const summaryClass = failureClass || fallbackClass
+    if (summaryClass) {
+      onSummary(fixedStartSummary(summaryClass))
+    }
+  }
+
+  return {
+    arm: () => {
+      timer = setTimer(() => finalize(), FIXED_START_CAPTURE_TIMEOUT_MS)
+    },
+    consume: (stream, chunk) => {
+      if (closed || !Object.hasOwn(pending, stream)) {
+        return
+      }
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8')
+      const acceptedBytes = Math.min(bytes.length, FIXED_START_MAX_CAPTURE_BYTES - totalCaptureBytes)
+      if (acceptedBytes <= 0) {
+        captureLimited = true
+        return
+      }
+      totalCaptureBytes += acceptedBytes
+      if (acceptedBytes < bytes.length) {
+        captureLimited = true
+      }
+      pending[stream] = Buffer.concat([pending[stream], bytes.subarray(0, acceptedBytes)])
+      drain(stream, false)
+    },
+    finalize
+  }
+}
+
 const startStack = (profileId, optionOverrides = {}) => {
   ensureRuntimeDirs()
   const persistedOptions = normalizeOptions(profileId, optionOverrides)
@@ -1557,8 +1677,10 @@ const startStack = (profileId, optionOverrides = {}) => {
         TERM: 'dumb'
       }
     })
-  } catch (error) {
-    throw error
+  } catch {
+    const summary = fixedStartSummary('stack_start_failed_unknown')
+    writeJsonFile(LAUNCHER_STATE_FILE, { failedAt: nowIso(), fixedStartSummary: summary })
+    return { ok: false, fixedStartSummary: summary }
   }
 
   const acceptedAt = nowIso()
@@ -1589,25 +1711,41 @@ const startStack = (profileId, optionOverrides = {}) => {
 
   appendStackLog(`[launcher] spawned stack supervisor pid=${child.pid}\n`)
 
-  child.stdout.on('data', (chunk) => {
-    appendStackLog(chunk)
+  let releaseCollectorListeners = () => {}
+  const collector = createFixedStartSummaryCollector({
+    onSummary: (summary) => {
+      writeJsonFile(LAUNCHER_STATE_FILE, {
+        ...readLauncherState(),
+        failedAt: nowIso(),
+        fixedStartSummary: summary
+      })
+    },
+    onClose: () => releaseCollectorListeners()
   })
-  child.stderr.on('data', (chunk) => {
-    appendStackLog(chunk)
-  })
+  const onSupervisorStdout = (chunk) => {
+    collector.consume('stdout', chunk)
+  }
+  const onSupervisorStderr = (chunk) => {
+    collector.consume('stderr', chunk)
+  }
+  child.stdout.on('data', onSupervisorStdout)
+  child.stderr.on('data', onSupervisorStderr)
+  releaseCollectorListeners = () => {
+    child.stdout.removeListener('data', onSupervisorStdout)
+    child.stderr.removeListener('data', onSupervisorStderr)
+  }
+  collector.arm()
 
-  child.once('error', (error) => {
-    appendStackLog(
-      `[launcher] failed to spawn stack supervisor: ${error.message}\n`
-    )
+  child.once('error', () => {
+    collector.finalize('stack_start_failed_unknown')
     writeJsonFile(LAUNCHER_STATE_FILE, {
       ...readLauncherState(),
-      failedAt: nowIso(),
-      lastError: error.message
+      failedAt: nowIso()
     })
   })
 
   child.once('exit', (code, signal) => {
+    collector.finalize(code === 0 ? null : 'stack_start_failed_unknown')
     appendStackLog(
       `[launcher] stack supervisor exited code=${code} signal=${signal || '-'} at ${nowIso()}\n`
     )

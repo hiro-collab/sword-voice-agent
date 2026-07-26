@@ -72,6 +72,27 @@ $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = $utf8NoBom
 $OutputEncoding = $utf8NoBom
 
+$script:FixedStartFailureClass = ""
+
+function Write-FixedStartFailureMarker {
+    param(
+        [ValidateSet(
+            "camera_selection_missing",
+            "voicevox_unavailable",
+            "required_token_missing_or_short",
+            "required_port_conflict",
+            "dependency_or_tool_missing",
+            "first_service_spawn_failed",
+            "stack_start_failed_unknown"
+        )]
+        [string]$FailureClass
+    )
+    if ([string]::IsNullOrWhiteSpace($script:FixedStartFailureClass)) {
+        $script:FixedStartFailureClass = $FailureClass
+        [Console]::Out.WriteLine("SWORD_FIXED_START_FAILURE_CLASS:$FailureClass")
+    }
+}
+
 function Resolve-StackStateDir {
     param(
         [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
@@ -254,20 +275,26 @@ $ExternalProcessDenyList = @(
 
 function Resolve-Tool {
     param([Parameter(Mandatory = $true)][string]$Name)
-    if ($Name -eq "npm") {
-        $npmCmd = Get-Command "npm.cmd" -ErrorAction SilentlyContinue
-        if ($null -ne $npmCmd) {
-            return $npmCmd.Source
+    try {
+        if ($Name -eq "npm") {
+            $npmCmd = Get-Command "npm.cmd" -ErrorAction SilentlyContinue
+            if ($null -ne $npmCmd) {
+                return $npmCmd.Source
+            }
         }
-    }
-    $command = Get-Command $Name -ErrorAction Stop
-    if ($command.Source -like "*.ps1") {
-        $cmdCommand = Get-Command "$Name.cmd" -ErrorAction SilentlyContinue
-        if ($null -ne $cmdCommand) {
-            return $cmdCommand.Source
+        $command = Get-Command $Name -ErrorAction Stop
+        if ($command.Source -like "*.ps1") {
+            $cmdCommand = Get-Command "$Name.cmd" -ErrorAction SilentlyContinue
+            if ($null -ne $cmdCommand) {
+                return $cmdCommand.Source
+            }
         }
+        return $command.Source
     }
-    return $command.Source
+    catch {
+        Write-FixedStartFailureMarker -FailureClass "dependency_or_tool_missing"
+        throw
+    }
 }
 
 function Resolve-CurrentPowerShell {
@@ -288,6 +315,7 @@ function Assert-Directory {
         [Parameter(Mandatory = $true)][string]$Label
     )
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        Write-FixedStartFailureMarker -FailureClass "dependency_or_tool_missing"
         throw "$Label directory not found: $Path"
     }
 }
@@ -1951,20 +1979,24 @@ if ($EnableThoughtCore -or $EnableThoughtCoreWatch) {
 }
 if ($EnableThoughtCore) {
     if (-not (Test-Path -LiteralPath $ThoughtCoreScript -PathType Leaf)) {
+        Write-FixedStartFailureMarker -FailureClass "dependency_or_tool_missing"
         throw "thought-core start script not found: $ThoughtCoreScript"
     }
     if (-not (Test-Path -LiteralPath (Join-Path $ThoughtCoreRoot "services\thought-core") -PathType Container)) {
+        Write-FixedStartFailureMarker -FailureClass "dependency_or_tool_missing"
         throw "thought-core service directory not found under: $ThoughtCoreRoot"
     }
     if ($ThoughtCoreLlmProvider -eq "sword-openai-broker") {
         Assert-Directory -Path $BrokerRoot -Label "openai-provider-broker"
         if (-not (Test-Path -LiteralPath (Join-Path $BrokerRoot "pyproject.toml") -PathType Leaf)) {
+            Write-FixedStartFailureMarker -FailureClass "dependency_or_tool_missing"
             throw "openai provider broker project not found: $BrokerRoot"
         }
     }
 }
 if ($EnableThoughtCoreWatch) {
     if (-not (Test-Path -LiteralPath $ThoughtCoreWatchScript -PathType Leaf)) {
+        Write-FixedStartFailureMarker -FailureClass "dependency_or_tool_missing"
         throw "thought-core watcher script not found: $ThoughtCoreWatchScript"
     }
     Assert-Directory -Path $AiTalkCoreRoot -Label "ai-talk-core"
@@ -2056,35 +2088,59 @@ if (-not $DryRun) {
         }
     }
     if ($requiredPorts.Count -gt 0) {
-        Resolve-PortConflicts -PortSpecs $requiredPorts
+        try {
+            Resolve-PortConflicts -PortSpecs $requiredPorts
+        }
+        catch {
+            Write-FixedStartFailureMarker -FailureClass "required_port_conflict"
+            throw
+        }
     }
 }
 
-$uv = Resolve-Tool -Name "uv"
-$npm = Resolve-Tool -Name "npm"
-$node = $null
-if (-not $SkipTouchDesignerGui) {
-    $node = Resolve-Tool -Name "node"
+try {
+    $uv = Resolve-Tool -Name "uv"
+    $npm = Resolve-Tool -Name "npm"
+    $node = $null
+    if (-not $SkipTouchDesignerGui) {
+        $node = Resolve-Tool -Name "node"
+    }
+    $powerShell = $null
+    if ($EnableThoughtCore -or $EnableThoughtCoreWatch) {
+        $powerShell = Resolve-CurrentPowerShell
+    }
 }
-$powerShell = $null
-if ($EnableThoughtCore -or $EnableThoughtCoreWatch) {
-    $powerShell = Resolve-CurrentPowerShell
+catch {
+    Write-FixedStartFailureMarker -FailureClass "dependency_or_tool_missing"
+    throw
 }
 
 if (-not $SkipVoicevoxCheck -and -not $SkipAituber) {
-    Assert-VoicevoxReady -BaseUrl $VoicevoxUrl -TimeoutSeconds $VoicevoxReadyTimeoutSeconds
+    try {
+        Assert-VoicevoxReady -BaseUrl $VoicevoxUrl -TimeoutSeconds $VoicevoxReadyTimeoutSeconds
+    }
+    catch {
+        Write-FixedStartFailureMarker -FailureClass "voicevox_unavailable"
+        throw
+    }
 }
 
-if (-not $SkipHomeAssistantBridge) {
-    Assert-HomeControlBridgeTokenConfigured -EnvPath $HomeAssistantEnvPath
-    Report-HomeControlFaultInjectionStatus `
-        -EnvPath $HomeAssistantEnvPath `
-        -ConfigPath $HomeControlConfigPath `
-        -FaultModeOverride:$EnableHomeControlFaultInjection
-}
+try {
+    if (-not $SkipHomeAssistantBridge) {
+        Assert-HomeControlBridgeTokenConfigured -EnvPath $HomeAssistantEnvPath
+        Report-HomeControlFaultInjectionStatus `
+            -EnvPath $HomeAssistantEnvPath `
+            -ConfigPath $HomeControlConfigPath `
+            -FaultModeOverride:$EnableHomeControlFaultInjection
+    }
 
-if (-not $SkipEnvironmentState) {
-    Assert-EnvironmentStateTokenConfigured -EnvPath $HomeAssistantEnvPath
+    if (-not $SkipEnvironmentState) {
+        Assert-EnvironmentStateTokenConfigured -EnvPath $HomeAssistantEnvPath
+    }
+}
+catch {
+    Write-FixedStartFailureMarker -FailureClass "required_token_missing_or_short"
+    throw
 }
 
 $EnvironmentVoicevoxUrl = $VoicevoxUrl
@@ -2657,7 +2713,15 @@ try {
             $delayedVisionSnapshotSpecs += $spec
             continue
         }
-        $rootChild = Start-SupervisedProcess -Spec $spec
+        try {
+            $rootChild = Start-SupervisedProcess -Spec $spec
+        }
+        catch {
+            if ($children.Count -eq 0) {
+                Write-FixedStartFailureMarker -FailureClass "first_service_spawn_failed"
+            }
+            throw
+        }
         $children += $rootChild
         Save-PidState -Children $children
         if ($spec.Name -eq "openai_provider_broker") {
@@ -2743,6 +2807,7 @@ catch [System.Management.Automation.PipelineStoppedException] {
     Write-Host "Ctrl+C received; stopping stack..."
 }
 catch {
+    Write-FixedStartFailureMarker -FailureClass "stack_start_failed_unknown"
     [Console]::Error.WriteLine("home_control_stack_start_failed")
     $exitCode = 1
 }
