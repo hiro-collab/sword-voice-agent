@@ -23,7 +23,7 @@ HA_CONFIG_PATH = (
     / "action"
     / "home-assistant-server"
     / "config"
-    / "home-control.yaml"
+    / "home-control.example.yaml"
 )
 def load_catalog() -> dict:
     return json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
@@ -73,11 +73,11 @@ class ActionDriverCatalogTest(unittest.TestCase):
 
         self.assertEqual(
             set(bridge_actions),
-            set(catalog_actions) | {"aircon_restore_original"},
+            set(catalog_actions),
             {
                 "missing_from_bridge": sorted(set(catalog_actions) - set(bridge_actions)),
                 "unclassified_bridge_only": sorted(
-                    set(bridge_actions) - set(catalog_actions) - {"aircon_restore_original"}
+                    set(bridge_actions) - set(catalog_actions)
                 ),
             },
         )
