@@ -52,9 +52,11 @@ const OPENAI_BROKER_PORT_BY_MODE = {
   manifest_default: 18786,
   isolated_override: 18886
 }
+if (!Object.prototype.hasOwnProperty.call(OPENAI_BROKER_PORT_BY_MODE, PORT_MODE)) {
+  throw new Error('invalid_port_mode')
+}
 const OPENAI_BROKER_PORT =
-  OPENAI_BROKER_PORT_BY_MODE[PORT_MODE] ||
-  OPENAI_BROKER_PORT_BY_MODE.manifest_default
+  OPENAI_BROKER_PORT_BY_MODE[PORT_MODE]
 
 const PUBLIC_DIR = path.join(__dirname, 'public')
 const PROFILE_FILE = path.join(__dirname, 'config', 'default-profiles.json')

@@ -54,6 +54,45 @@ class OpenAIBrokerLaunchContractTest(TestCase):
             raise AssertionError("PowerShell regex helper failed")
         return result.returncode == 0
 
+    @staticmethod
+    def _invalid_port_mode_result(mode_source: str, mode: str) -> subprocess.CompletedProcess[str]:
+        probe = """
+const [modeSource, mode, launcherPath] = process.argv.slice(1);
+delete process.env.HOME_CONTROL_LAUNCHER_PORT_MODE;
+if (modeSource === 'cli') {
+  process.argv = ['node', launcherPath, '--port-mode', mode];
+} else {
+  process.argv = ['node', launcherPath];
+  process.env.HOME_CONTROL_LAUNCHER_PORT_MODE = mode;
+}
+try {
+  require(launcherPath);
+  process.exitCode = 2;
+} catch (error) {
+  process.exitCode = error && error.message === 'invalid_port_mode' ? 0 : 1;
+}
+"""
+        environment = {
+            "ComSpec": os.environ.get("ComSpec", r"C:\\Windows\\System32\\cmd.exe"),
+            "PATH": os.environ.get("PATH", ""),
+            "SystemRoot": os.environ.get("SystemRoot", r"C:\\Windows"),
+        }
+        return subprocess.run(
+            [
+                r"C:\\Program Files\\nodejs\\node.exe",
+                "-e",
+                probe,
+                mode_source,
+                mode,
+                str(LAUNCHER),
+            ],
+            capture_output=True,
+            check=False,
+            env=environment,
+            text=True,
+            timeout=10,
+        )
+
     def test_primary_profile_and_manifests_are_broker_first(self) -> None:
         profile = json.loads(
             (ROOT / "tools" / "home-control-launcher" / "config" / "default-profiles.json").read_text(encoding="utf-8")
@@ -139,6 +178,30 @@ class OpenAIBrokerLaunchContractTest(TestCase):
         self.assertNotIn(18888, broker_ports.values())
         self.assertIn("ThoughtCorePort: 18787", launcher)
         self.assertIn("ThoughtCorePort: 18888", launcher)
+
+    def test_unknown_port_modes_fail_closed_before_launcher_assembly(self) -> None:
+        launcher = LAUNCHER.read_text(encoding="utf-8")
+        validation = (
+            "if (!Object.prototype.hasOwnProperty.call(OPENAI_BROKER_PORT_BY_MODE, PORT_MODE)) {\n"
+            "  throw new Error('invalid_port_mode')\n"
+            "}"
+        )
+        self.assertIn(validation, launcher)
+        validation_index = launcher.index(validation)
+        self.assertLess(validation_index, launcher.index("const OPENAI_BROKER_PORT ="))
+        self.assertLess(validation_index, launcher.index("const DEFAULT_OPTIONS"))
+        self.assertLess(validation_index, launcher.index("const buildSystemStartArgs"))
+        self.assertLess(validation_index, launcher.index("server.listen"))
+
+        for mode_source in ("cli", "environment"):
+            result = self._invalid_port_mode_result(mode_source, "unknown_port_mode")
+            self.assertEqual(
+                result.returncode,
+                0,
+                msg=f"{mode_source} invalid mode did not fail closed",
+            )
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(result.stderr, "")
 
     def test_stack_sanitizes_children_and_waits_for_broker_before_thought_core(self) -> None:
         stack = STACK_START.read_text(encoding="utf-8")
