@@ -30,6 +30,14 @@ class ThoughtTools(Protocol):
     def home_preview(self, turn: TurnInput, observation: dict[str, Any]) -> dict[str, Any]:
         ...
 
+    def home_preview_direct(
+        self,
+        turn: TurnInput,
+        observation: dict[str, Any],
+        action: dict[str, Any],
+    ) -> dict[str, Any]:
+        ...
+
     def home_execute(self, turn: TurnInput, action: dict[str, Any]) -> dict[str, Any]:
         ...
 
@@ -157,6 +165,23 @@ class MockThoughtTools:
             "status": "ok",
             "action": action,
         }
+
+    def home_preview_direct(
+        self,
+        turn: TurnInput,
+        observation: dict[str, Any],
+        action: dict[str, Any],
+    ) -> dict[str, Any]:
+        del turn, observation
+        direct_action = dict(action)
+        if direct_action.get("noop") or direct_action.get("available") is False:
+            return {
+                "status": "noop",
+                "action": direct_action,
+                "message": _noop_message(direct_action),
+                "should_execute": False,
+            }
+        return {"status": "ok", "action": direct_action}
 
     def home_execute(self, turn: TurnInput, action: dict[str, Any]) -> dict[str, Any]:
         self.execute_calls.append(action)
@@ -474,6 +499,22 @@ class HomeControlHttpTools:
                 "action": {},
             }
         action = _action_from_intent(intent)
+        return self._home_preview_action(turn, action)
+
+    def home_preview_direct(
+        self,
+        turn: TurnInput,
+        observation: dict[str, Any],
+        action: dict[str, Any],
+    ) -> dict[str, Any]:
+        del observation
+        return self._home_preview_action(turn, dict(action))
+
+    def _home_preview_action(
+        self,
+        turn: TurnInput,
+        action: dict[str, Any],
+    ) -> dict[str, Any]:
         if action.get("noop") or action.get("available") is False:
             return {
                 "status": "noop",
@@ -490,7 +531,7 @@ class HomeControlHttpTools:
         try:
             payload = self._json_request(
                 "POST",
-                self._bridge_url(f"/actions/{intent.action_id}/preview"),
+                self._bridge_url(f"/actions/{action['action_id']}/preview"),
                 token=self.config.api_token,
                 body=_bridge_body(turn, request_id=f"{turn.turn_id}-preview"),
             )

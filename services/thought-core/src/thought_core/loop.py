@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import unicodedata
 from contextvars import ContextVar
@@ -12,6 +13,15 @@ from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
+from .agentic_turn_decision import validate_agentic_turn_decision
+from .agentic_turn_provider import (
+    AgenticActionReceipt,
+    AgenticTurnProvider,
+    AgenticTurnProviderRequest,
+    AgenticTurnProviderUnavailable,
+    validate_agentic_receipt_response,
+)
+from .capability_catalog import CapabilityCatalogError, HomeCapabilityCatalog
 from .conversation_continuity import ConversationContinuity
 from .execution_deadline import (
     TurnDeadlineExceeded,
@@ -124,6 +134,10 @@ DRIVER_RESULT_AUTHORITIES = {
     "driver_result_contract",
 }
 CONTEXT_VALUE_MAX_CHARS = 180
+PROVIDER_CONTEXT_REF_MAX_COUNT = 8
+PROVIDER_CONTEXT_REF_KEY_MAX_CHARS = 64
+PROVIDER_CONTEXT_REF_STRING_MAX_CHARS = 180
+PROVIDER_CONTEXT_REF_NUMBER_ABS = 1_000_000
 PROJECTION_EFFECT_COMPANION_MAX_CHARS = 120
 PROJECTION_EFFECT_PLAN_IDENTITY_MAX_CHARS = 128
 PROJECTION_EFFECT_PLAN_ID_NAMESPACE = b"sword.projection-performance-plan.v1"
@@ -480,6 +494,11 @@ class _TurnRequestContext:
     working_memory_context: Mapping[str, Any]
 
 
+@dataclass(frozen=True)
+class _AgenticCapabilityRoute:
+    action: dict[str, Any]
+
+
 _TURN_REQUEST_CONTEXT: ContextVar[_TurnRequestContext | None] = ContextVar(
     "thought_core_turn_request_context",
     default=None,
@@ -496,6 +515,8 @@ class ThoughtLoop:
         responder: TurnResponder | None = None,
         action_reasoner: ActionReasoner | None = None,
         input_understanding: InputUnderstanding | None = None,
+        agentic_turn_provider: AgenticTurnProvider | None = None,
+        capability_catalog: HomeCapabilityCatalog | None = None,
         persona: AssistantPersona | None = None,
         conversation_continuity: ConversationContinuity | None = None,
         llm_visible_speech: bool | None = None,
@@ -509,6 +530,13 @@ class ThoughtLoop:
         self.input_understanding = (
             input_understanding or build_input_understanding_from_env()
         )
+        self.agentic_turn_provider = agentic_turn_provider
+        self.capability_catalog = capability_catalog
+        if self.agentic_turn_provider is not None and self.capability_catalog is None:
+            try:
+                self.capability_catalog = HomeCapabilityCatalog.from_default_path()
+            except CapabilityCatalogError:
+                self.capability_catalog = None
         self.persona = persona or build_persona_from_env()
         self.conversation_continuity = (
             conversation_continuity or ConversationContinuity()
@@ -594,7 +622,33 @@ class ThoughtLoop:
             )
         )
         try:
-            input_frame = self._understand_input(turn_input)
+            # Pending lifecycle continuation is deterministic safety state and
+            # intentionally precedes ordinary semantic interpretation.
+            if self._handle_pending_confirmation_if_needed(events, factory, turn_input):
+                return events
+            input_frame: InputFrame | None = None
+            if self.pending_action_reviews.get(turn_input.session_id):
+                input_frame = self._understand_input(turn_input)
+                if self._handle_pending_action_review_if_needed(
+                    events,
+                    factory,
+                    turn_input,
+                    input_frame,
+                ):
+                    return events
+
+            # Ordinary fixed parsing, its published classification, and
+            # kind-dependent memory retrieval must follow the agentic boundary.
+            agentic_handled, agentic_route = self._handle_agentic_turn_if_configured(
+                events,
+                factory,
+                turn_input,
+            )
+            if agentic_handled and agentic_route is None:
+                return events
+
+            if input_frame is None:
+                input_frame = self._understand_input(turn_input)
             ensure_execution_active()
             self._replace_request_context(
                 issue_key=self._speech_issue_key(turn_input, input_frame)
@@ -630,31 +684,6 @@ class ThoughtLoop:
             self._replace_request_context(
                 issue_key=self._speech_issue_key(turn_input, input_frame)
             )
-            if self._handle_pending_confirmation_if_needed(events, factory, turn_input):
-                return events
-            if input_frame.kind == "state_query":
-                self._handle_room_light_state_query(events, factory, turn_input)
-                return events
-            if input_frame.kind == "environment_status_query":
-                self._handle_environment_status_query_turn(
-                    events,
-                    factory,
-                    turn_input,
-                    input_frame,
-                    memory_context,
-                )
-                return events
-            if input_frame.kind == "audio_check":
-                self._handle_audio_check_turn(events, factory, turn_input, input_frame)
-                return events
-            if input_frame.kind == "motion_request":
-                self._handle_motion_request_turn(
-                    events,
-                    factory,
-                    turn_input,
-                    input_frame,
-                )
-                return events
             if self._handle_pending_action_review_if_needed(
                 events,
                 factory,
@@ -662,116 +691,140 @@ class ThoughtLoop:
                 input_frame,
             ):
                 return events
-            if self._handle_state_query_feedback_if_needed(
-                events,
-                factory,
-                turn_input,
-                input_frame,
-            ):
-                return events
-
-            if input_frame.kind == "state_query" or detect_room_light_state_query(
-                turn_input.text
-            ):
-                self._handle_room_light_state_query(events, factory, turn_input)
-                return events
-
-            negative_action = detect_home_action_negative_request(turn_input.text)
-            if negative_action:
-                self._handle_home_action_negative_request(
+            if not agentic_handled:
+                if input_frame.kind == "state_query":
+                    self._handle_room_light_state_query(events, factory, turn_input)
+                    return events
+                if input_frame.kind == "environment_status_query":
+                    self._handle_environment_status_query_turn(
+                        events,
+                        factory,
+                        turn_input,
+                        input_frame,
+                        memory_context,
+                    )
+                    return events
+                if input_frame.kind == "audio_check":
+                    self._handle_audio_check_turn(events, factory, turn_input, input_frame)
+                    return events
+                if input_frame.kind == "motion_request":
+                    self._handle_motion_request_turn(
+                        events,
+                        factory,
+                        turn_input,
+                        input_frame,
+                    )
+                    return events
+                if self._handle_state_query_feedback_if_needed(
                     events,
                     factory,
                     turn_input,
-                    negative_action,
-                )
-                return events
+                    input_frame,
+                ):
+                    return events
 
-            action_ambiguity = detect_home_action_ambiguity(turn_input.text)
-            if action_ambiguity:
-                self._handle_home_action_ambiguity(
-                    events,
-                    factory,
-                    turn_input,
-                    action_ambiguity,
-                )
-                return events
+                if input_frame.kind == "state_query" or detect_room_light_state_query(
+                    turn_input.text
+                ):
+                    self._handle_room_light_state_query(events, factory, turn_input)
+                    return events
 
-            action_intent = detect_home_action_intent(turn_input.text)
-            if action_intent is None:
-                if _is_projection_effect_plan_candidate(turn_input.text):
-                    try:
-                        plan_id, plan_seed = _projection_effect_plan_identity(
-                            turn_input
-                        )
-                        plan_decision = compile_projection_effect_plan_intent(
-                            turn_input.text,
-                            plan_id=plan_id,
-                            session_id=turn_input.session_id,
-                            revision=1,
-                            seed=plan_seed,
-                        )
-                    except Exception:
-                        self._handle_projection_effect_clarification(
-                            events,
-                            factory,
-                            reason="projection_plan_needs_clarification",
-                        )
-                        return events
+                negative_action = detect_home_action_negative_request(turn_input.text)
+                if negative_action:
+                    self._handle_home_action_negative_request(
+                        events,
+                        factory,
+                        turn_input,
+                        negative_action,
+                    )
+                    return events
 
-                    if plan_decision.accepted:
+                action_ambiguity = detect_home_action_ambiguity(turn_input.text)
+                if action_ambiguity:
+                    self._handle_home_action_ambiguity(
+                        events,
+                        factory,
+                        turn_input,
+                        action_ambiguity,
+                    )
+                    return events
+
+                action_intent = detect_home_action_intent(turn_input.text)
+                if action_intent is None:
+                    if _is_projection_effect_plan_candidate(turn_input.text):
                         try:
-                            plan = validate_projection_performance_plan(
-                                plan_decision.plan
+                            plan_id, plan_seed = _projection_effect_plan_identity(
+                                turn_input
                             )
-                            if plan.session_id != turn_input.session_id:
-                                raise ProjectionPerformancePlanValidationError()
-                            plan_payload = plan.to_payload()
-                        except ProjectionPerformancePlanValidationError:
+                            plan_decision = compile_projection_effect_plan_intent(
+                                turn_input.text,
+                                plan_id=plan_id,
+                                session_id=turn_input.session_id,
+                                revision=1,
+                                seed=plan_seed,
+                            )
+                        except Exception:
                             self._handle_projection_effect_clarification(
                                 events,
                                 factory,
                                 reason="projection_plan_needs_clarification",
                             )
                             return events
+
+                        if plan_decision.accepted:
+                            try:
+                                plan = validate_projection_performance_plan(
+                                    plan_decision.plan
+                                )
+                                if plan.session_id != turn_input.session_id:
+                                    raise ProjectionPerformancePlanValidationError()
+                                plan_payload = plan.to_payload()
+                            except ProjectionPerformancePlanValidationError:
+                                self._handle_projection_effect_clarification(
+                                    events,
+                                    factory,
+                                    reason="projection_plan_needs_clarification",
+                                )
+                                return events
+                            self._handle_projection_effect_intent(
+                                events,
+                                factory,
+                                turn_input,
+                                {
+                                    "schemaVersion": 2,
+                                    "action": "start",
+                                    "plan": plan_payload,
+                                },
+                            )
+                            return events
+                        if plan_decision.status == "clarification_required":
+                            self._handle_projection_effect_clarification(
+                                events,
+                                factory,
+                                reason=plan_decision.reason,
+                            )
+                            return events
+
+                    projection_effect_intent = detect_projection_effect_intent(
+                        turn_input.text
+                    )
+                    if projection_effect_intent.accepted:
                         self._handle_projection_effect_intent(
                             events,
                             factory,
                             turn_input,
-                            {
-                                "schemaVersion": 2,
-                                "action": "start",
-                                "plan": plan_payload,
-                            },
+                            projection_effect_intent.event_payload(),
                         )
                         return events
-                    if plan_decision.status == "clarification_required":
+                    if projection_effect_intent.status == "clarification_required":
                         self._handle_projection_effect_clarification(
                             events,
                             factory,
-                            reason=plan_decision.reason,
+                            reason=projection_effect_intent.reason,
                         )
                         return events
-
-                projection_effect_intent = detect_projection_effect_intent(
-                    turn_input.text
-                )
-                if projection_effect_intent.accepted:
-                    self._handle_projection_effect_intent(
-                        events,
-                        factory,
-                        turn_input,
-                        projection_effect_intent.event_payload(),
-                    )
+                    self._handle_general_turn(events, factory, turn_input)
                     return events
-                if projection_effect_intent.status == "clarification_required":
-                    self._handle_projection_effect_clarification(
-                        events,
-                        factory,
-                        reason=projection_effect_intent.reason,
-                    )
-                    return events
-                self._handle_general_turn(events, factory, turn_input)
-                return events
 
             self._emit_stage_update(
                 events,
@@ -797,56 +850,79 @@ class ThoughtLoop:
                     },
                 )
             )
-            self._emit_stage_update(
-                events,
-                factory,
-                stage="target_state.generate",
-                speech="望む状態を組み立てます。",
-                detail={"memory_items": memory_context.get("item_count", 0)},
-            )
-            target_state = self._imagine_target_state(
-                events,
-                factory,
-                turn_input,
-                observation,
-            )
+            target_state: dict[str, Any] = {}
+            if agentic_route is None:
+                self._emit_stage_update(
+                    events,
+                    factory,
+                    stage="target_state.generate",
+                    speech="望む状態を組み立てます。",
+                    detail={"memory_items": memory_context.get("item_count", 0)},
+                )
+                target_state = self._imagine_target_state(
+                    events,
+                    factory,
+                    turn_input,
+                    observation,
+                )
 
             self._emit_stage_update(
                 events,
                 factory,
                 stage="home.preview",
                 speech="使える操作を確認しています。",
-                detail={"target_state_id": target_state.get("target_state_id")},
+                detail={
+                    "target_state_id": target_state.get("target_state_id"),
+                    "semantic_authority": (
+                        "agentic_provider"
+                        if agentic_route is not None
+                        else "compatibility_parser"
+                    ),
+                },
             )
-            preview = self._call_tool(
-                events,
-                factory,
-                "home.preview",
-                lambda: self.tools.home_preview(turn_input, observation),
-            )
+            if agentic_route is not None:
+                preview = self._call_tool(
+                    events,
+                    factory,
+                    "home.preview.direct",
+                    lambda: self.tools.home_preview_direct(
+                        turn_input,
+                        observation,
+                        agentic_route.action,
+                    ),
+                )
+            else:
+                preview = self._call_tool(
+                    events,
+                    factory,
+                    "home.preview",
+                    lambda: self.tools.home_preview(turn_input, observation),
+                )
             action = preview.get("action", {})
             command_plan: dict[str, Any] = {}
             if isinstance(action, dict) and action:
-                self._emit_stage_update(
-                    events,
-                    factory,
-                    stage="command.plan",
-                    speech="現在との差分から、実行内容を決めます。",
-                    detail={"action_id": action.get("action_id")},
-                )
-                command_plan = self._plan_command(
-                    events,
-                    factory,
-                    turn_input,
-                    observation,
-                    target_state,
-                    preview,
-                )
-                action = self._attach_reasoning_to_action(
-                    action,
-                    target_state,
-                    command_plan,
-                )
+                if agentic_route is None:
+                    self._emit_stage_update(
+                        events,
+                        factory,
+                        stage="command.plan",
+                        speech="現在との差分から、実行内容を決めます。",
+                        detail={"action_id": action.get("action_id")},
+                    )
+                    command_plan = self._plan_command(
+                        events,
+                        factory,
+                        turn_input,
+                        observation,
+                        target_state,
+                        preview,
+                    )
+                    action = self._attach_reasoning_to_action(
+                        action,
+                        target_state,
+                        command_plan,
+                    )
+                    action["semantic_authority"] = "compatibility_parser"
                 action["memory_context"] = memory_context
             if command_plan.get("status") == "already_satisfied" and action:
                 speech = self._already_satisfied_message(action)
@@ -888,6 +964,19 @@ class ThoughtLoop:
                     or action.get("reason_text")
                     or "今の状態では操作しなくて大丈夫です。"
                 )
+                display = speech
+                receipt_response = self._agentic_receipt_response(
+                    events,
+                    factory,
+                    action,
+                    phase="noop",
+                    status="noop",
+                    confirmed=False,
+                    executed=False,
+                )
+                if receipt_response is not None:
+                    speech = receipt_response["speech"]
+                    display = receipt_response["display"]
                 events.append(
                     factory.emit(
                         "action.skipped",
@@ -902,7 +991,7 @@ class ThoughtLoop:
                     events,
                     factory,
                     speech=speech,
-                    display=speech,
+                    display=display,
                     emotion="neutral",
                     motion="small_nod",
                     priority="normal",
@@ -920,18 +1009,47 @@ class ThoughtLoop:
                 )
                 return events
             if preview.get("status") not in {"ok", "preview"} or not action:
+                receipt_response = self._agentic_receipt_response(
+                    events,
+                    factory,
+                    action,
+                    phase="failure",
+                    status="preview_failed",
+                    confirmed=False,
+                    executed=False,
+                )
+                feedback_speech = (
+                    receipt_response["speech"]
+                    if receipt_response is not None
+                    else "家電操作の準備で止まりました。ブリッジ設定を確認します。"
+                )
+                feedback_display = (
+                    receipt_response["display"]
+                    if receipt_response is not None
+                    else "家電操作の準備に失敗しました"
+                )
                 events.append(
                     factory.emit(
                         "feedback.requested",
                         {
                             "reason": "action_preview_failed",
-                            "speech": "家電操作の準備で止まりました。ブリッジ設定を確認します。",
-                            "display": "家電操作の準備に失敗しました",
+                            "speech": feedback_speech,
+                            "display": feedback_display,
                             "preview_status": preview.get("status"),
                             "preview_error": preview.get("error"),
                         },
                     )
                 )
+                if receipt_response is not None:
+                    self._emit_message(
+                        events,
+                        factory,
+                        speech=receipt_response["speech"],
+                        display=receipt_response["display"],
+                        emotion="focused",
+                        motion="small_nod",
+                        priority="normal",
+                    )
                 events.append(
                     factory.emit(
                         "turn.completed",
@@ -948,6 +1066,19 @@ class ThoughtLoop:
             if action.get("confirm_required"):
                 self._remember_confirmation(turn_input, action)
                 speech = self._confirmation_prompt(action)
+                display = speech
+                receipt_response = self._agentic_receipt_response(
+                    events,
+                    factory,
+                    action,
+                    phase="confirmation",
+                    status="confirmation_required",
+                    confirmed=False,
+                    executed=False,
+                )
+                if receipt_response is not None:
+                    speech = receipt_response["speech"]
+                    display = receipt_response["display"]
                 events.append(
                     factory.emit(
                         "action.confirmation_required",
@@ -964,7 +1095,7 @@ class ThoughtLoop:
                     events,
                     factory,
                     speech=speech,
-                    display=speech,
+                    display=display,
                     emotion="focused",
                     motion="small_nod",
                     priority="immediate",
@@ -985,11 +1116,28 @@ class ThoughtLoop:
                 return events
 
             messages = self._home_action_messages(action)
+            receipt_response = self._agentic_receipt_response(
+                events,
+                factory,
+                action,
+                phase="preview",
+                status="previewed",
+                confirmed=False,
+                executed=False,
+            )
             self._emit_message(
                 events,
                 factory,
-                speech=messages["before_speech"],
-                display=messages["before_display"],
+                speech=(
+                    receipt_response["speech"]
+                    if receipt_response is not None
+                    else messages["before_speech"]
+                ),
+                display=(
+                    receipt_response["display"]
+                    if receipt_response is not None
+                    else messages["before_display"]
+                ),
                 emotion="confident",
                 motion="nod",
                 priority="immediate",
@@ -1107,6 +1255,17 @@ class ThoughtLoop:
                         messages,
                         post_action_feedback,
                     )
+                    receipt_response = self._agentic_receipt_response(
+                        events,
+                        factory,
+                        action,
+                        phase="success",
+                        status="success",
+                        confirmed=False,
+                        executed=True,
+                    )
+                    if receipt_response is not None:
+                        response = receipt_response
                     self._emit_message(
                         events,
                         factory,
@@ -1205,6 +1364,25 @@ class ThoughtLoop:
                         },
                     )
                 )
+                receipt_response = self._agentic_receipt_response(
+                    events,
+                    factory,
+                    action,
+                    phase="failure",
+                    status="needs_feedback",
+                    confirmed=False,
+                    executed=bool(execute_result.get("executed")),
+                )
+                if receipt_response is not None:
+                    self._emit_message(
+                        events,
+                        factory,
+                        speech=receipt_response["speech"],
+                        display=receipt_response["display"],
+                        emotion="focused",
+                        motion="small_nod",
+                        priority="normal",
+                    )
                 self._write_short_memory(
                     events,
                     factory,
@@ -1263,6 +1441,262 @@ class ThoughtLoop:
         ):
             events = self._run_active(turn, event_sink=_sink)
             return [event.to_dict() for event in events]
+
+    def _handle_agentic_turn_if_configured(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+    ) -> tuple[bool, _AgenticCapabilityRoute | None]:
+        """Route an injected semantic decision before compatibility detectors."""
+
+        provider = self.agentic_turn_provider
+        if provider is None:
+            return False, None
+        catalog = self.capability_catalog
+        if catalog is None:
+            self._emit_agentic_hold(
+                events,
+                factory,
+                reason="agentic_capability_catalog_unavailable",
+            )
+            return True, None
+
+        try:
+            context_refs = self._compact_agentic_context_refs(turn_input)
+        except ValueError:
+            self._emit_agentic_hold(
+                events,
+                factory,
+                reason="agentic_context_refs_invalid",
+            )
+            return True, None
+        request = AgenticTurnProviderRequest(
+            human_wish=turn_input.text,
+            context_refs=context_refs,
+            capability_view=catalog.capability_view,
+            agent_context=MappingProxyType(
+                {
+                    "bounded_wish_refs": (),
+                    "observation_refs": (),
+                    "memory_refs": (),
+                    "working_memory_item_count": int(
+                        self._active_working_memory_context.get("item_count", 0)
+                    ),
+                }
+            ),
+        )
+        try:
+            candidate = provider.decide(request)
+        except AgenticTurnProviderUnavailable:
+            self._emit_agentic_hold(
+                events,
+                factory,
+                reason="agentic_provider_unavailable",
+            )
+            return True, None
+        except Exception:
+            self._emit_agentic_hold(
+                events,
+                factory,
+                reason="agentic_provider_invalid",
+            )
+            return True, None
+
+        result = validate_agentic_turn_decision(
+            candidate,
+            capability_catalog_validator=catalog.authorizes,
+        )
+        if not result.accepted or result.decision is None:
+            self._emit_agentic_hold(
+                events,
+                factory,
+                reason="agentic_decision_invalid",
+            )
+            return True, None
+
+        decision = result.decision
+        events.append(
+            factory.emit(
+                "agentic.decision",
+                {
+                    "status": "accepted",
+                    "kind": decision.kind,
+                    "capability_present": decision.capability is not None,
+                    "semantic_authority": "agentic_provider",
+                },
+            )
+        )
+        if decision.kind != "capability" or decision.capability is None:
+            self._emit_message(
+                events,
+                factory,
+                speech=decision.response.speech,
+                display=decision.response.display,
+                emotion="neutral",
+                motion="small_nod",
+                priority="normal",
+            )
+            events.append(
+                factory.emit(
+                    "turn.completed",
+                    {
+                        "status": decision.kind,
+                        "semantic_authority": "agentic_provider",
+                        "capability_executed": False,
+                    },
+                )
+            )
+            return True, None
+
+        try:
+            action = catalog.action_for(
+                decision.capability.capability_id,
+                decision.capability.arguments,
+            )
+        except CapabilityCatalogError:
+            self._emit_agentic_hold(
+                events,
+                factory,
+                reason="agentic_capability_not_authorized",
+            )
+            return True, None
+        # Preserve only bounded, text-free provenance on action-bearing paths.
+        # Provider wording is supplied solely through the receipt-response boundary.
+        action["semantic_authority"] = "agentic_provider"
+        return True, _AgenticCapabilityRoute(action=action)
+
+    def _compact_agentic_context_refs(
+        self,
+        turn_input: TurnInput,
+    ) -> Mapping[str, object]:
+        compact: dict[str, object] = {}
+        for key in sorted(SAFE_CONTEXT_REF_KEYS):
+            if key not in turn_input.context_refs:
+                continue
+            if len(key) > PROVIDER_CONTEXT_REF_KEY_MAX_CHARS:
+                raise ValueError("agentic_context_ref_key_invalid")
+            if len(compact) >= PROVIDER_CONTEXT_REF_MAX_COUNT:
+                raise ValueError("agentic_context_ref_count_exceeded")
+            value = turn_input.context_refs.get(key)
+            if type(value) is str:
+                reader_safe_value = " ".join(value.strip().split())
+                if (
+                    not reader_safe_value
+                    or len(reader_safe_value) > PROVIDER_CONTEXT_REF_STRING_MAX_CHARS
+                    or _unsafe_context_value_reason(reader_safe_value)
+                ):
+                    raise ValueError("agentic_context_ref_string_invalid")
+                compact[key] = reader_safe_value
+                continue
+            if type(value) is int:
+                if abs(value) > PROVIDER_CONTEXT_REF_NUMBER_ABS:
+                    raise ValueError("agentic_context_ref_number_invalid")
+                compact[key] = value
+                continue
+            if type(value) is float:
+                if not math.isfinite(value) or abs(value) > PROVIDER_CONTEXT_REF_NUMBER_ABS:
+                    raise ValueError("agentic_context_ref_number_invalid")
+                compact[key] = value
+                continue
+            if type(value) is bool or value is None:
+                compact[key] = value
+                continue
+            raise ValueError("agentic_context_ref_type_invalid")
+        return MappingProxyType(compact)
+
+    def _emit_agentic_hold(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        *,
+        reason: str,
+    ) -> None:
+        speech = "AIの判断を安全に受け取れないため、今は操作を保留しています。"
+        events.append(
+            factory.emit(
+                "agentic.decision",
+                {
+                    "status": "held",
+                    "reason": reason,
+                    "semantic_authority": "agentic_provider",
+                    "degraded": True,
+                },
+            )
+        )
+        self._emit_message(
+            events,
+            factory,
+            speech=speech,
+            display=speech,
+            emotion="focused",
+            motion="small_nod",
+            priority="normal",
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {
+                    "status": "held",
+                    "reason": reason,
+                    "semantic_authority": "agentic_provider",
+                    "degraded": True,
+                },
+            )
+        )
+
+    def _agentic_receipt_response(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        action: Mapping[str, Any],
+        *,
+        phase: str,
+        status: str,
+        confirmed: bool,
+        executed: bool,
+    ) -> dict[str, str] | None:
+        """Return AI wording only after deterministic lifecycle facts exist."""
+
+        provider = self.agentic_turn_provider
+        responder = getattr(provider, "respond_to_receipt", None)
+        if action.get("semantic_authority") != "agentic_provider" or not callable(responder):
+            return None
+        receipt = AgenticActionReceipt(
+            action_id=str(action.get("action_id") or ""),
+            phase=phase,
+            status=status,
+            confirmed=confirmed,
+            executed=executed,
+        )
+        try:
+            response = validate_agentic_receipt_response(responder(receipt))
+        except Exception:
+            response = None
+        if response is None:
+            events.append(
+                factory.emit(
+                    "agentic.receipt_response",
+                    {
+                        "status": "unavailable",
+                        "phase": phase,
+                        "receipt_status": status,
+                    },
+                )
+            )
+            return None
+        events.append(
+            factory.emit(
+                "agentic.receipt_response",
+                {
+                    "status": "accepted",
+                    "phase": phase,
+                    "receipt_status": status,
+                    "provenance": "agentic_provider",
+                },
+            )
+        )
+        return {"speech": response.speech, "display": response.display}
 
     def _handle_state_query_feedback_if_needed(
         self,
@@ -2396,6 +2830,19 @@ class ThoughtLoop:
                 "確認の有効期限が切れたみたいです。まだ実行していません。"
                 "実行してよければ、もう一度「お願い」か「OK」と言ってください。"
             )
+            display = speech
+            receipt_response = self._agentic_receipt_response(
+                events,
+                factory,
+                action,
+                phase="confirmation",
+                status="confirmation_required",
+                confirmed=True,
+                executed=False,
+            )
+            if receipt_response is not None:
+                speech = receipt_response["speech"]
+                display = receipt_response["display"]
             events.append(
                 factory.emit(
                     "action.confirmation_required",
@@ -2412,7 +2859,7 @@ class ThoughtLoop:
                 events,
                 factory,
                 speech=speech,
-                display=speech,
+                display=display,
                 emotion="focused",
                 motion="small_nod",
                 priority="immediate",
@@ -2516,6 +2963,17 @@ class ThoughtLoop:
                 messages,
                 post_action_feedback,
             )
+            receipt_response = self._agentic_receipt_response(
+                events,
+                factory,
+                action,
+                phase="success",
+                status="success",
+                confirmed=True,
+                executed=True,
+            )
+            if receipt_response is not None:
+                response = receipt_response
             self._emit_message(
                 events,
                 factory,
@@ -2592,18 +3050,45 @@ class ThoughtLoop:
         else:
             self.pending_confirmations.pop(turn_input.session_id, None)
         messages = self._home_action_messages(action)
+        receipt_response = self._agentic_receipt_response(
+            events,
+            factory,
+            action,
+            phase="failure",
+            status="needs_feedback",
+            confirmed=True,
+            executed=bool(execute_result.get("executed")),
+        )
         events.append(
             factory.emit(
                 "feedback.requested",
                 {
                     "reason": "confirmed_action_failed",
-                    "speech": messages["feedback_speech"],
-                    "display": "家電の状態確認が必要です",
+                    "speech": (
+                        receipt_response["speech"]
+                        if receipt_response is not None
+                        else messages["feedback_speech"]
+                    ),
+                    "display": (
+                        receipt_response["display"]
+                        if receipt_response is not None
+                        else "家電の状態確認が必要です"
+                    ),
                     "last_execute_status": execute_result.get("status"),
                     "confirmed": True,
                 },
             )
         )
+        if receipt_response is not None:
+            self._emit_message(
+                events,
+                factory,
+                speech=receipt_response["speech"],
+                display=receipt_response["display"],
+                emotion="focused",
+                motion="small_nod",
+                priority="normal",
+            )
         events.append(
             factory.emit(
                 "turn.completed",
@@ -3991,11 +4476,24 @@ class ThoughtLoop:
             action,
             execute_result,
         )
+        display = speech
+        receipt_response = self._agentic_receipt_response(
+            events,
+            factory,
+            action,
+            phase="submitted",
+            status="submitted_external_observation_required",
+            confirmed=confirmed,
+            executed=True,
+        )
+        if receipt_response is not None:
+            speech = receipt_response["speech"]
+            display = receipt_response["display"]
         self._emit_message(
             events,
             factory,
             speech=speech,
-            display=speech,
+            display=display,
             emotion="focused",
             motion="small_nod",
             priority="immediate",
