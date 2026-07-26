@@ -211,6 +211,38 @@ If persistence is unavailable, return a non-2xx status with a short `error`; Tho
 
 State lookups such as "電気ついてる?" must not execute Home Assistant actions. Thought Core should set `action_id` to `none` and answer from `state_queries.room_light`; `available=false` or `stale=true` means the current sensor state cannot be confirmed.
 
+## OpenAI Broker (phase-one bounded contract)
+
+| Item | Contract |
+|---|---|
+| Bind | Literal `127.0.0.1` only |
+| Allowed ports | `18786` standard or `18886` isolated; `18888` is never a broker port |
+| Local API | Exact `POST /v1/chat/completions`; bounded `GET /health` |
+| Upstream | Fixed `https://api.openai.com/v1/chat/completions`; no caller-selected URL, model, proxy, redirect, or parameters |
+| Model | Fixed `gpt-4o-mini` for the first connectivity proof |
+| Input | Exactly system and user messages, `temperature: 0`, `response_format: {"type":"json_object"}`, and `max_tokens` exactly `720` or `240` |
+| Bounds | Inbound <=32 KiB; system <=12 KiB; user <=16 KiB; upstream <=64 KiB; timeout <=12 seconds; concurrency one; queue zero; retry zero |
+| HTTP admission | One synchronous handler with one queued connection; incremental bounded one-raw-read `read1` chunks under a monotonic total body deadline <=12 seconds; reject `Transfer-Encoding`, duplicate/ambiguous `Content-Length`, and incomplete bodies |
+
+The broker alone owns source class `thought-core-existing-env-v1`: it resolves
+the existing ignored `services/thought-core/.env` file and accepts exactly one
+non-empty `OPENAI_API_KEY`. The key never enters Thought Core, Launcher, a child
+environment, command arguments, process state, events, logs, Git, or a copied
+runtime secret. Its sole permitted use is the `Authorization: Bearer` header on
+the fixed upstream request. The broker retains no raw request, response, or
+header and reconstructs only `choices[0].message.content` in a compatible
+response envelope.
+
+Phase 1 proof is limited to source/static inspection and deterministic
+fake-transport tests only. It does not prove real key discovery, external
+OpenAI reachability, Thought Core or Launcher integration, runtime, readiness,
+or product completion. After review/adoption and separate runtime authorization,
+the first live request on a new or materially changed route is exactly one
+synthetic, non-private, conversation-only, single-attempt smoke before any real
+Thought Core, operator, repository, or private payload. That smoke uses mock
+tools with action/tool/device execution zero, followed by the owned Stop,
+cleanup, and residue verification.
+
 ## AITuberKit
 
 | Item | Contract |

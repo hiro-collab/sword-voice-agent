@@ -28,6 +28,7 @@ sword-no-provider-child-provenance = "sword_voice_agent.apps.build_no_provider_c
 sword-console = "sword_voice_agent.apps.console_server:main"
 sword-status-clear = "sword_voice_agent.apps.clear_status:main"
 sword-ai-talk-core-web = "sword_voice_agent.apps.ai_talk_core_web:main"
+sword-openai-broker = "sword_voice_agent.apps.openai_broker:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
