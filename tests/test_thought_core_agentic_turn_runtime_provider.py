@@ -23,6 +23,11 @@ from thought_core.agentic_turn_provider import (  # noqa: E402
 )
 from thought_core.agentic_turn_runtime_provider import (  # noqa: E402
     OpenAICompatibleAgenticTurnProvider,
+    MAX_SWORD_OPENAI_BROKER_TIMEOUT_S,
+    SWORD_OPENAI_BROKER_BASE_URLS,
+    SWORD_OPENAI_BROKER_MODEL,
+    SWORD_OPENAI_BROKER_PROVIDER,
+    SwordOpenAIBrokerAgenticTurnProvider,
     build_agentic_turn_provider_from_env,
 )
 from thought_core.input_understanding import (  # noqa: E402
@@ -635,6 +640,152 @@ class AgenticTurnRuntimeProviderTest(TestCase):
             opener.assert_not_called()
             urlopen.assert_not_called()
             request_type.assert_not_called()
+
+    def test_credential_free_sword_broker_selector_is_exact_and_preserves_limits(self) -> None:
+        env_base = {
+            "THOUGHT_CORE_LLM_ENABLED": "1",
+            "THOUGHT_CORE_LLM_PROVIDER": SWORD_OPENAI_BROKER_PROVIDER,
+            "THOUGHT_CORE_LLM_MODEL": SWORD_OPENAI_BROKER_MODEL,
+            "THOUGHT_CORE_LLM_TIMEOUT_S": "12",
+        }
+        for base_url in sorted(SWORD_OPENAI_BROKER_BASE_URLS):
+            with (
+                self.subTest(base_url=base_url),
+                patch.dict(os.environ, {**env_base, "THOUGHT_CORE_LLM_BASE_URL": base_url}, clear=True),
+                patch(
+                    "thought_core.agentic_turn_runtime_provider."
+                    "OpenAICompatibleStructuredCompletion",
+                    wraps=OpenAICompatibleStructuredCompletion,
+                ) as completion_type,
+            ):
+                provider = build_agentic_turn_provider_from_env()
+            self.assertIsInstance(provider, SwordOpenAIBrokerAgenticTurnProvider)
+            self.assertEqual(completion_type.call_count, 1)
+            self.assertEqual(completion_type.call_args.kwargs["base_url"], base_url)
+            self.assertEqual(
+                completion_type.call_args.kwargs["model"],
+                SWORD_OPENAI_BROKER_MODEL,
+            )
+            self.assertEqual(
+                completion_type.call_args.kwargs["timeout_s"],
+                MAX_SWORD_OPENAI_BROKER_TIMEOUT_S,
+            )
+
+        rejected = (
+            {"THOUGHT_CORE_LLM_BASE_URL": "http://127.0.0.1:18888/v1"},
+            {"THOUGHT_CORE_LLM_BASE_URL": "http://127.0.0.1:11434/v1"},
+            {"THOUGHT_CORE_LLM_BASE_URL": "https://api.openai.com/v1"},
+            {"THOUGHT_CORE_LLM_BASE_URL": "http://user@127.0.0.1:18786/v1"},
+            {"THOUGHT_CORE_LLM_BASE_URL": "http://127.0.0.1:18786/v1", "THOUGHT_CORE_LLM_MODEL": "different-model"},
+            {"THOUGHT_CORE_LLM_BASE_URL": "http://127.0.0.1:18786/v1", "THOUGHT_CORE_LLM_PROVIDER": "openai-compatible"},
+            {"THOUGHT_CORE_LLM_BASE_URL": "http://127.0.0.1:18786/v1", "THOUGHT_CORE_LLM_TIMEOUT_S": "12.001"},
+            {"THOUGHT_CORE_LLM_BASE_URL": "http://127.0.0.1:18786/v1", "THOUGHT_CORE_LLM_TIMEOUT_S": "inf"},
+            {"THOUGHT_CORE_LLM_BASE_URL": "http://127.0.0.1:18786/v1", "THOUGHT_CORE_LLM_TIMEOUT_S": "0"},
+            {
+                "THOUGHT_CORE_LLM_BASE_URL": "http://127.0.0.1:18786/v1",
+                "THOUGHT_CORE_LLM_ADAPTER": "sword-openai-broker",
+            },
+            {
+                "THOUGHT_CORE_LLM_BASE_URL": "http://127.0.0.1:18786/v1",
+                "THOUGHT_CORE_LLM_ADAPTER": "openai-compatible",
+                "OPENAI_BASE_URL": "http://127.0.0.1:18786/v1",
+                "OPENAI_MODEL": SWORD_OPENAI_BROKER_MODEL,
+            },
+            {
+                "THOUGHT_CORE_LLM_BASE_URL": "http://127.0.0.1:18786/v1",
+                "THOUGHT_CORE_LLM_ADAPTER": "different-adapter",
+                "OPENAI_BASE_URL": "http://127.0.0.1:11434/v1",
+                "OPENAI_MODEL": "different-model",
+            },
+            {"THOUGHT_CORE_LLM_BASE_URL": "http://127.0.0.1:18786/v1", "OPENAI_API_KEY": "synthetic-private-credential"},
+            {"THOUGHT_CORE_LLM_BASE_URL": "http://127.0.0.1:18786/v1", "THOUGHT_CORE_LLM_API_KEY": "synthetic-private-credential"},
+            {"THOUGHT_CORE_LLM_BASE_URL": "http://127.0.0.1:18786/v1", "THOUGHT_CORE_ACTION_LLM_API_KEY": "synthetic-private-credential"},
+        )
+        for overrides in rejected:
+            with (
+                self.subTest(overrides=tuple(sorted(overrides))),
+                patch.dict(os.environ, {**env_base, **overrides}, clear=True),
+                patch(
+                    "thought_core.agentic_turn_runtime_provider."
+                    "OpenAICompatibleStructuredCompletion",
+                ) as completion_type,
+            ):
+                provider = build_agentic_turn_provider_from_env()
+            self.assertIsInstance(provider, UnavailableAgenticTurnProvider)
+            completion_type.assert_not_called()
+
+        alias_only = {
+            "THOUGHT_CORE_LLM_ENABLED": "1",
+            "THOUGHT_CORE_LLM_ADAPTER": SWORD_OPENAI_BROKER_PROVIDER,
+            "OPENAI_BASE_URL": "http://127.0.0.1:18786/v1",
+            "OPENAI_MODEL": SWORD_OPENAI_BROKER_MODEL,
+        }
+        with (
+            patch.dict(os.environ, alias_only, clear=True),
+            patch(
+                "thought_core.agentic_turn_runtime_provider."
+                "OpenAICompatibleStructuredCompletion",
+            ) as completion_type,
+        ):
+            provider = build_agentic_turn_provider_from_env()
+        self.assertIsInstance(provider, UnavailableAgenticTurnProvider)
+        completion_type.assert_not_called()
+
+    def test_broker_timeout_ceiling_does_not_change_compatibility_provider(self) -> None:
+        env = {
+            "THOUGHT_CORE_LLM_ENABLED": "1",
+            "THOUGHT_CORE_LLM_PROVIDER": "openai-compatible",
+            "THOUGHT_CORE_LLM_BASE_URL": "http://127.0.0.1:11434/v1",
+            "THOUGHT_CORE_LLM_MODEL": "local-model",
+            "THOUGHT_CORE_LLM_TIMEOUT_S": "12.001",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch(
+                "thought_core.agentic_turn_runtime_provider."
+                "OpenAICompatibleStructuredCompletion",
+                wraps=OpenAICompatibleStructuredCompletion,
+            ) as completion_type,
+        ):
+            provider = build_agentic_turn_provider_from_env()
+        self.assertIsInstance(provider, OpenAICompatibleAgenticTurnProvider)
+        self.assertEqual(completion_type.call_count, 1)
+        self.assertEqual(completion_type.call_args.kwargs["timeout_s"], 12.001)
+
+    def test_sword_broker_provider_preserves_decision_and_receipt_token_caps(self) -> None:
+        completion = _CapturingCompletion(
+            self._conversation_candidate(),
+            {"speech": "receipt", "display": "receipt"},
+        )
+        provider = SwordOpenAIBrokerAgenticTurnProvider(completion)
+        provider.decide(
+            self._provider_request(
+                human_wish="synthetic wish",
+                context_refs=MappingProxyType({}),
+            )
+        )
+        provider.respond_to_receipt(
+            AgenticActionReceipt(
+                action_id="light_on",
+                phase="completed",
+                status="success",
+                confirmed=True,
+                executed=True,
+            )
+        )
+        self.assertEqual(
+            [call["max_tokens"] for call in completion.calls],
+            [720, 240],
+        )
+
+    def test_broker_example_is_credential_free_and_exact(self) -> None:
+        example = (REPO_ROOT / "services" / "thought-core" / ".env.example").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("THOUGHT_CORE_LLM_PROVIDER=sword-openai-broker", example)
+        self.assertIn("THOUGHT_CORE_LLM_BASE_URL=http://127.0.0.1:18786/v1", example)
+        self.assertNotIn("API_KEY=", example)
+        self.assertNotIn("https://api.openai.com", example)
 
     def test_valid_loopback_agentic_capability_lifecycle_uses_only_structured_client(
         self,

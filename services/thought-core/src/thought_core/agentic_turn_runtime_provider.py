@@ -31,6 +31,15 @@ from .responders import (
 
 DECISION_MAX_TOKENS = 720
 RECEIPT_MAX_TOKENS = 240
+SWORD_OPENAI_BROKER_PROVIDER = "sword-openai-broker"
+SWORD_OPENAI_BROKER_MODEL = "gpt-4o-mini"
+MAX_SWORD_OPENAI_BROKER_TIMEOUT_S = 12.0
+SWORD_OPENAI_BROKER_BASE_URLS = frozenset(
+    {
+        "http://127.0.0.1:18786/v1",
+        "http://127.0.0.1:18886/v1",
+    }
+)
 MAX_CONTEXT_REF_COUNT = 8
 MAX_CONTEXT_REF_KEY_CHARS = 64
 MAX_CONTEXT_REF_STRING_CHARS = 180
@@ -142,25 +151,38 @@ class OpenAICompatibleAgenticTurnProvider:
             return None
 
 
+class SwordOpenAIBrokerAgenticTurnProvider(OpenAICompatibleAgenticTurnProvider):
+    """The sole primary production route for the credential-free Sword broker."""
+
+    __slots__ = ()
+    provider_name = SWORD_OPENAI_BROKER_PROVIDER
+
+
 def build_agentic_turn_provider_from_env() -> AgenticTurnProvider | None:
     """Build the sole production semantic route or an explicit degraded provider."""
 
     llm_enabled = os.environ.get("THOUGHT_CORE_LLM_ENABLED", "").strip().lower()
-    provider_name = (
-        os.environ.get("THOUGHT_CORE_LLM_PROVIDER")
-        or os.environ.get("THOUGHT_CORE_LLM_ADAPTER")
-        or ""
-    ).strip().lower()
-    base_url = (
-        os.environ.get("THOUGHT_CORE_LLM_BASE_URL")
-        or os.environ.get("OPENAI_BASE_URL")
-        or ""
-    ).strip()
-    model = (
-        os.environ.get("THOUGHT_CORE_LLM_MODEL")
-        or os.environ.get("OPENAI_MODEL")
-        or ""
-    ).strip()
+    canonical_provider = os.environ.get("THOUGHT_CORE_LLM_PROVIDER", "")
+    compatibility_adapter = os.environ.get("THOUGHT_CORE_LLM_ADAPTER", "")
+    canonical_base_url = os.environ.get("THOUGHT_CORE_LLM_BASE_URL", "")
+    compatibility_base_url = os.environ.get("OPENAI_BASE_URL", "")
+    canonical_model = os.environ.get("THOUGHT_CORE_LLM_MODEL", "")
+    compatibility_model = os.environ.get("OPENAI_MODEL", "")
+    provider_name = (canonical_provider or compatibility_adapter).strip().lower()
+    base_url = (canonical_base_url or compatibility_base_url).strip()
+    model = (canonical_model or compatibility_model).strip()
+    broker_aliases_present = any(
+        value for value in (
+            compatibility_adapter,
+            compatibility_base_url,
+            compatibility_model,
+        )
+    )
+    broker_canonical_config = (
+        canonical_provider == SWORD_OPENAI_BROKER_PROVIDER
+        and canonical_base_url in SWORD_OPENAI_BROKER_BASE_URLS
+        and canonical_model == SWORD_OPENAI_BROKER_MODEL
+    )
     action_llm_enabled = os.environ.get(
         "THOUGHT_CORE_ACTION_LLM_ENABLED",
         "",
@@ -184,6 +206,10 @@ def build_agentic_turn_provider_from_env() -> AgenticTurnProvider | None:
     ):
         return UnavailableAgenticTurnProvider()
     if _env_enabled("THOUGHT_CORE_FORCE_NO_PROVIDER"):
+        if provider_name == SWORD_OPENAI_BROKER_PROVIDER:
+            if not broker_canonical_config or broker_aliases_present:
+                return UnavailableAgenticTurnProvider()
+            return None
         if provider_name and provider_name not in _SUPPORTED_PROVIDER_NAMES:
             return UnavailableAgenticTurnProvider()
         if base_url and not is_loopback_http_url(base_url):
@@ -204,6 +230,15 @@ def build_agentic_turn_provider_from_env() -> AgenticTurnProvider | None:
         llm_enabled and llm_enabled not in _ENABLED_VALUES
     ):
         return UnavailableAgenticTurnProvider()
+    if provider_name == SWORD_OPENAI_BROKER_PROVIDER:
+        if not broker_canonical_config or broker_aliases_present:
+            return UnavailableAgenticTurnProvider()
+        return _build_sword_openai_broker_provider(
+            base_url=canonical_base_url,
+            model=canonical_model,
+        )
+    if base_url in SWORD_OPENAI_BROKER_BASE_URLS:
+        return UnavailableAgenticTurnProvider()
     if provider_name and provider_name not in _SUPPORTED_PROVIDER_NAMES:
         return UnavailableAgenticTurnProvider()
     if not base_url or not model or not is_loopback_http_url(base_url):
@@ -220,6 +255,36 @@ def build_agentic_turn_provider_from_env() -> AgenticTurnProvider | None:
     except (OSError, TypeError, ValueError):
         return UnavailableAgenticTurnProvider()
     return OpenAICompatibleAgenticTurnProvider(completion)
+
+
+def _build_sword_openai_broker_provider(
+    *,
+    base_url: str,
+    model: str,
+) -> AgenticTurnProvider:
+    if (
+        base_url not in SWORD_OPENAI_BROKER_BASE_URLS
+        or model != SWORD_OPENAI_BROKER_MODEL
+    ):
+        return UnavailableAgenticTurnProvider()
+    timeout_s = _positive_float_env(
+        "THOUGHT_CORE_LLM_TIMEOUT_S",
+        MAX_SWORD_OPENAI_BROKER_TIMEOUT_S,
+    )
+    if (
+        timeout_s is None
+        or timeout_s > MAX_SWORD_OPENAI_BROKER_TIMEOUT_S
+    ):
+        return UnavailableAgenticTurnProvider()
+    try:
+        completion = OpenAICompatibleStructuredCompletion(
+            base_url=base_url,
+            model=SWORD_OPENAI_BROKER_MODEL,
+            timeout_s=timeout_s,
+        )
+    except (OSError, TypeError, ValueError):
+        return UnavailableAgenticTurnProvider()
+    return SwordOpenAIBrokerAgenticTurnProvider(completion)
 
 
 def _decision_input_payload(request: AgenticTurnProviderRequest) -> dict[str, object]:
