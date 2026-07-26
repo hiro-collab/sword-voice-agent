@@ -48,6 +48,14 @@ const PORT_MODE = readArg(
   process.env.HOME_CONTROL_LAUNCHER_PORT_MODE || 'manifest_default'
 )
 
+const OPENAI_BROKER_PORT_BY_MODE = {
+  manifest_default: 18786,
+  isolated_override: 18886
+}
+const OPENAI_BROKER_PORT =
+  OPENAI_BROKER_PORT_BY_MODE[PORT_MODE] ||
+  OPENAI_BROKER_PORT_BY_MODE.manifest_default
+
 const PUBLIC_DIR = path.join(__dirname, 'public')
 const PROFILE_FILE = path.join(__dirname, 'config', 'default-profiles.json')
 const OPS_SCRIPT_ROOT = path.join(PROJECT_ROOT, 'ops', 'scripts')
@@ -142,6 +150,7 @@ const DEFAULT_OPTIONS = {
   TouchDesignerGuiPort: 8788,
   ThoughtCoreHost: '127.0.0.1',
   ThoughtCorePort: 18787,
+  OpenAIBrokerPort: OPENAI_BROKER_PORT,
   ThoughtCoreLlmProvider: 'configured',
   VoicevoxReadyTimeoutSeconds: 45,
   MediapipeReadyTimeoutSeconds: 90,
@@ -195,6 +204,7 @@ const NUMBER_FIELDS = new Set([
   'AituberPort',
   'TouchDesignerGuiPort',
   'ThoughtCorePort',
+  'OpenAIBrokerPort',
   'VoicevoxReadyTimeoutSeconds',
   'MediapipeReadyTimeoutSeconds',
   'MediapipeCameraWidth',
@@ -847,6 +857,12 @@ const normalizeOptions = (profileId, overrides = {}) => {
     ...(selectedProfile ? selectedProfile.options || {} : {}),
     ...(overrides || {})
   }
+  if (
+    !Number.isInteger(Number(base.OpenAIBrokerPort)) ||
+    Number(base.OpenAIBrokerPort) !== OPENAI_BROKER_PORT
+  ) {
+    throw new Error('invalid_openai_broker_port')
+  }
   const normalized = { ...DEFAULT_OPTIONS }
   for (const [key, defaultValue] of Object.entries(DEFAULT_OPTIONS)) {
     const value = base[key]
@@ -1330,6 +1346,7 @@ const buildSystemStartArgs = (profileId, options) => {
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'TouchDesignerGuiPort', options.TouchDesignerGuiPort)
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'ThoughtCoreHost', options.ThoughtCoreHost)
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'ThoughtCorePort', options.ThoughtCorePort)
+  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'OpenAIBrokerPort', options.OpenAIBrokerPort)
   addSupportedParam(
     SYSTEM_SCRIPT,
     stackArgs,
@@ -1440,9 +1457,10 @@ const previewCommand = (
 }
 
 const saveConfig = (profileId, options) => {
+  const { OpenAIBrokerPort, ...persistedOptions } = options || {}
   writeJsonFile(LAUNCHER_CONFIG_FILE, {
     selectedProfileId: profileId,
-    options,
+    options: persistedOptions,
     updatedAt: nowIso()
   })
 }

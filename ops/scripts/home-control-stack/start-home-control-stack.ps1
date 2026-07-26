@@ -24,6 +24,8 @@ param(
     [int]$TouchDesignerUdpPort = 9001,
     [string]$ThoughtCoreHost = "127.0.0.1",
     [int]$ThoughtCorePort = 18787,
+    [ValidateSet(18786, 18886)]
+    [int]$OpenAIBrokerPort = 18786,
     [ValidateSet("configured", "openai-compatible", "sword-openai-broker", "codex-cli", "codex-cli-luna")]
     [string]$ThoughtCoreLlmProvider = "configured",
     [string]$ThoughtCoreWatchAituberHttpTimeout = "",
@@ -230,9 +232,8 @@ $TouchDesignerUdpClientHost = if ($TouchDesignerUdpHost -eq "0.0.0.0") { "127.0.
 $ThoughtCoreClientHost = if ($ThoughtCoreHost -eq "0.0.0.0") { "127.0.0.1" } else { $ThoughtCoreHost }
 $ThoughtCoreBaseUrl = "http://{0}:{1}" -f $ThoughtCoreClientHost, $ThoughtCorePort
 $OpenAIBrokerHost = "127.0.0.1"
-$OpenAIBrokerPort = 18786
-$OpenAIBrokerBaseUrl = "http://127.0.0.1:18786/v1"
-$OpenAIBrokerHealthUrl = "http://127.0.0.1:18786/health"
+$OpenAIBrokerBaseUrl = "http://{0}:{1}/v1" -f $OpenAIBrokerHost, $OpenAIBrokerPort
+$OpenAIBrokerHealthUrl = "http://{0}:{1}/health" -f $OpenAIBrokerHost, $OpenAIBrokerPort
 $BrokerRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..\..")).Path
 $AituberProjectionVisualUrl = "http://{0}:{1}/projection-visual/?mode=passive&hud=0" -f $AituberClientHost, $AituberPort
 $MediapipeCameraHubChildProcessFile = Join-Path $StateDir "modules\mediapipe_camera_hub_stack\processes.json"

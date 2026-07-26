@@ -79,12 +79,74 @@ class OpenAIBrokerLaunchContractTest(TestCase):
         self.assertIn('"-ThoughtCoreLlmProvider"', system)
         self.assertIn('Invoke-StackScript -ScriptName "start-home-control-stack.ps1"', system)
 
+    def test_broker_port_is_mode_derived_and_propagated_end_to_end(self) -> None:
+        launcher = LAUNCHER.read_text(encoding="utf-8")
+        system = SYSTEM.read_text(encoding="utf-8")
+        stack = STACK_START.read_text(encoding="utf-8")
+
+        self.assertIn("const OPENAI_BROKER_PORT_BY_MODE = {", launcher)
+        self.assertIn("manifest_default: 18786", launcher)
+        self.assertIn("isolated_override: 18886", launcher)
+        self.assertIn("OpenAIBrokerPort: OPENAI_BROKER_PORT", launcher)
+        self.assertIn(
+            "Number(base.OpenAIBrokerPort) !== OPENAI_BROKER_PORT",
+            launcher,
+        )
+        self.assertIn("throw new Error('invalid_openai_broker_port')", launcher)
+        self.assertIn(
+            "const { OpenAIBrokerPort, ...persistedOptions } = options || {}",
+            launcher,
+        )
+        self.assertIn("options: persistedOptions", launcher)
+        self.assertLess(
+            launcher.index("invalid_openai_broker_port"),
+            launcher.index("const buildSystemStartArgs"),
+        )
+        self.assertIn(
+            "addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'OpenAIBrokerPort', options.OpenAIBrokerPort)",
+            launcher,
+        )
+
+        self.assertIn("[ValidateSet(18786, 18886)]", system)
+        self.assertIn("[int]$OpenAIBrokerPort = 18786", system)
+        self.assertIn('"-OpenAIBrokerPort"', system)
+        self.assertIn("[ValidateSet(18786, 18886)]", stack)
+        self.assertIn("[int]$OpenAIBrokerPort = 18786", stack)
+        self.assertIn(
+            '$OpenAIBrokerBaseUrl = "http://{0}:{1}/v1" -f $OpenAIBrokerHost, $OpenAIBrokerPort',
+            stack,
+        )
+        self.assertIn(
+            '$OpenAIBrokerHealthUrl = "http://{0}:{1}/health" -f $OpenAIBrokerHost, $OpenAIBrokerPort',
+            stack,
+        )
+        self.assertIn("Port = $OpenAIBrokerPort", stack)
+        self.assertIn('"--port", [string]$OpenAIBrokerPort', stack)
+        self.assertIn("Get-ListeningPortOwner -Port $OpenAIBrokerPort", stack)
+
+        broker_ports = {
+            mode: int(port)
+            for mode, port in re.findall(
+                r"^\s*(manifest_default|isolated_override):\s*(\d+),?$",
+                launcher,
+                flags=re.MULTILINE,
+            )
+        }
+        self.assertEqual(
+            broker_ports,
+            {"manifest_default": 18786, "isolated_override": 18886},
+        )
+        self.assertNotIn(18888, broker_ports.values())
+        self.assertIn("ThoughtCorePort: 18787", launcher)
+        self.assertIn("ThoughtCorePort: 18888", launcher)
+
     def test_stack_sanitizes_children_and_waits_for_broker_before_thought_core(self) -> None:
         stack = STACK_START.read_text(encoding="utf-8")
         thought_core = THOUGHT_CORE_START.read_text(encoding="utf-8")
         stop = STACK_STOP.read_text(encoding="utf-8")
 
-        self.assertIn('$OpenAIBrokerPort = 18786', stack)
+        self.assertIn("[ValidateSet(18786, 18886)]", stack)
+        self.assertIn("[int]$OpenAIBrokerPort = 18786", stack)
         self.assertNotIn('18888', stack)
         self.assertIn('function Wait-OpenAIBrokerReady', stack)
         self.assertIn('Wait-OpenAIBrokerReady -Child $rootChild -TimeoutSeconds 12', stack)
@@ -214,27 +276,44 @@ class OpenAIBrokerLaunchContractTest(TestCase):
         module_match = re.search(r'-match "([^"\n]*sword_voice_agent[^"\n]*)"', stack)
         self.assertIsNotNone(port_match)
         self.assertIsNotNone(module_match)
-        port_pattern = port_match.group(1).format(18786)
         module_pattern = module_match.group(1)
-        canonical_command = "uv run python -m sword_voice_agent.apps.openai_broker --port 18786"
-        self.assertTrue(self._powershell_regex_matches(module_pattern, canonical_command))
-        self.assertTrue(self._powershell_regex_matches(port_pattern, canonical_command))
-        for rejected_command in (
-            "uv run python -m other_broker --port 18786",
-            "uv run python -m sword_voice_agent.apps.openai_broker --port 18886",
-            "python -m unrelated_health --port 18786",
-        ):
-            self.assertFalse(
-                self._powershell_regex_matches(module_pattern, rejected_command)
-                and self._powershell_regex_matches(port_pattern, rejected_command)
+        for port, wrong_port in ((18786, 18886), (18886, 18786)):
+            port_pattern = port_match.group(1).format(port)
+            canonical_command = (
+                "uv run python -m sword_voice_agent.apps.openai_broker "
+                f"--port {port}"
+            )
+            self.assertTrue(self._powershell_regex_matches(module_pattern, canonical_command))
+            self.assertTrue(self._powershell_regex_matches(port_pattern, canonical_command))
+            for rejected_command in (
+                f"uv run python -m other_broker --port {port}",
+                "uv run python -m sword_voice_agent.apps.openai_broker "
+                f"--port {wrong_port}",
+                f"python -m unrelated_health --port {port}",
+            ):
+                self.assertFalse(
+                    self._powershell_regex_matches(module_pattern, rejected_command)
+                    and self._powershell_regex_matches(port_pattern, rejected_command)
+                )
+
+        def owned_listener(
+            expected_port: int,
+            observed_port: int,
+            owner_pid: int,
+            owned_pids: set[int],
+            listener_pids: list[int],
+        ) -> bool:
+            return (
+                observed_port == expected_port
+                and len(listener_pids) == 1
+                and listener_pids[0] in owned_pids | {owner_pid}
             )
 
-        def owned_listener(owner_pid: int, owned_pids: set[int], listener_pids: list[int]) -> bool:
-            return len(listener_pids) == 1 and listener_pids[0] in owned_pids | {owner_pid}
-
-        self.assertFalse(owned_listener(7100, {7101}, [7200]))
-        self.assertFalse(owned_listener(7100, {7101}, [7101, 7200]))
-        self.assertTrue(owned_listener(7100, {7101}, [7101]))
+        for port, wrong_port in ((18786, 18886), (18886, 18786)):
+            self.assertFalse(owned_listener(port, port, 7100, {7101}, [7200]))
+            self.assertFalse(owned_listener(port, port, 7100, {7101}, [7101, 7200]))
+            self.assertFalse(owned_listener(port, wrong_port, 7100, {7101}, [7101]))
+            self.assertTrue(owned_listener(port, port, 7100, {7101}, [7101]))
 
     def test_broker_primary_child_environment_cannot_construct_or_request_action_reviewer(self) -> None:
         thought_core_src = ROOT / "services" / "thought-core" / "src"
