@@ -454,7 +454,7 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def test_server_accepts_and_forwards_deadline_inside_thirty_second_bound(
+    def test_server_accepts_and_forwards_deadline_inside_seventy_five_second_bound(
         self,
     ) -> None:
         class RecordingDeadlineLoop:
@@ -476,12 +476,12 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
             status, _ = self._post_turn(
                 server.server_address[1],
                 payload,
-                deadline_header=str(time.monotonic() + 25.0),
+                deadline_header=str(time.monotonic() + 70.0),
             )
             self.assertEqual(status, 200)
             self.assertIsNotNone(loop.remaining_seconds)
-            self.assertGreater(loop.remaining_seconds, 20.0)
-            self.assertLessEqual(loop.remaining_seconds, 25.0)
+            self.assertGreater(loop.remaining_seconds, 65.0)
+            self.assertLessEqual(loop.remaining_seconds, 70.0)
         finally:
             server.shutdown()
             server.server_close()
@@ -576,7 +576,7 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
         thread.start()
         try:
             port = server.server_address[1]
-            for deadline_header in (marker, str(time.monotonic() + 31)):
+            for deadline_header in (marker, str(time.monotonic() + 76)):
                 with self.subTest(deadline_header=deadline_header):
                     payload = self._accepted_candidate_payload(
                         "ausc_live:cid_33333333333333333333333333333333"
