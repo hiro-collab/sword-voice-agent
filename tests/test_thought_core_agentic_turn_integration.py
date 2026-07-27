@@ -241,6 +241,134 @@ class AgenticTurnIntegrationTest(TestCase):
                 observed_actions.append(proposed["data"]["action"]["action_id"])
         self.assertEqual(observed_actions, ["light_on", "light_on"])
 
+    def test_agentic_projection_capabilities_use_one_existing_event_route(self) -> None:
+        cases = (
+            (
+                "projection.fire.start",
+                {"position": {"x": 0.4, "y": -0.2}, "strength": 0.8, "durationMs": 4200},
+                {"schemaVersion": 2, "action": "start", "effectId": "fire"},
+            ),
+            (
+                "projection.thunder.start",
+                {},
+                {"schemaVersion": 1, "action": "start", "effectId": "thunderBall"},
+            ),
+            (
+                "projection.effect.stop",
+                {},
+                {"schemaVersion": 1, "action": "stop"},
+            ),
+            (
+                "projection.effect.reset",
+                {},
+                {"schemaVersion": 1, "action": "reset"},
+            ),
+        )
+        for index, (capability_id, arguments, expected) in enumerate(cases):
+            with self.subTest(capability_id=capability_id):
+                tools = _DirectOnlyTools()
+                speech = f"AIが選んだ演出を開始します。{index}"
+                candidate = self._capability(
+                    capability_id,
+                    arguments=arguments,
+                    speech=speech,
+                    display=f"Projection {index}",
+                )
+                with (
+                    patch(
+                        "thought_core.loop.detect_projection_effect_intent",
+                        side_effect=AssertionError("fixed_projection_parser_must_not_run"),
+                    ),
+                    patch(
+                        "thought_core.loop.compile_projection_effect_plan_intent",
+                        side_effect=AssertionError("fixed_projection_compiler_must_not_run"),
+                    ),
+                ):
+                    events = ThoughtLoop(
+                        tools=tools,
+                        agentic_turn_provider=StaticAgenticTurnProvider(candidate),
+                    ).run_dicts(
+                        self._turn(
+                            "会話の流れに合う演出を選んで。",
+                            turn_id=f"agentic_projection_{index}",
+                        )
+                    )
+
+                requested = [
+                    event for event in events if event["type"] == "projection.effect.requested"
+                ]
+                self.assertEqual(len(requested), 1)
+                payload = requested[0]["data"]
+                self.assertEqual(payload["schemaVersion"], expected["schemaVersion"])
+                self.assertEqual(payload["action"], expected["action"])
+                if payload["schemaVersion"] == 2:
+                    plan = payload["plan"]
+                    self.assertEqual(plan["effectId"], expected["effectId"])
+                    self.assertEqual(plan["position"], arguments["position"])
+                    self.assertEqual(plan["strength"], arguments["strength"])
+                    self.assertEqual(plan["durationMs"], arguments["durationMs"])
+                    self.assertEqual(plan["keyframes"][0]["position"], arguments["position"])
+                    self.assertEqual(plan["keyframes"][0]["strength"], arguments["strength"])
+                elif "effectId" in expected:
+                    self.assertEqual(payload["effectId"], expected["effectId"])
+                else:
+                    self.assertEqual(set(payload), {"schemaVersion", "action"})
+
+                event_types = [event["type"] for event in events]
+                self.assertLess(
+                    event_types.index("projection.effect.requested"),
+                    event_types.index("assistant.speech_delta"),
+                )
+                self.assertEqual(
+                    [
+                        event["data"]["speech"]
+                        for event in events
+                        if event["type"] == "assistant.message"
+                    ],
+                    [speech],
+                )
+                self.assertEqual(tools.direct_preview_calls, [])
+                self.assertEqual(tools.execute_calls, [])
+                self.assertNotIn("action.proposed", event_types)
+                self.assertEqual(events[-1]["data"]["status"], "projection_effect_requested")
+                self.assertEqual(
+                    events[-1]["data"]["execution_receipt"],
+                    "downstream_required",
+                )
+
+    def test_agentic_projection_arguments_fail_closed_without_dispatch(self) -> None:
+        cases = (
+            ("projection.fire.start", {"position": None}),
+            ("projection.fire.start", {"strength": None}),
+            ("projection.fire.start", {"durationMs": None}),
+            ("projection.fire.start", {"position": {"x": 0.0}}),
+            ("projection.fire.start", {"position": {"x": 1.1, "y": 0.0}}),
+            ("projection.fire.start", {"strength": True}),
+            ("projection.fire.start", {"durationMs": 499}),
+            ("projection.fire.start", {"durationMs": 3000.0}),
+            ("projection.fire.start", {"unknown": 1}),
+            ("projection.effect.stop", {"strength": 0.5}),
+            ("projection.effect.reset", {"durationMs": 3000}),
+        )
+        for capability_id, arguments in cases:
+            with self.subTest(capability_id=capability_id, arguments=arguments):
+                events = ThoughtLoop(
+                    tools=_DirectOnlyTools(),
+                    agentic_turn_provider=StaticAgenticTurnProvider(
+                        self._capability(capability_id, arguments=arguments)
+                    ),
+                ).run_dicts(self._turn("演出を調整して。"))
+                self.assertNotIn(
+                    "projection.effect.requested",
+                    [event["type"] for event in events],
+                )
+                self.assertNotIn("turn.error", [event["type"] for event in events])
+                self.assertEqual(events[-1]["data"]["status"], "held")
+                self.assertEqual(
+                    events[-1]["data"]["reason"],
+                    "agentic_decision_invalid",
+                )
+
     def test_conversation_decisions_keep_multiple_natural_responses_without_execution(self) -> None:
         responses = (
             ("少し静かな光に整えます。", "静かな光を考えています。"),
@@ -294,9 +422,12 @@ class AgenticTurnIntegrationTest(TestCase):
         request = provider.requests[0]
         self.assertEqual(request.human_wish, "I would like help choosing a room setting.")
         self.assertEqual(dict(request.context_refs), {"observation_ref": "obs_safe_1"})
-        self.assertEqual(request.capability_view.catalog_id, "sword.home-actions")
-        self.assertEqual(request.capability_view.catalog_version, "home-actions.v3")
-        self.assertEqual(len(request.capability_view.capabilities), 15)
+        self.assertEqual(request.capability_view.catalog_id, "sword.agentic-capabilities")
+        self.assertEqual(
+            request.capability_view.catalog_version,
+            "agentic-capabilities.v1",
+        )
+        self.assertEqual(len(request.capability_view.capabilities), 19)
         self.assertLess(len(request.capability_view.capabilities), MAX_CAPABILITY_VIEW_COUNT)
         capabilities = {
             entry.capability_id: entry for entry in request.capability_view.capabilities
@@ -304,6 +435,11 @@ class AgenticTurnIntegrationTest(TestCase):
         self.assertTrue(capabilities["light_on"].available)
         self.assertFalse(capabilities["aircon_on"].available)
         self.assertEqual(capabilities["light_on"].description, "ライトをつける")
+        self.assertTrue(capabilities["projection.fire.start"].available)
+        self.assertIn(
+            "durationMs:500..12000",
+            capabilities["projection.fire.start"].description,
+        )
         with self.assertRaises(AttributeError):
             capabilities["light_on"].available = False  # type: ignore[misc]
         self.assertEqual(
@@ -678,7 +814,7 @@ class AgenticTurnIntegrationTest(TestCase):
 
                 provider = _CapturingConversationProvider(self._capability("light_on"))
                 with patch(
-                    "thought_core.loop.HomeCapabilityCatalog.from_default_path",
+                    "thought_core.loop.AgenticCapabilityCatalog.from_default_path",
                     side_effect=CapabilityCatalogError("home_capability_catalog_over_limit"),
                 ):
                     events = ThoughtLoop(agentic_turn_provider=provider).run_dicts(
@@ -735,7 +871,7 @@ class AgenticTurnIntegrationTest(TestCase):
                     ).run_dicts(turn)
                 else:
                     with patch(
-                        "thought_core.loop.HomeCapabilityCatalog.from_default_path",
+                        "thought_core.loop.AgenticCapabilityCatalog.from_default_path",
                         side_effect=catalog_error,
                     ):
                         events = ThoughtLoop(

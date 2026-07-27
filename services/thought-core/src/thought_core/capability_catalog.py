@@ -1,8 +1,9 @@
-"""Read-only adapter from the Home action catalog to agentic capabilities."""
+"""Read-only adapters from product catalogs to agentic capabilities."""
 
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,10 +21,51 @@ from .agentic_turn_provider import (
 
 MAX_CAPABILITY_ID_CHARS = 96
 MAX_CAPABILITY_DESCRIPTION_CHARS = 180
+AGENTIC_CATALOG_ID = "sword.agentic-capabilities"
+AGENTIC_CATALOG_VERSION = "agentic-capabilities.v1"
+
+
+@dataclass(frozen=True)
+class ProjectionCapabilitySpec:
+    action: str
+    effect_id: str | None
+    description: str
+
+
+_PROJECTION_CAPABILITIES = MappingProxyType(
+    {
+        "projection.fire.start": ProjectionCapabilitySpec(
+            action="start",
+            effect_id="fire",
+            description=(
+                "Projection VisualのFireを開始。argumentsは省略可。指定時は"
+                "position{x,y:-1..1}, strength:0..1, durationMs:500..12000のみ。"
+            ),
+        ),
+        "projection.thunder.start": ProjectionCapabilitySpec(
+            action="start",
+            effect_id="thunderBall",
+            description=(
+                "Projection VisualのThunderを開始。argumentsは省略可。指定時は"
+                "position{x,y:-1..1}, strength:0..1, durationMs:500..12000のみ。"
+            ),
+        ),
+        "projection.effect.stop": ProjectionCapabilitySpec(
+            action="stop",
+            effect_id=None,
+            description="現在のProjection Visualエフェクトを停止。argumentsは空のみ。",
+        ),
+        "projection.effect.reset": ProjectionCapabilitySpec(
+            action="reset",
+            effect_id=None,
+            description="Projection Visualエフェクトを初期状態へリセット。argumentsは空のみ。",
+        ),
+    }
+)
 
 
 class CapabilityCatalogError(Exception):
-    """The read-only Home capability catalog cannot authorize a decision."""
+    """The read-only product capability catalog cannot authorize a decision."""
 
 
 @dataclass(frozen=True)
@@ -143,6 +185,72 @@ class HomeCapabilityCatalog:
         return action
 
 
+@dataclass(frozen=True)
+class AgenticCapabilityCatalog:
+    """Compose Home actions and the existing Projection event surface."""
+
+    home: HomeCapabilityCatalog
+    capability_view: AgenticCapabilityView
+
+    @classmethod
+    def from_default_path(cls) -> "AgenticCapabilityCatalog":
+        return cls.from_home_catalog(HomeCapabilityCatalog.from_default_path())
+
+    @classmethod
+    def from_home_catalog(
+        cls,
+        home: HomeCapabilityCatalog,
+    ) -> "AgenticCapabilityCatalog":
+        projection_entries = tuple(
+            AgenticCapabilityViewEntry(
+                capability_id=capability_id,
+                description=spec.description,
+                available=True,
+            )
+            for capability_id, spec in sorted(_PROJECTION_CAPABILITIES.items())
+        )
+        combined = home.capability_view.capabilities + projection_entries
+        if len(combined) > MAX_CAPABILITY_VIEW_COUNT:
+            raise CapabilityCatalogError("agentic_capability_catalog_over_limit")
+        if any(capability_id in home.actions for capability_id in _PROJECTION_CAPABILITIES):
+            raise CapabilityCatalogError("agentic_capability_catalog_collision")
+        return cls(
+            home=home,
+            capability_view=AgenticCapabilityView(
+                catalog_id=AGENTIC_CATALOG_ID,
+                catalog_version=AGENTIC_CATALOG_VERSION,
+                capabilities=combined,
+            ),
+        )
+
+    def authorizes(self, capability_id: str, arguments: Mapping[str, object]) -> bool:
+        if capability_id in self.home.actions:
+            return self.home.authorizes(capability_id, arguments)
+        spec = _PROJECTION_CAPABILITIES.get(capability_id)
+        return spec is not None and _valid_projection_arguments(spec, arguments)
+
+    def action_for(
+        self,
+        capability_id: str,
+        arguments: Mapping[str, object],
+    ) -> dict[str, Any]:
+        if capability_id in self.home.actions:
+            return self.home.action_for(capability_id, arguments)
+        spec = _PROJECTION_CAPABILITIES.get(capability_id)
+        if spec is None or not _valid_projection_arguments(spec, arguments):
+            raise CapabilityCatalogError("agentic_capability_not_authorized")
+        canonical_arguments = _canonical_projection_arguments(spec, arguments)
+        return {
+            "route_kind": "projection_effect",
+            "action": spec.action,
+            "effect_id": spec.effect_id or "",
+            "action_id": capability_id,
+            "agentic_capability_id": capability_id,
+            "capability_arguments": canonical_arguments,
+            "semantic_authority": "agentic_provider",
+        }
+
+
 def _valid_action_row(row: Mapping[str, object]) -> bool:
     required_text = (
         "label",
@@ -162,6 +270,59 @@ def _valid_action_row(row: Mapping[str, object]) -> bool:
         and type(row.get("expected_effect")) is dict
         and type(row.get("observation")) is dict
     )
+
+
+def _valid_projection_arguments(
+    spec: ProjectionCapabilitySpec,
+    arguments: Mapping[str, object],
+) -> bool:
+    if spec.action in {"stop", "reset"}:
+        return len(arguments) == 0
+    if set(arguments) - {"position", "strength", "durationMs"}:
+        return False
+    if "position" in arguments:
+        position = arguments["position"]
+        if not isinstance(position, Mapping) or set(position) != {"x", "y"}:
+            return False
+        if not all(_bounded_number(position.get(axis), -1.0, 1.0) for axis in ("x", "y")):
+            return False
+    if "strength" in arguments:
+        strength = arguments["strength"]
+        if not _bounded_number(strength, 0.0, 1.0):
+            return False
+    if "durationMs" in arguments:
+        duration_ms = arguments["durationMs"]
+        if type(duration_ms) is not int or not 500 <= duration_ms <= 12_000:
+            return False
+    return True
+
+
+def _bounded_number(value: object, minimum: float, maximum: float) -> bool:
+    return (
+        type(value) in {int, float}
+        and math.isfinite(float(value))
+        and minimum <= float(value) <= maximum
+    )
+
+
+def _canonical_projection_arguments(
+    spec: ProjectionCapabilitySpec,
+    arguments: Mapping[str, object],
+) -> dict[str, object]:
+    if not _valid_projection_arguments(spec, arguments):
+        raise CapabilityCatalogError("agentic_capability_not_authorized")
+    canonical: dict[str, object] = {}
+    position = arguments.get("position")
+    if isinstance(position, Mapping):
+        canonical["position"] = {
+            "x": float(position["x"]),
+            "y": float(position["y"]),
+        }
+    if "strength" in arguments:
+        canonical["strength"] = float(arguments["strength"])
+    if "durationMs" in arguments:
+        canonical["durationMs"] = int(arguments["durationMs"])
+    return canonical
 
 
 def _is_currently_available(row: Mapping[str, object]) -> bool:

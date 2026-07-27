@@ -24,7 +24,11 @@ from .agentic_turn_provider import (
     UnavailableAgenticTurnProvider,
     validate_agentic_receipt_response,
 )
-from .capability_catalog import CapabilityCatalogError, HomeCapabilityCatalog
+from .capability_catalog import (
+    AgenticCapabilityCatalog,
+    CapabilityCatalogError,
+    HomeCapabilityCatalog,
+)
 from .conversation_continuity import ConversationContinuity
 from .execution_deadline import (
     TurnDeadlineExceeded,
@@ -48,8 +52,13 @@ from .projection_effect_plan import (
     ProjectionPerformancePlanValidationError,
     validate_projection_performance_plan,
 )
-from .projection_effect_plan_intent import compile_projection_effect_plan_intent
-from .projection_effect_plan_intent import MAX_UTTERANCE_CHARS
+from .projection_effect_plan_intent import (
+    DEFAULT_DURATION_MS,
+    DEFAULT_POSITION,
+    DEFAULT_STRENGTH,
+    MAX_UTTERANCE_CHARS,
+    compile_projection_effect_plan_intent,
+)
 from .responders import (
     TURN_RESPONDER_BOUNDARY,
     EnvironmentTurnResponder,
@@ -499,7 +508,9 @@ class _TurnRequestContext:
 
 @dataclass(frozen=True)
 class _AgenticCapabilityRoute:
+    route_kind: str
     action: dict[str, Any]
+    response: Mapping[str, str]
 
 
 _TURN_REQUEST_CONTEXT: ContextVar[_TurnRequestContext | None] = ContextVar(
@@ -519,7 +530,7 @@ class ThoughtLoop:
         action_reasoner: ActionReasoner | None = None,
         input_understanding: InputUnderstanding | None = None,
         agentic_turn_provider: AgenticTurnProvider | None = None,
-        capability_catalog: HomeCapabilityCatalog | None = None,
+        capability_catalog: AgenticCapabilityCatalog | HomeCapabilityCatalog | None = None,
         persona: AssistantPersona | None = None,
         conversation_continuity: ConversationContinuity | None = None,
         llm_visible_speech: bool | None = None,
@@ -537,7 +548,7 @@ class ThoughtLoop:
         self.capability_catalog = capability_catalog
         if self.agentic_turn_provider is not None and self.capability_catalog is None:
             try:
-                self.capability_catalog = HomeCapabilityCatalog.from_default_path()
+                self.capability_catalog = AgenticCapabilityCatalog.from_default_path()
             except CapabilityCatalogError:
                 self.capability_catalog = None
         self.persona = persona or build_persona_from_env()
@@ -730,6 +741,17 @@ class ThoughtLoop:
                 self._replace_request_context(
                     issue_key=self._speech_issue_key(turn_input)
                 )
+            if (
+                agentic_route is not None
+                and agentic_route.route_kind == "projection_effect"
+            ):
+                self._handle_agentic_projection_effect_route(
+                    events,
+                    factory,
+                    turn_input,
+                    agentic_route,
+                )
+                return events
             if not agentic_handled:
                 if input_frame.kind == "state_query":
                     self._handle_room_light_state_query(events, factory, turn_input)
@@ -1997,7 +2019,16 @@ class ThoughtLoop:
         # Preserve only bounded, text-free provenance on action-bearing paths.
         # Provider wording is supplied solely through the receipt-response boundary.
         action["semantic_authority"] = "agentic_provider"
-        return True, _AgenticCapabilityRoute(action=action)
+        return True, _AgenticCapabilityRoute(
+            route_kind=str(action.get("route_kind") or "home"),
+            action=action,
+            response=MappingProxyType(
+                {
+                    "speech": decision.response.speech,
+                    "display": decision.response.display,
+                }
+            ),
+        )
 
     def _compact_agentic_context_refs(
         self,
@@ -6949,6 +6980,113 @@ class ThoughtLoop:
                     "boundary": TURN_RESPONDER_BOUNDARY,
                     "adapter_kind": result.adapter_kind,
                     "used_llm": result.used_llm,
+                },
+            )
+        )
+
+    def _handle_agentic_projection_effect_route(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+        route: _AgenticCapabilityRoute,
+    ) -> None:
+        """Emit one existing Projection intent before its AI-authored response."""
+
+        action = str(route.action.get("action") or "")
+        effect_id = str(route.action.get("effect_id") or "")
+        arguments = route.action.get("capability_arguments")
+        if not isinstance(arguments, Mapping):
+            self._emit_agentic_hold(
+                events,
+                factory,
+                reason="agentic_projection_capability_invalid",
+            )
+            return
+
+        try:
+            if action == "start" and effect_id in {"fire", "thunderBall"}:
+                if not arguments:
+                    payload: dict[str, Any] = {
+                        "schemaVersion": 1,
+                        "action": "start",
+                        "effectId": effect_id,
+                    }
+                else:
+                    position = arguments.get("position")
+                    if position is None:
+                        position = {
+                            "x": DEFAULT_POSITION[0],
+                            "y": DEFAULT_POSITION[1],
+                        }
+                    plan_id, plan_seed = _projection_effect_plan_identity(turn_input)
+                    plan = validate_projection_performance_plan(
+                        {
+                            "schemaVersion": 1,
+                            "planId": plan_id,
+                            "sessionId": turn_input.session_id,
+                            "revision": 1,
+                            "action": "start",
+                            "effectId": effect_id,
+                            "position": position,
+                            "strength": arguments.get("strength", DEFAULT_STRENGTH),
+                            "durationMs": arguments.get(
+                                "durationMs",
+                                DEFAULT_DURATION_MS,
+                            ),
+                            "seed": plan_seed,
+                            "keyframes": [
+                                {
+                                    "atMs": 0,
+                                    "position": position,
+                                    "strength": arguments.get(
+                                        "strength",
+                                        DEFAULT_STRENGTH,
+                                    ),
+                                }
+                            ],
+                        }
+                    )
+                    payload = {
+                        "schemaVersion": 2,
+                        "action": "start",
+                        "plan": plan.to_payload(),
+                    }
+            elif action in {"stop", "reset"} and not arguments and not effect_id:
+                payload = {"schemaVersion": 1, "action": action}
+            else:
+                raise ProjectionPerformancePlanValidationError()
+        except (KeyError, TypeError, ValueError):
+            self._emit_agentic_hold(
+                events,
+                factory,
+                reason="agentic_projection_capability_invalid",
+            )
+            return
+
+        events.append(factory.emit("projection.effect.requested", payload))
+        self._emit_message(
+            events,
+            factory,
+            speech=route.response["speech"],
+            display=route.response["display"],
+            emotion="focused",
+            motion="small_nod",
+            priority="normal",
+            phrase_generation_override={
+                "enabled": True,
+                "status": "agentic_provider_decision_response",
+                "adapter_kind": "agentic_turn_provider",
+            },
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {
+                    "status": "projection_effect_requested",
+                    "semantic_authority": "agentic_provider",
+                    "capability_dispatched": True,
+                    "execution_receipt": "downstream_required",
                 },
             )
         )
