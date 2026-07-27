@@ -449,14 +449,21 @@ class HomeControlHttpTools:
                 "facts": {"devices": []},
             }
         url = self.config.environment_state_url
+        request_timeout_s = self.config.timeout_s
         if reason == "after_action":
             wait_after = (
                 self.room_light_wait_after_by_turn.pop(turn.turn_id, "")
                 or self.last_execute_issued_at_by_turn.get(turn.turn_id, "")
             )
-            wait_timeout_ms = self.room_light_wait_timeout_ms_by_turn.pop(
-                turn.turn_id,
-                self.config.room_light_wait_timeout_ms,
+            wait_timeout_ms = min(
+                62_000,
+                max(
+                    500,
+                    self.room_light_wait_timeout_ms_by_turn.pop(
+                        turn.turn_id,
+                        self.config.room_light_wait_timeout_ms,
+                    ),
+                ),
             )
             if wait_after:
                 url = _url_with_query(
@@ -467,11 +474,19 @@ class HomeControlHttpTools:
                         "timeout_ms": str(wait_timeout_ms),
                     },
                 )
+                request_timeout_s = min(
+                    63.0,
+                    max(
+                        self.config.timeout_s,
+                        (wait_timeout_ms / 1000.0) + 1.0,
+                    ),
+                )
         try:
             payload = self._json_request(
                 "GET",
                 url,
                 token=self.config.environment_api_token,
+                timeout_s=request_timeout_s,
             )
         except HomeControlToolError as exc:
             return {
@@ -558,6 +573,11 @@ class HomeControlHttpTools:
                 "action": action,
             }
 
+        timing_fields = _tracked_state_timing_fields(payload)
+        safe_bridge_response = dict(payload)
+        safe_bridge_response.pop("settle_seconds", None)
+        safe_bridge_response.pop("timeout_seconds", None)
+        safe_bridge_response.update(timing_fields)
         action.update(
             {
                 "confirm_required": bool(payload.get("confirmation_required")),
@@ -569,6 +589,7 @@ class HomeControlHttpTools:
                 "state_tracking": payload.get("state_tracking"),
                 "expected_effect": payload.get("expected_effect"),
                 "preview": payload.get("preview"),
+                **timing_fields,
             }
         )
         if payload.get("expected_state"):
@@ -576,7 +597,7 @@ class HomeControlHttpTools:
         return {
             "status": "ok" if payload.get("ok", True) else "failed",
             "action": action,
-            "bridge_response": payload,
+            "bridge_response": safe_bridge_response,
         }
 
     def home_execute(self, turn: TurnInput, action: dict[str, Any]) -> dict[str, Any]:
@@ -650,6 +671,7 @@ class HomeControlHttpTools:
             "submission_outcome_unknown",
             "expired_before_submit",
         }
+        timing_fields = _tracked_state_timing_fields(payload)
         return {
             "status": "accepted" if ok and executed else bridge_status,
             "retryable": not ok
@@ -673,6 +695,7 @@ class HomeControlHttpTools:
             "execution_lifecycle_class": lifecycle or None,
             "submission_count": submission_count,
             "terminal": payload.get("terminal"),
+            **timing_fields,
         }
 
     def _matched_tracked_state_fact(self, turn: TurnInput) -> dict[str, Any] | None:
@@ -917,6 +940,7 @@ class HomeControlHttpTools:
         *,
         token: str,
         body: dict[str, Any] | None = None,
+        timeout_s: float | None = None,
     ) -> dict[str, Any]:
         data = (
             None
@@ -938,7 +962,9 @@ class HomeControlHttpTools:
             ensure_execution_active()
             with request.urlopen(
                 req,
-                timeout=clamp_execution_timeout(self.config.timeout_s),
+                timeout=clamp_execution_timeout(
+                    self.config.timeout_s if timeout_s is None else timeout_s
+                ),
             ) as response:
                 raw = response.read().decode("utf-8")
             ensure_execution_active()
@@ -1548,6 +1574,43 @@ def _tracked_state_check(
         "action_id": action_id,
         "target": target,
         "expected_state": expected_state,
+    }
+
+
+def _tracked_state_timing_fields(payload: dict[str, Any]) -> dict[str, float]:
+    if (
+        str(payload.get("state_tracking") or "") != "tracked"
+        or str(payload.get("verification_mode") or "") != "ha_state"
+        or str(payload.get("state_authority") or "")
+        not in {"ha_entity", "home_assistant"}
+    ):
+        return {}
+    settle_raw = payload.get("settle_seconds")
+    timeout_raw = payload.get("timeout_seconds")
+    if (
+        isinstance(settle_raw, bool)
+        or not isinstance(settle_raw, (int, float))
+        or isinstance(timeout_raw, bool)
+        or not isinstance(timeout_raw, (int, float))
+    ):
+        return {}
+    try:
+        settle_seconds = float(settle_raw)
+        timeout_seconds = float(timeout_raw)
+    except OverflowError:
+        return {}
+    if (
+        not math.isfinite(settle_seconds)
+        or not math.isfinite(timeout_seconds)
+        or settle_seconds < 0
+        or timeout_seconds <= 0
+    ):
+        return {}
+    timeout_seconds = min(60.0, timeout_seconds)
+    settle_seconds = min(timeout_seconds, settle_seconds)
+    return {
+        "settle_seconds": settle_seconds,
+        "timeout_seconds": timeout_seconds,
     }
 
 

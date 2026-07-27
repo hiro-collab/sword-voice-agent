@@ -1425,6 +1425,8 @@ class ThoughtCoreContractTest(TestCase):
             "state_authority": "ha_entity",
             "verification_mode": "ha_state",
             "state_tracking": "tracked",
+            "settle_seconds": 5,
+            "timeout_seconds": 60,
         }
         self.assertEqual(
             _tracked_state_check(action, execute_payload),
@@ -1447,6 +1449,164 @@ class ThoughtCoreContractTest(TestCase):
                 self.assertIsNone(
                     _tracked_state_check(action, execute_payload_candidate)
                 )
+
+        preview_tools = HomeControlHttpTools(
+            HomeControlToolConfig(
+                bridge_base_url="http://127.0.0.1:1",
+                api_token="bridge-token",
+            )
+        )
+        with patch.object(
+            preview_tools,
+            "_json_request",
+            return_value={
+                "ok": True,
+                "status": "preview",
+                "confirmation_required": True,
+                **execute_payload,
+            },
+        ):
+            preview = preview_tools.home_preview_direct(
+                TurnInput.from_mapping({**TURN, "turn_id": "turn_tracked_preview"}),
+                {},
+                action,
+            )
+        self.assertEqual(preview["action"]["settle_seconds"], 5)
+        self.assertEqual(preview["action"]["timeout_seconds"], 60)
+
+        unsafe_timing_payloads = (
+            {
+                **execute_payload,
+                "settle_seconds": "PRIVATE_PATH_SENTINEL",
+            },
+            {**execute_payload, "timeout_seconds": float("nan")},
+            {**execute_payload, "timeout_seconds": float("inf")},
+            {**execute_payload, "settle_seconds": -1},
+            {**execute_payload, "settle_seconds": True},
+            {**execute_payload, "settle_seconds": 10**10_000},
+            {**execute_payload, "timeout_seconds": -(10**10_000)},
+            {
+                **execute_payload,
+                "state_tracking": "ack_only",
+                "verification_mode": "command_ack_only",
+            },
+        )
+        for unsafe_payload in unsafe_timing_payloads:
+            with self.subTest(unsafe_payload=unsafe_payload):
+                with patch.object(
+                    preview_tools,
+                    "_json_request",
+                    return_value={
+                        "ok": True,
+                        "status": "preview",
+                        "confirmation_required": True,
+                        **unsafe_payload,
+                    },
+                ):
+                    unsafe_preview = preview_tools.home_preview_direct(
+                        TurnInput.from_mapping(
+                            {**TURN, "turn_id": "turn_unsafe_timing"}
+                        ),
+                        {},
+                        action,
+                    )
+                self.assertNotIn("settle_seconds", unsafe_preview["action"])
+                self.assertNotIn("timeout_seconds", unsafe_preview["action"])
+                self.assertNotIn(
+                    "settle_seconds",
+                    unsafe_preview["bridge_response"],
+                )
+                self.assertNotIn(
+                    "timeout_seconds",
+                    unsafe_preview["bridge_response"],
+                )
+
+        with patch.object(
+            preview_tools,
+            "_json_request",
+            return_value={
+                "ok": True,
+                "status": "preview",
+                "confirmation_required": True,
+                **execute_payload,
+                "settle_seconds": 5000,
+                "timeout_seconds": 6000,
+            },
+        ):
+            capped_preview = preview_tools.home_preview_direct(
+                TurnInput.from_mapping(
+                    {**TURN, "turn_id": "turn_capped_timing"}
+                ),
+                {},
+                action,
+            )
+        self.assertEqual(capped_preview["action"]["settle_seconds"], 60.0)
+        self.assertEqual(capped_preview["action"]["timeout_seconds"], 60.0)
+        self.assertEqual(
+            capped_preview["bridge_response"]["settle_seconds"],
+            60.0,
+        )
+        self.assertEqual(
+            capped_preview["bridge_response"]["timeout_seconds"],
+            60.0,
+        )
+
+        execution_turn = TurnInput.from_mapping(
+            {**TURN, "turn_id": "turn_execute_timing"}
+        )
+        valid_execution_payload = {
+            "ok": True,
+            "executed": True,
+            "status": "accepted",
+            "execution_lifecycle_class": "submission_completed",
+            "submission_count": 1,
+            "issued_at": "2026-05-08T00:00:00+00:00",
+            **execute_payload,
+        }
+        with execution_deadline_scope(
+            issue_turn_execution_deadline(time.monotonic() + 5.0)
+        ):
+            with patch.object(
+                preview_tools,
+                "_json_request",
+                return_value=valid_execution_payload,
+            ):
+                valid_execute_result = preview_tools.home_execute(
+                    execution_turn,
+                    action,
+                )
+        self.assertEqual(valid_execute_result["settle_seconds"], 5.0)
+        self.assertEqual(valid_execute_result["timeout_seconds"], 60.0)
+
+        unsafe_execute_timings = (
+            {"settle_seconds": "PRIVATE_PATH_SENTINEL"},
+            {"settle_seconds": 10**10_000},
+            {"timeout_seconds": -(10**10_000)},
+        )
+        for index, unsafe_timing in enumerate(unsafe_execute_timings):
+            with self.subTest(unsafe_execute_timing=unsafe_timing):
+                with execution_deadline_scope(
+                    issue_turn_execution_deadline(time.monotonic() + 5.0)
+                ):
+                    with patch.object(
+                        preview_tools,
+                        "_json_request",
+                        return_value={
+                            **valid_execution_payload,
+                            **unsafe_timing,
+                        },
+                    ):
+                        unsafe_execute_result = preview_tools.home_execute(
+                            TurnInput.from_mapping(
+                                {
+                                    **TURN,
+                                    "turn_id": f"turn_execute_timing_unsafe_{index}",
+                                }
+                            ),
+                            action,
+                        )
+                self.assertNotIn("settle_seconds", unsafe_execute_result)
+                self.assertNotIn("timeout_seconds", unsafe_execute_result)
 
         tools = HomeControlHttpTools(
             HomeControlToolConfig(
@@ -1500,6 +1660,136 @@ class ThoughtCoreContractTest(TestCase):
         self.assertNotIn(
             "PRIVATE_HA_STATE_SENTINEL",
             json.dumps(fact, ensure_ascii=False),
+        )
+
+    def test_tracked_home_review_uses_bridge_verification_window(self) -> None:
+        loop = ThoughtLoop(tools=MockThoughtTools())
+        policy = loop._action_review_policy(
+            {
+                "action_id": "door_open",
+                "state_authority": "ha_entity",
+                "verification_mode": "ha_state",
+                "state_tracking": "tracked",
+                "settle_seconds": 5,
+                "timeout_seconds": 60,
+            }
+        )
+        self.assertEqual(policy["settle_ms"], 5000)
+        self.assertEqual(policy["observation_attempts"], 4)
+        self.assertEqual(policy["checkpoint_ms"], [5000, 15000, 30000, 60000])
+        self.assertEqual(policy["auto_retries"], 0)
+
+        capped_policy = loop._action_review_policy(
+            {
+                "action_id": "door_open",
+                "state_authority": "home_assistant",
+                "verification_mode": "ha_state",
+                "state_tracking": "tracked",
+                "settle_seconds": 5,
+                "timeout_seconds": 6000,
+            }
+        )
+        self.assertEqual(
+            capped_policy["checkpoint_ms"],
+            [5000, 15000, 30000, 60000],
+        )
+
+        invalid_policy = loop._action_review_policy(
+            {
+                "action_id": "door_open",
+                "state_authority": "ha_entity",
+                "verification_mode": "ha_state",
+                "state_tracking": "tracked",
+                "settle_seconds": 5,
+                "timeout_seconds": "nan",
+            }
+        )
+        self.assertEqual(invalid_policy["observation_attempts"], 2)
+        self.assertNotIn("checkpoint_ms", invalid_policy)
+
+        oversized_policy = loop._action_review_policy(
+            {
+                "action_id": "door_open",
+                "state_authority": "ha_entity",
+                "verification_mode": "ha_state",
+                "state_tracking": "tracked",
+                "settle_seconds": 10**10_000,
+                "timeout_seconds": 60,
+            }
+        )
+        self.assertEqual(oversized_policy["observation_attempts"], 2)
+        self.assertNotIn("checkpoint_ms", oversized_policy)
+
+        untracked_policy = loop._action_review_policy(
+            {
+                "action_id": "door_open",
+                "state_authority": "submitted_only",
+                "verification_mode": "command_ack_only",
+                "state_tracking": "ack_only",
+                "settle_seconds": 5,
+                "timeout_seconds": 60,
+            }
+        )
+        self.assertEqual(untracked_policy["settle_ms"], 5000)
+        self.assertEqual(untracked_policy["observation_attempts"], 2)
+        self.assertNotIn("checkpoint_ms", untracked_policy)
+
+        http_tools = HomeControlHttpTools(
+            HomeControlToolConfig(
+                bridge_base_url="http://127.0.0.1:1",
+                api_token="bridge-token",
+                environment_state_url="http://127.0.0.1:1/environment/current",
+                environment_api_token="environment-token",
+                timeout_s=3.0,
+            )
+        )
+        checkpoint_turn = TurnInput.from_mapping(
+            {**TURN, "turn_id": "turn_tracked_wait"}
+        )
+        http_tools.room_light_wait_after_by_turn[checkpoint_turn.turn_id] = (
+            "2026-05-08T00:01:00+00:00"
+        )
+        http_tools.room_light_wait_timeout_ms_by_turn[checkpoint_turn.turn_id] = 61_500
+        with patch.object(
+            http_tools,
+            "_json_request",
+            return_value={"status": "ok", "facts": {"devices": []}},
+        ) as observe_request:
+            http_tools.environment_observe(checkpoint_turn, reason="after_action")
+        self.assertEqual(observe_request.call_args.kwargs["timeout_s"], 62.5)
+        self.assertIn(
+            "timeout_ms=61500",
+            observe_request.call_args.args[1],
+        )
+
+        capped_turn = TurnInput.from_mapping(
+            {**TURN, "turn_id": "turn_tracked_wait_capped"}
+        )
+        capped_http_tools = HomeControlHttpTools(
+            HomeControlToolConfig(
+                bridge_base_url="http://127.0.0.1:1",
+                api_token="bridge-token",
+                environment_state_url="http://127.0.0.1:1/environment/current",
+                environment_api_token="environment-token",
+                timeout_s=120.0,
+            )
+        )
+        capped_http_tools.room_light_wait_after_by_turn[capped_turn.turn_id] = (
+            "2026-05-08T00:01:00+00:00"
+        )
+        capped_http_tools.room_light_wait_timeout_ms_by_turn[
+            capped_turn.turn_id
+        ] = 999_999
+        with patch.object(
+            capped_http_tools,
+            "_json_request",
+            return_value={"status": "ok", "facts": {"devices": []}},
+        ) as capped_observe_request:
+            capped_http_tools.environment_observe(capped_turn, reason="after_action")
+        self.assertEqual(capped_observe_request.call_args.kwargs["timeout_s"], 63.0)
+        self.assertIn(
+            "timeout_ms=62000",
+            capped_observe_request.call_args.args[1],
         )
 
     def test_confirm_required_action_waits_for_user_confirmation(self) -> None:
@@ -1565,6 +1855,8 @@ class ThoughtCoreContractTest(TestCase):
                             "state_authority": "ha_entity",
                             "verification_mode": "ha_state",
                             "state_tracking": "tracked",
+                            "settle_seconds": 5,
+                            "timeout_seconds": 60,
                         }
                     )
                     return
@@ -1591,6 +1883,8 @@ class ThoughtCoreContractTest(TestCase):
                                 "state_authority": "ha_entity",
                                 "verification_mode": "ha_state",
                                 "state_tracking": "tracked",
+                                "settle_seconds": 5,
+                                "timeout_seconds": 60,
                             }
                         )
                         return

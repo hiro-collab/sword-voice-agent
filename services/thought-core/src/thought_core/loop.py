@@ -4648,6 +4648,11 @@ class ThoughtLoop:
             )
             if isinstance(checkpoints, list):
                 policy["checkpoint_ms"] = checkpoints
+        tracked_checkpoints = self._tracked_state_review_checkpoints_ms(action)
+        if tracked_checkpoints:
+            policy["settle_ms"] = tracked_checkpoints[0]
+            policy["observation_attempts"] = len(tracked_checkpoints)
+            policy["checkpoint_ms"] = tracked_checkpoints
         policy["settle_ms"] = max(0, policy["settle_ms"])
         policy["observation_attempts"] = min(4, max(1, policy["observation_attempts"]))
         policy["auto_retries"] = 0
@@ -4655,6 +4660,47 @@ class ThoughtLoop:
         if checkpoints:
             policy["checkpoint_ms"] = checkpoints[: policy["observation_attempts"]]
         return policy
+
+    def _tracked_state_review_checkpoints_ms(
+        self,
+        action: dict[str, Any],
+    ) -> list[int]:
+        if (
+            str(action.get("state_tracking") or "") != "tracked"
+            or str(action.get("verification_mode") or "") != "ha_state"
+            or str(action.get("state_authority") or "")
+            not in {"ha_entity", "home_assistant"}
+        ):
+            return []
+        try:
+            settle_seconds = float(action.get("settle_seconds"))
+            timeout_seconds = float(action.get("timeout_seconds"))
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if (
+            not math.isfinite(settle_seconds)
+            or not math.isfinite(timeout_seconds)
+            or settle_seconds < 0
+            or timeout_seconds <= 0
+        ):
+            return []
+        timeout_ms = min(60_000, int(round(timeout_seconds * 1000)))
+        if timeout_ms <= 0:
+            return []
+        settle_ms = min(timeout_ms, max(0, int(round(settle_seconds * 1000))))
+        first_ms = settle_ms if settle_ms > 0 else min(1000, timeout_ms)
+        candidates = [
+            first_ms,
+            max(first_ms, timeout_ms // 4),
+            max(first_ms, timeout_ms // 2),
+            timeout_ms,
+        ]
+        checkpoints: list[int] = []
+        for candidate in candidates:
+            bounded = min(timeout_ms, max(first_ms, int(candidate)))
+            if not checkpoints or checkpoints[-1] != bounded:
+                checkpoints.append(bounded)
+        return checkpoints[:4]
 
     def _review_checkpoints_ms(self, policy: dict[str, Any]) -> list[int]:
         raw = policy.get("checkpoint_ms") or policy.get("checkpoints_ms")
@@ -4766,7 +4812,7 @@ class ThoughtLoop:
             getattr(config, "room_light_wait_timeout_ms", None),
             base_timeout_ms,
         )
-        base_timeout_ms = max(500, configured)
+        base_timeout_ms = min(2_000, max(500, configured))
         wait_after = self._parse_iso_datetime(wait_after_text)
         if wait_after is None:
             return base_timeout_ms
@@ -4774,7 +4820,10 @@ class ThoughtLoop:
             0,
             int((wait_after - datetime.now(UTC)).total_seconds() * 1000),
         )
-        return max(base_timeout_ms, remaining_ms + base_timeout_ms)
+        return min(
+            62_000,
+            max(base_timeout_ms, remaining_ms + base_timeout_ms),
+        )
 
     def _parse_iso_datetime(self, text: str) -> datetime | None:
         value = str(text or "").strip()
