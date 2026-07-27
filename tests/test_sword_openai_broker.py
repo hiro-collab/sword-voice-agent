@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import ssl
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -275,6 +278,28 @@ class BrokerSecretAndSurfaceTests(unittest.TestCase):
         self.assertEqual(server_type.call_args.args[0], (LOOPBACK_HOST, STANDARD_PORT))
         self.assertEqual(COMPLETIONS_PATH, "/v1/chat/completions")
         self.assertEqual(HEALTH_PATH, "/health")
+
+    def test_python_module_entrypoint_executes_main(self) -> None:
+        repository = Path(__file__).parents[1]
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(repository / "src")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "sword_voice_agent.apps.openai_broker",
+                "--port",
+                "1",
+            ],
+            cwd=repository,
+            env=environment,
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, b"")
+        self.assertEqual(result.stderr, b"")
 
     def test_http_body_admission_is_single_deadlined_and_strictly_framed(self) -> None:
         self.assertLessEqual(BODY_READ_TIMEOUT_S, MAX_TIMEOUT_S)
