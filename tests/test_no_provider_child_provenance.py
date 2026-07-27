@@ -489,6 +489,63 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_plain_turn_mapping_with_deadline_reaches_fixed_confirmation_stage(
+        self,
+    ) -> None:
+        class FailingConfirmationLoop:
+            def run_dicts(self, turn, *, event_sink=None, execution_deadline=None):
+                self.assert_mapping(turn)
+                execution_deadline.claim(
+                    (str(turn.get("turn_id") or ""), str(turn.get("session_id") or ""))
+                )
+                event_sink(
+                    {"event_id": "evt_confirmed", "type": "action.confirmed", "data": {}}
+                )
+                raise RuntimeError("PRIVATE_MAPPING_CONFIRMATION_SENTINEL")
+
+            @staticmethod
+            def assert_mapping(turn):
+                if not isinstance(turn, dict):
+                    raise AssertionError("plain turn must remain a mapping")
+
+        payload = {
+            "text": "はい、今の操作を実行してください。",
+            "turn_id": "turn_plain_mapping_confirmation",
+            "session_id": "session_plain_mapping_confirmation",
+            "locale": "ja-JP",
+            "context_refs": {"trace_id": "trace_plain_mapping_confirmation"},
+        }
+        server = create_server(
+            "127.0.0.1",
+            0,
+            thought_loop=FailingConfirmationLoop(),
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, body = self._post_turn(
+                server.server_address[1],
+                payload,
+                deadline_header=str(time.monotonic() + 5.0),
+            )
+            self.assertEqual(status, 500)
+            self.assertEqual(
+                json.loads(body),
+                {
+                    "error": "turn_execution_failed",
+                    "confirmation_result": {
+                        "schema_version": "thought-core.confirmation-response-result.v1",
+                        "stage": "provider_confirmation",
+                        "result_class": "confirmation_failed",
+                    },
+                },
+            )
+            self.assertNotIn("PRIVATE_MAPPING_CONFIRMATION_SENTINEL", body)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_server_returns_fixed_error_when_deadline_expires_inside_loop(self) -> None:
         class CancellingLoop:
             def __init__(self) -> None:

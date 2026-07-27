@@ -182,6 +182,14 @@ def materialize_turn_input(payload: Mapping[str, Any]) -> TurnInput | Mapping[st
     return TurnInput.from_accepted_speech_candidate(candidate, private_turn)
 
 
+def _turn_execution_key(
+    turn: TurnInput | Mapping[str, Any],
+) -> tuple[str, str]:
+    if isinstance(turn, TurnInput):
+        return (turn.turn_id, turn.session_id)
+    return (str(turn.get("turn_id") or ""), str(turn.get("session_id") or ""))
+
+
 def _decorate_correlated_event_with_conversation_attempt_ref(
     event: dict[str, Any],
     turn: TurnInput | Mapping[str, Any],
@@ -472,7 +480,7 @@ def create_server(
                 execution_deadline = (
                     issue_turn_execution_deadline(
                         deadline_monotonic,
-                        turn_key=(turn.turn_id, turn.session_id),
+                        turn_key=_turn_execution_key(turn),
                     )
                     if deadline_monotonic is not None
                     else None
