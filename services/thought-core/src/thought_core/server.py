@@ -39,6 +39,16 @@ DEFAULT_MAX_BODY_BYTES = 64 * 1024
 ROUTE_DEADLINE_HEADER = "X-Sword-Route-Deadline-Monotonic"
 MAX_ROUTE_DEADLINE_SECONDS = 75.0
 MAX_ACCEPTED_CANDIDATE_RESERVATIONS = 4096
+CONFIRMATION_RESPONSE_RESULT_SCHEMA = "thought-core.confirmation-response-result.v1"
+
+_CONFIRMATION_RESPONSE_STAGES = {
+    "provider_confirmation",
+    "action_submission",
+    "action_receipt",
+    "post_observation",
+    "post_review",
+    "response_serialization",
+}
 
 _ACCEPTED_SPEECH_ENVELOPE_KEYS = {
     "accepted_user_speech_candidate",
@@ -59,6 +69,55 @@ class TurnRequestRejected(ValueError):
         super().__init__(result_class)
         self.result_class = result_class
         self.status = status
+
+
+class _SafeTurnProgress:
+    """Track only fixed public confirmation stages, never event payload values."""
+
+    def __init__(self) -> None:
+        self.confirmation_seen = False
+        self.stage = "provider_confirmation"
+
+    def observe(self, event: Mapping[str, Any]) -> None:
+        event_type = str(event.get("type") or "")
+        data = event.get("data")
+        event_data = data if isinstance(data, Mapping) else {}
+        if event_type == "action.confirmed":
+            self.confirmation_seen = True
+            self.stage = "provider_confirmation"
+            return
+        if not self.confirmation_seen:
+            return
+        if event_type == "tool.started" and event_data.get("tool") == "home.execute":
+            self.stage = "action_submission"
+        elif event_type == "tool.result" and event_data.get("tool") == "home.execute":
+            self.stage = "action_receipt"
+        elif (
+            event_type == "thought.stage"
+            and event_data.get("stage") == "environment.observe.after_action"
+        ) or (
+            event_type == "observation.received"
+            and event_data.get("after_tool") == "home.execute"
+        ):
+            self.stage = "post_observation"
+        elif event_type == "action.reviewed":
+            self.stage = "post_review"
+        elif event_type in {"agentic.receipt_response", "turn.completed"}:
+            self.stage = "response_serialization"
+
+    def mark_response_serialization(self) -> None:
+        if self.confirmation_seen:
+            self.stage = "response_serialization"
+
+    def result(self, result_class: str) -> dict[str, str] | None:
+        if not self.confirmation_seen:
+            return None
+        stage = self.stage if self.stage in _CONFIRMATION_RESPONSE_STAGES else "provider_confirmation"
+        return {
+            "schema_version": CONFIRMATION_RESPONSE_RESULT_SCHEMA,
+            "stage": stage,
+            "result_class": result_class,
+        }
 
 
 class _AcceptedCandidateRegistry:
@@ -402,6 +461,7 @@ def create_server(
             deadline_monotonic: float | None,
         ) -> None:
             execution_deadline: TurnExecutionDeadline | None = None
+            progress = _SafeTurnProgress()
             self._turn_response_started = False
             try:
                 _ensure_route_deadline_current(deadline_monotonic)
@@ -429,19 +489,44 @@ def create_server(
                     else {}
                 )
                 events = []
-                for event in loop.run_dicts(turn, **run_kwargs):
+
+                def collect_event(event: dict[str, Any]) -> None:
                     if execution_deadline is not None:
                         execution_deadline.ensure_current()
-                    events.append(
+                    public_event = _public_turn_event(
                         _decorate_correlated_event_with_conversation_attempt_ref(
-                            event,
-                            turn,
-                        )
+                            event, turn
+                        ),
+                        progress,
                     )
+                    events.append(public_event)
+
+                returned_events = loop.run_dicts(
+                    turn,
+                    event_sink=collect_event,
+                    **run_kwargs,
+                )
+                if not events:
+                    for event in returned_events:
+                        collect_event(event)
+                progress.mark_response_serialization()
+                _write_journal_safely(
+                    event_journal,
+                    events,
+                    execution_deadline=execution_deadline,
+                )
+                self._send_json(
+                    {"events": events},
+                    execution_deadline=execution_deadline,
+                )
             except TurnDeadlineExceeded:
                 if not self._turn_response_started:
                     self._send_json(
-                        {"error": TURN_DEADLINE_EXCEEDED},
+                        _fixed_turn_failure_payload(
+                            TURN_DEADLINE_EXCEEDED,
+                            progress,
+                            result_class="confirmation_timeout",
+                        ),
                         status=HTTPStatus.REQUEST_TIMEOUT,
                     )
                 return
@@ -459,17 +544,29 @@ def create_server(
                 )
                 return
             except ValueError as exc:
-                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                if progress.confirmation_seen:
+                    self._send_json(
+                        _fixed_turn_failure_payload(
+                            "turn_execution_failed",
+                            progress,
+                            result_class="confirmation_failed",
+                        ),
+                        status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    )
+                else:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
-            _write_journal_safely(
-                event_journal,
-                events,
-                execution_deadline=execution_deadline,
-            )
-            self._send_json(
-                {"events": events},
-                execution_deadline=execution_deadline,
-            )
+            except Exception:
+                if not self._turn_response_started:
+                    self._send_json(
+                        _fixed_turn_failure_payload(
+                            "turn_execution_failed",
+                            progress,
+                            result_class="confirmation_failed",
+                        ),
+                        status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    )
+                return
 
         def _read_json_body(self) -> dict[str, Any]:
             length_raw = self.headers.get("Content-Length", "0")
@@ -508,8 +605,9 @@ def create_server(
                 self.send_header(name, value)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            if execution_deadline is not None:
-                execution_deadline.ensure_current()
+            # The pre-header check is the response commit boundary. Once headers
+            # are visible, finish the already-bounded body instead of creating a
+            # headers-only response when the deadline crosses during serialization.
             self.wfile.write(body)
 
         def _send_sse(self, events: list[dict[str, Any]]) -> None:
@@ -527,6 +625,7 @@ def create_server(
             *,
             execution_deadline: TurnExecutionDeadline | None,
         ) -> None:
+            progress = _SafeTurnProgress()
             if execution_deadline is not None:
                 execution_deadline.ensure_current()
             self._turn_response_started = True
@@ -543,6 +642,7 @@ def create_server(
                     event,
                     turn,
                 )
+                event = _public_turn_event(event, progress)
                 _write_journal_event_safely(
                     event_journal,
                     event,
@@ -553,6 +653,19 @@ def create_server(
                     execution_deadline=execution_deadline,
                 )
 
+            def write_failure(code: str, result_class: str) -> None:
+                event = _fixed_turn_failure_event(
+                    turn,
+                    code=code,
+                    progress=progress,
+                    result_class=result_class,
+                )
+                event = _decorate_correlated_event_with_conversation_attempt_ref(
+                    event,
+                    turn,
+                )
+                self._write_sse_event(event)
+
             try:
                 run_kwargs = (
                     {"execution_deadline": execution_deadline}
@@ -561,28 +674,30 @@ def create_server(
                 )
                 loop.run_dicts(turn, event_sink=write_event, **run_kwargs)
             except TurnDeadlineExceeded:
+                try:
+                    write_failure(TURN_DEADLINE_EXCEEDED, "confirmation_timeout")
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    pass
                 return
             except TurnDeadlineInvalid:
+                try:
+                    write_failure(TURN_DEADLINE_INVALID, "confirmation_aborted")
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    pass
                 return
             except TurnRequestRejected as exc:
-                write_event(
-                    _error_event(
-                        {},
-                        code=exc.result_class,
-                        message=exc.result_class,
-                    )
-                )
-            except ValueError as exc:
-                write_event(
-                    _error_event(
-                        {},
-                        code="bad_request",
-                        message=str(exc),
-                    )
-                )
+                write_failure(exc.result_class, "confirmation_aborted")
+            except ValueError:
+                write_failure("bad_request", "confirmation_aborted")
             except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
                 if execution_deadline is not None:
                     execution_deadline.cancel()
+                return
+            except Exception:
+                try:
+                    write_failure("turn_execution_failed", "confirmation_failed")
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    pass
                 return
 
         def _write_sse_event(
@@ -660,6 +775,61 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def _public_turn_event(
+    event: dict[str, Any],
+    progress: _SafeTurnProgress,
+) -> dict[str, Any]:
+    progress.observe(event)
+    if event.get("type") != "turn.error":
+        return event
+    data = event.get("data")
+    raw_code = str(data.get("code") or "") if isinstance(data, Mapping) else ""
+    code = raw_code if raw_code in {
+        TURN_DEADLINE_EXCEEDED,
+        TURN_DEADLINE_INVALID,
+        "turn_execution_failed",
+    } else "turn_execution_failed"
+    public_data: dict[str, Any] = {"code": code, "message": code}
+    result = progress.result("confirmation_failed")
+    if result is not None:
+        public_data.update(result)
+    return {**event, "data": public_data}
+
+
+def _fixed_turn_failure_payload(
+    code: str,
+    progress: _SafeTurnProgress,
+    *,
+    result_class: str,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"error": code}
+    result = progress.result(result_class)
+    if result is not None:
+        payload["confirmation_result"] = result
+    return payload
+
+
+def _fixed_turn_failure_event(
+    turn: TurnInput | Mapping[str, Any],
+    *,
+    code: str,
+    progress: _SafeTurnProgress,
+    result_class: str,
+) -> dict[str, Any]:
+    if isinstance(turn, TurnInput):
+        identity = {"turn_id": turn.turn_id, "session_id": turn.session_id}
+    else:
+        identity = {
+            "turn_id": str(turn.get("turn_id") or ""),
+            "session_id": str(turn.get("session_id") or ""),
+        }
+    event = _error_event(identity, code=code, message=code)
+    result = progress.result(result_class)
+    if result is not None:
+        event["data"].update(result)
+    return event
 
 
 def _error_event(payload: dict[str, Any], *, code: str, message: str) -> dict[str, Any]:

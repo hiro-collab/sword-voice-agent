@@ -29,8 +29,10 @@ from thought_core.provenance_diagnostics import (  # noqa: E402
 from thought_core import server as thought_core_server  # noqa: E402
 from thought_core.schema import TurnInput  # noqa: E402
 from thought_core.server import (  # noqa: E402
+    _SafeTurnProgress,
     _decorate_correlated_event_with_conversation_attempt_ref,
     _is_opaque_conversation_attempt_ref,
+    _public_turn_event,
     create_server,
 )
 
@@ -521,6 +523,293 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_confirmed_turn_deadline_at_response_commit_returns_fixed_stage(self) -> None:
+        class DeadlineAtResponseLoop:
+            def run_dicts(self, turn, *, event_sink=None, execution_deadline=None):
+                events = [
+                    {"event_id": "evt_confirmed", "type": "action.confirmed", "data": {}},
+                    {
+                        "event_id": "evt_submit",
+                        "type": "tool.started",
+                        "data": {"tool": "home.execute"},
+                    },
+                    {
+                        "event_id": "evt_receipt",
+                        "type": "tool.result",
+                        "data": {"tool": "home.execute", "status": "ok"},
+                    },
+                    {
+                        "event_id": "evt_observe",
+                        "type": "observation.received",
+                        "data": {"after_tool": "home.execute"},
+                    },
+                    {"event_id": "evt_review", "type": "action.reviewed", "data": {}},
+                    {
+                        "event_id": "evt_wording",
+                        "type": "agentic.receipt_response",
+                        "data": {"status": "accepted"},
+                    },
+                    {"event_id": "evt_done", "type": "turn.completed", "data": {}},
+                ]
+                for event in events:
+                    event_sink(event)
+                execution_deadline.cancel()
+                return events
+
+        marker = "PRIVATE_CONFIRMATION_RESPONSE_SENTINEL"
+        payload = {
+            "text": marker,
+            "turn_id": "turn_confirmation_commit",
+            "session_id": "session_confirmation_commit",
+            "locale": "ja-JP",
+            "context_refs": {
+                "accepted_user_speech_candidate_ref": (
+                    "ausc_live:cid_66666666666666666666666666666666"
+                )
+            },
+        }
+        server = create_server(
+            "127.0.0.1",
+            0,
+            thought_loop=DeadlineAtResponseLoop(),
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with (
+                patch.object(
+                    thought_core_server,
+                    "materialize_turn_input",
+                    return_value=TurnInput.from_mapping(payload),
+                ),
+            ):
+                status, body = self._post_turn(
+                    server.server_address[1],
+                    payload,
+                    deadline_header=str(time.monotonic() + 5.0),
+                )
+            self.assertEqual(status, 408)
+            self.assertEqual(
+                json.loads(body),
+                {
+                    "error": "turn_deadline_exceeded",
+                    "confirmation_result": {
+                        "schema_version": "thought-core.confirmation-response-result.v1",
+                        "stage": "response_serialization",
+                        "result_class": "confirmation_timeout",
+                    },
+                },
+            )
+            self.assertNotIn(marker, body)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_confirmed_turn_unexpected_failure_returns_fixed_stage_without_raw_error(self) -> None:
+        class FailingConfirmationLoop:
+            def run_dicts(self, turn, *, event_sink=None, execution_deadline=None):
+                event_sink(
+                    {"event_id": "evt_confirmed", "type": "action.confirmed", "data": {}}
+                )
+                event_sink(
+                    {
+                        "event_id": "evt_submit",
+                        "type": "tool.started",
+                        "data": {"tool": "home.execute"},
+                    }
+                )
+                raise ValueError("PRIVATE_ACTION_FAILURE_SENTINEL")
+
+        payload = {
+            "text": "お願い",
+            "turn_id": "turn_confirmation_failure",
+            "session_id": "session_confirmation_failure",
+            "locale": "ja-JP",
+            "context_refs": {
+                "accepted_user_speech_candidate_ref": (
+                    "ausc_live:cid_77777777777777777777777777777777"
+                )
+            },
+        }
+        server = create_server(
+            "127.0.0.1",
+            0,
+            thought_loop=FailingConfirmationLoop(),
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with (
+                patch.object(
+                    thought_core_server,
+                    "materialize_turn_input",
+                    return_value=TurnInput.from_mapping(payload),
+                ),
+            ):
+                status, body = self._post_turn(
+                    server.server_address[1],
+                    payload,
+                    deadline_header=str(time.monotonic() + 5.0),
+                )
+            self.assertEqual(status, 500)
+            self.assertEqual(
+                json.loads(body),
+                {
+                    "error": "turn_execution_failed",
+                    "confirmation_result": {
+                        "schema_version": "thought-core.confirmation-response-result.v1",
+                        "stage": "action_submission",
+                        "result_class": "confirmation_failed",
+                    },
+                },
+            )
+            self.assertNotIn("PRIVATE_ACTION_FAILURE_SENTINEL", body)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_confirmation_public_progress_is_fixed_and_raw_error_is_discarded(self) -> None:
+        progress = _SafeTurnProgress()
+        cases = (
+            ("action.confirmed", {}, "provider_confirmation"),
+            ("tool.started", {"tool": "home.execute"}, "action_submission"),
+            ("tool.result", {"tool": "home.execute"}, "action_receipt"),
+            (
+                "observation.received",
+                {"after_tool": "home.execute"},
+                "post_observation",
+            ),
+            ("action.reviewed", {}, "post_review"),
+            ("agentic.receipt_response", {}, "response_serialization"),
+        )
+        for index, (event_type, data, expected_stage) in enumerate(cases):
+            event = _public_turn_event(
+                {
+                    "event_id": f"evt_stage_{index}",
+                    "type": event_type,
+                    "data": data,
+                },
+                progress,
+            )
+            self.assertEqual(event["type"], event_type)
+            self.assertEqual(progress.result("confirmation_failed")["stage"], expected_stage)
+
+        sanitized = _public_turn_event(
+            {
+                "event_id": "evt_private_error",
+                "type": "turn.error",
+                "data": {
+                    "code": "thought_core_error",
+                    "message": "C:\\private\\PRIVATE_ERROR_SENTINEL",
+                },
+            },
+            progress,
+        )
+        self.assertEqual(
+            sanitized["data"],
+            {
+                "code": "turn_execution_failed",
+                "message": "turn_execution_failed",
+                "schema_version": "thought-core.confirmation-response-result.v1",
+                "stage": "response_serialization",
+                "result_class": "confirmation_failed",
+            },
+        )
+        self.assertNotIn("PRIVATE_ERROR_SENTINEL", json.dumps(sanitized))
+
+    def test_json_response_commit_checks_deadline_only_before_headers(self) -> None:
+        class ExpireOnSecondCheck:
+            def __init__(self) -> None:
+                self.checks = 0
+
+            def ensure_current(self) -> None:
+                self.checks += 1
+                if self.checks > 1:
+                    raise AssertionError("deadline rechecked after response commit")
+
+        class RecordingWriter:
+            def __init__(self) -> None:
+                self.body = bytearray()
+
+            def write(self, data: bytes) -> None:
+                self.body.extend(data)
+
+        server = create_server("127.0.0.1", 0, thought_loop=unittest.mock.Mock())
+        handler = object.__new__(server.RequestHandlerClass)
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+        handler.wfile = RecordingWriter()
+        deadline = ExpireOnSecondCheck()
+        try:
+            handler._send_json(
+                {"events": []},
+                execution_deadline=deadline,
+            )
+            self.assertEqual(deadline.checks, 1)
+            self.assertEqual(json.loads(bytes(handler.wfile.body)), {"events": []})
+        finally:
+            server.server_close()
+
+    def test_confirmed_sse_deadline_emits_one_fixed_terminal_result(self) -> None:
+        class DeadlineSseLoop:
+            def run_dicts(self, turn, *, event_sink=None, execution_deadline=None):
+                event_sink(
+                    {"event_id": "evt_confirmed", "type": "action.confirmed", "data": {}}
+                )
+                event_sink(
+                    {
+                        "event_id": "evt_submit",
+                        "type": "tool.started",
+                        "data": {"tool": "home.execute"},
+                    }
+                )
+                execution_deadline.cancel()
+                execution_deadline.ensure_current()
+
+        class RecordingWriter:
+            def __init__(self) -> None:
+                self.body = bytearray()
+
+            def write(self, data: bytes) -> None:
+                self.body.extend(data)
+
+            def flush(self) -> None:
+                return None
+
+        server = create_server("127.0.0.1", 0, thought_loop=DeadlineSseLoop())
+        handler = object.__new__(server.RequestHandlerClass)
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+        handler.wfile = RecordingWriter()
+        deadline = thought_core_server.issue_turn_execution_deadline(
+            time.monotonic() + 5.0
+        )
+        try:
+            handler._send_sse_live(
+                TurnInput.from_mapping(
+                    {
+                        "text": "お願い",
+                        "turn_id": "turn_confirmation_sse",
+                        "session_id": "session_confirmation_sse",
+                        "locale": "ja-JP",
+                        "context_refs": {},
+                    }
+                ),
+                execution_deadline=deadline,
+            )
+            rendered = bytes(handler.wfile.body).decode("utf-8")
+            self.assertEqual(rendered.count("event: turn.error"), 1)
+            self.assertIn('"code":"turn_deadline_exceeded"', rendered)
+            self.assertIn('"stage":"action_submission"', rendered)
+            self.assertIn('"result_class":"confirmation_timeout"', rendered)
+            self.assertNotIn("PRIVATE", rendered)
+        finally:
+            server.server_close()
 
     def test_server_expiry_after_materialize_does_not_reserve_candidate(self) -> None:
         class CountingLoop:
