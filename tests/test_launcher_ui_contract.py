@@ -1229,11 +1229,12 @@ class LauncherUiContractTest(TestCase):
                 self.assertNotIn(
                     "MediapipeCameraName", state_payload["config"]["options"]
                 )
-                self.assertIn(
-                    "<local-camera-selection>",
-                    state_payload["launcherState"]["commandLine"],
+                self.assertNotIn("commandLine", state_payload["launcherState"])
+                self.assertNotIn("logTail", state_payload)
+                self.assertEqual(
+                    set(state_payload["launcherState"]),
+                    {"command_class", "fixed_start_summary"},
                 )
-                self.assertIn("<local-camera-selection>", state_payload["logTail"])
 
                 with urllib.request.urlopen(
                     f"http://127.0.0.1:{launcher_port}/api/video-input-devices",
@@ -1296,7 +1297,8 @@ class LauncherUiContractTest(TestCase):
                 ) as response:
                     logs = json.loads(response.read().decode("utf-8"))
                 self.assertNotIn(local_camera, json.dumps(logs))
-                self.assertIn("<local-camera-selection>", logs["logTail"])
+                self.assertNotIn("logTail", logs)
+                self.assertEqual(set(logs), {"ok", "diagnostic"})
                 self.assertFalse((state_dir / "pids.json").exists())
             finally:
                 launcher.terminate()
@@ -2206,8 +2208,31 @@ class LauncherUiContractTest(TestCase):
             self.assertIn(f'"{failure_class}"', system)
             self.assertIn(f'"{failure_class}"', stack_start)
 
+        for failure_class in (
+            "system_preflight_failed",
+            "profile_preflight_failed",
+            "delegated_stack_preflight_failed",
+            "entrypoint_missing",
+        ):
+            self.assertIn(f"'{failure_class}'", collector)
+            self.assertIn(f'"{failure_class}"', system)
+        for failure_class in (
+            "stack_preflight_failed",
+            "stack_config_preflight_failed",
+            "previous_stack_preflight_failed",
+            "pid_registry_write_failed",
+        ):
+            self.assertIn(f"'{failure_class}'", collector)
+            self.assertIn(f'"{failure_class}"', stack_start)
+
         self.assertIn("SWORD_FIXED_START_FAILURE_CLASS:$FailureClass", system)
         self.assertIn("SWORD_FIXED_START_FAILURE_CLASS:$FailureClass", stack_start)
+        for producer in (system, stack_start):
+            self.assertIn('GetEnvironmentVariable("SWORD_FIXED_START_FAILURE_FILE")', producer)
+            self.assertIn("[System.IO.FileMode]::CreateNew", producer)
+            self.assertIn("[System.IO.FileShare]::Read", producer)
+            self.assertIn("Write-FixedStartFailureArtifact -FailureClass $FailureClass", producer)
+            self.assertIn("[System.StringComparison]::OrdinalIgnoreCase", producer)
         self.assertIn(
             "Write-FixedStartFailureMarker -FailureClass \"camera_selection_missing\"",
             system,
@@ -2238,35 +2263,62 @@ class LauncherUiContractTest(TestCase):
         )
 
         self.assertIn("/^SWORD_FIXED_START_FAILURE_CLASS:([a-z_]+)$/", collector)
-        self.assertIn("FIXED_START_MAX_PARTIAL_BYTES = 4095", collector)
-        self.assertIn("FIXED_START_MAX_CAPTURE_BYTES = 65535", collector)
+        self.assertIn("FIXED_START_MAX_PARTIAL_BYTES = 96", collector)
+        self.assertIn("FIXED_START_MAX_CAPTURE_BYTES = 192", collector)
         self.assertIn("FIXED_START_MAX_LINES = 127", collector)
-        self.assertIn("FIXED_START_CAPTURE_TIMEOUT_MS = 15000", collector)
+        self.assertIn("FIXED_START_FAILURE_ARTIFACT_MAX_BYTES = 96", collector)
+        self.assertIn("newFixedStartFailureArtifactPath", collector)
+        self.assertIn("readFixedStartFailureArtifact", collector)
+        self.assertIn("removeFixedStartFailureArtifact", collector)
+        self.assertNotIn("FIXED_START_CAPTURE_TIMEOUT_MS", collector)
         self.assertIn("pending = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }", collector)
         self.assertIn("collector.consume('stdout', chunk)", start_stack)
         self.assertIn("collector.consume('stderr', chunk)", start_stack)
-        self.assertIn("collector.finalize('stack_start_failed_unknown')", start_stack)
-        self.assertIn("timer = setTimer(() => finalize(), FIXED_START_CAPTURE_TIMEOUT_MS)", collector)
         self.assertIn(
-            "collector.finalize(code === 0 ? null : 'stack_start_failed_unknown')",
+            "exitIntent.code === 0 ? null : 'stack_start_failed_unknown'",
             start_stack,
         )
-        self.assertIn("const summaryClass = failureClass || fallbackClass", collector)
+        self.assertIn("child.stdout.once('end', onSupervisorStdoutEnd)", start_stack)
+        self.assertIn("child.stderr.once('end', onSupervisorStderrEnd)", start_stack)
+        self.assertIn("classification_origin", collector)
+        self.assertIn("launcher_pre_source_failed", collector)
+        self.assertIn("const summaryClass = artifactClass || failureClass || fallbackClass", collector)
         self.assertIn("if (summaryClass)", collector)
         self.assertIn("pending.stdout = Buffer.alloc(0)", collector)
         self.assertIn("pending.stderr = Buffer.alloc(0)", collector)
-        self.assertIn("clearTimer(timer)", collector)
         self.assertIn("onClose()", collector)
         self.assertIn("releaseCollectorListeners", start_stack)
         self.assertIn("onClose: () => releaseCollectorListeners()", start_stack)
         self.assertIn("removeListener('data', onSupervisorStdout)", start_stack)
         self.assertIn("removeListener('data', onSupervisorStderr)", start_stack)
+        self.assertIn("[FIXED_START_FAILURE_ARTIFACT_ENV]: fixedStartFailureArtifactPath", start_stack)
+        self.assertIn("const artifactFailureClass = readFixedStartFailureArtifact", start_stack)
+        self.assertIn("removeFixedStartFailureArtifact(fixedStartFailureArtifactPath)", start_stack)
+        self.assertIn("const removeArtifactAfterFailedSetup", start_stack)
+        self.assertIn("releaseCollectorListeners()", start_stack)
+        self.assertLess(
+            start_stack.index("child.once('exit', removeArtifactAfterFailedSetup)"),
+            start_stack.index("writeJsonFile(LAUNCHER_STATE_FILE, state)"),
+        )
+        self.assertLess(
+            start_stack.index("child.stdout.on('data', onSupervisorStdout)"),
+            start_stack.index("writeJsonFile(LAUNCHER_STATE_FILE, state)"),
+        )
 
         self.assertIn("schema_version: 'launcher_fixed_start_summary.v1'", collector)
         self.assertIn("failure_class: failureClass", collector)
         self.assertNotIn("appendStackLog(chunk)", start_stack)
         self.assertNotIn("error.message", start_stack)
         self.assertNotIn("lastError:", start_stack)
+        self.assertNotIn("preview.commandLine", start_stack)
+        self.assertIn("publicFixedStartDiagnostic", server)
+        self.assertNotIn("logTail: readTextTail(STACK_LOG_FILE)", server)
+        self.assertIn("Save-StartupPidState", stack_start)
+        self.assertIn("Assert-SelectedServiceEntrypoints -Specs $specs", stack_start)
+        self.assertIn("Write-FixedStartFailureMarker -FailureClass \"pid_registry_write_failed\"", stack_start)
+        self.assertIn("Write-FixedStartFailureMarker -FailureClass \"previous_stack_preflight_failed\"", stack_start)
+        self.assertIn("Write-FixedStartFailureMarker -FailureClass \"delegated_stack_preflight_failed\"", system)
+        self.assertIn("Write-FixedStartFailureMarker -FailureClass \"entrypoint_missing\"", system)
         fresh_state = extract_between(
             start_stack,
             "const state = {",
@@ -2275,57 +2327,509 @@ class LauncherUiContractTest(TestCase):
         self.assertNotIn("fixedStartSummary", fresh_state)
         self.assertNotIn("readLauncherState()", fresh_state)
 
+    def test_service_children_cannot_inherit_fixed_start_artifact_channel(self) -> None:
+        stack_start = read_stack_start_script()
+        supervised_start = extract_between(
+            stack_start,
+            "function Start-SupervisedProcess",
+            "function Test-VisionSnapshotWorkerCommand",
+        )
+        child_environment_finalizer = extract_between(
+            supervised_start,
+            "    foreach ($key in $Spec.Environment.Keys) {",
+            "\n\n    $process = [System.Diagnostics.Process]::new()",
+        )
+        artifact_removal = (
+            '$null = $startInfo.Environment.Remove('
+            '"SWORD_FIXED_START_FAILURE_FILE")'
+        )
+
+        self.assertEqual(supervised_start.count(artifact_removal), 1)
+        self.assertLess(
+            supervised_start.index(
+                "$startInfo.Environment[$key] = [string]$Spec.Environment[$key]"
+            ),
+            supervised_start.index(artifact_removal),
+        )
+        self.assertTrue(child_environment_finalizer.rstrip().endswith(artifact_removal))
+
+        powershell_program = """
+$ErrorActionPreference = "Stop"
+$env:SWORD_FIXED_START_FAILURE_FILE = "producer-owned-sentinel"
+
+function Test-ServiceChildEnvironment {
+    param(
+        [Parameter(Mandatory = $true)][string]$Case,
+        [Parameter(Mandatory = $true)][hashtable]$Environment
+    )
+
+    $Spec = [pscustomobject]@{ Environment = $Environment }
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.Environment["SWORD_FIXED_START_FAILURE_FILE"] = "inherited-sentinel"
+""" + child_environment_finalizer + """
+
+    return [pscustomobject]@{
+        case = $Case
+        child_has_artifact = $startInfo.Environment.ContainsKey(
+            "SWORD_FIXED_START_FAILURE_FILE"
+        )
+        producer_retained = (
+            $env:SWORD_FIXED_START_FAILURE_FILE -eq "producer-owned-sentinel"
+        )
+    }
+}
+
+@(
+    Test-ServiceChildEnvironment -Case "ordinary" -Environment @{}
+    Test-ServiceChildEnvironment -Case "compatibility" -Environment @{
+        THOUGHT_CORE_LLM_PROVIDER = "codex-cli"
+        SWORD_FIXED_START_FAILURE_FILE = "spec-spoof"
+    }
+    Test-ServiceChildEnvironment -Case "broker" -Environment @{
+        THOUGHT_CORE_LLM_PROVIDER = "sword-openai-broker"
+        SWORD_FIXED_START_FAILURE_FILE = "spec-spoof"
+    }
+) | ConvertTo-Json -Compress
+"""
+        completed = subprocess.run(
+            [
+                r"C:\Program Files\PowerShell\7\pwsh.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                powershell_program,
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        cases = json.loads(completed.stdout)
+        self.assertEqual(
+            [case["case"] for case in cases],
+            ["ordinary", "compatibility", "broker"],
+        )
+        for case in cases:
+            self.assertFalse(case["child_has_artifact"])
+            self.assertTrue(case["producer_retained"])
+
     def test_fixed_start_summary_collector_handles_split_and_bounded_private_input(self) -> None:
+        server = read_launcher_server()
+        collector = extract_between(
+            server,
+            "const FIXED_START_FAILURE_CLASSES",
+            "const publicFixedStartDiagnostic",
+        )
+        start_stack = extract_between(
+            server,
+            "const startStack",
+            "const runScriptAndCollect",
+        )
+        self.assertIn("FIXED_START_MAX_PARTIAL_BYTES = 96", collector)
+        self.assertIn("FIXED_START_MAX_CAPTURE_BYTES = 192", collector)
+        self.assertIn("discardUntilNewline", collector)
+        self.assertIn("inspectionClosed", collector)
+        self.assertIn("classification_origin", collector)
+        self.assertIn("finalizeAfterDrain", start_stack)
+        self.assertIn("child.once('exit'", start_stack)
+
+        node_program = r"""
+const { EventEmitter } = require('events')
+const crypto = require('crypto')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
+let currentChild = null
+let writes = []
+let currentState = {}
+let failNextStateWrite = false
+let artifactFailureClassDuringSpawn = ''
+let artifactFailureClassOnKill = ''
+const PROJECT_ROOT = 'fixture-project-root'
+const WORKSPACE_ROOT = 'fixture-workspace-root'
+const STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'sword-fixed-start-'))
+const LAUNCHER_STATE_FILE = 'fixture-state-file'
+const ensureRuntimeDirs = () => {}
+const normalizeOptions = () => ({})
+const resolveVideoInputSelectionForStart = () => ({ ok: true, captureName: 'fixture-camera' })
+const previewCommand = () => ({ ok: true, command: ['fixture-supervisor'], options: {} })
+const saveConfig = () => {}
+const nowIso = () => '2026-07-27T00:00:00.000Z'
+const expectedServicesForOptions = () => []
+const writeJsonFile = (_path, value) => {
+  if (failNextStateWrite) {
+    failNextStateWrite = false
+    throw new Error('fixture state write failed')
+  }
+  currentState = value
+  writes.push(value)
+}
+const readLauncherState = () => currentState
+const trackedStream = () => {
+  const stream = new EventEmitter()
+  stream.dataRemovals = 0
+  const removeListener = stream.removeListener.bind(stream)
+  stream.removeListener = (event, listener) => {
+    if (event === 'data') stream.dataRemovals += 1
+    return removeListener(event, listener)
+  }
+  return stream
+}
+const childProcess = {
+  spawn: (_command, _args, options) => {
+    const child = new EventEmitter()
+    child.pid = 9876
+    child.stdout = trackedStream()
+    child.stderr = trackedStream()
+    child.spawnOptions = options
+    child.killCalls = 0
+    child.kill = () => {
+      child.killCalls += 1
+      if (artifactFailureClassOnKill) {
+        fs.writeFileSync(
+          options.env[FIXED_START_FAILURE_ARTIFACT_ENV],
+          artifactFailureClassOnKill,
+          { flag: 'wx' }
+        )
+      }
+      child.emit('exit', 1)
+      child.emit('close')
+      return true
+    }
+    if (artifactFailureClassDuringSpawn) {
+      fs.writeFileSync(
+        options.env[FIXED_START_FAILURE_ARTIFACT_ENV],
+        artifactFailureClassDuringSpawn,
+        { flag: 'wx' }
+      )
+    }
+    currentChild = child
+    return child
+  }
+}
+__COLLECTOR__
+__START_STACK__
+const summaryWrites = () => writes.filter((entry) => entry.fixedStartSummary)
+const runSetupWriteFailure = () => {
+  writes = []
+  currentState = {}
+  currentChild = null
+  failNextStateWrite = true
+  artifactFailureClassDuringSpawn = 'required_port_conflict'
+  artifactFailureClassOnKill = 'required_port_conflict'
+  const result = startStack('thought-core-v0', {})
+  artifactFailureClassDuringSpawn = ''
+  artifactFailureClassOnKill = ''
+  const child = currentChild
+  const artifactPath = child.spawnOptions.env[FIXED_START_FAILURE_ARTIFACT_ENV]
+  return {
+    resultOk: result.ok,
+    summary: result.fixedStartSummary,
+    writes: writes.length,
+    killCalls: child.killCalls,
+    stdoutRemovals: child.stdout.dataRemovals,
+    stderrRemovals: child.stderr.dataRemovals,
+    stdoutDataListeners: child.stdout.listenerCount('data'),
+    stderrDataListeners: child.stderr.listenerCount('data'),
+    artifactPath,
+    artifactExists: fs.existsSync(artifactPath)
+  }
+}
+const runLifecycle = ({
+  code,
+  stdout = [],
+  stderr = [],
+  repeat = false,
+  artifactFailureClass = '',
+  artifactAfterStdout = -1
+}) => {
+  writes = []
+  currentState = {}
+  currentChild = null
+  const result = startStack('thought-core-v0', {})
+  const child = currentChild
+  child.emit('exit', code)
+  const summariesAfterExit = summaryWrites().length
+  if (artifactFailureClass && artifactAfterStdout < 0) {
+    fs.writeFileSync(
+      child.spawnOptions.env[FIXED_START_FAILURE_ARTIFACT_ENV],
+      artifactFailureClass,
+      { flag: 'wx' }
+    )
+  }
+  for (let index = 0; index < stdout.length; index += 1) {
+    const chunk = stdout[index]
+    child.stdout.emit('data', Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf8'))
+    if (artifactFailureClass && artifactAfterStdout === index) {
+      fs.writeFileSync(
+        child.spawnOptions.env[FIXED_START_FAILURE_ARTIFACT_ENV],
+        artifactFailureClass,
+        { flag: 'wx' }
+      )
+    }
+  }
+  for (const chunk of stderr) child.stderr.emit('data', Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf8'))
+  child.stdout.emit('end')
+  child.stderr.emit('end')
+  child.emit('close')
+  if (repeat) {
+    child.stdout.emit('end')
+    child.stderr.emit('end')
+    child.emit('close')
+  }
+  return {
+    resultOk: result.ok,
+    summariesAfterExit,
+    summaries: summaryWrites().map((entry) => entry.fixedStartSummary),
+    stdoutRemovals: child.stdout.dataRemovals,
+    stderrRemovals: child.stderr.dataRemovals,
+    stdoutDataListeners: child.stdout.listenerCount('data'),
+    stderrDataListeners: child.stderr.listenerCount('data'),
+    artifactPath: child.spawnOptions.env[FIXED_START_FAILURE_ARTIFACT_ENV],
+    artifactExists: fs.existsSync(child.spawnOptions.env[FIXED_START_FAILURE_ARTIFACT_ENV])
+  }
+}
+const privateSentinel = 'PRIVATE_SUPERVISOR_SENTINEL_NEVER_PUBLIC'
+const delegatedPrelude = [
+  '[ops] command=start profile=thought-core-v0 state_dir=fixture-state-root',
+  '[ops] delegate=start layer=ops script=fixture-start-home-control-stack.ps1',
+  '[ops] delegate_args=-Profile thought-core-v0 -Services home_assistant_bridge,thought_core_api',
+  privateSentinel
+].join('\n') + '\n'
+if (Buffer.byteLength(delegatedPrelude, 'utf8') <= 192) {
+  throw new Error('delegated prelude must exhaust the raw inspection budget')
+}
+const opaqueLargeChunk = () => {
+  const chunk = Buffer.alloc(1024 * 1024, 0x78)
+  chunk.toString = () => { throw new Error('post-classification chunk decoded') }
+  return chunk
+}
+const report = {
+  setupWriteFailure: runSetupWriteFailure(),
+  sourceAfterExit: runLifecycle({
+    code: 1,
+    stdout: [
+      privateSentinel + '\nSWORD_FIXED_START_FAILURE_',
+      'CLASS:required_port_conflict\n'
+    ],
+    repeat: true
+  }),
+  codeZeroNoMarker: runLifecycle({ code: 0, stdout: [privateSentinel + '\n'] }),
+  nonzeroNoMarker: runLifecycle({ code: 1, stdout: [privateSentinel + '\nordinary\n'] }),
+  overLimit: runLifecycle({
+    code: 1,
+    stdout: ['x'.repeat(97) + '\nSWORD_FIXED_START_FAILURE_CLASS:voicevox_unavailable\n']
+  }),
+  lineLimit: runLifecycle({
+    code: 1,
+    stdout: ['x\n'.repeat(127) + 'SWORD_FIXED_START_FAILURE_CLASS:voicevox_unavailable\n']
+  }),
+  inspectionExhausted: runLifecycle({
+    code: 1,
+    stdout: [
+      Buffer.alloc(192, 0x78),
+      Buffer.from('SWORD_FIXED_START_FAILURE_CLASS:voicevox_unavailable\n', 'utf8')
+    ]
+  }),
+  delegatedAfterPrelude: runLifecycle({
+    code: 1,
+    stdout: [
+      delegatedPrelude,
+      Buffer.from('SWORD_FIXED_START_FAILURE_CLASS:required_port_conflict\n', 'utf8')
+    ],
+    artifactFailureClass: 'required_port_conflict',
+    artifactAfterStdout: 0,
+    repeat: true
+  }),
+  classifiedLargeChunk: runLifecycle({
+    code: 1,
+    stdout: [
+      'SWORD_FIXED_START_FAILURE_CLASS:required_port_conflict\n',
+      opaqueLargeChunk()
+    ]
+  })
+}
+fs.rmSync(STATE_DIR, { recursive: true, force: true })
+process.stdout.write(JSON.stringify(report))
+""".replace("__COLLECTOR__", collector).replace("__START_STACK__", start_stack)
+        completed = subprocess.run(
+            [r"C:\Program Files\nodejs\node.exe", "-e", node_program],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertNotIn("PRIVATE_SUPERVISOR_SENTINEL_NEVER_PUBLIC", completed.stdout)
+        results = json.loads(completed.stdout)
+
+        setup_failure = results["setupWriteFailure"]
+        self.assertFalse(setup_failure["resultOk"])
+        self.assertEqual(setup_failure["writes"], 0)
+        self.assertEqual(setup_failure["killCalls"], 1)
+        self.assertEqual(setup_failure["stdoutRemovals"], 1)
+        self.assertEqual(setup_failure["stderrRemovals"], 1)
+        self.assertEqual(setup_failure["stdoutDataListeners"], 0)
+        self.assertEqual(setup_failure["stderrDataListeners"], 0)
+        self.assertFalse(setup_failure["artifactExists"])
+        self.assertEqual(
+            setup_failure["summary"],
+            {
+                "schema_version": "launcher_fixed_start_summary.v1",
+                "status": "failed",
+                "failure_class": "launcher_pre_source_failed",
+                "classification_origin": "launcher_fallback",
+                "captured_bytes": 0,
+                "captured_lines": 0,
+                "capture_limited": False,
+                "proof_ceiling": "bounded_source_marker_diagnostic_only",
+            },
+        )
+
+        source_after_exit = results["sourceAfterExit"]
+        self.assertNotEqual(
+            setup_failure["artifactPath"],
+            results["codeZeroNoMarker"]["artifactPath"],
+        )
+        self.assertEqual(source_after_exit["summariesAfterExit"], 0)
+        self.assertEqual(
+            source_after_exit["summaries"],
+            [
+                {
+                    "schema_version": "launcher_fixed_start_summary.v1",
+                    "status": "failed",
+                    "failure_class": "required_port_conflict",
+                    "classification_origin": "source_marker",
+                    "captured_bytes": 96,
+                    "captured_lines": 2,
+                    "capture_limited": False,
+                    "proof_ceiling": "bounded_source_marker_diagnostic_only",
+                }
+            ],
+        )
+        for key in (
+            "sourceAfterExit",
+            "codeZeroNoMarker",
+            "nonzeroNoMarker",
+            "overLimit",
+            "lineLimit",
+            "inspectionExhausted",
+            "delegatedAfterPrelude",
+            "classifiedLargeChunk",
+        ):
+            self.assertTrue(results[key]["resultOk"])
+            self.assertEqual(results[key]["stdoutRemovals"], 1)
+            self.assertEqual(results[key]["stderrRemovals"], 1)
+            self.assertEqual(results[key]["stdoutDataListeners"], 0)
+            self.assertEqual(results[key]["stderrDataListeners"], 0)
+            self.assertFalse(results[key]["artifactExists"])
+
+        self.assertEqual(results["codeZeroNoMarker"]["summariesAfterExit"], 0)
+        self.assertEqual(results["codeZeroNoMarker"]["summaries"], [])
+        self.assertEqual(results["nonzeroNoMarker"]["summariesAfterExit"], 0)
+        self.assertEqual(
+            results["nonzeroNoMarker"]["summaries"],
+            [
+                {
+                    "schema_version": "launcher_fixed_start_summary.v1",
+                    "status": "failed",
+                    "failure_class": "stack_start_failed_unknown",
+                    "classification_origin": "launcher_fallback",
+                    "captured_bytes": 50,
+                    "captured_lines": 2,
+                    "capture_limited": False,
+                    "proof_ceiling": "bounded_source_marker_diagnostic_only",
+                }
+            ],
+        )
+        self.assertEqual(len(results["overLimit"]["summaries"]), 1)
+        self.assertEqual(
+            results["overLimit"]["summaries"][0]["failure_class"],
+            "voicevox_unavailable",
+        )
+        self.assertEqual(
+            results["overLimit"]["summaries"][0]["classification_origin"],
+            "source_marker",
+        )
+        self.assertTrue(results["overLimit"]["summaries"][0]["capture_limited"])
+        self.assertEqual(len(results["lineLimit"]["summaries"]), 1)
+        self.assertEqual(
+            results["lineLimit"]["summaries"][0]["failure_class"],
+            "stack_start_failed_unknown",
+        )
+        self.assertEqual(
+            results["lineLimit"]["summaries"][0]["classification_origin"],
+            "launcher_fallback",
+        )
+        self.assertTrue(results["lineLimit"]["summaries"][0]["capture_limited"])
+        self.assertEqual(len(results["inspectionExhausted"]["summaries"]), 1)
+        self.assertEqual(
+            results["inspectionExhausted"]["summaries"][0]["failure_class"],
+            "stack_start_failed_unknown",
+        )
+        self.assertEqual(
+            results["inspectionExhausted"]["summaries"][0]["classification_origin"],
+            "launcher_fallback",
+        )
+        self.assertEqual(results["inspectionExhausted"]["summaries"][0]["captured_bytes"], 192)
+        self.assertTrue(results["inspectionExhausted"]["summaries"][0]["capture_limited"])
+        self.assertEqual(len(results["delegatedAfterPrelude"]["summaries"]), 1)
+        self.assertEqual(
+            results["delegatedAfterPrelude"]["summaries"][0]["failure_class"],
+            "required_port_conflict",
+        )
+        self.assertEqual(
+            results["delegatedAfterPrelude"]["summaries"][0]["classification_origin"],
+            "source_marker",
+        )
+        self.assertEqual(
+            results["delegatedAfterPrelude"]["summaries"][0]["captured_bytes"],
+            192,
+        )
+        self.assertTrue(results["delegatedAfterPrelude"]["summaries"][0]["capture_limited"])
+        self.assertEqual(len(results["classifiedLargeChunk"]["summaries"]), 1)
+        self.assertEqual(
+            results["classifiedLargeChunk"]["summaries"][0]["failure_class"],
+            "required_port_conflict",
+        )
+        self.assertEqual(
+            results["classifiedLargeChunk"]["summaries"][0]["classification_origin"],
+            "source_marker",
+        )
+        self.assertLessEqual(results["classifiedLargeChunk"]["summaries"][0]["captured_bytes"], 192)
+        self.assertTrue(results["classifiedLargeChunk"]["summaries"][0]["capture_limited"])
+
+    def test_fixed_start_summary_collector_preserves_only_bounded_source_markers(self) -> None:
         collector = extract_between(
             read_launcher_server(),
             "const FIXED_START_FAILURE_CLASSES",
-            "const startStack",
+            "const publicFixedStartDiagnostic",
         )
         node_program = f"""
 {collector}
-const capture = (chunks, timeout = false, fallbackClass = null, repeatFinalize = false) => {{
+const sentinel = 'PRIVATE_SUPERVISOR_SENTINEL_NEVER_PUBLIC'
+const capture = (chunks, fallback = null, repeat = false) => {{
   const summaries = []
-  let deadline = null
   let closeCount = 0
-  let clearCount = 0
   const collector = createFixedStartSummaryCollector({{
     onSummary: (summary) => summaries.push(summary),
-    onClose: () => {{ closeCount += 1 }},
-    setTimer: (callback) => {{ deadline = callback; return 1 }},
-    clearTimer: () => {{ clearCount += 1; deadline = null }}
+    onClose: () => {{ closeCount += 1 }}
   }})
-  collector.arm()
   for (const [stream, value] of chunks) {{
     collector.consume(stream, Buffer.from(value, 'utf8'))
   }}
-  if (timeout) {{
-    deadline()
-  }} else {{
-    collector.finalize(fallbackClass)
-  }}
-  if (repeatFinalize) {{
-    collector.finalize(fallbackClass)
-  }}
-  return {{ summaries, closeCount, clearCount }}
+  collector.finalize(fallback)
+  if (repeat) collector.finalize(fallback)
+  return {{ summaries, closeCount }}
 }}
-const privateSentinel = 'PRIVATE_SUPERVISOR_SENTINEL_NEVER_PUBLIC'
 const result = {{
-  split: capture([
-    ['stdout', privateSentinel + '\\nSWORD_FIXED_START_FAILURE_'],
-    ['stdout', 'CLASS:voicevox_unavailable\\n']
-  ]),
-  stderr: capture([
-    ['stderr', 'SWORD_FIXED_START_FAILURE_'],
-    ['stderr', 'CLASS:required_port_conflict\\n']
-  ]),
-  unmatched: capture([['stdout', privateSentinel + '\\n']], false, 'stack_start_failed_unknown'),
-  partial: capture([['stdout', 'x'.repeat(4096) + '\\nSWORD_FIXED_START_FAILURE_CLASS:required_port_conflict\\n']], false, 'stack_start_failed_unknown'),
-  total: capture([['stdout', 'x'.repeat(65535)], ['stderr', 'SWORD_FIXED_START_FAILURE_CLASS:required_port_conflict\\n']], false, 'stack_start_failed_unknown'),
-  lines: capture([['stdout', 'x\\n'.repeat(127) + 'SWORD_FIXED_START_FAILURE_CLASS:required_port_conflict\\n']], false, 'stack_start_failed_unknown'),
-  healthyTimeout: capture([['stdout', 'SWORD_FIXED_START_FAILURE_']], true),
-  cleanExit: capture([], false, null),
-  nonzeroExit: capture([], false, 'stack_start_failed_unknown'),
-  repeated: capture([], false, null, true)
+  split: capture([['stdout', sentinel + '\\nSWORD_FIXED_START_FAILURE_'], ['stdout', 'CLASS:entrypoint_missing\\n']]),
+  delayed: capture([['stdout', 'ordinary output\\n'], ['stderr', 'SWORD_FIXED_START_FAILURE_CLASS:pid_registry_write_failed\\n']]),
+  first: capture([['stdout', 'SWORD_FIXED_START_FAILURE_CLASS:voicevox_unavailable\\nSWORD_FIXED_START_FAILURE_CLASS:required_port_conflict\\n']]),
+  overlong: capture([['stdout', 'x'.repeat(97) + '\\nSWORD_FIXED_START_FAILURE_CLASS:required_port_conflict\\n']], 'stack_start_failed_unknown'),
+  fallback: capture([['stdout', sentinel + '\\n']], 'stack_start_failed_unknown'),
+  healthy: capture([], null, true)
 }}
 process.stdout.write(JSON.stringify(result))
 """
@@ -2338,43 +2842,13 @@ process.stdout.write(JSON.stringify(result))
             timeout=15,
         )
         self.assertNotIn("PRIVATE_SUPERVISOR_SENTINEL_NEVER_PUBLIC", completed.stdout)
-        results = json.loads(completed.stdout)
-        self.assertEqual(
-            results["split"]["summaries"],
-            [
-                {
-                    "schema_version": "launcher_fixed_start_summary.v1",
-                    "status": "failed",
-                    "failure_class": "voicevox_unavailable",
-                }
-            ],
-        )
-        self.assertEqual(
-            results["stderr"]["summaries"][0]["failure_class"], "required_port_conflict"
-        )
-        for key in ("unmatched", "partial", "total", "lines"):
-            self.assertEqual(
-                results[key]["summaries"][0]["failure_class"], "stack_start_failed_unknown"
-            )
-            self.assertEqual(len(results[key]["summaries"]), 1)
-        self.assertEqual(results["healthyTimeout"]["summaries"], [])
-        self.assertEqual(results["cleanExit"]["summaries"], [])
-        self.assertEqual(
-            results["nonzeroExit"]["summaries"][0]["failure_class"],
-            "stack_start_failed_unknown",
-        )
-        for key in (
-            "split",
-            "stderr",
-            "unmatched",
-            "partial",
-            "total",
-            "lines",
-            "healthyTimeout",
-            "cleanExit",
-            "nonzeroExit",
-            "repeated",
-        ):
-            self.assertEqual(results[key]["closeCount"], 1)
-            self.assertEqual(results[key]["clearCount"], 1)
-        self.assertEqual(results["repeated"]["summaries"], [])
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["split"]["summaries"][0]["failure_class"], "entrypoint_missing")
+        self.assertEqual(result["split"]["summaries"][0]["classification_origin"], "source_marker")
+        self.assertEqual(result["delayed"]["summaries"][0]["failure_class"], "pid_registry_write_failed")
+        self.assertEqual(result["first"]["summaries"][0]["failure_class"], "voicevox_unavailable")
+        self.assertEqual(result["overlong"]["summaries"][0]["failure_class"], "required_port_conflict")
+        self.assertEqual(result["fallback"]["summaries"][0]["classification_origin"], "launcher_fallback")
+        self.assertEqual(result["healthy"]["summaries"], [])
+        for value in result.values():
+            self.assertEqual(value["closeCount"], 1)

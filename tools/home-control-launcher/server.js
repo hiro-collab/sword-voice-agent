@@ -1525,116 +1525,235 @@ const FIXED_START_FAILURE_CLASSES = new Set([
   'required_port_conflict',
   'dependency_or_tool_missing',
   'first_service_spawn_failed',
-  'stack_start_failed_unknown'
+  'stack_start_failed_unknown',
+  'system_preflight_failed',
+  'profile_preflight_failed',
+  'delegated_stack_preflight_failed',
+  'entrypoint_missing',
+  'stack_preflight_failed',
+  'stack_config_preflight_failed',
+  'previous_stack_preflight_failed',
+  'pid_registry_write_failed',
+  'launcher_pre_source_failed'
 ])
 const FIXED_START_FAILURE_MARKER = /^SWORD_FIXED_START_FAILURE_CLASS:([a-z_]+)$/
-const FIXED_START_MAX_PARTIAL_BYTES = 4095
-const FIXED_START_MAX_CAPTURE_BYTES = 65535
+const FIXED_START_MAX_PARTIAL_BYTES = 96
+const FIXED_START_MAX_CAPTURE_BYTES = 192
 const FIXED_START_MAX_LINES = 127
-const FIXED_START_CAPTURE_TIMEOUT_MS = 15000
+const FIXED_START_FAILURE_ARTIFACT_ENV = 'SWORD_FIXED_START_FAILURE_FILE'
+const FIXED_START_FAILURE_ARTIFACT_MAX_BYTES = 96
 
-const fixedStartSummary = (failureClass) => ({
+const newFixedStartFailureArtifactPath = () => path.join(
+  STATE_DIR,
+  `.launcher-fixed-start-${process.pid}-${crypto.randomUUID()}.cause`
+)
+
+const readFixedStartFailureArtifact = (artifactPath) => {
+  let descriptor = null
+  try {
+    const artifactStat = fs.lstatSync(artifactPath)
+    if (
+      !artifactStat.isFile() ||
+      artifactStat.size < 1 ||
+      artifactStat.size > FIXED_START_FAILURE_ARTIFACT_MAX_BYTES
+    ) {
+      return ''
+    }
+    descriptor = fs.openSync(artifactPath, 'r')
+    const openedStat = fs.fstatSync(descriptor)
+    if (
+      !openedStat.isFile() ||
+      openedStat.size !== artifactStat.size ||
+      openedStat.size > FIXED_START_FAILURE_ARTIFACT_MAX_BYTES
+    ) {
+      return ''
+    }
+    const value = Buffer.alloc(openedStat.size)
+    const bytesRead = fs.readSync(descriptor, value, 0, value.length, 0)
+    if (bytesRead !== value.length) {
+      return ''
+    }
+    const failureClass = value.toString('ascii')
+    return FIXED_START_FAILURE_CLASSES.has(failureClass) ? failureClass : ''
+  } catch {
+    return ''
+  } finally {
+    if (descriptor !== null) {
+      try {
+        fs.closeSync(descriptor)
+      } catch {
+        // Reading a diagnostic artifact must not affect supervisor cleanup.
+      }
+    }
+  }
+}
+
+const removeFixedStartFailureArtifact = (artifactPath) => {
+  try {
+    fs.rmSync(artifactPath, { force: true })
+  } catch {
+    // A fixed diagnostic artifact must never affect stack lifecycle handling.
+  }
+}
+
+const fixedStartSummary = (failureClass, classificationOrigin, counters) => ({
   schema_version: 'launcher_fixed_start_summary.v1',
   status: 'failed',
-  failure_class: failureClass
+  failure_class: failureClass,
+  classification_origin: classificationOrigin,
+  captured_bytes: counters.totalCaptureBytes,
+  captured_lines: counters.lineCount,
+  capture_limited: counters.captureLimited,
+  proof_ceiling: 'bounded_source_marker_diagnostic_only'
 })
 
 const createFixedStartSummaryCollector = ({
   onSummary,
-  onClose,
-  setTimer = setTimeout,
-  clearTimer = clearTimeout
+  onClose
 }) => {
   const pending = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }
+  const discardUntilNewline = { stdout: false, stderr: false }
   let totalCaptureBytes = 0
   let lineCount = 0
   let failureClass = ''
   let captureLimited = false
+  let inspectionClosed = false
   let closed = false
-  let timer = null
+
+  const counters = () => ({ totalCaptureBytes, lineCount, captureLimited })
 
   const considerLine = (line) => {
-    if (failureClass || captureLimited) {
-      return
+    if (failureClass) {
+      return true
     }
     if (lineCount >= FIXED_START_MAX_LINES || line.length > FIXED_START_MAX_PARTIAL_BYTES) {
       captureLimited = true
-      return
+      inspectionClosed = true
+      return true
     }
     lineCount += 1
     const match = FIXED_START_FAILURE_MARKER.exec(line.toString('utf8').replace(/\r$/, ''))
     if (match && FIXED_START_FAILURE_CLASSES.has(match[1])) {
       failureClass = match[1]
+      inspectionClosed = true
     }
+    if (lineCount >= FIXED_START_MAX_LINES) {
+      inspectionClosed = true
+    }
+    return inspectionClosed
   }
 
-  const drain = (stream, includePartial) => {
-    let buffer = pending[stream]
-    while (buffer.length > 0 && lineCount < FIXED_START_MAX_LINES) {
-      const newlineIndex = buffer.indexOf(0x0a)
-      if (newlineIndex < 0) {
-        break
-      }
-      considerLine(buffer.subarray(0, newlineIndex))
-      buffer = buffer.subarray(newlineIndex + 1)
+  const finishPendingLine = (stream) => {
+    if (pending[stream].length > 0) {
+      const closedInspection = considerLine(pending[stream])
+      pending[stream] = Buffer.alloc(0)
+      return closedInspection
     }
-    if (lineCount >= FIXED_START_MAX_LINES && buffer.length > 0) {
-      captureLimited = true
-      buffer = Buffer.alloc(0)
-    }
-    if (includePartial && buffer.length > 0) {
-      considerLine(buffer)
-      buffer = Buffer.alloc(0)
-    }
-    if (buffer.length > FIXED_START_MAX_PARTIAL_BYTES) {
-      captureLimited = true
-      buffer = Buffer.alloc(0)
-    }
-    pending[stream] = buffer
+    return inspectionClosed
   }
 
-  const finalize = (fallbackClass = null) => {
+  const finalize = (
+    fallbackClass = null,
+    fallbackOrigin = 'launcher_fallback',
+    artifactFailureClass = ''
+  ) => {
     if (closed) {
       return
     }
     closed = true
-    if (timer) {
-      clearTimer(timer)
-      timer = null
-    }
-    drain('stdout', true)
-    drain('stderr', true)
+    finishPendingLine('stdout')
+    finishPendingLine('stderr')
     pending.stdout = Buffer.alloc(0)
     pending.stderr = Buffer.alloc(0)
     onClose()
-    const summaryClass = failureClass || fallbackClass
+    const artifactClass = FIXED_START_FAILURE_CLASSES.has(artifactFailureClass)
+      ? artifactFailureClass
+      : ''
+    const summaryClass = artifactClass || failureClass || fallbackClass
     if (summaryClass) {
-      onSummary(fixedStartSummary(summaryClass))
+      onSummary(fixedStartSummary(
+        summaryClass,
+        artifactClass || failureClass ? 'source_marker' : fallbackOrigin,
+        counters()
+      ))
     }
   }
 
   return {
-    arm: () => {
-      timer = setTimer(() => finalize(), FIXED_START_CAPTURE_TIMEOUT_MS)
-    },
     consume: (stream, chunk) => {
       if (closed || !Object.hasOwn(pending, stream)) {
         return
       }
-      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8')
-      const acceptedBytes = Math.min(bytes.length, FIXED_START_MAX_CAPTURE_BYTES - totalCaptureBytes)
-      if (acceptedBytes <= 0) {
-        captureLimited = true
+      if (inspectionClosed || totalCaptureBytes >= FIXED_START_MAX_CAPTURE_BYTES) {
+        inspectionClosed = true
+        if (chunk && chunk.length > 0) {
+          captureLimited = true
+        }
         return
       }
-      totalCaptureBytes += acceptedBytes
-      if (acceptedBytes < bytes.length) {
-        captureLimited = true
+      if (!Buffer.isBuffer(chunk)) {
+        inspectionClosed = true
+        captureLimited = Boolean(chunk)
+        return
       }
-      pending[stream] = Buffer.concat([pending[stream], bytes.subarray(0, acceptedBytes)])
-      drain(stream, false)
+      for (let index = 0; index < chunk.length; index += 1) {
+        if (totalCaptureBytes >= FIXED_START_MAX_CAPTURE_BYTES) {
+          inspectionClosed = true
+          captureLimited = true
+          return
+        }
+        const byte = chunk[index]
+        totalCaptureBytes += 1
+        if (discardUntilNewline[stream]) {
+          if (byte === 0x0a) {
+            discardUntilNewline[stream] = false
+          }
+          continue
+        }
+        if (byte === 0x0a) {
+          if (finishPendingLine(stream)) {
+            if (index + 1 < chunk.length) {
+              captureLimited = true
+            }
+            return
+          }
+          continue
+        }
+        if (lineCount >= FIXED_START_MAX_LINES || pending[stream].length >= FIXED_START_MAX_PARTIAL_BYTES) {
+          pending[stream] = Buffer.alloc(0)
+          discardUntilNewline[stream] = true
+          captureLimited = true
+          continue
+        }
+        pending[stream] = Buffer.concat([pending[stream], Buffer.from([byte])])
+      }
     },
-    finalize
+    finalize,
+    counters
+  }
+}
+
+const publicFixedStartDiagnostic = (launcherState) => {
+  const summary = launcherState && launcherState.fixedStartSummary
+  const allowed = summary && FIXED_START_FAILURE_CLASSES.has(summary.failure_class)
+    ? {
+        schema_version: 'launcher_fixed_start_summary.v1',
+        status: 'failed',
+        failure_class: summary.failure_class,
+        classification_origin: summary.classification_origin === 'source_marker'
+          ? 'source_marker'
+          : 'launcher_fallback',
+        captured_bytes: Number.isInteger(summary.captured_bytes) ? summary.captured_bytes : 0,
+        captured_lines: Number.isInteger(summary.captured_lines) ? summary.captured_lines : 0,
+        capture_limited: Boolean(summary.capture_limited),
+        proof_ceiling: 'bounded_source_marker_diagnostic_only'
+      }
+    : null
+  return {
+    command_class: launcherState && launcherState.command_class === 'home_control_stack'
+      ? 'home_control_stack'
+      : null,
+    fixed_start_summary: allowed
   }
 }
 
@@ -1653,15 +1772,8 @@ const startStack = (profileId, optionOverrides = {}) => {
   }
   saveConfig(profileId, persistedOptions)
 
-  appendStackLog(
-    [
-      '',
-      `===== Sword System Launcher start ${nowIso()} =====`,
-      preview.commandLine,
-      ''
-    ].join('\n')
-  )
-
+  const fixedStartFailureArtifactPath = newFixedStartFailureArtifactPath()
+  removeFixedStartFailureArtifact(fixedStartFailureArtifactPath)
   let child
   try {
     child = childProcess.spawn(preview.command[0], preview.command.slice(1), {
@@ -1672,91 +1784,190 @@ const startStack = (profileId, optionOverrides = {}) => {
         ...process.env,
         HOME_CONTROL_WORKSPACE_ROOT: WORKSPACE_ROOT,
         HOME_CONTROL_STACK_STATE_DIR: STATE_DIR,
+        [FIXED_START_FAILURE_ARTIFACT_ENV]: fixedStartFailureArtifactPath,
         NO_COLOR: '1',
         FORCE_COLOR: '0',
         TERM: 'dumb'
       }
     })
   } catch {
-    const summary = fixedStartSummary('stack_start_failed_unknown')
-    writeJsonFile(LAUNCHER_STATE_FILE, { failedAt: nowIso(), fixedStartSummary: summary })
+    removeFixedStartFailureArtifact(fixedStartFailureArtifactPath)
+    const summary = fixedStartSummary('launcher_pre_source_failed', 'launcher_fallback', {
+      totalCaptureBytes: 0,
+      lineCount: 0,
+      captureLimited: false
+    })
+    writeJsonFile(LAUNCHER_STATE_FILE, {
+      failedAt: nowIso(),
+      command_class: 'home_control_stack',
+      fixedStartSummary: summary
+    })
     return { ok: false, fixedStartSummary: summary }
   }
 
-  const acceptedAt = nowIso()
-  const state = {
-    startedAt: acceptedAt,
-    supervisorPid: child.pid,
-    commandLine: preview.commandLine,
-    profileId,
-    startupTiming: {
-      schema_version: 'launcher_startup_timing.v0',
-      profileId,
-      acceptedAt,
-      supervisorPid: child.pid,
-      status_class: 'starting',
-      expectedServiceIds: expectedServicesForOptions(preview.options),
-      timelineEvents: [
-        {
-          event_class: 'launcher_start_accepted',
-          at: acceptedAt,
-          elapsedMs: 0
-        }
-      ],
-      serviceReadiness: {},
-      raw_private_publication_flags: false
+  let setupFailed = false
+  const removeArtifactAfterFailedSetup = () => {
+    if (setupFailed) {
+      removeFixedStartFailureArtifact(fixedStartFailureArtifactPath)
     }
   }
-  writeJsonFile(LAUNCHER_STATE_FILE, state)
-
-  appendStackLog(`[launcher] spawned stack supervisor pid=${child.pid}\n`)
+  child.once('exit', removeArtifactAfterFailedSetup)
+  child.once('close', removeArtifactAfterFailedSetup)
 
   let releaseCollectorListeners = () => {}
-  const collector = createFixedStartSummaryCollector({
-    onSummary: (summary) => {
+  let collectorListenersReleased = false
+  let collectorFinalized = false
+  let collector = null
+  let stdoutCollectorAttached = false
+  let stderrCollectorAttached = false
+  try {
+    collector = createFixedStartSummaryCollector({
+      onSummary: (summary) => {
+        writeJsonFile(LAUNCHER_STATE_FILE, {
+          ...readLauncherState(),
+          failedAt: nowIso(),
+          fixedStartSummary: summary
+        })
+      },
+      onClose: () => releaseCollectorListeners()
+    })
+    const onSupervisorStdout = (chunk) => {
+      collector.consume('stdout', chunk)
+    }
+    const onSupervisorStderr = (chunk) => {
+      collector.consume('stderr', chunk)
+    }
+    releaseCollectorListeners = () => {
+      if (collectorListenersReleased) {
+        return
+      }
+      collectorListenersReleased = true
+      if (stdoutCollectorAttached) {
+        child.stdout.removeListener('data', onSupervisorStdout)
+      }
+      if (stderrCollectorAttached) {
+        child.stderr.removeListener('data', onSupervisorStderr)
+      }
+    }
+    child.stdout.on('data', onSupervisorStdout)
+    stdoutCollectorAttached = true
+    child.stderr.on('data', onSupervisorStderr)
+    stderrCollectorAttached = true
+
+    let stdoutDrained = false
+    let stderrDrained = false
+    let exitIntent = null
+    const finalizeCollector = (fallbackClass, fallbackOrigin = 'launcher_fallback') => {
+      if (collectorFinalized) {
+        return
+      }
+      collectorFinalized = true
+      const artifactFailureClass = readFixedStartFailureArtifact(fixedStartFailureArtifactPath)
+      try {
+        collector.finalize(fallbackClass, fallbackOrigin, artifactFailureClass)
+      } finally {
+        removeFixedStartFailureArtifact(fixedStartFailureArtifactPath)
+      }
+    }
+    const finalizeAfterDrain = () => {
+      if (!exitIntent || !stdoutDrained || !stderrDrained) {
+        return
+      }
+      finalizeCollector(
+        exitIntent.code === 0 ? null : 'stack_start_failed_unknown',
+        'launcher_fallback'
+      )
+    }
+    const onSupervisorStdoutEnd = () => {
+      stdoutDrained = true
+      finalizeAfterDrain()
+    }
+    const onSupervisorStderrEnd = () => {
+      stderrDrained = true
+      finalizeAfterDrain()
+    }
+    child.stdout.once('end', onSupervisorStdoutEnd)
+    child.stderr.once('end', onSupervisorStderrEnd)
+
+    child.once('error', () => {
+      if (setupFailed) {
+        return
+      }
+      stdoutDrained = true
+      stderrDrained = true
+      finalizeCollector('launcher_pre_source_failed', 'launcher_fallback')
       writeJsonFile(LAUNCHER_STATE_FILE, {
         ...readLauncherState(),
         failedAt: nowIso(),
-        fixedStartSummary: summary
+        command_class: 'home_control_stack'
       })
-    },
-    onClose: () => releaseCollectorListeners()
-  })
-  const onSupervisorStdout = (chunk) => {
-    collector.consume('stdout', chunk)
-  }
-  const onSupervisorStderr = (chunk) => {
-    collector.consume('stderr', chunk)
-  }
-  child.stdout.on('data', onSupervisorStdout)
-  child.stderr.on('data', onSupervisorStderr)
-  releaseCollectorListeners = () => {
-    child.stdout.removeListener('data', onSupervisorStdout)
-    child.stderr.removeListener('data', onSupervisorStderr)
-  }
-  collector.arm()
-
-  child.once('error', () => {
-    collector.finalize('stack_start_failed_unknown')
-    writeJsonFile(LAUNCHER_STATE_FILE, {
-      ...readLauncherState(),
-      failedAt: nowIso()
     })
-  })
 
-  child.once('exit', (code, signal) => {
-    collector.finalize(code === 0 ? null : 'stack_start_failed_unknown')
-    appendStackLog(
-      `[launcher] stack supervisor exited code=${code} signal=${signal || '-'} at ${nowIso()}\n`
+    child.once('exit', (code) => {
+      if (setupFailed) {
+        return
+      }
+      exitIntent = { code }
+      finalizeAfterDrain()
+      writeJsonFile(LAUNCHER_STATE_FILE, {
+        ...readLauncherState(),
+        exitedAt: nowIso(),
+        command_class: 'home_control_stack'
+      })
+    })
+    child.once('close', () => {
+      if (setupFailed) {
+        return
+      }
+      stdoutDrained = true
+      stderrDrained = true
+      finalizeAfterDrain()
+    })
+
+    const acceptedAt = nowIso()
+    const state = {
+      startedAt: acceptedAt,
+      command_class: 'home_control_stack',
+      startupTiming: {
+        schema_version: 'launcher_startup_timing.v0',
+        profileId,
+        acceptedAt,
+        supervisorPid: child.pid,
+        status_class: 'starting',
+        expectedServiceIds: expectedServicesForOptions(preview.options),
+        timelineEvents: [
+          {
+            event_class: 'launcher_start_accepted',
+            at: acceptedAt,
+            elapsedMs: 0
+          }
+        ],
+        serviceReadiness: {},
+        raw_private_publication_flags: false
+      }
+    }
+    writeJsonFile(LAUNCHER_STATE_FILE, state)
+    return { ok: true, ...state }
+  } catch {
+    setupFailed = true
+    collectorFinalized = true
+    releaseCollectorListeners()
+    removeFixedStartFailureArtifact(fixedStartFailureArtifactPath)
+    try {
+      child.kill()
+    } catch {
+      // The terminal cleanup hooks remain responsible for any later artifact.
+    }
+    const counters = collector
+      ? collector.counters()
+      : { totalCaptureBytes: 0, lineCount: 0, captureLimited: false }
+    const summary = fixedStartSummary(
+      'launcher_pre_source_failed',
+      'launcher_fallback',
+      counters
     )
-    writeJsonFile(LAUNCHER_STATE_FILE, {
-      ...readLauncherState(),
-      exitedAt: nowIso(),
-      exitCode: code,
-      signal: signal || null
-    })
-  })
-  return { ok: true, ...state }
+    return { ok: false, fixedStartSummary: summary }
+  }
 }
 
 const runScriptAndCollect = (scriptPath, scriptArgs = [], timeoutMs = 30000) =>
@@ -3998,7 +4209,6 @@ const getState = async ({ includeLocalCameraSelection = true } = {}) => {
   const config = readLauncherConfig()
   const selectedProfileId = config.selectedProfileId || PRIMARY_PROFILE_ID
   const options = normalizeOptions(selectedProfileId, config.options || {})
-  const preview = publicCommandPreview(previewCommand(selectedProfileId, options))
   const status = await getStatus()
   const demoSafeSettings = effectiveDemoSafeSettings()
   return {
@@ -4019,24 +4229,14 @@ const getState = async ({ includeLocalCameraSelection = true } = {}) => {
         ? options
         : withoutLocalCameraSelection(options)
     },
-    launcherState: (() => {
-      const launcherState = readLauncherState()
-      return {
-        ...launcherState,
-        commandLine: launcherState.commandLine
-          ? redactCameraSelectionInCommandText(launcherState.commandLine)
-          : launcherState.commandLine
-      }
-    })(),
+    launcherState: publicFixedStartDiagnostic(readLauncherState()),
     operation: operationState(),
     status,
     startupTiming: status.startupTiming,
     diagnosticSurfaces: status.diagnosticSurfaces,
     demoSafeSettings,
     demoReadinessStatus: demoReadinessStatus(demoSafeSettings, status),
-    endpoints: getEndpoints(options),
-    preview,
-    logTail: readTextTail(STACK_LOG_FILE)
+    endpoints: getEndpoints(options)
   }
 }
 
@@ -4305,7 +4505,10 @@ const handleApi = async (request, response, requestUrl) => {
     return
   }
   if (request.method === 'GET' && requestUrl.pathname === '/api/logs') {
-    sendJson(response, 200, { ok: true, logTail: readTextTail(STACK_LOG_FILE) })
+    sendJson(response, 200, {
+      ok: true,
+      diagnostic: publicFixedStartDiagnostic(readLauncherState())
+    })
     return
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/preview') {

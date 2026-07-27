@@ -71,6 +71,54 @@ $OutputEncoding = $utf8NoBom
 
 $script:FixedStartFailureClass = ""
 
+function Write-FixedStartFailureArtifact {
+    param([Parameter(Mandatory = $true)][string]$FailureClass)
+
+    $artifactPath = [Environment]::GetEnvironmentVariable("SWORD_FIXED_START_FAILURE_FILE")
+    $stateDir = [Environment]::GetEnvironmentVariable("HOME_CONTROL_STACK_STATE_DIR")
+    if ([string]::IsNullOrWhiteSpace($artifactPath) -or [string]::IsNullOrWhiteSpace($stateDir)) {
+        return
+    }
+
+    try {
+        $fullStateDir = [System.IO.Path]::GetFullPath($stateDir).TrimEnd(
+            [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        )
+        $fullArtifactPath = [System.IO.Path]::GetFullPath($artifactPath)
+        $artifactParent = [System.IO.Path]::GetDirectoryName($fullArtifactPath).TrimEnd(
+            [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        )
+        $artifactName = [System.IO.Path]::GetFileName($fullArtifactPath)
+        if (-not [string]::Equals($artifactParent, $fullStateDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return
+        }
+        if ($artifactName -notmatch '^\.launcher-fixed-start-[0-9]+-[0-9a-fA-F-]{36}\.cause$') {
+            return
+        }
+
+        $payload = [System.Text.Encoding]::ASCII.GetBytes($FailureClass)
+        if ($payload.Length -gt 96) {
+            return
+        }
+        $stream = [System.IO.FileStream]::new(
+            $fullArtifactPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::Read
+        )
+        try {
+            $stream.Write($payload, 0, $payload.Length)
+            $stream.Flush($true)
+        }
+        finally {
+            $stream.Dispose()
+        }
+    }
+    catch {
+        # The bounded stdout marker remains available if the optional artifact cannot be created.
+    }
+}
+
 function Write-FixedStartFailureMarker {
     param(
         [ValidateSet(
@@ -80,12 +128,17 @@ function Write-FixedStartFailureMarker {
             "required_port_conflict",
             "dependency_or_tool_missing",
             "first_service_spawn_failed",
-            "stack_start_failed_unknown"
+            "stack_start_failed_unknown",
+            "system_preflight_failed",
+            "profile_preflight_failed",
+            "delegated_stack_preflight_failed",
+            "entrypoint_missing"
         )]
         [string]$FailureClass
     )
     if ([string]::IsNullOrWhiteSpace($script:FixedStartFailureClass)) {
         $script:FixedStartFailureClass = $FailureClass
+        Write-FixedStartFailureArtifact -FailureClass $FailureClass
         [Console]::Out.WriteLine("SWORD_FIXED_START_FAILURE_CLASS:$FailureClass")
     }
 }
@@ -481,7 +534,7 @@ function Invoke-StackScript {
     )
     $scriptPath = Join-Path (Resolve-RepoRoot) "ops\scripts\home-control-stack\$ScriptName"
     if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
-        Write-FixedStartFailureMarker -FailureClass "dependency_or_tool_missing"
+        Write-FixedStartFailureMarker -FailureClass "entrypoint_missing"
         throw "Stack script not found: $scriptPath"
     }
     try {
@@ -504,6 +557,7 @@ function Invoke-StackScript {
     & $powerShell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $scriptPath @Arguments
     $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
     if ($exitCode -ne 0) {
+        Write-FixedStartFailureMarker -FailureClass "delegated_stack_preflight_failed"
         exit $exitCode
     }
 }
@@ -539,16 +593,28 @@ function Write-ManifestStatus {
     }
 }
 
-$repoRoot = Resolve-RepoRoot
-$workspaceRoot = Resolve-WorkspaceRoot -Value $WorkspaceRoot
-$stackStateDir = Resolve-StackStateDir -WorkspaceRoot $workspaceRoot -Value $StackStateDir
-$manifestRoot = Join-Path $repoRoot "ops\manifests"
-$profileManifest = Resolve-ProfileManifest -ManifestRoot $manifestRoot -Profile $Profile
-$effectiveProfile = [string](Get-ObjectProperty -Object $profileManifest -Name "profile_id" -Default $Profile)
-$services = @(Resolve-EffectiveServices -Services @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $profileManifest -Name "services" -Default @())))
+try {
+    $repoRoot = Resolve-RepoRoot
+    $workspaceRoot = Resolve-WorkspaceRoot -Value $WorkspaceRoot
+    $stackStateDir = Resolve-StackStateDir -WorkspaceRoot $workspaceRoot -Value $StackStateDir
+    $manifestRoot = Join-Path $repoRoot "ops\manifests"
+}
+catch {
+    Write-FixedStartFailureMarker -FailureClass "system_preflight_failed"
+    throw
+}
 
-if ($services.Count -eq 0) {
-    throw "Profile has no services: $Profile"
+try {
+    $profileManifest = Resolve-ProfileManifest -ManifestRoot $manifestRoot -Profile $Profile
+    $effectiveProfile = [string](Get-ObjectProperty -Object $profileManifest -Name "profile_id" -Default $Profile)
+    $services = @(Resolve-EffectiveServices -Services @(ConvertTo-StringArray -Value (Get-ObjectProperty -Object $profileManifest -Name "services" -Default @())))
+    if ($services.Count -eq 0) {
+        throw "Profile has no services: $Profile"
+    }
+}
+catch {
+    Write-FixedStartFailureMarker -FailureClass "profile_preflight_failed"
+    throw
 }
 
 if ($effectiveProfile -ne $Profile) {

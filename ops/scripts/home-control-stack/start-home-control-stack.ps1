@@ -74,6 +74,54 @@ $OutputEncoding = $utf8NoBom
 
 $script:FixedStartFailureClass = ""
 
+function Write-FixedStartFailureArtifact {
+    param([Parameter(Mandatory = $true)][string]$FailureClass)
+
+    $artifactPath = [Environment]::GetEnvironmentVariable("SWORD_FIXED_START_FAILURE_FILE")
+    $stateDir = [Environment]::GetEnvironmentVariable("HOME_CONTROL_STACK_STATE_DIR")
+    if ([string]::IsNullOrWhiteSpace($artifactPath) -or [string]::IsNullOrWhiteSpace($stateDir)) {
+        return
+    }
+
+    try {
+        $fullStateDir = [System.IO.Path]::GetFullPath($stateDir).TrimEnd(
+            [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        )
+        $fullArtifactPath = [System.IO.Path]::GetFullPath($artifactPath)
+        $artifactParent = [System.IO.Path]::GetDirectoryName($fullArtifactPath).TrimEnd(
+            [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        )
+        $artifactName = [System.IO.Path]::GetFileName($fullArtifactPath)
+        if (-not [string]::Equals($artifactParent, $fullStateDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return
+        }
+        if ($artifactName -notmatch '^\.launcher-fixed-start-[0-9]+-[0-9a-fA-F-]{36}\.cause$') {
+            return
+        }
+
+        $payload = [System.Text.Encoding]::ASCII.GetBytes($FailureClass)
+        if ($payload.Length -gt 96) {
+            return
+        }
+        $stream = [System.IO.FileStream]::new(
+            $fullArtifactPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::Read
+        )
+        try {
+            $stream.Write($payload, 0, $payload.Length)
+            $stream.Flush($true)
+        }
+        finally {
+            $stream.Dispose()
+        }
+    }
+    catch {
+        # The bounded stdout marker remains available if the optional artifact cannot be created.
+    }
+}
+
 function Write-FixedStartFailureMarker {
     param(
         [ValidateSet(
@@ -83,12 +131,18 @@ function Write-FixedStartFailureMarker {
             "required_port_conflict",
             "dependency_or_tool_missing",
             "first_service_spawn_failed",
-            "stack_start_failed_unknown"
+            "stack_start_failed_unknown",
+            "stack_preflight_failed",
+            "stack_config_preflight_failed",
+            "previous_stack_preflight_failed",
+            "entrypoint_missing",
+            "pid_registry_write_failed"
         )]
         [string]$FailureClass
     )
     if ([string]::IsNullOrWhiteSpace($script:FixedStartFailureClass)) {
         $script:FixedStartFailureClass = $FailureClass
+        Write-FixedStartFailureArtifact -FailureClass $FailureClass
         [Console]::Out.WriteLine("SWORD_FIXED_START_FAILURE_CLASS:$FailureClass")
     }
 }
@@ -206,19 +260,25 @@ function Assert-HomeControlConfigNotDemoLiveMapping {
         )
     }
 }
-$HomeControlConfigPath = Resolve-HomeControlConfigPath `
-    -WorkspaceRoot $WorkspaceRoot `
-    -HomeAssistantServerRoot $HomeAssistantServerRoot `
-    -ConfiguredPath $HomeControlConfigPath
-if (-not $SkipHomeAssistantBridge) {
-    Assert-HomeControlConfigNotDemoLiveMapping -WorkspaceRoot $WorkspaceRoot -ConfigPath $HomeControlConfigPath
-    $localLiveConfigPath = Join-Path $WorkspaceRoot "local\env\home-control.live.yaml"
-    $localLiveResolved = Resolve-Path -LiteralPath $localLiveConfigPath -ErrorAction SilentlyContinue
-    $homeControlConfigLabel = $HomeControlConfigPath
-    if ($null -ne $localLiveResolved -and $HomeControlConfigPath -ieq $localLiveResolved.Path) {
-        $homeControlConfigLabel = "local/env/home-control.live.yaml"
+try {
+    $HomeControlConfigPath = Resolve-HomeControlConfigPath `
+        -WorkspaceRoot $WorkspaceRoot `
+        -HomeAssistantServerRoot $HomeAssistantServerRoot `
+        -ConfiguredPath $HomeControlConfigPath
+    if (-not $SkipHomeAssistantBridge) {
+        Assert-HomeControlConfigNotDemoLiveMapping -WorkspaceRoot $WorkspaceRoot -ConfigPath $HomeControlConfigPath
+        $localLiveConfigPath = Join-Path $WorkspaceRoot "local\env\home-control.live.yaml"
+        $localLiveResolved = Resolve-Path -LiteralPath $localLiveConfigPath -ErrorAction SilentlyContinue
+        $homeControlConfigLabel = $HomeControlConfigPath
+        if ($null -ne $localLiveResolved -and $HomeControlConfigPath -ieq $localLiveResolved.Path) {
+            $homeControlConfigLabel = "local/env/home-control.live.yaml"
+        }
+        Write-Host "[home_assistant_bridge] config: $homeControlConfigLabel"
     }
-    Write-Host "[home_assistant_bridge] config: $homeControlConfigLabel"
+}
+catch {
+    Write-FixedStartFailureMarker -FailureClass "stack_config_preflight_failed"
+    throw
 }
 $HomeAssistantEnvPath = Join-Path $HomeAssistantServerRoot ".env"
 $TouchDesignerGuiToolsRoot = Join-Path $TouchDesignerGuiRoot "tools"
@@ -316,6 +376,7 @@ function Assert-Directory {
     )
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
         Write-FixedStartFailureMarker -FailureClass "dependency_or_tool_missing"
+        Write-FixedStartFailureMarker -FailureClass "stack_preflight_failed"
         throw "$Label directory not found: $Path"
     }
 }
@@ -1174,6 +1235,27 @@ function Save-PidState {
     $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $PidFile -Encoding UTF8
 }
 
+function Save-StartupPidState {
+    param([Parameter(Mandatory = $true)][object[]]$Children)
+    try {
+        Save-PidState -Children $Children
+    }
+    catch {
+        Write-FixedStartFailureMarker -FailureClass "pid_registry_write_failed"
+        throw
+    }
+}
+
+function Assert-SelectedServiceEntrypoints {
+    param([Parameter(Mandatory = $true)][object[]]$Specs)
+    foreach ($spec in $Specs) {
+        if ([string]::IsNullOrWhiteSpace([string]$spec.FilePath) -or -not (Test-Path -LiteralPath $spec.FilePath -PathType Leaf)) {
+            Write-FixedStartFailureMarker -FailureClass "entrypoint_missing"
+            throw "Selected service entrypoint is unavailable: $($spec.Name)"
+        }
+    }
+}
+
 function Format-CommandLine {
     param([Parameter(Mandatory = $true)][string[]]$Command)
     return ($Command | ForEach-Object {
@@ -1473,6 +1555,7 @@ function Start-SupervisedProcess {
     foreach ($key in $Spec.Environment.Keys) {
         $startInfo.Environment[$key] = [string]$Spec.Environment[$key]
     }
+    $null = $startInfo.Environment.Remove("SWORD_FIXED_START_FAILURE_FILE")
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -1979,7 +2062,7 @@ if ($EnableThoughtCore -or $EnableThoughtCoreWatch) {
 }
 if ($EnableThoughtCore) {
     if (-not (Test-Path -LiteralPath $ThoughtCoreScript -PathType Leaf)) {
-        Write-FixedStartFailureMarker -FailureClass "dependency_or_tool_missing"
+        Write-FixedStartFailureMarker -FailureClass "entrypoint_missing"
         throw "thought-core start script not found: $ThoughtCoreScript"
     }
     if (-not (Test-Path -LiteralPath (Join-Path $ThoughtCoreRoot "services\thought-core") -PathType Container)) {
@@ -1996,7 +2079,7 @@ if ($EnableThoughtCore) {
 }
 if ($EnableThoughtCoreWatch) {
     if (-not (Test-Path -LiteralPath $ThoughtCoreWatchScript -PathType Leaf)) {
-        Write-FixedStartFailureMarker -FailureClass "dependency_or_tool_missing"
+        Write-FixedStartFailureMarker -FailureClass "entrypoint_missing"
         throw "thought-core watcher script not found: $ThoughtCoreWatchScript"
     }
     Assert-Directory -Path $AiTalkCoreRoot -Label "ai-talk-core"
@@ -2019,22 +2102,28 @@ if ($EnableThoughtCore -and (-not $StopExisting) -and (Test-HttpReachable -Url "
     $StartThoughtCoreService = $false
 }
 
-if (Test-RecordedProcessesAlive) {
-    if ($DryRun) {
-        Write-Host "[dry-run] a previous home-control stack appears to be running; no stop was attempted."
-    }
-    elseif ($StopExisting) {
-        Stop-RecordedStack
-    }
-    else {
-        $answer = Read-Host "A previous home-control stack appears to be running. Stop it and continue? [y/N]"
-        if ($answer -match "^(y|yes)$") {
+try {
+    if (Test-RecordedProcessesAlive) {
+        if ($DryRun) {
+            Write-Host "[dry-run] a previous home-control stack appears to be running; no stop was attempted."
+        }
+        elseif ($StopExisting) {
             Stop-RecordedStack
         }
         else {
-            throw "Canceled because a previous home-control stack is still running."
+            $answer = Read-Host "A previous home-control stack appears to be running. Stop it and continue? [y/N]"
+            if ($answer -match "^(y|yes)$") {
+                Stop-RecordedStack
+            }
+            else {
+                throw "Canceled because a previous home-control stack is still running."
+            }
         }
     }
+}
+catch {
+    Write-FixedStartFailureMarker -FailureClass "previous_stack_preflight_failed"
+    throw
 }
 
 if (-not $DryRun) {
@@ -2701,6 +2790,8 @@ if ($DryRun) {
     return
 }
 
+Assert-SelectedServiceEntrypoints -Specs $specs
+
 $children = @()
 $shutdownStarted = $false
 $exitCode = 0
@@ -2723,7 +2814,7 @@ try {
             throw
         }
         $children += $rootChild
-        Save-PidState -Children $children
+        Save-StartupPidState -Children $children
         if ($spec.Name -eq "openai_provider_broker") {
             Wait-OpenAIBrokerReady -Child $rootChild -TimeoutSeconds 12
         }
@@ -2752,7 +2843,7 @@ try {
         }
         if ($null -ne $sealedListener) {
             $children += $sealedListener
-            Save-PidState -Children $children
+            Save-StartupPidState -Children $children
         }
         if ($spec.Name -eq "mediapipe_camera_hub_stack") {
             $mediapipeCameraHubChild = $rootChild
@@ -2765,7 +2856,7 @@ try {
     foreach ($spec in $delayedVisionSnapshotSpecs) {
         $visionSnapshotRootChild = Start-SupervisedProcess -Spec $spec
         $children += $visionSnapshotRootChild
-        Save-PidState -Children $children
+        Save-StartupPidState -Children $children
         $visionSnapshotListener = Find-SealedDescendantListenerRecord `
             -RootChild $visionSnapshotRootChild `
             -Port $VisionSnapshotProcessorPort `
@@ -2773,7 +2864,7 @@ try {
             -Name "vision_snapshot_processor_listener" `
             -Module "vision-snapshot-processor"
         $children += $visionSnapshotListener
-        Save-PidState -Children $children
+        Save-StartupPidState -Children $children
     }
 
     Write-StackEndpointGuide
