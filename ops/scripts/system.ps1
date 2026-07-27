@@ -49,7 +49,9 @@ param(
     [switch]$SkipAituber,
     [switch]$SkipTouchDesignerGui,
     [switch]$EnableThoughtCore,
+    [switch]$SkipThoughtCore,
     [switch]$EnableThoughtCoreWatch,
+    [switch]$SkipThoughtCoreWatch,
     [switch]$ThoughtCoreNoProvider,
     [switch]$StopExisting,
     [switch]$SkipVoicevoxCheck,
@@ -353,6 +355,13 @@ function Test-ServiceSelected {
 
 function Resolve-EffectiveServices {
     param([Parameter(Mandatory = $true)][string[]]$Services)
+    if ($EnableThoughtCore -and $SkipThoughtCore) {
+        throw "EnableThoughtCore cannot be combined with SkipThoughtCore."
+    }
+    if ($EnableThoughtCoreWatch -and $SkipThoughtCoreWatch) {
+        throw "EnableThoughtCoreWatch cannot be combined with SkipThoughtCoreWatch."
+    }
+
     $selected = @{}
     foreach ($service in $Services) {
         $selected[$service] = $true
@@ -364,8 +373,18 @@ function Resolve-EffectiveServices {
     if ($SkipVisionSnapshotProcessor) { $selected["vision_snapshot_processor"] = $false }
     if ($SkipAituber) { $selected["aituber_kit"] = $false }
     if ($SkipTouchDesignerGui) { $selected["touchdesigner_control_gui"] = $false }
-    if ($EnableThoughtCore) { $selected["thought_core_api"] = $true }
-    if ($EnableThoughtCoreWatch) { $selected["thought_core_watcher"] = $true }
+    if ($SkipThoughtCore) {
+        $selected["thought_core_api"] = $false
+    }
+    elseif ($EnableThoughtCore) {
+        $selected["thought_core_api"] = $true
+    }
+    if ($SkipThoughtCoreWatch) {
+        $selected["thought_core_watcher"] = $false
+    }
+    elseif ($EnableThoughtCoreWatch) {
+        $selected["thought_core_watcher"] = $true
+    }
 
     return [string[]]@(
         $selected.Keys |

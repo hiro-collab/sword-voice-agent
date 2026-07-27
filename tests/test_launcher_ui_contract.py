@@ -78,6 +78,90 @@ def extract_between(text: str, start: str, end: str) -> str:
 
 
 class LauncherUiContractTest(TestCase):
+    def test_launcher_propagates_explicit_thought_core_selection_to_system(self) -> None:
+        server = read_launcher_server()
+        helper = extract_between(
+            server,
+            "const addThoughtCoreSelectionArgs",
+            "const buildSystemStartArgs",
+        )
+        start_builder = extract_between(
+            server,
+            "const buildSystemStartArgs",
+            "const buildSystemStatusArgs",
+        )
+        status_builder = extract_between(
+            server,
+            "const buildSystemStatusArgs",
+            "const buildPowerShellCommand",
+        )
+        expected_services = extract_between(
+            server,
+            "const expectedServicesForOptions",
+            "const startupReadyTimeoutMsForService",
+        )
+
+        for source in (start_builder, status_builder):
+            self.assertIn("addThoughtCoreSelectionArgs(stackArgs, options)", source)
+        self.assertIn(
+            "options.EnableThoughtCore ? 'EnableThoughtCore' : 'SkipThoughtCore'",
+            helper,
+        )
+        self.assertIn(
+            "options.EnableThoughtCoreWatch ? 'EnableThoughtCoreWatch' : 'SkipThoughtCoreWatch'",
+            helper,
+        )
+        self.assertIn(
+            "if (options.EnableThoughtCore) services.push('thought_core_api')",
+            expected_services,
+        )
+        self.assertIn(
+            "if (options.EnableThoughtCoreWatch) services.push('thought_core_watcher')",
+            expected_services,
+        )
+
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is required for launcher argument contract tests")
+        node_program = f"""
+const SYSTEM_SCRIPT = 'fixture-system.ps1'
+const addSupportedSwitch = (_script, args, name) => args.push(`-${{name}}`)
+{helper}
+const cases = [
+  {{ api: true, watch: true }},
+  {{ api: true, watch: false }},
+  {{ api: false, watch: true }},
+  {{ api: false, watch: false }}
+]
+const report = cases.map((item) => {{
+  const args = []
+  addThoughtCoreSelectionArgs(args, {{
+    EnableThoughtCore: item.api,
+    EnableThoughtCoreWatch: item.watch
+  }})
+  return args
+}})
+process.stdout.write(JSON.stringify(report))
+"""
+        completed = subprocess.run(
+            [node, "-e", node_program],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            json.loads(completed.stdout),
+            [
+                ["-EnableThoughtCore", "-EnableThoughtCoreWatch"],
+                ["-EnableThoughtCore", "-SkipThoughtCoreWatch"],
+                ["-SkipThoughtCore", "-EnableThoughtCoreWatch"],
+                ["-SkipThoughtCore", "-SkipThoughtCoreWatch"],
+            ],
+        )
+
     def test_body_map_inspector_is_the_only_launcher_diagnostics_route(self) -> None:
         server = read_launcher_server()
         public_app = read_public("app.js")

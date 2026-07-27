@@ -1329,6 +1329,19 @@ const addSupportedSwitch = (scriptPath, args, name) => {
   }
 }
 
+const addThoughtCoreSelectionArgs = (stackArgs, options) => {
+  addSupportedSwitch(
+    SYSTEM_SCRIPT,
+    stackArgs,
+    options.EnableThoughtCore ? 'EnableThoughtCore' : 'SkipThoughtCore'
+  )
+  addSupportedSwitch(
+    SYSTEM_SCRIPT,
+    stackArgs,
+    options.EnableThoughtCoreWatch ? 'EnableThoughtCoreWatch' : 'SkipThoughtCoreWatch'
+  )
+}
+
 const buildSystemStartArgs = (profileId, options) => {
   const stackArgs = ['start', '-Profile', opsProfileFor(profileId)]
   addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'HomeAssistantBridgeHost', options.HomeAssistantBridgeHost)
@@ -1386,10 +1399,14 @@ const buildSystemStartArgs = (profileId, options) => {
     addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'HomeControlConfigPath', options.HomeControlConfigPath)
   }
   for (const key of SWITCH_FIELDS) {
+    if (key === 'EnableThoughtCore' || key === 'EnableThoughtCoreWatch') {
+      continue
+    }
     if (options[key]) {
       addSupportedSwitch(SYSTEM_SCRIPT, stackArgs, key)
     }
   }
+  addThoughtCoreSelectionArgs(stackArgs, options)
   return stackArgs
 }
 
@@ -1406,12 +1423,7 @@ const buildSystemStatusArgs = (profileId, options) => {
       addSupportedParam(SYSTEM_SCRIPT, stackArgs, key, options[key])
     }
   }
-  if (options.EnableThoughtCore) {
-    addSupportedSwitch(SYSTEM_SCRIPT, stackArgs, 'EnableThoughtCore')
-  }
-  if (options.EnableThoughtCoreWatch) {
-    addSupportedSwitch(SYSTEM_SCRIPT, stackArgs, 'EnableThoughtCoreWatch')
-  }
+  addThoughtCoreSelectionArgs(stackArgs, options)
   return stackArgs
 }
 

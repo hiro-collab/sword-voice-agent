@@ -196,6 +196,90 @@ class LauncherNativeLayoutTest(TestCase):
             self.assertEqual(list((state_dir / "logs").iterdir()), [])
             self.assertFalse((state_dir / "pids.json").exists())
 
+    def test_system_thought_core_selection_can_override_manifest_services(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sword-system-thought-core-selection-") as temp_dir:
+            temp_root = Path(temp_dir)
+            workspace = temp_root / "sword-agent-os"
+            make_native_workspace(workspace)
+            shutil.rmtree(workspace / "organs/speech-input/ai-talk-core")
+            common_arguments = (
+                "start",
+                "-Profile",
+                "thought-core-v0",
+                "-WorkspaceRoot",
+                str(workspace),
+                "-SkipEnvironmentState",
+                "-SkipMediapipe",
+                "-SkipVisionSnapshotProcessor",
+                "-SkipAituber",
+                "-SkipTouchDesignerGui",
+                "-SkipVoicevoxCheck",
+                "-ThoughtCoreNoProvider",
+                "-DryRun",
+            )
+
+            api_only_result = run_system(
+                *common_arguments,
+                "-StackStateDir",
+                str(temp_root / "api-only-state"),
+                "-EnableThoughtCore",
+                "-SkipThoughtCoreWatch",
+                cwd=temp_root,
+            )
+            api_only_output = (
+                f"{api_only_result.stdout}\n{api_only_result.stderr}"
+            )
+            self.assertEqual(api_only_result.returncode, 0, api_only_output)
+            self.assertIn(
+                str(workspace / "control-plane/core/scripts/start-thought-core.ps1"),
+                api_only_output,
+            )
+            self.assertNotIn("start-thought-core-watch.ps1", api_only_output)
+            self.assertNotIn("ai-talk-core", api_only_output)
+
+            no_thought_core_result = run_system(
+                *common_arguments,
+                "-StackStateDir",
+                str(temp_root / "no-thought-core-state"),
+                "-SkipThoughtCore",
+                "-SkipThoughtCoreWatch",
+                cwd=temp_root,
+            )
+            no_thought_core_output = (
+                f"{no_thought_core_result.stdout}\n{no_thought_core_result.stderr}"
+            )
+            self.assertEqual(
+                no_thought_core_result.returncode,
+                0,
+                no_thought_core_output,
+            )
+            self.assertIn("home_assistant_bridge", no_thought_core_output)
+            self.assertNotIn("start-thought-core.ps1", no_thought_core_output)
+            self.assertNotIn("start-thought-core-watch.ps1", no_thought_core_output)
+            self.assertNotIn("ai-talk-core", no_thought_core_output)
+
+    def test_system_rejects_conflicting_thought_core_selection_switches(self) -> None:
+        for enable_switch, skip_switch in (
+            ("-EnableThoughtCore", "-SkipThoughtCore"),
+            ("-EnableThoughtCoreWatch", "-SkipThoughtCoreWatch"),
+        ):
+            with self.subTest(enable=enable_switch, skip=skip_switch):
+                result = run_system(
+                    "status",
+                    "-Profile",
+                    "thought-core-v0",
+                    "-ManifestOnly",
+                    enable_switch,
+                    skip_switch,
+                    cwd=ROOT,
+                )
+                output = f"{result.stdout}\n{result.stderr}"
+                self.assertNotEqual(result.returncode, 0, output)
+                self.assertIn(
+                    f"{enable_switch[1:]} cannot be combined with {skip_switch[1:]}",
+                    output,
+                )
+
     def test_system_camera_selection_is_required_only_for_camera_profiles(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sword-system-camera-selection-") as temp_dir:
             temp_root = Path(temp_dir)
