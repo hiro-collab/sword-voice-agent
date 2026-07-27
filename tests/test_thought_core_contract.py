@@ -29,6 +29,7 @@ from thought_core.tools import (  # noqa: E402
     HomeControlHttpTools,
     HomeControlToolConfig,
     MockThoughtTools,
+    _tracked_state_check,
     detect_home_action_intent,
 )
 
@@ -1411,6 +1412,96 @@ class ThoughtCoreContractTest(TestCase):
             "2026-05-08T00:00:05+00:00",
         )
 
+    def test_tracked_home_state_requires_exact_bounded_match_contract(self) -> None:
+        action = {
+            "action_id": "door_close",
+            "target": "door",
+            "target_name": "PRIVATE_TARGET_NAME_SENTINEL",
+            "expected_state": "closed",
+        }
+        execute_payload = {
+            "action_id": "door_close",
+            "expected_state": "closed",
+            "state_authority": "ha_entity",
+            "verification_mode": "ha_state",
+            "state_tracking": "tracked",
+        }
+        self.assertEqual(
+            _tracked_state_check(action, execute_payload),
+            {
+                "action_id": "door_close",
+                "target": "door",
+                "expected_state": "closed",
+            },
+        )
+        rejected_execute_payloads = [
+            {**execute_payload, "action_id": "door_open"},
+            {**execute_payload, "expected_state": "open"},
+            {**execute_payload, "expected_state": "closed/private"},
+            {**execute_payload, "state_authority": "submitted_only"},
+            {**execute_payload, "verification_mode": "command_ack_only"},
+            {**execute_payload, "state_tracking": "ack_only"},
+        ]
+        for execute_payload_candidate in rejected_execute_payloads:
+            with self.subTest(execute_payload=execute_payload_candidate):
+                self.assertIsNone(
+                    _tracked_state_check(action, execute_payload_candidate)
+                )
+
+        tools = HomeControlHttpTools(
+            HomeControlToolConfig(
+                bridge_base_url="http://127.0.0.1:1",
+                api_token="bridge-token",
+                environment_state_url="http://127.0.0.1:1/environment/current",
+                environment_api_token="environment-token",
+            )
+        )
+        turn = TurnInput.from_mapping({**TURN, "turn_id": "turn_tracked_state"})
+        tools.tracked_state_check_by_turn[turn.turn_id] = {
+            "action_id": "door_close",
+            "target": "door",
+            "expected_state": "closed",
+        }
+        matched = {
+            "action_id": "door_close",
+            "status": "matched",
+            "state_authority": "ha_entity",
+            "verification_mode": "ha_state",
+            "state_tracking": "tracked",
+            "actual_state": "PRIVATE_HA_STATE_SENTINEL",
+        }
+        rejected = [
+            {**matched, "action_id": "door_open"},
+            {**matched, "status": "mismatch"},
+            {**matched, "state_authority": "submitted_only"},
+            {**matched, "verification_mode": "command_ack_only"},
+            {**matched, "state_tracking": "ack_only"},
+        ]
+        for payload in rejected:
+            with self.subTest(payload=payload):
+                with patch.object(tools, "_json_request", return_value=payload):
+                    self.assertIsNone(tools._matched_tracked_state_fact(turn))
+
+        with patch.object(tools, "_json_request", return_value=matched):
+            fact = tools._matched_tracked_state_fact(turn)
+
+        self.assertEqual(
+            fact,
+            {
+                "id": "door",
+                "kind": "door",
+                "name": "中扉",
+                "state": "closed",
+                "stale": False,
+                "source": "home_control_bridge.state_match",
+                "action_id": "door_close",
+            },
+        )
+        self.assertNotIn(
+            "PRIVATE_HA_STATE_SENTINEL",
+            json.dumps(fact, ensure_ascii=False),
+        )
+
     def test_confirm_required_action_waits_for_user_confirmation(self) -> None:
         calls: list[dict[str, object]] = []
         state = {"door": "open"}
@@ -1424,16 +1515,24 @@ class ThoughtCoreContractTest(TestCase):
                         "authorization": self.headers.get("Authorization"),
                     }
                 )
+                if self.path == "/actions/door_close/state":
+                    self._send_json(
+                        {
+                            "ok": state["door"] == "closed",
+                            "action_id": "door_close",
+                            "status": "matched" if state["door"] == "closed" else "mismatch",
+                            "state_authority": "ha_entity",
+                            "verification_mode": "ha_state",
+                            "state_tracking": "tracked",
+                            "actual_state": state["door"],
+                            "private_detail": "PRIVATE_HA_STATE_SENTINEL",
+                        }
+                    )
+                    return
                 self._send_json(
                     {
                         "snapshot_id": "env_test",
-                        "appliances": {
-                            "door": {
-                                "state": state["door"],
-                                "updated_at": "2026-05-08T00:00:00+00:00",
-                                "source": "home_assistant",
-                            }
-                        },
+                        "appliances": {},
                         "last_home_assistant_events": [],
                         "state_queries": {},
                     }
@@ -1463,6 +1562,9 @@ class ThoughtCoreContractTest(TestCase):
                             "speak": "中扉を閉めるを実行します。よろしいですか？",
                             "expected_state": "closed",
                             "expected_effect": {"expected_state": "closed"},
+                            "state_authority": "ha_entity",
+                            "verification_mode": "ha_state",
+                            "state_tracking": "tracked",
                         }
                     )
                     return
@@ -1482,8 +1584,13 @@ class ThoughtCoreContractTest(TestCase):
                                 "message": "中扉を閉めました。",
                                 "speak": "中扉を閉めました。",
                                 "execution_id": "exec_door_close",
+                                "execution_lifecycle_class": "submission_completed",
+                                "submission_count": 1,
                                 "expected_state": "closed",
                                 "expected_effect": {"expected_state": "closed"},
+                                "state_authority": "ha_entity",
+                                "verification_mode": "ha_state",
+                                "state_tracking": "tracked",
                             }
                         )
                         return
@@ -1590,12 +1697,17 @@ class ThoughtCoreContractTest(TestCase):
         self.assertEqual(execute_body["confirmed"], True)
         self.assertEqual(execute_body["confirmation_token"], "confirm-token-1")
         self.assertEqual(second_events[-1]["data"]["status"], "success")
+        self.assertIn(
+            "/actions/door_close/state",
+            [call["path"] for call in calls if call["method"] == "GET"],
+        )
         self.assertIn("中扉を閉める操作を送信しました。反映後の状態を確認します。", second_messages)
         self.assertIn("中扉を閉めました。", second_messages[-1])
         self.assertIn("environment.observe.after_action", second_stages)
         self.assertIn("action.review", second_stages)
         serialized = json.dumps(first_events + second_events, ensure_ascii=False)
         self.assertNotIn("confirm-token-1", serialized)
+        self.assertNotIn("PRIVATE_HA_STATE_SENTINEL", serialized)
         self.assertIn("[REDACTED]", serialized)
 
     def test_action_waits_for_multiple_observations_before_giving_up(self) -> None:

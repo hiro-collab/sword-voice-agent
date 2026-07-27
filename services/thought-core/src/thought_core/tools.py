@@ -436,6 +436,7 @@ class HomeControlHttpTools:
     config: HomeControlToolConfig
     execute_attempts_by_turn: dict[str, int] = field(default_factory=dict)
     last_execute_issued_at_by_turn: dict[str, str] = field(default_factory=dict)
+    tracked_state_check_by_turn: dict[str, dict[str, str]] = field(default_factory=dict)
     room_light_wait_after_by_turn: dict[str, str] = field(default_factory=dict)
     room_light_wait_timeout_ms_by_turn: dict[str, int] = field(default_factory=dict)
 
@@ -482,11 +483,25 @@ class HomeControlHttpTools:
                 "observation_source": "environment-state-server.http",
                 "facts": {"devices": []},
             }
+        facts = _facts_from_environment_current(payload)
+        matched_state_fact = self._matched_tracked_state_fact(turn)
+        if matched_state_fact is not None:
+            target = str(matched_state_fact["id"])
+            devices = [
+                device
+                for device in facts["devices"]
+                if not (
+                    isinstance(device, dict)
+                    and str(device.get("id") or device.get("kind") or "") == target
+                )
+            ]
+            devices.append(matched_state_fact)
+            facts["devices"] = devices
         return {
             "status": "ok",
             "observation_ref": str(payload.get("snapshot_id") or f"env_{reason}"),
             "observation_source": "environment-state-server.http",
-            "facts": _facts_from_environment_current(payload),
+            "facts": facts,
             "environment": payload,
         }
 
@@ -622,6 +637,9 @@ class HomeControlHttpTools:
         issued_at = str(issued_at_value or datetime.now(UTC).isoformat())
         if lifecycle == "submission_completed" and submission_count == 1:
             self.last_execute_issued_at_by_turn[turn.turn_id] = issued_at
+            tracking = _tracked_state_check(action, payload)
+            if tracking is not None:
+                self.tracked_state_check_by_turn[turn.turn_id] = tracking
         bridge_status = str(payload.get("status") or "unknown")
         executed = bool(payload.get("executed"))
         ok = bool(payload.get("ok", executed))
@@ -655,6 +673,42 @@ class HomeControlHttpTools:
             "execution_lifecycle_class": lifecycle or None,
             "submission_count": submission_count,
             "terminal": payload.get("terminal"),
+        }
+
+    def _matched_tracked_state_fact(self, turn: TurnInput) -> dict[str, Any] | None:
+        tracking = self.tracked_state_check_by_turn.get(turn.turn_id)
+        if not isinstance(tracking, dict):
+            return None
+        action_id = str(tracking.get("action_id") or "")
+        target = str(tracking.get("target") or "")
+        expected_state = str(tracking.get("expected_state") or "")
+        if not action_id or not target or not expected_state:
+            return None
+        try:
+            payload = self._json_request(
+                "GET",
+                self._bridge_url(f"/actions/{action_id}/state"),
+                token=self.config.api_token,
+            )
+        except HomeControlToolError:
+            return None
+        if (
+            str(payload.get("action_id") or "") != action_id
+            or str(payload.get("status") or "") != "matched"
+            or str(payload.get("state_tracking") or "") != "tracked"
+            or str(payload.get("verification_mode") or "") != "ha_state"
+            or str(payload.get("state_authority") or "")
+            not in {"ha_entity", "home_assistant"}
+        ):
+            return None
+        return {
+            "id": target,
+            "kind": target,
+            "name": _device_name(target),
+            "state": expected_state,
+            "stale": False,
+            "source": "home_control_bridge.state_match",
+            "action_id": action_id,
         }
 
     def state_query_feedback(
@@ -1443,6 +1497,57 @@ def _facts_from_environment_current(payload: dict[str, Any]) -> dict[str, Any]:
         "last_home_assistant_events": payload.get("last_home_assistant_events", []),
         "actions": payload.get("actions", []),
         "state_queries": payload.get("state_queries", {}),
+    }
+
+
+def _tracked_state_check(
+    action: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, str] | None:
+    action_id = str(action.get("action_id") or "").strip()
+    payload_action_id = str(payload.get("action_id") or "").strip()
+    target = str(action.get("target") or "").strip()
+    expected_state = str(action.get("expected_state") or "").strip()
+    payload_expected_state = str(payload.get("expected_state") or "").strip()
+    state_tracking = str(
+        payload.get("state_tracking") or action.get("state_tracking") or ""
+    ).strip()
+    verification_mode = str(
+        payload.get("verification_mode") or action.get("verification_mode") or ""
+    ).strip()
+    state_authority = str(
+        payload.get("state_authority") or action.get("state_authority") or ""
+    ).strip()
+    if (
+        not action_id
+        or not target
+        or not expected_state
+        or (payload_action_id and payload_action_id != action_id)
+        or payload_expected_state != expected_state
+        or len(action_id) > 64
+        or len(target) > 64
+        or len(expected_state) > 64
+        or any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789_"
+            for character in action_id
+        )
+        or any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789_"
+            for character in target
+        )
+        or any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789_"
+            for character in expected_state
+        )
+        or state_tracking != "tracked"
+        or verification_mode != "ha_state"
+        or state_authority not in {"ha_entity", "home_assistant"}
+    ):
+        return None
+    return {
+        "action_id": action_id,
+        "target": target,
+        "expected_state": expected_state,
     }
 
 
