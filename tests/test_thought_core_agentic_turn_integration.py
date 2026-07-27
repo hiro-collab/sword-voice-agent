@@ -23,6 +23,7 @@ from thought_core.capability_catalog import (  # noqa: E402
     CapabilityCatalogError,
     HomeCapabilityCatalog,
 )
+from thought_core.execution_deadline import TurnDeadlineExceeded  # noqa: E402
 from thought_core.input_understanding import InputFrame  # noqa: E402
 from thought_core.loop import ThoughtLoop  # noqa: E402
 from thought_core.tools import MockThoughtTools  # noqa: E402
@@ -101,6 +102,26 @@ class _OrderedProvider(_CapturingConversationProvider):
     def respond_to_receipt(self, receipt):  # type: ignore[no-untyped-def]
         self.call_order.append(f"provider.receipt:{receipt.phase}")
         return {"speech": "結果を確認しました。", "display": "確認済みです。"}
+
+
+class _ReceiptExceptionProvider:
+    def __init__(self, candidate: object, exception: Exception) -> None:
+        self.candidate = candidate
+        self.exception = exception
+        self.receipt_phases: list[str] = []
+
+    def decide(self, request: AgenticTurnProviderRequest) -> object:
+        del request
+        return self.candidate
+
+    def respond_to_receipt(self, receipt):  # type: ignore[no-untyped-def]
+        self.receipt_phases.append(receipt.phase)
+        if receipt.phase == "confirmation":
+            return {
+                "speech": "実行前に確認します。",
+                "display": "確認が必要です。",
+            }
+        raise self.exception
 
 
 class _OrderedPredecisionTools(_DirectOnlyTools):
@@ -1097,6 +1118,47 @@ class AgenticTurnIntegrationTest(TestCase):
                 and event["data"]["status"] == "accepted"
             ],
         )
+
+    def test_receipt_deadline_propagates_after_confirmed_execution(self) -> None:
+        provider = _ReceiptExceptionProvider(
+            self._capability("door_close"),
+            TurnDeadlineExceeded(),
+        )
+        tools = _DirectOnlyTools()
+        loop = ThoughtLoop(tools=tools, agentic_turn_provider=provider)
+
+        preview_events = loop.run_dicts(
+            self._turn("通路を安全にしたい。", turn_id="deadline_preview")
+        )
+        self.assertEqual(preview_events[-1]["data"]["status"], "confirmation_required")
+
+        with self.assertRaisesRegex(TurnDeadlineExceeded, "turn_deadline_exceeded"):
+            loop.run_dicts(self._turn("お願い", turn_id="deadline_confirm"))
+
+        self.assertEqual(provider.receipt_phases, ["confirmation", "success"])
+        self.assertEqual(len(tools.execute_calls), 1)
+
+    def test_non_deadline_receipt_error_remains_bounded_and_unavailable(self) -> None:
+        private_sentinel = "PRIVATE_RECEIPT_ERROR_SENTINEL"
+        provider = _ReceiptExceptionProvider(
+            self._capability("light_on"),
+            RuntimeError(private_sentinel),
+        )
+        events = ThoughtLoop(
+            tools=_NoopDirectTools(),
+            agentic_turn_provider=provider,
+        ).run_dicts(self._turn("少し明るくして。", turn_id="receipt_error"))
+
+        unavailable = [
+            event
+            for event in events
+            if event["type"] == "agentic.receipt_response"
+            and event["data"]["status"] == "unavailable"
+        ]
+        self.assertEqual(provider.receipt_phases, ["noop"])
+        self.assertEqual(len(unavailable), 1)
+        self.assertEqual(unavailable[0]["data"]["phase"], "noop")
+        self.assertNotIn(private_sentinel, json.dumps(events, ensure_ascii=False))
 
     def _capability(
         self,

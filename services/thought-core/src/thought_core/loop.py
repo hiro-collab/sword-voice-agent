@@ -2135,6 +2135,8 @@ class ThoughtLoop:
         )
         try:
             response = validate_agentic_receipt_response(responder(receipt))
+        except TurnDeadlineExceeded:
+            raise
         except Exception:
             response = None
         if response is None:
