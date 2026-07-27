@@ -1,0 +1,176 @@
+{
+  "schema_version": "ordinary_standard_route.v1",
+  "profile_id": "thought-core-v0",
+  "public_surfaces": {
+    "contract": {
+      "path": "/api/ordinary-route-contract"
+    },
+    "status": {
+      "path": "/api/status",
+      "field": "startupTiming"
+    },
+    "state": {
+      "path": "/api/state",
+      "field": "launcherState.fixed_start_summary"
+    }
+  },
+  "readiness": {
+    "expected_service_ids": [
+      "home_assistant_bridge",
+      "environment_state_server",
+      "mediapipe",
+      "vision_snapshot_processor",
+      "aituber_kit",
+      "touchdesigner_control_gui",
+      "thought_core_api",
+      "thought_core_watcher",
+      "voicevox"
+    ],
+    "status_class_field": "startupTiming.status_class",
+    "expected_service_ids_field": "startupTiming.expectedServiceIds",
+    "ready_status_classes": [
+      "startup_expected_services_ready",
+      "startup_expected_services_operational_with_degraded"
+    ]
+  },
+  "deadlines": {
+    "header": "X-Sword-Route-Deadline-Monotonic",
+    "server_seconds": 75,
+    "client_seconds": 74,
+    "relation": "client_strictly_less_than_server"
+  },
+  "turn_accounting": {
+    "retry_count": 0,
+    "abort_rule": "abort_before_request_after_ceiling",
+    "flows": {
+      "conversation": {
+        "user_turns": 1,
+        "max_provider_requests": 1,
+        "abort_request_number": 2,
+        "phases": ["provider_decision"]
+      },
+      "confirmed_action": {
+        "user_turns": 2,
+        "max_provider_requests": 3,
+        "abort_request_number": 4,
+        "phases": [
+          "provider_decision",
+          "confirmation_prompt_response",
+          "post_receipt_response"
+        ]
+      },
+      "single_decision_action": {
+        "user_turns": 1,
+        "max_provider_requests": 1,
+        "abort_request_number": 2,
+        "phases": ["provider_decision"]
+      }
+    }
+  },
+  "action_accounting": {
+    "max_submissions_per_confirmed_action": 1,
+    "receipt_before_success_presentation": true,
+    "unknown_outcome_stops": true,
+    "canonical_authority_required": true,
+    "duplicate_cloud_allowed": false,
+    "counter_fields": [
+      "bridge_submission_count",
+      "correlated_receipt_count",
+      "success_presentation_count"
+    ],
+    "certainty_classes": [
+      "zero",
+      "one",
+      "bounded_zero_or_one",
+      "unknown",
+      "not_applicable"
+    ]
+  },
+  "review_checkpoint": {
+    "schema_version": "ordinary_standard_route.review_checkpoint.v1",
+    "field": "review_checkpoint_class",
+    "state_tracking_value": "tracked",
+    "verification_mode_value": "ha_state",
+    "classes": {
+      "not_checked": "not_checked",
+      "pending": "pending",
+      "action_id_mismatch": "action_id_mismatch",
+      "status_not_matched": "status_not_matched",
+      "tracking_not_tracked": "tracking_not_tracked",
+      "verification_mode_mismatch": "verification_mode_mismatch",
+      "authority_mismatch": "authority_mismatch",
+      "matched": "matched",
+      "unavailable": "unavailable",
+      "deadline": "deadline"
+    },
+    "authority_values": ["ha_entity", "home_assistant"]
+  },
+  "result_finalization": {
+    "schema_version": "ordinary_standard_route.run_result.v1",
+    "phase_classes": [
+      "not_started",
+      "preflight",
+      "launcher_started",
+      "ready",
+      "turn_in_progress",
+      "turn_completed",
+      "stopped",
+      "aborted"
+    ],
+    "finalization_classes": [
+      "result_missing",
+      "result_partial",
+      "result_complete"
+    ],
+    "cleanup_classes": [
+      "cleanup_not_started",
+      "cleanup_in_progress",
+      "cleanup_clear",
+      "cleanup_degraded",
+      "cleanup_blocked"
+    ],
+    "required_fields": [
+      "schema_version",
+      "contract_sha256",
+      "flow_id",
+      "phase_class",
+      "finalization_class",
+      "cleanup_class",
+      "user_turn_count",
+      "provider_request_count",
+      "bridge_submission_count",
+      "correlated_receipt_count",
+      "success_presentation_count",
+      "review_checkpoint_class"
+    ],
+    "optional_fields": [
+      "provider_request_certainty",
+      "bridge_submission_certainty",
+      "correlated_receipt_certainty",
+      "success_presentation_certainty",
+      "fixed_result_class"
+    ]
+  },
+  "privacy": {
+    "raw_private_publication_flags": false,
+    "prohibited_result_fields": [
+      "stdout",
+      "stderr",
+      "log",
+      "logs",
+      "command",
+      "args",
+      "env",
+      "key",
+      "token",
+      "payload",
+      "response_body",
+      "entity",
+      "state",
+      "path",
+      "url",
+      "pid",
+      "process"
+    ]
+  }
+}

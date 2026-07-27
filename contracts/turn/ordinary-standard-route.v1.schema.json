@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-agent-os.local/contracts/turn/ordinary-standard-route.v1.schema.json",
+  "title": "Sword ordinary standard route contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile_id",
+    "public_surfaces",
+    "readiness",
+    "deadlines",
+    "turn_accounting",
+    "action_accounting",
+    "review_checkpoint",
+    "result_finalization",
+    "privacy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "ordinary_standard_route.v1"
+    },
+    "profile_id": {
+      "const": "thought-core-v0"
+    },
+    "public_surfaces": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "status", "state"],
+      "properties": {
+        "contract": { "$ref": "#/$defs/publicSurface" },
+        "status": { "$ref": "#/$defs/publicSurface" },
+        "state": { "$ref": "#/$defs/publicSurface" }
+      }
+    },
+    "readiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_service_ids",
+        "status_class_field",
+        "expected_service_ids_field",
+        "ready_status_classes"
+      ],
+      "properties": {
+        "expected_service_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/fixedToken" }
+        },
+        "status_class_field": { "$ref": "#/$defs/publicFieldPath" },
+        "expected_service_ids_field": { "$ref": "#/$defs/publicFieldPath" },
+        "ready_status_classes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/fixedToken" }
+        }
+      }
+    },
+    "deadlines": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["header", "server_seconds", "client_seconds", "relation"],
+      "properties": {
+        "header": {
+          "type": "string",
+          "const": "X-Sword-Route-Deadline-Monotonic"
+        },
+        "server_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 75
+        },
+        "client_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 74
+        },
+        "relation": {
+          "const": "client_strictly_less_than_server"
+        }
+      }
+    },
+    "turn_accounting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["retry_count", "abort_rule", "flows"],
+      "properties": {
+        "retry_count": { "const": 0 },
+        "abort_rule": { "const": "abort_before_request_after_ceiling" },
+        "flows": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["conversation", "confirmed_action", "single_decision_action"],
+          "properties": {
+            "conversation": { "$ref": "#/$defs/flowBudget" },
+            "confirmed_action": { "$ref": "#/$defs/flowBudget" },
+            "single_decision_action": { "$ref": "#/$defs/flowBudget" }
+          }
+        }
+      }
+    },
+    "action_accounting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_submissions_per_confirmed_action",
+        "receipt_before_success_presentation",
+        "unknown_outcome_stops",
+        "canonical_authority_required",
+        "duplicate_cloud_allowed",
+        "counter_fields",
+        "certainty_classes"
+      ],
+      "properties": {
+        "max_submissions_per_confirmed_action": { "const": 1 },
+        "receipt_before_success_presentation": { "const": true },
+        "unknown_outcome_stops": { "const": true },
+        "canonical_authority_required": { "const": true },
+        "duplicate_cloud_allowed": { "const": false },
+        "counter_fields": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "bridge_submission_count",
+              "correlated_receipt_count",
+              "success_presentation_count"
+            ]
+          }
+        },
+        "certainty_classes": {
+          "type": "array",
+          "minItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["zero", "one", "bounded_zero_or_one", "unknown", "not_applicable"]
+          }
+        }
+      }
+    },
+    "review_checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "field",
+        "state_tracking_value",
+        "verification_mode_value",
+        "classes",
+        "authority_values"
+      ],
+      "properties": {
+        "schema_version": { "const": "ordinary_standard_route.review_checkpoint.v1" },
+        "field": { "const": "review_checkpoint_class" },
+        "state_tracking_value": { "const": "tracked" },
+        "verification_mode_value": { "const": "ha_state" },
+        "classes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "not_checked",
+            "pending",
+            "action_id_mismatch",
+            "status_not_matched",
+            "tracking_not_tracked",
+            "verification_mode_mismatch",
+            "authority_mismatch",
+            "matched",
+            "unavailable",
+            "deadline"
+          ],
+          "properties": {
+            "not_checked": { "const": "not_checked" },
+            "pending": { "const": "pending" },
+            "action_id_mismatch": { "const": "action_id_mismatch" },
+            "status_not_matched": { "const": "status_not_matched" },
+            "tracking_not_tracked": { "const": "tracking_not_tracked" },
+            "verification_mode_mismatch": { "const": "verification_mode_mismatch" },
+            "authority_mismatch": { "const": "authority_mismatch" },
+            "matched": { "const": "matched" },
+            "unavailable": { "const": "unavailable" },
+            "deadline": { "const": "deadline" }
+          }
+        },
+        "authority_values": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["ha_entity", "home_assistant"] }
+        }
+      }
+    },
+    "result_finalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "phase_classes",
+        "finalization_classes",
+        "cleanup_classes",
+        "required_fields",
+        "optional_fields"
+      ],
+      "properties": {
+        "schema_version": { "const": "ordinary_standard_route.run_result.v1" },
+        "phase_classes": { "$ref": "#/$defs/tokenList" },
+        "finalization_classes": { "$ref": "#/$defs/tokenList" },
+        "cleanup_classes": { "$ref": "#/$defs/tokenList" },
+        "required_fields": { "$ref": "#/$defs/tokenList" },
+        "optional_fields": { "$ref": "#/$defs/tokenList" }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw_private_publication_flags", "prohibited_result_fields"],
+      "properties": {
+        "raw_private_publication_flags": { "const": false },
+        "prohibited_result_fields": { "$ref": "#/$defs/tokenList" }
+      }
+    }
+  },
+  "$defs": {
+    "fixedToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "^[a-z0-9_.-]+$"
+    },
+    "publicFieldPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9_.]+$"
+    },
+    "publicSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/api/[a-z0-9-]+$",
+          "maxLength": 96
+        },
+        "field": { "$ref": "#/$defs/publicFieldPath" }
+      }
+    },
+    "flowBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user_turns", "max_provider_requests", "abort_request_number", "phases"],
+      "properties": {
+        "user_turns": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "max_provider_requests": { "type": "integer", "minimum": 0, "maximum": 12 },
+        "abort_request_number": { "type": "integer", "minimum": 1, "maximum": 13 },
+        "phases": { "$ref": "#/$defs/tokenList" }
+      }
+    },
+    "tokenList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/fixedToken" }
+    }
+  }
+}

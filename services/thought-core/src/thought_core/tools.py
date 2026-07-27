@@ -20,6 +20,11 @@ from .execution_deadline import (
     ensure_execution_active,
     remaining_execution_seconds,
 )
+from .ordinary_route_contract import (
+    canonical_review_match_required,
+    review_checkpoint_class,
+    review_checkpoint_payload,
+)
 from .schema import TurnInput
 
 
@@ -104,6 +109,7 @@ class MockThoughtTools:
     state_query_feedback_calls: list[dict[str, Any]] = field(default_factory=list)
     short_memory_write_calls: list[dict[str, Any]] = field(default_factory=list)
     memory_write_calls: list[dict[str, Any]] = field(default_factory=list)
+    canonical_review_matched_turns: set[str] = field(default_factory=set)
 
     def environment_observe(self, turn: TurnInput, *, reason: str) -> dict[str, Any]:
         light_on = self._light_on_for_turn(turn)
@@ -145,6 +151,12 @@ class MockThoughtTools:
                 "state_queries": environment.get("state_queries", {}),
             },
             "environment": environment,
+            "review_checkpoint": review_checkpoint_payload(
+                "matched"
+                if reason == "after_action"
+                and turn.turn_id in self.canonical_review_matched_turns
+                else "not_checked"
+            ),
         }
 
     def home_preview(self, turn: TurnInput, observation: dict[str, Any]) -> dict[str, Any]:
@@ -223,6 +235,8 @@ class MockThoughtTools:
                 "speak": _mock_action_message(action),
                 **mock_metadata,
             }
+            if canonical_review_match_required(action):
+                self.canonical_review_matched_turns.add(turn.turn_id)
         if self.include_secret_in_execute_result:
             result["access_token"] = "mock-token-that-must-not-leak"
             result["authorization"] = "Bearer mock-token-that-must-not-leak"
@@ -437,16 +451,19 @@ class HomeControlHttpTools:
     execute_attempts_by_turn: dict[str, int] = field(default_factory=dict)
     last_execute_issued_at_by_turn: dict[str, str] = field(default_factory=dict)
     tracked_state_check_by_turn: dict[str, dict[str, str]] = field(default_factory=dict)
+    tracked_state_checkpoint_by_turn: dict[str, str] = field(default_factory=dict)
     room_light_wait_after_by_turn: dict[str, str] = field(default_factory=dict)
     room_light_wait_timeout_ms_by_turn: dict[str, int] = field(default_factory=dict)
 
     def environment_observe(self, turn: TurnInput, *, reason: str) -> dict[str, Any]:
+        review_checkpoint = self._review_checkpoint_for_turn(turn, reason=reason)
         if not self.config.environment_state_url or not self.config.environment_api_token:
             return {
                 "status": "skipped",
                 "observation_ref": f"env_unconfigured_{reason}",
                 "observation_source": "environment-state-server.unconfigured",
                 "facts": {"devices": []},
+                "review_checkpoint": review_checkpoint,
             }
         url = self.config.environment_state_url
         request_timeout_s = self.config.timeout_s
@@ -497,9 +514,11 @@ class HomeControlHttpTools:
                 "observation_ref": f"env_error_{reason}",
                 "observation_source": "environment-state-server.http",
                 "facts": {"devices": []},
+                "review_checkpoint": review_checkpoint,
             }
         facts = _facts_from_environment_current(payload)
         matched_state_fact = self._matched_tracked_state_fact(turn)
+        review_checkpoint = self._review_checkpoint_for_turn(turn, reason=reason)
         if matched_state_fact is not None:
             target = str(matched_state_fact["id"])
             devices = [
@@ -518,6 +537,7 @@ class HomeControlHttpTools:
             "observation_source": "environment-state-server.http",
             "facts": facts,
             "environment": payload,
+            "review_checkpoint": review_checkpoint,
         }
 
     def home_preview(self, turn: TurnInput, observation: dict[str, Any]) -> dict[str, Any]:
@@ -661,6 +681,10 @@ class HomeControlHttpTools:
             tracking = _tracked_state_check(action, payload)
             if tracking is not None:
                 self.tracked_state_check_by_turn[turn.turn_id] = tracking
+                self.tracked_state_checkpoint_by_turn[turn.turn_id] = review_checkpoint_class(
+                    tracking,
+                    None,
+                )
         bridge_status = str(payload.get("status") or "unknown")
         executed = bool(payload.get("executed"))
         ok = bool(payload.get("ok", executed))
@@ -707,6 +731,10 @@ class HomeControlHttpTools:
         expected_state = str(tracking.get("expected_state") or "")
         if not action_id or not target or not expected_state:
             return None
+        self.tracked_state_checkpoint_by_turn[turn.turn_id] = review_checkpoint_class(
+            tracking,
+            None,
+        )
         try:
             payload = self._json_request(
                 "GET",
@@ -714,15 +742,17 @@ class HomeControlHttpTools:
                 token=self.config.api_token,
             )
         except HomeControlToolError:
+            self.tracked_state_checkpoint_by_turn[turn.turn_id] = review_checkpoint_class(
+                tracking,
+                None,
+                unavailable=True,
+            )
             return None
-        if (
-            str(payload.get("action_id") or "") != action_id
-            or str(payload.get("status") or "") != "matched"
-            or str(payload.get("state_tracking") or "") != "tracked"
-            or str(payload.get("verification_mode") or "") != "ha_state"
-            or str(payload.get("state_authority") or "")
-            not in {"ha_entity", "home_assistant"}
-        ):
+        checkpoint_class = review_checkpoint_class(tracking, payload)
+        self.tracked_state_checkpoint_by_turn[turn.turn_id] = checkpoint_class
+        if checkpoint_class != review_checkpoint_payload("matched")[
+            "review_checkpoint_class"
+        ]:
             return None
         return {
             "id": target,
@@ -733,6 +763,22 @@ class HomeControlHttpTools:
             "source": "home_control_bridge.state_match",
             "action_id": action_id,
         }
+
+    def _review_checkpoint_for_turn(
+        self,
+        turn: TurnInput,
+        *,
+        reason: str,
+    ) -> dict[str, str]:
+        if reason != "after_action":
+            return review_checkpoint_payload("not_checked")
+        checkpoint_class = self.tracked_state_checkpoint_by_turn.get(turn.turn_id)
+        if checkpoint_class is None:
+            checkpoint_class = review_checkpoint_class(
+                self.tracked_state_check_by_turn.get(turn.turn_id),
+                None,
+            )
+        return review_checkpoint_payload(checkpoint_class)
 
     def state_query_feedback(
         self,

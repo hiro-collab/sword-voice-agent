@@ -5,6 +5,11 @@ const http = require('http')
 const https = require('https')
 const net = require('net')
 const path = require('path')
+const {
+  assertLauncherRuntimeAlignment,
+  loadContract: loadOrdinaryRouteContract,
+  publicContractPayload: ordinaryRouteContractPayload
+} = require('./ordinary-route-contract')
 
 const args = process.argv.slice(2)
 
@@ -89,6 +94,8 @@ const STOP_VERIFY_INTERVAL_MS = Number(
   process.env.HOME_CONTROL_LAUNCHER_STOP_VERIFY_INTERVAL_MS || 600
 )
 const PRIMARY_PROFILE_ID = 'thought-core-v0'
+const ORDINARY_ROUTE_CONTRACT = loadOrdinaryRouteContract()
+const ORDINARY_ROUTE_PUBLIC_SURFACES = ORDINARY_ROUTE_CONTRACT.public_surfaces
 const DEFAULT_HOME_CONTROL_LIVE_CONFIG = path.join(
   WORKSPACE_ROOT,
   'local',
@@ -4484,7 +4491,17 @@ const handleApi = async (request, response, requestUrl) => {
     })
     return
   }
-  if (request.method === 'GET' && requestUrl.pathname === '/api/state') {
+  if (
+    request.method === 'GET' &&
+    requestUrl.pathname === ORDINARY_ROUTE_PUBLIC_SURFACES.contract.path
+  ) {
+    sendJson(response, 200, ordinaryRouteContractPayload())
+    return
+  }
+  if (
+    request.method === 'GET' &&
+    requestUrl.pathname === ORDINARY_ROUTE_PUBLIC_SURFACES.state.path
+  ) {
     sendJson(
       response,
       200,
@@ -4492,7 +4509,10 @@ const handleApi = async (request, response, requestUrl) => {
     )
     return
   }
-  if (request.method === 'GET' && requestUrl.pathname === '/api/status') {
+  if (
+    request.method === 'GET' &&
+    requestUrl.pathname === ORDINARY_ROUTE_PUBLIC_SURFACES.status.path
+  ) {
     sendJson(response, 200, await getStatus(), launcherStatusCorsHeaders())
     return
   }
@@ -4662,7 +4682,9 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === 'OPTIONS') {
       const headers =
-        requestUrl.pathname === '/api/status' ? launcherStatusCorsHeaders() : {}
+        requestUrl.pathname === ORDINARY_ROUTE_PUBLIC_SURFACES.status.path
+          ? launcherStatusCorsHeaders()
+          : {}
       sendJson(response, 204, {}, headers)
       return
     }
@@ -4717,6 +4739,23 @@ server.on('error', (error) => {
   process.exitCode = 1
 })
 
+assertLauncherRuntimeAlignment({
+  profileId: PRIMARY_PROFILE_ID,
+  publicSurfaces: {
+    contract: { path: ORDINARY_ROUTE_PUBLIC_SURFACES.contract.path },
+    status: {
+      path: ORDINARY_ROUTE_PUBLIC_SURFACES.status.path,
+      field: 'startupTiming'
+    },
+    state: {
+      path: ORDINARY_ROUTE_PUBLIC_SURFACES.state.path,
+      field: 'launcherState.fixed_start_summary'
+    }
+  },
+  expectedServiceIds: expectedServicesForOptions(
+    normalizeOptions(PRIMARY_PROFILE_ID, {})
+  )
+})
 ensureRuntimeDirs()
 server.listen(PORT, HOST, () => {
   const url = `http://${HOST}:${PORT}`

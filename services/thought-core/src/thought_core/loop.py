@@ -43,6 +43,11 @@ from .input_understanding import (
     build_input_understanding_from_env,
     describe_input_understanding,
 )
+from .ordinary_route_contract import (
+    canonical_review_match_required,
+    review_checkpoint_from_observation,
+    review_checkpoint_payload,
+)
 from .persona import AssistantPersona, build_persona_from_env, strip_persona_tags
 from .projection_effect_intent import (
     detect_projection_effect_intent,
@@ -1287,6 +1292,9 @@ class ThoughtLoop:
                             "facts": after_observation.get("facts", {}),
                             "after_tool": "home.execute",
                             "attempt": attempt,
+                            "review_checkpoint_class": review_checkpoint_from_observation(
+                                after_observation
+                            ),
                         },
                     )
                 )
@@ -3394,6 +3402,9 @@ class ThoughtLoop:
                     "after_tool": "home.execute",
                     "attempt": execute_result.get("attempt", 1),
                     "confirmed": True,
+                    "review_checkpoint_class": review_checkpoint_from_observation(
+                        after_observation
+                    ),
                 },
             )
         )
@@ -3663,6 +3674,9 @@ class ThoughtLoop:
                     "observation_source": observation.get("observation_source"),
                     "facts": observation.get("facts", {}),
                     "review_for_action": action.get("action_id"),
+                    "review_checkpoint_class": review_checkpoint_from_observation(
+                        observation
+                    ),
                     "observations_done": observations_done,
                     "execute_attempts": execute_attempts,
                     "environment_recheck": self._environment_recheck_marker(
@@ -3953,6 +3967,9 @@ class ThoughtLoop:
                     "after_tool": "home.execute",
                     "attempt": execute_attempts,
                     "review_retry": True,
+                    "review_checkpoint_class": review_checkpoint_from_observation(
+                        observation
+                    ),
                 },
             )
         )
@@ -4386,10 +4403,37 @@ class ThoughtLoop:
         observation: dict[str, Any],
         execute_result: dict[str, Any],
     ) -> dict[str, Any]:
+        checkpoint_class = review_checkpoint_from_observation(observation)
+
+        def with_checkpoint(review: dict[str, Any]) -> dict[str, Any]:
+            review["review_checkpoint_class"] = checkpoint_class
+            return review
+
         action_id = str(action.get("action_id") or "")
         expected_state = str(
             action.get("expected_state") or execute_result.get("expected_state") or ""
         ).strip()
+        not_checked_checkpoint = review_checkpoint_payload("not_checked")[
+            "review_checkpoint_class"
+        ]
+        matched_checkpoint = review_checkpoint_payload("matched")[
+            "review_checkpoint_class"
+        ]
+        requires_canonical_match = canonical_review_match_required(
+            action,
+            execute_result,
+        )
+        if checkpoint_class != matched_checkpoint and (
+            requires_canonical_match or checkpoint_class != not_checked_checkpoint
+        ):
+            return with_checkpoint(
+                {
+                    "status": "pending",
+                    "reason": "canonical_review_checkpoint_not_matched",
+                    "action_id": action_id,
+                    "expected_state": expected_state,
+                }
+            )
         target_state = self._target_state_from_action(action)
         if self._target_state_is_reviewable(target_state):
             try:
@@ -4429,41 +4473,41 @@ class ThoughtLoop:
                     "wildcard_policy",
                     target_state.get("wildcard_policy", "unspecified_values_are_any"),
                 )
-                return review
+                return with_checkpoint(review)
         status = str(execute_result.get("status") or "")
         if not self._execution_was_accepted(execute_result):
-            return {
+            return with_checkpoint({
                 "status": "execute_failed",
                 "reason": str(execute_result.get("error") or status or "execute_failed"),
                 "action_id": action_id,
                 "expected_state": expected_state,
-            }
+            })
 
         device_review = self._review_device_state(action, observation, expected_state)
         if device_review:
-            return device_review
+            return with_checkpoint(device_review)
 
         room_light_review = self._review_room_light_state(action, observation, expected_state)
         if room_light_review:
-            return room_light_review
+            return with_checkpoint(room_light_review)
 
         wait_result = self._wait_result_from_observation(observation)
         if wait_result and self._as_bool(wait_result.get("matched")) is False:
-            return {
+            return with_checkpoint({
                 "status": "pending",
                 "reason": "environment_wait_timeout",
                 "action_id": action_id,
                 "expected_state": expected_state,
                 "wait_result": wait_result,
-            }
+            })
 
-        return {
+        return with_checkpoint({
             "status": "pending",
             "reason": "accepted_but_unverified",
             "action_id": action_id,
             "expected_state": expected_state,
             "bridge_status": status,
-        }
+        })
 
     def _review_device_state(
         self,

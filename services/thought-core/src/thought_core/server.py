@@ -30,14 +30,18 @@ from .execution_deadline import (
     issue_turn_execution_deadline,
 )
 from .loop import ThoughtLoop
+from .ordinary_route_contract import (
+    max_route_deadline_seconds,
+    route_deadline_header,
+)
 from .provenance_diagnostics import build_child_provenance_diagnostics
 from .reasoning import LocalActionReasoner
 from .responders import LocalFallbackResponder
 from .schema import TurnInput
 
 DEFAULT_MAX_BODY_BYTES = 64 * 1024
-ROUTE_DEADLINE_HEADER = "X-Sword-Route-Deadline-Monotonic"
-MAX_ROUTE_DEADLINE_SECONDS = 75.0
+ROUTE_DEADLINE_HEADER = route_deadline_header()
+MAX_ROUTE_DEADLINE_SECONDS = max_route_deadline_seconds()
 MAX_ACCEPTED_CANDIDATE_RESERVATIONS = 4096
 CONFIRMATION_RESPONSE_RESULT_SCHEMA = "thought-core.confirmation-response-result.v1"
 
