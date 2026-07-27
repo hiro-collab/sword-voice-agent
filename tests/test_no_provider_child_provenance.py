@@ -454,6 +454,39 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_server_accepts_and_forwards_deadline_inside_twenty_second_bound(
+        self,
+    ) -> None:
+        class RecordingDeadlineLoop:
+            def __init__(self) -> None:
+                self.remaining_seconds: float | None = None
+
+            def run_dicts(self, turn, *, event_sink=None, execution_deadline=None):
+                self.remaining_seconds = execution_deadline.remaining_seconds()
+                return []
+
+        loop = RecordingDeadlineLoop()
+        payload = self._accepted_candidate_payload(
+            "ausc_live:cid_55555555555555555555555555555555"
+        )
+        server = create_server("127.0.0.1", 0, thought_loop=loop)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, _ = self._post_turn(
+                server.server_address[1],
+                payload,
+                deadline_header=str(time.monotonic() + 15.0),
+            )
+            self.assertEqual(status, 200)
+            self.assertIsNotNone(loop.remaining_seconds)
+            self.assertGreater(loop.remaining_seconds, 10.0)
+            self.assertLessEqual(loop.remaining_seconds, 15.0)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_server_returns_fixed_error_when_deadline_expires_inside_loop(self) -> None:
         class CancellingLoop:
             def __init__(self) -> None:
@@ -543,7 +576,7 @@ class NoProviderChildProvenanceTests(unittest.TestCase):
         thread.start()
         try:
             port = server.server_address[1]
-            for deadline_header in (marker, str(time.monotonic() + 11)):
+            for deadline_header in (marker, str(time.monotonic() + 21)):
                 with self.subTest(deadline_header=deadline_header):
                     payload = self._accepted_candidate_payload(
                         "ausc_live:cid_33333333333333333333333333333333"
