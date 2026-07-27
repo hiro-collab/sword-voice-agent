@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 from collections.abc import Mapping
 from email.message import Message
@@ -18,11 +19,14 @@ from thought_core.agentic_turn_provider import (  # noqa: E402
     AgenticActionReceipt,
     AgenticCapabilityView,
     AgenticCapabilityViewEntry,
+    AgenticPredecisionContext,
+    AgenticPredecisionContextSection,
     AgenticTurnProviderRequest,
     UnavailableAgenticTurnProvider,
 )
 from thought_core.agentic_turn_runtime_provider import (  # noqa: E402
     OpenAICompatibleAgenticTurnProvider,
+    MAX_PREDECISION_CONTEXT_SERIALIZED_BYTES,
     MAX_SWORD_OPENAI_BROKER_TIMEOUT_S,
     SWORD_OPENAI_BROKER_BASE_URLS,
     SWORD_OPENAI_BROKER_MODEL,
@@ -928,7 +932,11 @@ class AgenticTurnRuntimeProviderTest(TestCase):
         self.assertEqual(held["data"]["reason"], "agentic_provider_unavailable")
         self.assertEqual(understanding.calls, [])
         self.assertEqual(
-            [event for event in events if event["type"] == "tool.started"],
+            [
+                event["data"]["tool"]
+                for event in events
+                if event["type"] == "tool.started"
+            ],
             [],
         )
         self.assertNotIn("action.proposed", [event["type"] for event in events])
@@ -953,6 +961,7 @@ class AgenticTurnRuntimeProviderTest(TestCase):
                 "capabilities",
                 "context_refs",
                 "agent_context",
+                "predecision_context",
             },
         )
         self.assertEqual(
@@ -974,10 +983,324 @@ class AgenticTurnRuntimeProviderTest(TestCase):
                 },
             ],
         )
+        predecision = payload["predecision_context"]  # type: ignore[index]
+        self.assertEqual(
+            predecision["schema_version"],  # type: ignore[index]
+            "agentic-predecision-context.v1",
+        )
+        self.assertIsNone(predecision["latest_user_correction"])  # type: ignore[index]
+        for section_name in (
+            "environment_state",
+            "relevant_memory",
+            "same_session_continuity",
+            "system_topology",
+        ):
+            self.assertEqual(
+                predecision[section_name],  # type: ignore[index]
+                {
+                    "status": "missing",
+                    "status_detail": "not_supplied",
+                    "summary": "",
+                    "items": [],
+                },
+            )
+        self.assertEqual(
+            predecision["capability_view"],  # type: ignore[index]
+            {
+                "catalog": payload["catalog"],  # type: ignore[index]
+                "capabilities": payload["capabilities"],  # type: ignore[index]
+            },
+        )
         serialized = json.dumps(call, ensure_ascii=False)
         self.assertNotIn("provider_payload", serialized)
         self.assertNotIn("api_key", serialized)
         self.assertNotIn("endpoint", serialized)
+
+    def test_predecision_context_is_bounded_explicit_and_stably_ordered(self) -> None:
+        candidate = self._conversation_candidate()
+        completion = _CapturingCompletion(candidate, candidate)
+        provider = OpenAICompatibleAgenticTurnProvider(completion)
+
+        def _context(item: Mapping[str, object]) -> AgenticPredecisionContext:
+            return AgenticPredecisionContext(
+                latest_user_correction="照明ではなく映像を変えて。",
+                environment_state=AgenticPredecisionContextSection(
+                    status="available",
+                    status_detail="",
+                    summary="現在の部屋状態を観測済み。",
+                    items=(item,),
+                ),
+                relevant_memory=AgenticPredecisionContextSection(
+                    status="stale",
+                    status_detail="memory_snapshot_stale",
+                    summary="関連する以前の希望は古い。",
+                    items=(MappingProxyType({"memory_ref": "memory_safe_1"}),),
+                ),
+                same_session_continuity=AgenticPredecisionContextSection(
+                    status="available",
+                    status_detail="",
+                    summary="同じ会話内の修正を保持。",
+                    items=(
+                        MappingProxyType({"topic": "映像表現", "correction_rank": 1}),
+                    ),
+                ),
+                system_topology=AgenticPredecisionContextSection(
+                    status="conflict",
+                    status_detail="component_reports_disagree",
+                    summary="表示系の報告が一致していない。",
+                    items=(
+                        MappingProxyType(
+                            {
+                                "component": "projection_host",
+                                "reported_states": ("ready", "unknown"),
+                            }
+                        ),
+                    ),
+                ),
+            )
+
+        first = _context(MappingProxyType({"z_value": "最後", "a_value": "先頭"}))
+        second = _context(MappingProxyType({"a_value": "先頭", "z_value": "最後"}))
+        for context in (first, second):
+            self.assertEqual(
+                provider.decide(
+                    self._provider_request(
+                        human_wish="意図が見える映像にして。",
+                        context_refs=MappingProxyType({}),
+                        predecision_context=context,
+                    )
+                ),
+                candidate,
+            )
+
+        observed = [
+            call["input_payload"]["predecision_context"]  # type: ignore[index]
+            for call in completion.calls
+        ]
+        encoded = [
+            json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            for value in observed
+        ]
+        self.assertEqual(encoded[0], encoded[1])
+        self.assertLessEqual(
+            len(encoded[0].encode("utf-8")),
+            MAX_PREDECISION_CONTEXT_SERIALIZED_BYTES,
+        )
+        self.assertEqual(
+            observed[0]["latest_user_correction"],  # type: ignore[index]
+            "照明ではなく映像を変えて。",
+        )
+        self.assertEqual(
+            observed[0]["relevant_memory"]["status"],  # type: ignore[index]
+            "stale",
+        )
+        self.assertEqual(
+            observed[0]["system_topology"]["status"],  # type: ignore[index]
+            "conflict",
+        )
+        self.assertIn("latest_user_correction", completion.calls[0]["system_prompt"])
+
+    def test_runtime_payload_matches_draft_2020_12_schema_and_safety_parity(self) -> None:
+        candidate = self._conversation_candidate()
+        completion = _CapturingCompletion(candidate)
+        provider = OpenAICompatibleAgenticTurnProvider(completion)
+        available = lambda items: AgenticPredecisionContextSection(  # noqa: E731
+            status="available",
+            status_detail="",
+            summary="bounded context",
+            items=items,
+        )
+        context = AgenticPredecisionContext(
+            latest_user_correction="映像の方を先に変えて。",
+            environment_state=available(
+                (MappingProxyType({"item_type": "state", "available": True}),)
+            ),
+            relevant_memory=available(
+                (
+                    MappingProxyType(
+                        {"item_type": "working_memory", "safe_ref_count": 2}
+                    ),
+                )
+            ),
+            same_session_continuity=available(
+                (
+                    MappingProxyType(
+                        {"item_type": "decision", "correction_rank": 1}
+                    ),
+                )
+            ),
+        )
+
+        self.assertEqual(
+            provider.decide(
+                self._provider_request(
+                    human_wish="いまの状態を踏まえて映像を変えて。",
+                    context_refs=MappingProxyType({}),
+                    predecision_context=context,
+                )
+            ),
+            candidate,
+        )
+        payload = completion.calls[0]["input_payload"]["predecision_context"]
+        schema = json.loads(
+            (
+                REPO_ROOT
+                / "contracts"
+                / "turn"
+                / "agentic-predecision-context.schema.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(schema["$schema"], "https://json-schema.org/draft/2020-12/schema")
+        self.assertEqual(_draft_2020_12_errors(payload, schema), [])
+        self.assertIsInstance(
+            payload["relevant_memory"]["items"][0]["safe_ref_count"],  # type: ignore[index]
+            int,
+        )
+        self.assertIsInstance(
+            payload["same_session_continuity"]["items"][0]["correction_rank"],  # type: ignore[index]
+            int,
+        )
+
+        forbidden_keys = (
+            "api_key",
+            "raw_note",
+            "device_path",
+            "user_secret_hint",
+            "provider_payload_copy",
+            "command_line_copy",
+            "event_jsonl_record",
+        )
+        for key in forbidden_keys:
+            invalid = json.loads(json.dumps(payload, ensure_ascii=False))
+            invalid["environment_state"]["items"] = [{key: "safe"}]
+            with self.subTest(forbidden_key=key):
+                self.assertTrue(_draft_2020_12_errors(invalid, schema))
+
+        forbidden_strings = (
+            "https://example.invalid/value",
+            "C:\\private\\value",
+            "Bearer PRIVATE_VALUE",
+            "token PRIVATE_VALUE",
+            "access_token=PRIVATE_VALUE",
+            "api_key=PRIVATE_VALUE",
+            "password=PRIVATE_VALUE",
+            "prompt: PRIVATE_VALUE",
+            "System Prompt PRIVATE_VALUE",
+        )
+        for value in forbidden_strings:
+            invalid = json.loads(json.dumps(payload, ensure_ascii=False))
+            invalid["environment_state"]["items"] = [{"note": value}]
+            with self.subTest(forbidden_string=value):
+                self.assertTrue(_draft_2020_12_errors(invalid, schema))
+
+        for field, value in (
+            ("id", "x" * 97),
+            ("description", "x" * 181),
+        ):
+            invalid = json.loads(json.dumps(payload, ensure_ascii=False))
+            invalid["capability_view"]["capabilities"][0][field] = value
+            with self.subTest(capability_field=field):
+                self.assertTrue(_draft_2020_12_errors(invalid, schema))
+
+    def test_human_wish_limits_fail_closed_before_completion(self) -> None:
+        candidate = self._conversation_candidate()
+        exact_wish = "\U0001f4a1" * 600
+        exact_completion = _CapturingCompletion(candidate)
+        exact_provider = OpenAICompatibleAgenticTurnProvider(exact_completion)
+        self.assertEqual(
+            exact_provider.decide(
+                self._provider_request(
+                    human_wish=exact_wish,
+                    context_refs=MappingProxyType({}),
+                )
+            ),
+            candidate,
+        )
+        self.assertEqual(len(exact_wish), 600)
+        self.assertEqual(len(exact_wish.encode("utf-8")), 2_400)
+        self.assertEqual(len(exact_completion.calls), 1)
+
+        for wish in ("x" * 601, "\U0001f4a1" * 601):
+            completion = _CapturingCompletion(candidate)
+            provider = OpenAICompatibleAgenticTurnProvider(completion)
+            with self.subTest(chars=len(wish), bytes=len(wish.encode("utf-8"))):
+                self.assertIsNone(
+                    provider.decide(
+                        self._provider_request(
+                            human_wish=wish,
+                            context_refs=MappingProxyType({}),
+                        )
+                    )
+                )
+                self.assertEqual(completion.calls, [])
+
+    def test_predecision_context_rejects_size_count_depth_and_private_shapes(self) -> None:
+        available = lambda items: AgenticPredecisionContextSection(  # noqa: E731
+            status="available",
+            status_detail="",
+            summary="context",
+            items=items,
+        )
+        dense_items = tuple(
+            MappingProxyType({f"fact_{index:02d}": "x" * 160 for index in range(12)})
+            for _ in range(8)
+        )
+        cases = {
+            "item_count": AgenticPredecisionContext(
+                environment_state=available(
+                    tuple(MappingProxyType({"state": "known"}) for _ in range(9))
+                )
+            ),
+            "depth": AgenticPredecisionContext(
+                environment_state=available(
+                    (MappingProxyType({"a": {"b": {"c": {"d": "too_deep"}}}}),)
+                )
+            ),
+            "private_key": AgenticPredecisionContext(
+                environment_state=available(
+                    (MappingProxyType({"api_key": "PRIVATE_SENTINEL"}),)
+                )
+            ),
+            "private_key_pattern": AgenticPredecisionContext(
+                environment_state=available(
+                    (MappingProxyType({"user_secret_hint": "PRIVATE_SENTINEL"}),)
+                )
+            ),
+            "private_value": AgenticPredecisionContext(
+                environment_state=available(
+                    (MappingProxyType({"note": "https://example.invalid/private"}),)
+                )
+            ),
+            "token_value": AgenticPredecisionContext(
+                environment_state=available(
+                    (MappingProxyType({"note": "Bearer PRIVATE_SENTINEL"}),)
+                )
+            ),
+            "path_value": AgenticPredecisionContext(
+                environment_state=available(
+                    (MappingProxyType({"note": "C:\\private\\sentinel"}),)
+                )
+            ),
+            "serialized_size": AgenticPredecisionContext(
+                environment_state=available(dense_items),
+                relevant_memory=available(dense_items),
+                same_session_continuity=available(dense_items),
+                system_topology=available(dense_items),
+            ),
+        }
+        for name, context in cases.items():
+            completion = _CapturingCompletion(self._conversation_candidate())
+            provider = OpenAICompatibleAgenticTurnProvider(completion)
+            with self.subTest(name=name):
+                observed = provider.decide(
+                    self._provider_request(
+                        human_wish="現在の情報から判断して。",
+                        context_refs=MappingProxyType({}),
+                        predecision_context=context,
+                    )
+                )
+                self.assertIsNone(observed)
+                self.assertEqual(completion.calls, [])
 
     def test_receipt_prompt_contains_only_receipt_facts(self) -> None:
         private_wish = "PRIVATE_WISH_SENTINEL"
@@ -1244,11 +1567,12 @@ class AgenticTurnRuntimeProviderTest(TestCase):
         *,
         human_wish: str,
         context_refs: Mapping[str, object],
+        predecision_context: AgenticPredecisionContext | None = None,
     ) -> AgenticTurnProviderRequest:
-        return AgenticTurnProviderRequest(
-            human_wish=human_wish,
-            context_refs=context_refs,
-            capability_view=AgenticCapabilityView(
+        values: dict[str, object] = {
+            "human_wish": human_wish,
+            "context_refs": context_refs,
+            "capability_view": AgenticCapabilityView(
                 catalog_id="catalog-test",
                 catalog_version="catalog-test.v1",
                 capabilities=(
@@ -1264,7 +1588,7 @@ class AgenticTurnRuntimeProviderTest(TestCase):
                     ),
                 ),
             ),
-            agent_context=MappingProxyType(
+            "agent_context": MappingProxyType(
                 {
                     "bounded_wish_refs": (),
                     "observation_refs": (),
@@ -1272,7 +1596,10 @@ class AgenticTurnRuntimeProviderTest(TestCase):
                     "working_memory_item_count": 0,
                 }
             ),
-        )
+        }
+        if predecision_context is not None:
+            values["predecision_context"] = predecision_context
+        return AgenticTurnProviderRequest(**values)  # type: ignore[arg-type]
 
     @staticmethod
     def _turn(text: str) -> dict[str, object]:
@@ -1283,3 +1610,197 @@ class AgenticTurnRuntimeProviderTest(TestCase):
             "locale": "ja-JP",
             "context_refs": {},
         }
+
+
+def _draft_2020_12_errors(
+    value: object,
+    schema: Mapping[str, object],
+    *,
+    root: Mapping[str, object] | None = None,
+    path: str = "$",
+) -> list[str]:
+    """Execute the Draft 2020-12 keywords used by the predecision schema."""
+
+    root = schema if root is None else root
+    reference = schema.get("$ref")
+    if isinstance(reference, str):
+        target: object = root
+        if not reference.startswith("#/"):
+            return [f"{path}: unsupported external reference"]
+        for token in reference[2:].split("/"):
+            token = token.replace("~1", "/").replace("~0", "~")
+            if not isinstance(target, Mapping) or token not in target:
+                return [f"{path}: unresolved reference"]
+            target = target[token]
+        if not isinstance(target, Mapping):
+            return [f"{path}: invalid reference target"]
+        return _draft_2020_12_errors(value, target, root=root, path=path)
+
+    errors: list[str] = []
+    for option in schema.get("allOf", []):
+        if isinstance(option, Mapping):
+            errors.extend(_draft_2020_12_errors(value, option, root=root, path=path))
+
+    any_of = schema.get("anyOf")
+    if isinstance(any_of, list):
+        matches = [
+            not _draft_2020_12_errors(value, option, root=root, path=path)
+            for option in any_of
+            if isinstance(option, Mapping)
+        ]
+        if not any(matches):
+            errors.append(f"{path}: anyOf did not match")
+
+    one_of = schema.get("oneOf")
+    if isinstance(one_of, list):
+        matches = sum(
+            not _draft_2020_12_errors(value, option, root=root, path=path)
+            for option in one_of
+            if isinstance(option, Mapping)
+        )
+        if matches != 1:
+            errors.append(f"{path}: oneOf matched {matches} branches")
+
+    negated = schema.get("not")
+    if isinstance(negated, Mapping) and not _draft_2020_12_errors(
+        value,
+        negated,
+        root=root,
+        path=path,
+    ):
+        errors.append(f"{path}: forbidden by not")
+
+    condition = schema.get("if")
+    consequent = schema.get("then")
+    if (
+        isinstance(condition, Mapping)
+        and isinstance(consequent, Mapping)
+        and not _draft_2020_12_errors(value, condition, root=root, path=path)
+    ):
+        errors.extend(
+            _draft_2020_12_errors(value, consequent, root=root, path=path)
+        )
+
+    if "const" in schema and value != schema["const"]:
+        errors.append(f"{path}: const mismatch")
+    enum = schema.get("enum")
+    if isinstance(enum, list) and value not in enum:
+        errors.append(f"{path}: enum mismatch")
+
+    expected_type = schema.get("type")
+    if isinstance(expected_type, str) and not _draft_2020_12_type_matches(
+        value,
+        expected_type,
+    ):
+        errors.append(f"{path}: expected {expected_type}")
+        return errors
+
+    if isinstance(value, Mapping):
+        required = schema.get("required", [])
+        if isinstance(required, list):
+            for key in required:
+                if key not in value:
+                    errors.append(f"{path}: missing {key}")
+        max_properties = schema.get("maxProperties")
+        if isinstance(max_properties, int) and len(value) > max_properties:
+            errors.append(f"{path}: too many properties")
+        property_names = schema.get("propertyNames")
+        if isinstance(property_names, Mapping):
+            for key in value:
+                errors.extend(
+                    _draft_2020_12_errors(
+                        key,
+                        property_names,
+                        root=root,
+                        path=f"{path}.<key>",
+                    )
+                )
+        properties = schema.get("properties", {})
+        properties = properties if isinstance(properties, Mapping) else {}
+        for key, item in value.items():
+            property_schema = properties.get(key)
+            if isinstance(property_schema, Mapping):
+                errors.extend(
+                    _draft_2020_12_errors(
+                        item,
+                        property_schema,
+                        root=root,
+                        path=f"{path}.{key}",
+                    )
+                )
+                continue
+            additional = schema.get("additionalProperties", True)
+            if additional is False:
+                errors.append(f"{path}: unexpected {key}")
+            elif isinstance(additional, Mapping):
+                errors.extend(
+                    _draft_2020_12_errors(
+                        item,
+                        additional,
+                        root=root,
+                        path=f"{path}.{key}",
+                    )
+                )
+
+    if isinstance(value, list):
+        min_items = schema.get("minItems")
+        max_items = schema.get("maxItems")
+        if isinstance(min_items, int) and len(value) < min_items:
+            errors.append(f"{path}: too few items")
+        if isinstance(max_items, int) and len(value) > max_items:
+            errors.append(f"{path}: too many items")
+        item_schema = schema.get("items")
+        if isinstance(item_schema, Mapping):
+            for index, item in enumerate(value):
+                errors.extend(
+                    _draft_2020_12_errors(
+                        item,
+                        item_schema,
+                        root=root,
+                        path=f"{path}[{index}]",
+                    )
+                )
+
+    if isinstance(value, str):
+        min_length = schema.get("minLength")
+        max_length = schema.get("maxLength")
+        pattern = schema.get("pattern")
+        if isinstance(min_length, int) and len(value) < min_length:
+            errors.append(f"{path}: too short")
+        if isinstance(max_length, int) and len(value) > max_length:
+            errors.append(f"{path}: too long")
+        if isinstance(pattern, str) and re.search(pattern, value) is None:
+            errors.append(f"{path}: pattern mismatch")
+
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        if isinstance(minimum, int | float) and value < minimum:
+            errors.append(f"{path}: below minimum")
+        if isinstance(maximum, int | float) and value > maximum:
+            errors.append(f"{path}: above maximum")
+    return errors
+
+
+def _draft_2020_12_type_matches(value: object, expected_type: str) -> bool:
+    if expected_type == "object":
+        return isinstance(value, Mapping)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "integer":
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+        ) or (
+            isinstance(value, float)
+            and value.is_integer()
+        )
+    if expected_type == "number":
+        return isinstance(value, int | float) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "null":
+        return value is None
+    return False

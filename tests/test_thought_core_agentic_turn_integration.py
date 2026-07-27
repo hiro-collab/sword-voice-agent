@@ -89,6 +89,105 @@ class _CapturingUnavailableProvider:
         raise AgenticTurnProviderUnavailable("provider_unavailable")
 
 
+class _OrderedProvider(_CapturingConversationProvider):
+    def __init__(self, candidate: object, call_order: list[str]) -> None:
+        super().__init__(candidate)
+        self.call_order = call_order
+
+    def decide(self, request: AgenticTurnProviderRequest) -> object:
+        self.call_order.append("provider.decide")
+        return super().decide(request)
+
+    def respond_to_receipt(self, receipt):  # type: ignore[no-untyped-def]
+        self.call_order.append(f"provider.receipt:{receipt.phase}")
+        return {"speech": "結果を確認しました。", "display": "確認済みです。"}
+
+
+class _OrderedPredecisionTools(_DirectOnlyTools):
+    def __init__(self, call_order: list[str]) -> None:
+        super().__init__()
+        self.call_order = call_order
+        self.observation_reasons: list[str] = []
+        self.direct_preview_observation_refs: list[object] = []
+
+    def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+        self.call_order.append(f"environment.observe:{reason}")
+        self.observation_reasons.append(reason)
+        return super().environment_observe(turn, reason=reason)
+
+    def memory_retrieve(self, turn):  # type: ignore[no-untyped-def]
+        self.call_order.append("memory.retrieve")
+        return super().memory_retrieve(turn)
+
+    def home_preview_direct(self, turn, observation, action):  # type: ignore[no-untyped-def]
+        self.call_order.append("home.preview.direct")
+        self.direct_preview_observation_refs.append(observation.get("observation_ref"))
+        preview = super().home_preview_direct(turn, observation, action)
+        reviewable_action = dict(preview.get("action", {}))
+        reviewable_action.update(
+            {
+                "state_tracking": "state_path",
+                "verification_mode": "state_observation",
+                "state_authority": "environment_observed",
+            }
+        )
+        preview["action"] = reviewable_action
+        return preview
+
+    def home_execute(self, turn, action):  # type: ignore[no-untyped-def]
+        self.call_order.append("home.execute")
+        return super().home_execute(turn, action)
+
+
+class _PrivatePredecisionObservationTools(_DirectOnlyTools):
+    def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+        del turn, reason
+        return {
+            "status": "ok",
+            "observation_ref": "PRIVATE_RAW_REF/C:\\PRIVATE_PATH_SENTINEL",
+            "observation_source": "Bearer PRIVATE_TOKEN_SENTINEL",
+            "facts": {
+                "raw_private": "PRIVATE_RAW_FACT_SENTINEL",
+                "location": "C:\\PRIVATE_LOCATION_SENTINEL",
+                "devices": [
+                    {
+                        "id": "device_safe_1",
+                        "name": "token PRIVATE_DEVICE_SENTINEL",
+                        "state": True,
+                        "api_key": "PRIVATE_API_KEY_SENTINEL",
+                    }
+                ],
+                "state_queries": {
+                    "room_light": {
+                        "available": True,
+                        "state": "on",
+                        "path": "C:\\PRIVATE_STATE_PATH_SENTINEL",
+                    }
+                },
+            },
+        }
+
+
+class _OrderedCompatibilityTools(MockThoughtTools):
+    def __init__(self, call_order: list[str]) -> None:
+        super().__init__()
+        self.call_order = call_order
+        self.observation_reasons: list[str] = []
+
+    def environment_observe(self, turn, *, reason):  # type: ignore[no-untyped-def]
+        self.call_order.append(f"environment.observe:{reason}")
+        self.observation_reasons.append(reason)
+        return super().environment_observe(turn, reason=reason)
+
+    def memory_retrieve(self, turn):  # type: ignore[no-untyped-def]
+        self.call_order.append("memory.retrieve")
+        return super().memory_retrieve(turn)
+
+    def home_preview(self, turn, observation):  # type: ignore[no-untyped-def]
+        self.call_order.append("home.preview")
+        return super().home_preview(turn, observation)
+
+
 class _CountingInputUnderstanding:
     adapter_kind = "test_counting"
     provider = "test"
@@ -216,6 +315,19 @@ class AgenticTurnIntegrationTest(TestCase):
                 "working_memory_item_count",
             },
         )
+        self.assertEqual(request.predecision_context.environment_state.status, "available")
+        self.assertEqual(request.predecision_context.relevant_memory.status, "available")
+        self.assertEqual(
+            request.predecision_context.same_session_continuity.status,
+            "missing",
+        )
+        self.assertEqual(request.predecision_context.system_topology.status, "missing")
+        self.assertTrue(
+            any(
+                item.get("item_type") == "working_memory"
+                for item in request.predecision_context.relevant_memory.items
+            )
+        )
 
     def test_unavailable_or_invalid_capability_holds_without_compatibility_fallback(self) -> None:
         cases = (
@@ -272,7 +384,7 @@ class AgenticTurnIntegrationTest(TestCase):
                 self.assertEqual(len(provider.requests), 1)
                 self.assertEqual(understanding.calls, [])
                 self.assertNotIn("input.understood", event_types)
-                self.assertNotIn("memory.retrieved", event_types)
+                self.assertIn("memory.retrieved", event_types)
                 self.assertNotIn("action.proposed", event_types)
                 self.assertEqual(
                     [
@@ -280,7 +392,7 @@ class AgenticTurnIntegrationTest(TestCase):
                         for event in events
                         if event["type"] == "tool.started"
                     ],
-                    [],
+                    ["environment.observe", "memory.retrieve"],
                 )
                 self.assertEqual(tools.direct_preview_calls, [])
                 self.assertEqual(tools.execute_calls, [])
@@ -315,17 +427,199 @@ class AgenticTurnIntegrationTest(TestCase):
                 self.assertEqual(len(provider.requests), 1)
                 self.assertEqual(understanding.calls, [])
                 self.assertNotIn("input.understood", event_types)
-                self.assertNotIn("memory.retrieved", event_types)
+                self.assertIn("memory.retrieved", event_types)
                 self.assertNotIn("action.proposed", event_types)
                 self.assertEqual(
-                    [event for event in events if event["type"] == "tool.started"],
-                    [],
+                    [
+                        event["data"]["tool"]
+                        for event in events
+                        if event["type"] == "tool.started"
+                    ],
+                    ["environment.observe", "memory.retrieve"],
                 )
                 self.assertEqual(tools.direct_preview_calls, [])
                 self.assertEqual(tools.execute_calls, [])
                 if reason is not None:
                     held = next(event for event in events if event["type"] == "agentic.decision")
                     self.assertEqual(held["data"]["reason"], reason)
+
+    def test_predecision_context_is_gathered_before_provider_and_observation_is_reused(self) -> None:
+        call_order: list[str] = []
+        tools = _OrderedPredecisionTools(call_order)
+        provider = _OrderedProvider(self._capability("light_on"), call_order)
+        events = ThoughtLoop(
+            tools=tools,
+            agentic_turn_provider=provider,
+        ).run_dicts(
+            self._turn(
+                "部屋を明るくして。",
+                turn_id="predecision_order",
+                context_refs={
+                    "observation_ref": "working_obs_1",
+                    "mock_memory_items": [
+                        {
+                            "scope": "session",
+                            "memory_type": "preference",
+                            "content": {"preference": "soft_light"},
+                        }
+                    ],
+                },
+            )
+        )
+
+        self.assertLess(
+            call_order.index("environment.observe:before_decision"),
+            call_order.index("provider.decide"),
+        )
+        self.assertLess(call_order.index("memory.retrieve"), call_order.index("provider.decide"))
+        self.assertLess(call_order.index("provider.decide"), call_order.index("home.preview.direct"))
+        self.assertEqual(
+            tools.observation_reasons,
+            ["before_decision", "after_action"],
+        )
+        request = provider.requests[0]
+        environment_items = request.predecision_context.environment_state.items
+        state_item = next(
+            item for item in environment_items if item.get("item_type") == "state_query"
+        )
+        self.assertEqual(state_item["target"], "room_light")
+        memory_items = request.predecision_context.relevant_memory.items
+        self.assertTrue(
+            any(item.get("item_type") == "working_memory" for item in memory_items)
+        )
+        self.assertTrue(
+            any(item.get("item_type") == "retrieved_memory" for item in memory_items)
+        )
+        predecision_observation = next(
+            event
+            for event in events
+            if event["type"] == "observation.received"
+            and event["data"].get("purpose") == "agentic_predecision"
+        )
+        self.assertEqual(
+            len(tools.direct_preview_observation_refs),
+            1,
+        )
+        self.assertEqual(predecision_observation["data"]["status"], "available")
+        self.assertTrue(predecision_observation["data"]["available"])
+        self.assertTrue(
+            predecision_observation["data"]["safe_observation_ref_present"]
+        )
+        self.assertGreater(
+            predecision_observation["data"]["filtered_item_count"],
+            0,
+        )
+        self.assertNotIn("facts", predecision_observation["data"])
+        self.assertNotIn("observation_source", predecision_observation["data"])
+        self.assertIn("action.reviewed", [event["type"] for event in events])
+        self.assertIn("agentic.receipt_response", [event["type"] for event in events])
+
+    def test_observation_events_publish_only_reader_safe_text_free_summary(self) -> None:
+        provider = _CapturingConversationProvider(
+            {
+                "schemaVersion": 1,
+                "kind": "conversation",
+                "response": {"speech": "確認しました。", "display": "確認済みです。"},
+            }
+        )
+        events = ThoughtLoop(
+            tools=_PrivatePredecisionObservationTools(),
+            agentic_turn_provider=provider,
+        ).run_dicts(self._turn("いまの状況を見て。", turn_id="private_observation"))
+
+        observations = [
+            event for event in events if event["type"] == "observation.received"
+        ]
+        self.assertEqual(len(observations), 1)
+        data = observations[0]["data"]
+        self.assertEqual(
+            set(data),
+            {
+                "purpose",
+                "status",
+                "available",
+                "filtered_item_count",
+                "safe_observation_ref_present",
+            },
+        )
+        self.assertEqual(data["purpose"], "agentic_predecision")
+        self.assertEqual(data["status"], "available")
+        self.assertTrue(data["available"])
+        self.assertFalse(data["safe_observation_ref_present"])
+        self.assertGreater(data["filtered_item_count"], 0)
+        serialized = json.dumps(observations, ensure_ascii=False)
+        for sentinel in (
+            "PRIVATE_RAW_REF",
+            "PRIVATE_PATH_SENTINEL",
+            "PRIVATE_TOKEN_SENTINEL",
+            "PRIVATE_RAW_FACT_SENTINEL",
+            "PRIVATE_LOCATION_SENTINEL",
+            "PRIVATE_API_KEY_SENTINEL",
+            "PRIVATE_STATE_PATH_SENTINEL",
+        ):
+            self.assertNotIn(sentinel, serialized)
+        self.assertNotIn('"facts"', serialized)
+        self.assertNotIn("observation_source", serialized)
+        self.assertTrue(
+            any(
+                item.get("item_type") == "state_query"
+                and item.get("target") == "room_light"
+                for item in provider.requests[0].predecision_context.environment_state.items
+            )
+        )
+
+    def test_same_session_correction_and_prior_turn_reach_next_provider_decision(self) -> None:
+        candidate = {
+            "schemaVersion": 1,
+            "kind": "conversation",
+            "response": {"speech": "承知しました。", "display": "更新しました。"},
+        }
+        provider = _CapturingConversationProvider(candidate)
+        loop = ThoughtLoop(agentic_turn_provider=provider)
+        loop.run_dicts(self._turn("照明を変えたい。", turn_id="continuity_first"))
+        correction = "いや、照明ではなく映像を変えて。"
+        loop.run_dicts(self._turn(correction, turn_id="continuity_second"))
+
+        context = provider.requests[1].predecision_context
+        self.assertEqual(context.latest_user_correction, correction)
+        self.assertEqual(context.same_session_continuity.status, "available")
+        self.assertTrue(
+            any(
+                item.get("item_type") == "recent_turn"
+                and item.get("user_text") == "照明を変えたい。"
+                for item in context.same_session_continuity.items
+            )
+        )
+        self.assertTrue(
+            any(
+                item.get("item_type") == "decision"
+                and item.get("status") == "correction"
+                for item in context.same_session_continuity.items
+            )
+        )
+
+    def test_none_provider_keeps_compatibility_parser_and_before_action_order(self) -> None:
+        call_order: list[str] = []
+        tools = _OrderedCompatibilityTools(call_order)
+        understanding = _CountingInputUnderstanding()
+        events = ThoughtLoop(
+            tools=tools,
+            input_understanding=understanding,
+            agentic_turn_provider=None,
+        ).run_dicts(self._turn("ライトをつけて", turn_id="compatibility_order"))
+
+        self.assertEqual(understanding.calls, ["ライトをつけて"])
+        self.assertIn("input.understood", [event["type"] for event in events])
+        self.assertNotIn("environment.observe:before_decision", call_order)
+        self.assertIn("environment.observe:before_action", call_order)
+        self.assertLess(
+            call_order.index("memory.retrieve"),
+            call_order.index("environment.observe:before_action"),
+        )
+        self.assertLess(
+            call_order.index("environment.observe:before_action"),
+            call_order.index("home.preview"),
+        )
 
     def test_pending_confirmation_and_review_precede_provider(self) -> None:
         action = {

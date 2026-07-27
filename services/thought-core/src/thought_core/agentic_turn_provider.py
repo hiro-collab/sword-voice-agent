@@ -14,6 +14,16 @@ MAX_CAPABILITY_VIEW_COUNT = 24
 MAX_CATALOG_ID_LENGTH = 96
 MAX_CATALOG_VERSION_LENGTH = 96
 MAX_RECEIPT_RESPONSE_LENGTH = 600
+AGENTIC_PREDECISION_CONTEXT_SCHEMA_VERSION = "agentic-predecision-context.v1"
+AGENTIC_PREDECISION_CONTEXT_SECTION_NAMES = (
+    "environment_state",
+    "relevant_memory",
+    "same_session_continuity",
+    "system_topology",
+)
+AGENTIC_PREDECISION_CONTEXT_STATUSES = frozenset(
+    {"available", "missing", "unavailable", "stale", "conflict"}
+)
 
 
 class AgenticTurnProviderUnavailable(Exception):
@@ -39,6 +49,40 @@ class AgenticCapabilityView:
 
 
 @dataclass(frozen=True)
+class AgenticPredecisionContextSection:
+    """One bounded, reader-safe summary available before semantic judgment."""
+
+    status: str = "missing"
+    status_detail: str = "not_supplied"
+    summary: str = ""
+    items: tuple[Mapping[str, object], ...] = ()
+
+
+@dataclass(frozen=True)
+class AgenticPredecisionContext:
+    """Structured context gathered before the agent chooses a turn decision.
+
+    This type carries context, not action authority. ``human_wish`` remains the
+    newest input; ``latest_user_correction`` lets a same-session correction
+    override older continuity or memory summaries.
+    """
+
+    latest_user_correction: str | None = None
+    environment_state: AgenticPredecisionContextSection = field(
+        default_factory=AgenticPredecisionContextSection
+    )
+    relevant_memory: AgenticPredecisionContextSection = field(
+        default_factory=AgenticPredecisionContextSection
+    )
+    same_session_continuity: AgenticPredecisionContextSection = field(
+        default_factory=AgenticPredecisionContextSection
+    )
+    system_topology: AgenticPredecisionContextSection = field(
+        default_factory=AgenticPredecisionContextSection
+    )
+
+
+@dataclass(frozen=True)
 class AgenticActionReceipt:
     """Bounded deterministic lifecycle facts available after a real phase."""
 
@@ -61,11 +105,9 @@ class AgenticReceiptResponse:
 class AgenticTurnProviderRequest:
     """Private, compact context supplied to the semantic-decision boundary.
 
-    ``human_wish`` is deliberately private input. The other fields are bounded
-    references rather than raw provider, memory, or observation payloads. The
-    empty agent-context field reserves a place for future bounded AI-side
-    wishes, feelings, motivations, observation, and memory references without
-    creating or evaluating any of them in this slice.
+    ``human_wish`` is deliberately private input. ``context_refs`` and
+    ``agent_context`` remain bounded references. ``predecision_context`` is the
+    bounded structured view assembled before semantic judgment.
     """
 
     human_wish: str
@@ -73,6 +115,9 @@ class AgenticTurnProviderRequest:
     capability_view: AgenticCapabilityView
     agent_context: Mapping[str, object] = field(
         default_factory=lambda: MappingProxyType({})
+    )
+    predecision_context: AgenticPredecisionContext = field(
+        default_factory=AgenticPredecisionContext
     )
 
 

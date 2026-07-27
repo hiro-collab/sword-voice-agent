@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 from collections.abc import Mapping
 
 from .agentic_turn_provider import (
+    AGENTIC_PREDECISION_CONTEXT_SCHEMA_VERSION,
+    AGENTIC_PREDECISION_CONTEXT_SECTION_NAMES,
+    AGENTIC_PREDECISION_CONTEXT_STATUSES,
     MAX_CAPABILITY_VIEW_COUNT,
     MAX_CATALOG_ID_LENGTH,
     MAX_CATALOG_VERSION_LENGTH,
     AgenticActionReceipt,
+    AgenticCapabilityView,
+    AgenticPredecisionContext,
+    AgenticPredecisionContextSection,
     AgenticTurnProvider,
     AgenticTurnProviderRequest,
     AgenticTurnProviderUnavailable,
@@ -47,6 +54,19 @@ MAX_CONTEXT_REF_NUMBER_ABS = 1_000_000
 MAX_AGENT_CONTEXT_REF_COUNT = 8
 MAX_AGENT_CONTEXT_LIST_ITEMS = 8
 MAX_AGENT_CONTEXT_STRING_CHARS = 180
+MAX_PREDECISION_CONTEXT_SERIALIZED_BYTES = 32_768
+MAX_PREDECISION_SECTION_ITEMS = 8
+MAX_PREDECISION_ITEM_PROPERTIES = 12
+MAX_PREDECISION_VALUE_LIST_ITEMS = 8
+MAX_PREDECISION_VALUE_DEPTH = 3
+MAX_PREDECISION_VALUE_NODES = 512
+MAX_PREDECISION_KEY_CHARS = 64
+MAX_PREDECISION_VALUE_STRING_CHARS = 320
+MAX_PREDECISION_SECTION_SUMMARY_CHARS = 360
+MAX_PREDECISION_STATUS_DETAIL_CHARS = 180
+MAX_PREDECISION_LATEST_CORRECTION_CHARS = 600
+MAX_AGENTIC_HUMAN_WISH_CHARS = 600
+MAX_AGENTIC_HUMAN_WISH_UTF8_BYTES = 2_400
 
 _SUPPORTED_PROVIDER_NAMES = frozenset(
     {
@@ -84,13 +104,43 @@ _SAFE_CONTEXT_REF_KEYS = frozenset(
         "verifier_result_id",
     }
 )
+_BLOCKED_PREDECISION_KEYS = frozenset(
+    {
+        "api_key",
+        "args",
+        "argv",
+        "auth",
+        "authorization",
+        "command",
+        "command_line",
+        "credential",
+        "credentials",
+        "endpoint",
+        "jsonl",
+        "password",
+        "path",
+        "payload",
+        "port",
+        "provider_payload",
+        "raw",
+        "raw_config",
+        "secret",
+        "token",
+        "url",
+        "uri",
+    }
+)
 _DECISION_SYSTEM_PROMPT = (
     "Return exactly one JSON object for AgenticTurnDecision V1. Use schemaVersion 1; "
     "kind must be conversation, clarification, hold, or capability; response must "
     "contain non-empty speech and display strings. A capability decision must also "
     "contain capability with exactly id and arguments. Select only an available "
     "capability from the supplied catalog snapshot. Do not execute anything, do not "
-    "invent evidence, and do not return markdown or explanatory text."
+    "invent evidence, and do not return markdown or explanatory text. The human_wish "
+    "is the newest user instruction. When latest_user_correction is present in the "
+    "predecision context, it overrides older continuity or memory summaries. Preserve "
+    "missing, unavailable, stale, and conflict status instead of treating it as current "
+    "context."
 )
 _RECEIPT_SYSTEM_PROMPT = (
     "Return exactly one JSON object with non-empty speech and display strings. Render "
@@ -288,12 +338,37 @@ def _build_sword_openai_broker_provider(
 
 
 def _decision_input_payload(request: AgenticTurnProviderRequest) -> dict[str, object]:
-    if type(request.human_wish) is not str or not request.human_wish.strip():
+    if (
+        type(request.human_wish) is not str
+        or not request.human_wish.strip()
+        or len(request.human_wish) > MAX_AGENTIC_HUMAN_WISH_CHARS
+        or len(request.human_wish.encode("utf-8")) > MAX_AGENTIC_HUMAN_WISH_UTF8_BYTES
+    ):
         raise ValueError("agentic_human_wish_invalid")
 
-    capability_view = request.capability_view
+    catalog, capabilities = _bounded_capability_view(request.capability_view)
+    predecision_context = _bounded_predecision_context(
+        request.predecision_context,
+        catalog=catalog,
+        capabilities=capabilities,
+    )
+
+    return {
+        "human_wish": request.human_wish,
+        "catalog": catalog,
+        "capabilities": capabilities,
+        "context_refs": _bounded_context_refs(request.context_refs),
+        "agent_context": _bounded_agent_context(request.agent_context),
+        "predecision_context": predecision_context,
+    }
+
+
+def _bounded_capability_view(
+    capability_view: object,
+) -> tuple[dict[str, str], list[dict[str, object]]]:
     if (
-        type(capability_view.catalog_id) is not str
+        type(capability_view) is not AgenticCapabilityView
+        or type(capability_view.catalog_id) is not str
         or not capability_view.catalog_id
         or len(capability_view.catalog_id) > MAX_CATALOG_ID_LENGTH
         or type(capability_view.catalog_version) is not str
@@ -323,16 +398,13 @@ def _decision_input_payload(request: AgenticTurnProviderRequest) -> dict[str, ob
             }
         )
 
-    return {
-        "human_wish": request.human_wish,
-        "catalog": {
+    return (
+        {
             "id": capability_view.catalog_id,
             "version": capability_view.catalog_version,
         },
-        "capabilities": capabilities,
-        "context_refs": _bounded_context_refs(request.context_refs),
-        "agent_context": _bounded_agent_context(request.agent_context),
-    }
+        capabilities,
+    )
 
 
 def _receipt_input_payload(receipt: AgenticActionReceipt) -> dict[str, object]:
@@ -401,6 +473,188 @@ def _bounded_agent_context(values: Mapping[str, object]) -> dict[str, object]:
             refs.append(item)
         result[key] = refs
     return result
+
+
+def _bounded_predecision_context(
+    value: object,
+    *,
+    catalog: Mapping[str, str],
+    capabilities: list[dict[str, object]],
+) -> dict[str, object]:
+    if type(value) is not AgenticPredecisionContext:
+        raise ValueError("agentic_predecision_context_invalid")
+
+    latest_user_correction: str | None = None
+    if value.latest_user_correction is not None:
+        latest_user_correction = _bounded_predecision_text(
+            value.latest_user_correction,
+            max_chars=MAX_PREDECISION_LATEST_CORRECTION_CHARS,
+            allow_empty=False,
+        )
+
+    node_budget = [0]
+    sections: dict[str, object] = {}
+    for section_name in AGENTIC_PREDECISION_CONTEXT_SECTION_NAMES:
+        sections[section_name] = _bounded_predecision_section(
+            getattr(value, section_name, None),
+            node_budget=node_budget,
+        )
+
+    result: dict[str, object] = {
+        "schema_version": AGENTIC_PREDECISION_CONTEXT_SCHEMA_VERSION,
+        "latest_user_correction": latest_user_correction,
+        **sections,
+        "capability_view": {
+            "catalog": dict(catalog),
+            "capabilities": [dict(entry) for entry in capabilities],
+        },
+    }
+    encoded = json.dumps(
+        result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    if len(encoded) > MAX_PREDECISION_CONTEXT_SERIALIZED_BYTES:
+        raise ValueError("agentic_predecision_context_invalid")
+    return result
+
+
+def _bounded_predecision_section(
+    value: object,
+    *,
+    node_budget: list[int],
+) -> dict[str, object]:
+    if type(value) is not AgenticPredecisionContextSection:
+        raise ValueError("agentic_predecision_context_invalid")
+    if value.status not in AGENTIC_PREDECISION_CONTEXT_STATUSES:
+        raise ValueError("agentic_predecision_context_invalid")
+    status_detail = _bounded_predecision_text(
+        value.status_detail,
+        max_chars=MAX_PREDECISION_STATUS_DETAIL_CHARS,
+        allow_empty=value.status == "available",
+    )
+    if value.status != "available" and not status_detail:
+        raise ValueError("agentic_predecision_context_invalid")
+    summary = _bounded_predecision_text(
+        value.summary,
+        max_chars=MAX_PREDECISION_SECTION_SUMMARY_CHARS,
+        allow_empty=True,
+    )
+    if type(value.items) is not tuple or len(value.items) > MAX_PREDECISION_SECTION_ITEMS:
+        raise ValueError("agentic_predecision_context_invalid")
+
+    items: list[dict[str, object]] = []
+    for item in value.items:
+        if not isinstance(item, Mapping) or len(item) > MAX_PREDECISION_ITEM_PROPERTIES:
+            raise ValueError("agentic_predecision_context_invalid")
+        bounded = _bounded_predecision_value(item, depth=0, node_budget=node_budget)
+        if type(bounded) is not dict:
+            raise ValueError("agentic_predecision_context_invalid")
+        items.append(bounded)
+    return {
+        "status": value.status,
+        "status_detail": status_detail,
+        "summary": summary,
+        "items": items,
+    }
+
+
+def _bounded_predecision_value(
+    value: object,
+    *,
+    depth: int,
+    node_budget: list[int],
+) -> object:
+    node_budget[0] += 1
+    if node_budget[0] > MAX_PREDECISION_VALUE_NODES:
+        raise ValueError("agentic_predecision_context_invalid")
+
+    if isinstance(value, Mapping):
+        if depth >= MAX_PREDECISION_VALUE_DEPTH or len(value) > MAX_PREDECISION_ITEM_PROPERTIES:
+            raise ValueError("agentic_predecision_context_invalid")
+        keys = list(value)
+        if any(not _safe_predecision_key(key) for key in keys):
+            raise ValueError("agentic_predecision_context_invalid")
+        return {
+            key: _bounded_predecision_value(
+                value[key],
+                depth=depth + 1,
+                node_budget=node_budget,
+            )
+            for key in sorted(keys)
+        }
+    if type(value) in {list, tuple}:
+        if depth >= MAX_PREDECISION_VALUE_DEPTH or len(value) > MAX_PREDECISION_VALUE_LIST_ITEMS:
+            raise ValueError("agentic_predecision_context_invalid")
+        return [
+            _bounded_predecision_value(
+                item,
+                depth=depth + 1,
+                node_budget=node_budget,
+            )
+            for item in value
+        ]
+    if type(value) is str:
+        return _bounded_predecision_text(
+            value,
+            max_chars=MAX_PREDECISION_VALUE_STRING_CHARS,
+            allow_empty=False,
+        )
+    if type(value) is bool or value is None:
+        return value
+    if type(value) is int:
+        if abs(value) > MAX_CONTEXT_REF_NUMBER_ABS:
+            raise ValueError("agentic_predecision_context_invalid")
+        return value
+    if type(value) is float:
+        if not math.isfinite(value) or abs(value) > MAX_CONTEXT_REF_NUMBER_ABS:
+            raise ValueError("agentic_predecision_context_invalid")
+        return value
+    raise ValueError("agentic_predecision_context_invalid")
+
+
+def _safe_predecision_key(value: object) -> bool:
+    if type(value) is not str or not 1 <= len(value) <= MAX_PREDECISION_KEY_CHARS:
+        return False
+    if value[0] not in "abcdefghijklmnopqrstuvwxyz":
+        return False
+    if any(character not in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in value):
+        return False
+    return not (
+        value in _BLOCKED_PREDECISION_KEYS
+        or value.startswith("raw_")
+        or value.endswith(("_path", "_url", "_uri", "_port"))
+        or "credential" in value
+        or "secret" in value
+        or "api_key" in value
+        or "provider_payload" in value
+        or "command_line" in value
+        or "jsonl" in value
+    )
+
+
+def _bounded_predecision_text(
+    value: object,
+    *,
+    max_chars: int,
+    allow_empty: bool,
+) -> str:
+    if type(value) is not str or len(value) > max_chars or (not allow_empty and not value):
+        raise ValueError("agentic_predecision_context_invalid")
+    lowered = value.lower()
+    if (
+        "://" in lowered
+        or "/" in value
+        or "\\" in value
+        or lowered.startswith(("bearer ", "token ", "system prompt", "developer prompt"))
+        or "access_token=" in lowered
+        or "api_key=" in lowered
+        or "password=" in lowered
+        or "prompt:" in lowered
+    ):
+        raise ValueError("agentic_predecision_context_invalid")
+    return value
 
 
 def _bounded_scalar(value: object, *, max_string: int) -> object:

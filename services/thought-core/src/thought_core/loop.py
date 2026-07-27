@@ -16,9 +16,12 @@ from typing import Any, Callable, Mapping
 from .agentic_turn_decision import validate_agentic_turn_decision
 from .agentic_turn_provider import (
     AgenticActionReceipt,
+    AgenticPredecisionContext,
+    AgenticPredecisionContextSection,
     AgenticTurnProvider,
     AgenticTurnProviderRequest,
     AgenticTurnProviderUnavailable,
+    UnavailableAgenticTurnProvider,
     validate_agentic_receipt_response,
 )
 from .capability_catalog import CapabilityCatalogError, HomeCapabilityCatalog
@@ -637,60 +640,96 @@ class ThoughtLoop:
                 ):
                     return events
 
-            # Ordinary fixed parsing, its published classification, and
-            # kind-dependent memory retrieval must follow the agentic boundary.
-            agentic_handled, agentic_route = self._handle_agentic_turn_if_configured(
-                events,
-                factory,
-                turn_input,
-            )
-            if agentic_handled and agentic_route is None:
-                return events
+            agentic_handled = False
+            agentic_route: _AgenticCapabilityRoute | None = None
+            observation: dict[str, Any] | None = None
+            memory_context: dict[str, Any] = {}
+            continuity_context: dict[str, Any] = {}
 
-            if input_frame is None:
-                input_frame = self._understand_input(turn_input)
-            ensure_execution_active()
-            self._replace_request_context(
-                issue_key=self._speech_issue_key(turn_input, input_frame)
-            )
-            self._emit_input_ack(events, factory, turn_input, input_frame)
-            self._emit_input_understood(events, factory, input_frame)
-            working_memory_context = self._build_working_memory_context(turn_input)
-            ensure_execution_active()
-            self._replace_request_context(
-                working_memory_context=MappingProxyType(dict(working_memory_context))
-            )
-            self._emit_context_trace_events(events, factory, working_memory_context)
-            continuity_context = self.conversation_continuity.context_for_response(
-                session_id=turn_input.session_id
-            )
-            if input_frame.kind == "general":
-                memory_context = self._disabled_legacy_memory_context(
+            # An injected semantic provider receives the current environment,
+            # relevant memory, and same-session continuity before it decides.
+            # None-provider compatibility deliberately keeps the legacy order.
+            if isinstance(self.agentic_turn_provider, UnavailableAgenticTurnProvider):
+                agentic_handled, agentic_route = self._handle_agentic_turn_if_configured(
                     events,
                     factory,
+                    turn_input,
+                    predecision_context=AgenticPredecisionContext(),
+                    observation=MappingProxyType({}),
                 )
-            else:
-                memory_context = self._retrieve_memory_context(
+                if agentic_handled and agentic_route is None:
+                    return events
+            elif self.agentic_turn_provider is not None:
+                (
+                    predecision_context,
+                    observation,
+                    memory_context,
+                    continuity_context,
+                ) = self._prepare_agentic_predecision_context(
                     events,
                     factory,
                     turn_input,
                 )
-            self._hydrate_pending_action_review_from_memory(
-                turn_input,
-                memory_context,
-                input_frame,
-            )
-            ensure_execution_active()
-            self._replace_request_context(
-                issue_key=self._speech_issue_key(turn_input, input_frame)
-            )
-            if self._handle_pending_action_review_if_needed(
-                events,
-                factory,
-                turn_input,
-                input_frame,
-            ):
-                return events
+                agentic_handled, agentic_route = self._handle_agentic_turn_if_configured(
+                    events,
+                    factory,
+                    turn_input,
+                    predecision_context=predecision_context,
+                    observation=observation,
+                )
+                if agentic_handled and agentic_route is None:
+                    return events
+
+            if agentic_route is None:
+                if input_frame is None:
+                    input_frame = self._understand_input(turn_input)
+                ensure_execution_active()
+                self._replace_request_context(
+                    issue_key=self._speech_issue_key(turn_input, input_frame)
+                )
+                self._emit_input_ack(events, factory, turn_input, input_frame)
+                self._emit_input_understood(events, factory, input_frame)
+                working_memory_context = self._build_working_memory_context(turn_input)
+                ensure_execution_active()
+                self._replace_request_context(
+                    working_memory_context=MappingProxyType(dict(working_memory_context))
+                )
+                self._emit_context_trace_events(events, factory, working_memory_context)
+                continuity_context = self.conversation_continuity.context_for_response(
+                    session_id=turn_input.session_id
+                )
+                if input_frame.kind == "general":
+                    memory_context = self._disabled_legacy_memory_context(
+                        events,
+                        factory,
+                    )
+                else:
+                    memory_context = self._retrieve_memory_context(
+                        events,
+                        factory,
+                        turn_input,
+                    )
+                self._hydrate_pending_action_review_from_memory(
+                    turn_input,
+                    memory_context,
+                    input_frame,
+                )
+                ensure_execution_active()
+                self._replace_request_context(
+                    issue_key=self._speech_issue_key(turn_input, input_frame)
+                )
+                if self._handle_pending_action_review_if_needed(
+                    events,
+                    factory,
+                    turn_input,
+                    input_frame,
+                ):
+                    return events
+            else:
+                ensure_execution_active()
+                self._replace_request_context(
+                    issue_key=self._speech_issue_key(turn_input)
+                )
             if not agentic_handled:
                 if input_frame.kind == "state_query":
                     self._handle_room_light_state_query(events, factory, turn_input)
@@ -826,30 +865,31 @@ class ThoughtLoop:
                     self._handle_general_turn(events, factory, turn_input)
                     return events
 
-            self._emit_stage_update(
-                events,
-                factory,
-                stage="environment.observe.before_action",
-                speech="いまの環境を短く見ています。",
-                detail={"reason": "before_action"},
-            )
-            observation = self._call_tool(
-                events,
-                factory,
-                "environment.observe",
-                lambda: self.tools.environment_observe(turn_input, reason="before_action"),
-            )
-            observation = self._with_memory_context(observation, memory_context)
-            events.append(
-                factory.emit(
-                    "observation.received",
-                    {
-                        "observation_ref": observation.get("observation_ref"),
-                        "observation_source": observation.get("observation_source"),
-                        "facts": observation.get("facts", {}),
-                    },
+            if observation is None:
+                self._emit_stage_update(
+                    events,
+                    factory,
+                    stage="environment.observe.before_action",
+                    speech="いまの環境を短く見ています。",
+                    detail={"reason": "before_action"},
                 )
-            )
+                observation = self._call_tool(
+                    events,
+                    factory,
+                    "environment.observe",
+                    lambda: self.tools.environment_observe(turn_input, reason="before_action"),
+                )
+                observation = self._with_memory_context(observation, memory_context)
+                events.append(
+                    factory.emit(
+                        "observation.received",
+                        {
+                            "observation_ref": observation.get("observation_ref"),
+                            "observation_source": observation.get("observation_source"),
+                            "facts": observation.get("facts", {}),
+                        },
+                    )
+                )
             target_state: dict[str, Any] = {}
             if agentic_route is None:
                 self._emit_stage_update(
@@ -1442,11 +1482,397 @@ class ThoughtLoop:
             events = self._run_active(turn, event_sink=_sink)
             return [event.to_dict() for event in events]
 
+    def _prepare_agentic_predecision_context(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        turn_input: TurnInput,
+    ) -> tuple[
+        AgenticPredecisionContext,
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+    ]:
+        working_memory_context = self._build_working_memory_context(turn_input)
+        ensure_execution_active()
+        self._replace_request_context(
+            working_memory_context=MappingProxyType(dict(working_memory_context))
+        )
+        self._emit_context_trace_events(events, factory, working_memory_context)
+        continuity_context = self.conversation_continuity.context_for_response(
+            session_id=turn_input.session_id
+        )
+
+        self._emit_stage_update(
+            events,
+            factory,
+            stage="environment.observe.before_decision",
+            speech="判断の前に、いまの環境を見ています。",
+            detail={"reason": "before_decision"},
+        )
+        observation = self._call_tool(
+            events,
+            factory,
+            "environment.observe",
+            lambda: self.tools.environment_observe(turn_input, reason="before_decision"),
+        )
+        events.append(
+            factory.emit(
+                "observation.received",
+                self._reader_safe_observation_event_data(
+                    observation,
+                    purpose="agentic_predecision",
+                ),
+            )
+        )
+        memory_context = self._retrieve_memory_context(
+            events,
+            factory,
+            turn_input,
+        )
+        observation = self._with_memory_context(observation, memory_context)
+        return (
+            self._build_agentic_predecision_context(
+                observation=observation,
+                memory_context=memory_context,
+                continuity_context=continuity_context,
+                working_memory_context=working_memory_context,
+            ),
+            observation,
+            memory_context,
+            continuity_context,
+        )
+
+    def _build_agentic_predecision_context(
+        self,
+        *,
+        observation: Mapping[str, Any],
+        memory_context: Mapping[str, Any],
+        continuity_context: Mapping[str, Any],
+        working_memory_context: Mapping[str, Any],
+    ) -> AgenticPredecisionContext:
+        return AgenticPredecisionContext(
+            latest_user_correction=self._latest_agentic_user_correction(
+                continuity_context
+            ),
+            environment_state=self._agentic_environment_section(observation),
+            relevant_memory=self._agentic_memory_section(
+                memory_context,
+                working_memory_context,
+            ),
+            same_session_continuity=self._agentic_continuity_section(
+                continuity_context
+            ),
+            system_topology=AgenticPredecisionContextSection(
+                status="missing",
+                status_detail="not_available_in_current_turn",
+                summary="System topology was not supplied for this decision.",
+            ),
+        )
+
+    def _agentic_environment_section(
+        self,
+        observation: Mapping[str, Any],
+    ) -> AgenticPredecisionContextSection:
+        observed_status = str(observation.get("status") or "missing").strip().lower()
+        available = observed_status == "ok"
+        items: list[Mapping[str, object]] = []
+        metadata = self._agentic_selected_scalars(
+            observation,
+            ("observation_ref", "observation_source"),
+        )
+        if metadata:
+            items.append({"item_type": "observation", **metadata})
+
+        facts = observation.get("facts")
+        if isinstance(facts, Mapping):
+            location = self._agentic_safe_scalar(facts.get("location"))
+            if location is not None and len(items) < 8:
+                items.append({"item_type": "location", "location": location})
+            devices = facts.get("devices")
+            if isinstance(devices, list):
+                for device in devices:
+                    if len(items) >= 8:
+                        break
+                    if not isinstance(device, Mapping):
+                        continue
+                    selected = self._agentic_selected_scalars(
+                        device,
+                        ("id", "kind", "name", "state", "available", "stale"),
+                    )
+                    if selected:
+                        items.append({"item_type": "device_state", **selected})
+            state_queries = facts.get("state_queries")
+            if isinstance(state_queries, Mapping):
+                for target in sorted(state_queries):
+                    if len(items) >= 8:
+                        break
+                    state = state_queries.get(target)
+                    if not isinstance(state, Mapping):
+                        continue
+                    safe_target = self._agentic_safe_scalar(target)
+                    selected = self._agentic_selected_scalars(
+                        state,
+                        (
+                            "available",
+                            "stale",
+                            "state",
+                            "confidence_label",
+                            "authority",
+                            "observed_at",
+                            "updated_at",
+                        ),
+                    )
+                    if safe_target is not None:
+                        selected["target"] = safe_target
+                    if selected:
+                        items.append({"item_type": "state_query", **selected})
+
+        return AgenticPredecisionContextSection(
+            status="available" if available else "unavailable",
+            status_detail=(
+                "observed_before_decision"
+                if available
+                else "environment_observation_unavailable"
+            ),
+            summary=(
+                "Current environment was observed before the provider decision."
+                if available
+                else "Current environment could not be observed before the provider decision."
+            ),
+            items=tuple(items),
+        )
+
+    def _reader_safe_observation_event_data(
+        self,
+        observation: Mapping[str, Any],
+        *,
+        purpose: str,
+    ) -> dict[str, object]:
+        section = self._agentic_environment_section(observation)
+        return {
+            "purpose": purpose,
+            "status": section.status,
+            "available": section.status == "available",
+            "filtered_item_count": len(section.items),
+            "safe_observation_ref_present": (
+                self._agentic_safe_scalar(
+                    observation.get("observation_ref"),
+                    max_chars=180,
+                )
+                is not None
+            ),
+        }
+
+    def _agentic_memory_section(
+        self,
+        memory_context: Mapping[str, Any],
+        working_memory_context: Mapping[str, Any],
+    ) -> AgenticPredecisionContextSection:
+        items: list[Mapping[str, object]] = []
+        safe_refs = working_memory_context.get("safe_refs")
+        bounded_refs: list[dict[str, object]] = []
+        if isinstance(safe_refs, list):
+            for ref in safe_refs[:8]:
+                if not isinstance(ref, Mapping):
+                    continue
+                selected = self._agentic_selected_scalars(ref, ("key", "value", "source"))
+                if selected:
+                    bounded_refs.append(selected)
+        if bounded_refs:
+            items.append(
+                {
+                    "item_type": "working_memory",
+                    "status": "available",
+                    "safe_ref_count": len(bounded_refs),
+                    "safe_refs": tuple(bounded_refs),
+                }
+            )
+
+        memory_items = memory_context.get("items")
+        if isinstance(memory_items, list):
+            for memory_item in memory_items:
+                if len(items) >= 8:
+                    break
+                if not isinstance(memory_item, Mapping):
+                    continue
+                selected = self._agentic_selected_scalars(
+                    memory_item,
+                    (
+                        "scope",
+                        "memory_type",
+                        "status",
+                        "confidence",
+                        "created_at",
+                        "source",
+                    ),
+                )
+                content = memory_item.get("content")
+                if isinstance(content, Mapping):
+                    bounded_content = self._agentic_selected_scalars(
+                        content,
+                        (
+                            "action_id",
+                            "target",
+                            "expected_state",
+                            "action",
+                            "actual_state",
+                            "preference",
+                            "alias",
+                            "canonical",
+                            "summary",
+                            "note",
+                        ),
+                    )
+                    if bounded_content:
+                        selected["content"] = bounded_content
+                else:
+                    safe_content = self._agentic_safe_scalar(content)
+                    if safe_content is not None:
+                        selected["content"] = safe_content
+                if selected:
+                    items.append({"item_type": "retrieved_memory", **selected})
+
+        retrieval_status = str(memory_context.get("status") or "missing").strip().lower()
+        available = retrieval_status in {"ok", "available", "success"}
+        return AgenticPredecisionContextSection(
+            status="available" if available else "unavailable",
+            status_detail=(
+                "retrieved_before_decision"
+                if available
+                else "memory_retrieval_unavailable"
+            ),
+            summary=(
+                f"Relevant memory retrieval completed with {len(items)} bounded context items."
+                if available
+                else "Relevant memory retrieval was unavailable before the decision."
+            ),
+            items=tuple(items),
+        )
+
+    def _agentic_continuity_section(
+        self,
+        continuity_context: Mapping[str, Any],
+    ) -> AgenticPredecisionContextSection:
+        items: list[Mapping[str, object]] = []
+        rolling_state = continuity_context.get("rolling_state")
+        if isinstance(rolling_state, Mapping):
+            decisions = rolling_state.get("decisions")
+            if isinstance(decisions, list):
+                for decision in decisions:
+                    if len(items) >= 8 or not isinstance(decision, Mapping):
+                        break
+                    selected = self._agentic_selected_scalars(
+                        decision,
+                        ("ordinal", "status", "proposition", "provenance"),
+                    )
+                    if selected:
+                        items.append({"item_type": "decision", **selected})
+        recent_turns = continuity_context.get("recent_turns")
+        if isinstance(recent_turns, list):
+            for recent_turn in recent_turns:
+                if len(items) >= 8 or not isinstance(recent_turn, Mapping):
+                    break
+                selected = self._agentic_selected_scalars(
+                    recent_turn,
+                    (
+                        "turn_id",
+                        "user_text",
+                        "assistant_text",
+                        "provenance",
+                        "exact_within_bound",
+                    ),
+                )
+                if selected:
+                    items.append({"item_type": "recent_turn", **selected})
+        if isinstance(rolling_state, Mapping):
+            open_items = rolling_state.get("open_items")
+            if isinstance(open_items, list):
+                for open_item in open_items:
+                    if len(items) >= 8 or not isinstance(open_item, Mapping):
+                        break
+                    selected = self._agentic_selected_scalars(
+                        open_item,
+                        ("ordinal", "source", "question", "provenance"),
+                    )
+                    if selected:
+                        items.append({"item_type": "open_item", **selected})
+
+        available = bool(continuity_context)
+        return AgenticPredecisionContextSection(
+            status="available" if available else "missing",
+            status_detail=(
+                "same_session_context_available"
+                if available
+                else "no_prior_same_session_context"
+            ),
+            summary=(
+                f"Same-session continuity supplied {len(items)} bounded items."
+                if available
+                else "No prior same-session continuity was available."
+            ),
+            items=tuple(items),
+        )
+
+    def _latest_agentic_user_correction(
+        self,
+        continuity_context: Mapping[str, Any],
+    ) -> str | None:
+        rolling_state = continuity_context.get("rolling_state")
+        if not isinstance(rolling_state, Mapping):
+            return None
+        decisions = rolling_state.get("decisions")
+        if not isinstance(decisions, list):
+            return None
+        for decision in reversed(decisions):
+            if not isinstance(decision, Mapping) or decision.get("status") != "correction":
+                continue
+            correction = self._agentic_safe_scalar(
+                decision.get("proposition"),
+                max_chars=600,
+            )
+            return correction if isinstance(correction, str) else None
+        return None
+
+    def _agentic_selected_scalars(
+        self,
+        source: Mapping[str, Any],
+        keys: tuple[str, ...],
+    ) -> dict[str, object]:
+        selected: dict[str, object] = {}
+        for key in keys:
+            value = self._agentic_safe_scalar(source.get(key))
+            if value is not None:
+                selected[key] = value
+        return selected
+
+    def _agentic_safe_scalar(
+        self,
+        value: object,
+        *,
+        max_chars: int = 320,
+    ) -> object | None:
+        if type(value) is bool:
+            return value
+        if type(value) is int and abs(value) <= 1_000_000:
+            return value
+        if type(value) is float and math.isfinite(value) and abs(value) <= 1_000_000:
+            return value
+        if type(value) is not str:
+            return None
+        compact = " ".join(value.strip().split())
+        if not compact or len(compact) > max_chars or _unsafe_context_value_reason(compact):
+            return None
+        return compact
+
     def _handle_agentic_turn_if_configured(
         self,
         events: list[ThoughtEvent],
         factory: EventFactory,
         turn_input: TurnInput,
+        *,
+        predecision_context: AgenticPredecisionContext,
+        observation: Mapping[str, Any],
     ) -> tuple[bool, _AgenticCapabilityRoute | None]:
         """Route an injected semantic decision before compatibility detectors."""
 
@@ -1478,13 +1904,20 @@ class ThoughtLoop:
             agent_context=MappingProxyType(
                 {
                     "bounded_wish_refs": (),
-                    "observation_refs": (),
+                    "observation_refs": tuple(
+                        value
+                        for value in (
+                            self._agentic_safe_scalar(observation.get("observation_ref")),
+                        )
+                        if isinstance(value, str)
+                    ),
                     "memory_refs": (),
-                    "working_memory_item_count": int(
-                        self._active_working_memory_context.get("item_count", 0)
+                    "working_memory_item_count": len(
+                        self._active_working_memory_context.get("safe_refs", [])
                     ),
                 }
             ),
+            predecision_context=predecision_context,
         )
         try:
             candidate = provider.decide(request)

@@ -6,6 +6,33 @@ Current schemas:
 
 - `turn-request.schema.json`
 - `turn-response-events.schema.json`
+- `agentic-predecision-context.schema.json`
+
+## Agentic Predecision Context
+
+`agentic-predecision-context.v1` is the bounded private input assembled before
+the primary AI provider authors one semantic turn decision. It carries explicit
+sections for current Environment State, relevant memory, same-session
+continuity, and system topology, plus the immutable capability view used for
+the decision.
+
+Every section reports `available`, `missing`, `unavailable`, `stale`, or
+`conflict`. The current slice supplies Environment State, relevant memory, and
+same-session continuity before the provider call. System topology remains an
+explicit `missing` section until its producer is connected. The current human
+wish stays authoritative as the newest input; a bounded latest same-session
+correction overrides older continuity and memory summaries.
+
+The contract contains summaries and bounded facts only. It excludes raw
+credentials, secrets, paths, URLs, ports, command lines, provider payloads,
+configuration documents, and JSONL records. Runtime serialization is capped at
+32,768 UTF-8 bytes, eight items per section, twelve properties per item, eight
+values per nested list, three nested value levels, and 512 total value nodes.
+
+The context informs semantic judgment but does not authorize execution.
+Existing catalog, schema, confirmation, execution, observation, receipt, and
+cleanup code retains those responsibilities. Explicit no-provider operation
+continues to use its compatibility route and is not the primary agentic route.
 
 ## Current Request Shape
 
