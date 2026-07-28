@@ -15,6 +15,61 @@ from sword_voice_agent.protocol.messages import AgentRequest
 
 class ThoughtCoreClientTest(TestCase):
     @patch("sword_voice_agent.adapters.thought_core.request.urlopen")
+    def test_append_closed_loop_event_uses_fixed_endpoint_and_bounded_receipt(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {
+                "ok": True,
+                "event_id": "evt_closed_loop_001",
+                "journal_entry_id": "jrn_closed_loop_001",
+                "ingest_offset": 7,
+            }
+        ).encode("utf-8")
+        urlopen.return_value = response
+        client = ThoughtCoreClient(base_url="http://127.0.0.1:18787")
+
+        result = client.append_closed_loop_event(
+            {
+                "event_kind": "output.dispatch_intent",
+                "session_id": "session_001",
+                "turn_id": "turn_001",
+                "assistant_message_id": "msg_001",
+                "details": {},
+            }
+        )
+
+        self.assertEqual(result["ingest_offset"], 7)
+        req = urlopen.call_args.args[0]
+        self.assertEqual(
+            req.full_url,
+            "http://127.0.0.1:18787/feedback/closed-loop",
+        )
+        self.assertNotIn("event_id", json.loads(req.data.decode("utf-8")))
+
+    @patch("sword_voice_agent.adapters.thought_core.request.urlopen")
+    def test_append_closed_loop_event_does_not_echo_http_error_body(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        marker = "PRIVATE_CLOSED_LOOP_RESPONSE"
+        urlopen.side_effect = error.HTTPError(
+            "http://127.0.0.1:18787/feedback/closed-loop",
+            503,
+            marker,
+            {},
+            MagicMock(read=lambda: marker.encode("utf-8")),
+        )
+        client = ThoughtCoreClient(base_url="http://127.0.0.1:18787")
+
+        with self.assertRaises(ThoughtCoreClientError) as raised:
+            client.append_closed_loop_event({})
+
+        self.assertNotIn(marker, str(raised.exception))
+
+    @patch("sword_voice_agent.adapters.thought_core.request.urlopen")
     def test_send_turn_streaming_aggregates_assistant_messages(self, urlopen: MagicMock) -> None:
         response = MagicMock()
         stream = MagicMock()

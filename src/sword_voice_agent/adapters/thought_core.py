@@ -94,6 +94,11 @@ class ThoughtCoreStreamEvent:
             return str(self.data.get("speech") or "")
         return self.speech_delta
 
+    @property
+    def assistant_message_id(self) -> str:
+        value = self.data.get("assistant_message_id") or self.data.get("message_id")
+        return str(value or "").strip()
+
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "type": self.type,
@@ -218,6 +223,65 @@ class ThoughtCoreClient:
             ),
             on_event=on_event,
         )
+
+    def append_closed_loop_event(
+        self,
+        candidate: Mapping[str, Any],
+        *,
+        timeout_s: float | None = None,
+    ) -> dict[str, Any]:
+        """Append through Thought Core's durable barrier; never expose response bodies."""
+
+        body = json.dumps(dict(candidate), ensure_ascii=False).encode("utf-8")
+        req = request.Request(
+            url=f"{self.base_url}/feedback/closed-loop",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        try:
+            with request.urlopen(
+                req,
+                timeout=self.timeout_s if timeout_s is None else max(0.05, timeout_s),
+            ) as response:
+                response_body = response.read(16 * 1024 + 1)
+        except error.HTTPError as exc:
+            raise ThoughtCoreClientError(
+                f"thought-core closed-loop append returned HTTP {exc.code}"
+            ) from exc
+        except (error.URLError, TimeoutError, OSError) as exc:
+            raise ThoughtCoreClientError(
+                "failed to append thought-core closed-loop event"
+            ) from exc
+        if len(response_body) > 16 * 1024:
+            raise ThoughtCoreClientError("thought-core closed-loop append response too large")
+        try:
+            payload = json.loads(response_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ThoughtCoreClientError(
+                "thought-core closed-loop append response invalid"
+            ) from exc
+        if not isinstance(payload, Mapping) or payload.get("ok") is not True:
+            raise ThoughtCoreClientError("thought-core closed-loop append failed")
+        event_id = payload.get("event_id")
+        journal_entry_id = payload.get("journal_entry_id")
+        ingest_offset = payload.get("ingest_offset")
+        if (
+            not isinstance(event_id, str)
+            or not event_id.startswith("evt_")
+            or not isinstance(journal_entry_id, str)
+            or not journal_entry_id.startswith("jrn_")
+            or isinstance(ingest_offset, bool)
+            or not isinstance(ingest_offset, int)
+            or ingest_offset < 1
+        ):
+            raise ThoughtCoreClientError("thought-core closed-loop append response invalid")
+        return {
+            "ok": True,
+            "event_id": event_id,
+            "journal_entry_id": journal_entry_id,
+            "ingest_offset": ingest_offset,
+        }
 
     def _post_json_stream(
         self,

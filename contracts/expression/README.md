@@ -27,5 +27,10 @@ Logical boundary:
   decide tool orchestration or action success.
 - The AITuberKit surface receives display/speech queue messages. It is a
   presentation target, not state authority.
+- Canonical assistant output uses `assistant_message_id`. The legacy
+  `message_id` field carries the same canonical value and is not the enclosing
+  Thought Core event ID.
+- Adapter HTTP completion is transport submission evidence only. It does not
+  prove TTS playback, visible pixels, physical state, or user observation.
 - Future `expression-core` event schemas should be added only after a concrete
   sender/receiver pair exists.

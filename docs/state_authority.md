@@ -31,6 +31,10 @@
 | transcript / command | `ai-talk-core` | handoff files | STT 結果と Thought Core へ送る既定 field |
 | Thought Core request text selection | Thought Core watcher | Thought Core API request | `command`, `transcript`, `prompt` の選択 |
 | Thought Core answer and turn metadata | Thought Core | status projection | `answer`, `turn_id`, `event_count` |
+| closed-loop `assistant_message_id` | Thought Core | turn events, output payloads, Event Journal v1 | `event_id` とは別 identity。`message_id` は同じ値を運ぶ legacy alias としてのみ残す |
+| closed-loop `event_id` | Thought Core | `closed-loop-correlation-feedback.v1` event | output adapter は発行せず、`POST /feedback/closed-loop` で Thought Core が発行する |
+| `journal_entry_id` / `ingest_offset` | Thought Core Event Journal | append-only local JSONL | durable append order。raw text、media、secret、provider payload、private path は保存しない |
+| active operation / recent output feedback projection | Operation/Output Projection | process-local derived state | Event Journal v1 から同じ reducer で live/replay 生成し、削除・再構築可能。外部 state authority や durable memory ではない |
 | semantic intent / capability selection / structured action proposal | Thought Core AI agent | turn events and validated proposal boundary | conversation, capability schemas, Environment State, memory, and optional Self Mirror are reasoning inputs; this is not execution permission |
 | action permission and parameter bounds | deterministic validator / policy boundary | validation event and execution request | schema, allowlist, range, confirmation, and safety policy may accept or reject an AI proposal but must not replace ordinary semantic intent with a fixed phrase table |
 | Home Assistant action result | `home-assistant-server` / Home Assistant | bridge API, Environment State Server | 家電状態の根拠 |
@@ -39,6 +43,46 @@
 | AITuberKit speech queue | AITuberKit | `/api/messages` | 発話キューと表示 |
 | TouchDesigner visual trigger | TouchDesigner runtime | UDP 9001 | 視覚演出状態 |
 | projection files and event log | `StatusStore` | `.cache/sword_voice_agent` | 表示・デバッグ用 |
+
+## Closed-loop correlation and feedback v1
+
+`contracts/turn/closed-loop-correlation-feedback.v1.json` is the single
+machine-readable authority for issuer rules, event-kind names, transition
+profiles, proof enums, redaction allowlists, and provider bounds. The feature
+starts disabled and is enabled only for a fresh session with
+`THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED=1`.
+
+The canonical shared identity vocabulary is limited to `session_id`,
+`input_attempt_id`, `turn_id`, `operation_id`, `assistant_message_id`,
+`event_id`, `candidate_id`, and `memory_id`, plus the ordering and causal refs
+listed in that contract. There is no v1 `feedback_id`, `observation_id`,
+`confirmation_id`, retry ID, cleanup ID, generic tag map, or second durable
+store. Existing caller-supplied `turn_id` remains a labeled compatibility path
+until the separately owned input edge can accept Thought-Core-issued IDs.
+
+Event Journal is redacted operational evidence, not current Environment,
+display, playback, physical, or user-observation authority and not Memory Core.
+The Control HTTP output route does not accept caller-authored
+`source_authority`: Thought Core derives `control_output_adapter` for dispatch
+intent and the display/TTS transport authority for feedback. Its fixed ingress
+matrix rejects playback, operation transitions, and success claims; those
+remain available only to future internal producers with their own authority.
+Immediately before the real output `urlopen`, the watcher durably records a
+distinct Control-authored send-attempt transition as
+`may_have_submitted / outcome_unknown`. It is provider-visible after replay and
+is never an automatic resend instruction. If that append fails, the network
+send is blocked; a later transport callback may refine the same correlation.
+HTTP completion from the Control output adapter proves at most
+`submission_ack`; it remains `needs_feedback`. A timeout or other ambiguous
+send becomes `may_have_submitted` plus `outcome_unknown`, with retry zero.
+AITuberKit remains authoritative for its queue/display handling and TTS Service
+remains authoritative for playback state. Deterministic fake success used in
+tests does not upgrade those runtime proof layers.
+
+Every v1 envelope/detail string crosses the same fixed secret-like matcher
+before the Journal boundary. Secret-like caller identifiers or detail values
+are rejected without mutation, append, projection, replay, or provider-context
+change. Accepted identifiers retain their exact value.
 
 ## Launcher Demo-Safe Settings
 

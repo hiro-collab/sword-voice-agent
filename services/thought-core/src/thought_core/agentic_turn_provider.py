@@ -17,8 +17,10 @@ MAX_RECEIPT_RESPONSE_LENGTH = 600
 AGENTIC_PREDECISION_CONTEXT_SCHEMA_VERSION = "agentic-predecision-context.v1"
 AGENTIC_PREDECISION_CONTEXT_SECTION_NAMES = (
     "environment_state",
-    "relevant_memory",
+    "active_operations",
+    "feedback_context",
     "same_session_continuity",
+    "relevant_memory",
     "system_topology",
 )
 AGENTIC_PREDECISION_CONTEXT_STATUSES = frozenset(
@@ -69,6 +71,12 @@ class AgenticPredecisionContext:
 
     latest_user_correction: str | None = None
     environment_state: AgenticPredecisionContextSection = field(
+        default_factory=AgenticPredecisionContextSection
+    )
+    active_operations: AgenticPredecisionContextSection = field(
+        default_factory=AgenticPredecisionContextSection
+    )
+    feedback_context: AgenticPredecisionContextSection = field(
         default_factory=AgenticPredecisionContextSection
     )
     relevant_memory: AgenticPredecisionContextSection = field(

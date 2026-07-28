@@ -205,11 +205,61 @@ If persistence is unavailable, return a non-2xx status with a short `error`; Tho
 | Env | Meaning |
 |---|---|
 | `THOUGHT_CORE_BASE_URL` | Thought Core API base URL, for example `http://127.0.0.1:18787` |
+| `THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED` | Disabled by default. Enables the fresh-session v1 Journal/projection/output-feedback chain. |
+| `THOUGHT_CORE_EVENT_JOURNAL_PATH` / `THOUGHT_CORE_EVENT_JOURNAL_DIR` | Existing local append-only Journal location; v0 telemetry and v1 closed-loop entries share the file without conversion. |
 | `ENVIRONMENT_STATE_URL` | URL for `/environment/current` |
 | `ENVIRONMENT_RELATIONS_URL` | URL for `/environment/relations` |
 | `ENVIRONMENT_FEEDBACK_URL` | URL for `/feedback/state-query` |
 
 State lookups such as "電気ついてる?" must not execute Home Assistant actions. Thought Core should set `action_id` to `none` and answer from `state_queries.room_light`; `available=false` or `stale=true` means the current sensor state cannot be confirmed.
+
+When the v1 gate is enabled, the loopback/auth policy used by `/turn` also
+protects `POST /feedback/closed-loop`. The caller sends one bounded candidate
+without `schema_version`, `event_id`, `observed_at`, or `source_authority`.
+Thought Core derives source authority from the fixed route matrix, issues the
+canonical identity and timestamp, validates the exact event-kind, channel,
+component, and transition-profile tuple, durably appends the redacted entry,
+and updates the replay-derived projection. This route accepts only display/TTS
+`output.dispatch_intent` and `output.feedback`; it rejects playback,
+`operation.transition`, visible/user-observation success, and every non-matrix
+tuple before Journal append. Success returns only:
+
+```json
+{
+  "ok": true,
+  "event_id": "evt_opaque",
+  "journal_entry_id": "jrn_opaque",
+  "ingest_offset": 1
+}
+```
+
+The general internal v1 contract defines exactly `operation.transition`,
+`output.dispatch_intent`, and `output.feedback`, while the Control HTTP route
+accepts only the latter two under its narrower matrix. An output adapter must
+obtain the successful durable response for `output.dispatch_intent` before its
+external HTTP send. At the worker boundary immediately before `urlopen`, it
+must also durably append the Control-authored
+`send_attempt_started_outcome_unknown` transition. This intentionally records
+`may_have_submitted / outcome_unknown` before the uncertain crash window. A
+failure to append blocks `urlopen`; replay retains the unknown state without
+resend, and only a later result callback may refine it to submission
+acknowledgement or terminal ambiguity. General post-turn v0 telemetry remains
+best-effort and nonfatal; this stricter barrier applies only to an external
+output/action dispatch intent.
+
+The provider-facing `agentic-predecision-context.v1` orders current correction,
+Environment, `active_operations`, `feedback_context`, same-session continuity,
+relevant Memory, and capability view. The projection is snapshotted before the
+provider call, so feedback arriving from turn N is visible starting with a
+later decision and never rewrites turn N. Replay reads only validated v1
+entries, invokes the same pure reducer as live ingest, and performs no output,
+tool, provider, browser, device, or Memory action.
+
+Canonical v1 validation applies one fixed secret-like string matcher to every
+envelope and detail string before Journal append. This includes `session_id`,
+message/event correlation references, and component values. Matching values
+are rejected unchanged rather than redacted or stored; otherwise identifiers
+remain byte-for-byte intact.
 
 ## OpenAI Broker (phase-one bounded contract)
 
@@ -252,7 +302,7 @@ cleanup, and residue verification.
 | Env from sword side | `AITUBER_MESSAGE_URL` |
 | Message Receiver | Enable in AITuberKit with matching client ID |
 
-Thought Core streaming responses are sent to AITuberKit through `direct_send`. AITuberKit external WebSocket mode is not part of the standard integration path.
+Thought Core streaming responses are sent to AITuberKit through `direct_send`. AITuberKit external WebSocket mode is not part of the standard integration path. Canonical output payloads carry `assistant_message_id`; the legacy `message_id` field carries the same value and must not be replaced by the enclosing Thought Core `event_id`. With closed-loop v1 enabled, a successful HTTP response records only transport `submission_ack / needs_feedback`, not visible pixels or user observation.
 
 ## TTS Service
 
@@ -266,7 +316,7 @@ Thought Core streaming responses are sent to AITuberKit through `direct_send`. A
 | Volume | `GET/POST /api/volume` |
 | Status file | `latest_tts_state.json` under output status dir |
 
-Thought Core watcher sends response chunks to `TTS_HTTP_CHUNK_URL` when TTS is enabled.
+Thought Core watcher sends response chunks to `TTS_HTTP_CHUNK_URL` when TTS is enabled. Canonical chunks carry `assistant_message_id`, with `message_id` as the same-value compatibility alias. The current adapter has no authoritative playback receipt source: HTTP completion is only `submission_ack / needs_feedback`; an ambiguous send is `may_have_submitted / outcome_unknown`, and no automatic retry occurs.
 
 ## Home Assistant Bridge
 

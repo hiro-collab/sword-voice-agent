@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword-voice-agent.local/contracts/turn/closed-loop-correlation-feedback.v1.schema.json",
+  "title": "Closed-loop correlation and feedback contract descriptor",
+  "type": "object",
+  "required": [
+    "contract_version",
+    "activation",
+    "identities",
+    "event_envelope",
+    "event_kinds",
+    "details",
+    "enums",
+    "http_output_ingress",
+    "transition_profiles",
+    "limits",
+    "provider_order",
+    "forbidden_key_parts"
+  ],
+  "properties": {
+    "contract_version": {"const": "closed-loop-correlation-feedback.v1"},
+    "activation": {
+      "type": "object",
+      "required": ["default", "environment_variable", "history_start"],
+      "properties": {
+        "default": {"const": "disabled"},
+        "environment_variable": {
+          "const": "THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED"
+        },
+        "history_start": {"const": "fresh_v1_session"}
+      },
+      "additionalProperties": false
+    },
+    "identities": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["issuer"],
+        "properties": {
+          "issuer": {"type": "string", "minLength": 1},
+          "legacy_caller_compatibility": {"type": "boolean"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "event_envelope": {
+      "type": "object",
+      "required": [
+        "required",
+        "optional",
+        "max_string_length",
+        "max_serialized_bytes"
+      ],
+      "properties": {
+        "required": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "optional": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "max_string_length": {"type": "integer", "minimum": 1, "maximum": 320},
+        "max_serialized_bytes": {"type": "integer", "minimum": 1, "maximum": 8192}
+      },
+      "additionalProperties": false
+    },
+    "event_kinds": {
+      "type": "object",
+      "required": [
+        "operation.transition",
+        "output.dispatch_intent",
+        "output.feedback"
+      ],
+      "properties": {
+        "operation.transition": {"$ref": "#/$defs/event_kind"},
+        "output.dispatch_intent": {"$ref": "#/$defs/event_kind"},
+        "output.feedback": {"$ref": "#/$defs/event_kind"}
+      },
+      "additionalProperties": false
+    },
+    "details": {
+      "type": "object",
+      "required": ["allowed_fields", "max_fields"],
+      "properties": {
+        "allowed_fields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "max_fields": {"type": "integer", "minimum": 1, "maximum": 16}
+      },
+      "additionalProperties": false
+    },
+    "enums": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "items": {"type": "string", "minLength": 1}
+      }
+    },
+    "http_output_ingress": {
+      "type": "object",
+      "required": [
+        "path",
+        "dispatch_source_authority",
+        "send_attempt_profile",
+        "channels",
+        "profiles"
+      ],
+      "properties": {
+        "path": {"const": "/feedback/closed-loop"},
+        "dispatch_source_authority": {"const": "control_output_adapter"},
+        "send_attempt_profile": {"const": "send_attempt_started_outcome_unknown"},
+        "channels": {
+          "type": "object",
+          "required": ["display", "tts"],
+          "properties": {
+            "display": {"$ref": "#/$defs/http_output_channel"},
+            "tts": {"$ref": "#/$defs/http_output_channel"}
+          },
+          "additionalProperties": false
+        },
+        "profiles": {
+          "type": "object",
+          "required": ["output.dispatch_intent", "output.feedback"],
+          "properties": {
+            "output.dispatch_intent": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "output.feedback": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "transition_profiles": {
+      "type": "object",
+      "required": [
+        "dispatch_intent_recorded",
+        "send_attempt_started_outcome_unknown",
+        "submission_ack_needs_feedback",
+        "possible_send_timeout",
+        "dispatch_rejected_before_send",
+        "transient_external_mismatch",
+        "projection_receipt_without_visible_pixels",
+        "cleanup_complete"
+      ],
+      "properties": {
+        "dispatch_intent_recorded": {"$ref": "#/$defs/transition_profile"},
+        "send_attempt_started_outcome_unknown": {"$ref": "#/$defs/transition_profile"},
+        "submission_ack_needs_feedback": {"$ref": "#/$defs/transition_profile"},
+        "possible_send_timeout": {"$ref": "#/$defs/transition_profile"},
+        "dispatch_rejected_before_send": {"$ref": "#/$defs/transition_profile"},
+        "transient_external_mismatch": {"$ref": "#/$defs/transition_profile"},
+        "projection_receipt_without_visible_pixels": {"$ref": "#/$defs/transition_profile"},
+        "cleanup_complete": {"$ref": "#/$defs/transition_profile"}
+      },
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "required": [
+        "active_operations",
+        "feedback_context",
+        "recent_projection_entries"
+      ],
+      "properties": {
+        "active_operations": {"type": "integer", "minimum": 1, "maximum": 8},
+        "feedback_context": {"type": "integer", "minimum": 1, "maximum": 8},
+        "recent_projection_entries": {"type": "integer", "minimum": 1, "maximum": 32}
+      },
+      "additionalProperties": false
+    },
+    "provider_order": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "forbidden_key_parts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    }
+  },
+  "$defs": {
+    "event_kind": {
+      "type": "object",
+      "required": ["requires", "required_details"],
+      "properties": {
+        "requires": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "required_details": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "additionalProperties": false
+    },
+    "http_output_channel": {
+      "type": "object",
+      "required": ["component", "feedback_source_authority"],
+      "properties": {
+        "component": {"type": "string", "minLength": 1},
+        "feedback_source_authority": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "transition_profile": {
+      "type": "object",
+      "required": [
+        "phase",
+        "outcome_class",
+        "submission_class",
+        "receipt_class",
+        "cleanup_class",
+        "proof_layer",
+        "verification_class"
+      ],
+      "properties": {
+        "phase": {"type": "string", "minLength": 1},
+        "outcome_class": {"type": "string", "minLength": 1},
+        "submission_class": {"type": "string", "minLength": 1},
+        "receipt_class": {"type": "string", "minLength": 1},
+        "cleanup_class": {"type": "string", "minLength": 1},
+        "proof_layer": {"type": "string", "minLength": 1},
+        "verification_class": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

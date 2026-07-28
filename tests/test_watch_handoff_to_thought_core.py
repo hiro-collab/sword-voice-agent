@@ -11,9 +11,11 @@ from sword_voice_agent.adapters.ai_talk_core import AiTalkCoreHandoffError
 from sword_voice_agent.adapters.status_store import StatusStore
 from sword_voice_agent.adapters.thought_core import ThoughtCoreStreamEvent
 from sword_voice_agent.apps.watch_handoff_to_thought_core import (
+    ClosedLoopOutputRecorder,
     HandoffSignature,
     NO_SPEECH_PLACEHOLDER,
     ThoughtCoreAituberForwarder,
+    ThoughtCoreTtsForwarder,
     build_parser,
     default_auto_review_pending,
     format_missing_handoff_message,
@@ -97,6 +99,39 @@ class FakeThoughtCoreClient:
             conversation_id=turn_payload["turn_id"],
             raw={"status": "success"},
         )
+
+
+class RecordingClosedLoopClient:
+    def __init__(
+        self,
+        *,
+        fail_intent: bool = False,
+        fail_send_attempt: bool = False,
+    ) -> None:
+        self.fail_intent = fail_intent
+        self.fail_send_attempt = fail_send_attempt
+        self.candidates: list[dict[str, object]] = []
+
+    def append_closed_loop_event(self, candidate):  # type: ignore[no-untyped-def]
+        copied = json.loads(json.dumps(candidate))
+        self.candidates.append(copied)
+        if self.fail_intent and candidate.get("event_kind") == "output.dispatch_intent":
+            raise RuntimeError("append failed")
+        details = candidate.get("details")
+        if (
+            self.fail_send_attempt
+            and isinstance(details, dict)
+            and details.get("phase") == "dispatching"
+            and details.get("outcome_class") == "outcome_unknown"
+        ):
+            raise RuntimeError("send-attempt append failed")
+        index = len(self.candidates)
+        return {
+            "ok": True,
+            "event_id": f"evt_closed_loop_{index:03d}",
+            "journal_entry_id": f"jrn_closed_loop_{index:03d}",
+            "ingest_offset": index,
+        }
 
 
 class PendingReviewThoughtCoreClient:
@@ -631,6 +666,198 @@ class WatchHandoffToThoughtCoreTest(TestCase):
             payloads[1]["response_source"],
             "thought_core_assistant_message",
         )
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_thought_core.request.urlopen")
+    def test_closed_loop_display_intent_is_appended_before_send_and_ack_is_bounded(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        order: list[str] = []
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+
+        client = RecordingClosedLoopClient()
+        original_append = client.append_closed_loop_event
+
+        def append(candidate):  # type: ignore[no-untyped-def]
+            order.append(str(candidate["event_kind"]))
+            return original_append(candidate)
+
+        client.append_closed_loop_event = append  # type: ignore[method-assign]
+
+        def send(_req, **_kwargs):  # type: ignore[no-untyped-def]
+            order.append("external_send")
+            return response
+
+        urlopen.side_effect = send
+        recorder = ClosedLoopOutputRecorder(
+            client,
+            session_id="session_closed_loop",
+            turn_id="turn_closed_loop",
+        )
+        forwarder = ThoughtCoreAituberForwarder(
+            "http://127.0.0.1:3000/api/messages?clientId=test&type=direct_send",
+            timeout_s=0.1,
+            turn_id="turn_closed_loop",
+            closed_loop_recorder=recorder,
+        )
+        forwarder(
+            ThoughtCoreStreamEvent(
+                event_type="assistant.message",
+                turn_id="turn_closed_loop",
+                session_id="session_closed_loop",
+                event_id="evt_message_envelope",
+                data={
+                    "assistant_message_id": "msg_closed_loop_001",
+                    "message_id": "msg_closed_loop_001",
+                    "speech": "bounded synthetic output",
+                },
+            )
+        )
+
+        self.assertEqual(
+            order,
+            [
+                "output.dispatch_intent",
+                "output.feedback",
+                "external_send",
+                "output.feedback",
+            ],
+        )
+        self.assertEqual(
+            client.candidates[1]["details"]["outcome_class"],  # type: ignore[index]
+            "outcome_unknown",
+        )
+        self.assertEqual(
+            client.candidates[1]["details"]["submission_class"],  # type: ignore[index]
+            "may_have_submitted",
+        )
+        self.assertEqual(
+            client.candidates[2]["details"]["outcome_class"],  # type: ignore[index]
+            "needs_feedback",
+        )
+        self.assertEqual(
+            client.candidates[2]["details"]["receipt_class"],  # type: ignore[index]
+            "submission_ack",
+        )
+        self.assertNotIn("source_authority", client.candidates[0])
+        self.assertNotIn("source_authority", client.candidates[1])
+        self.assertNotIn("source_authority", client.candidates[2])
+        sent = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(sent["assistant_message_id"], "msg_closed_loop_001")
+        self.assertEqual(sent["message_id"], "msg_closed_loop_001")
+        self.assertNotEqual(sent["assistant_message_id"], "evt_message_envelope")
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_thought_core.request.urlopen")
+    def test_closed_loop_journal_failure_blocks_external_display_dispatch(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        client = RecordingClosedLoopClient(fail_intent=True)
+        recorder = ClosedLoopOutputRecorder(
+            client,
+            session_id="session_closed_loop",
+            turn_id="turn_closed_loop",
+        )
+        forwarder = ThoughtCoreAituberForwarder(
+            "http://127.0.0.1:3000/api/messages?clientId=test&type=direct_send",
+            timeout_s=0.1,
+            turn_id="turn_closed_loop",
+            closed_loop_recorder=recorder,
+        )
+
+        forwarder(
+            ThoughtCoreStreamEvent(
+                event_type="assistant.message",
+                turn_id="turn_closed_loop",
+                session_id="session_closed_loop",
+                event_id="evt_message_envelope",
+                data={
+                    "assistant_message_id": "msg_closed_loop_001",
+                    "speech": "bounded synthetic output",
+                },
+            )
+        )
+
+        urlopen.assert_not_called()
+        self.assertEqual(forwarder.dispatch_count, 0)
+        self.assertEqual(len(client.candidates), 1)
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_thought_core.request.urlopen")
+    def test_closed_loop_send_attempt_journal_failure_blocks_urlopen(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        client = RecordingClosedLoopClient(fail_send_attempt=True)
+        recorder = ClosedLoopOutputRecorder(
+            client,
+            session_id="session_closed_loop",
+            turn_id="turn_closed_loop",
+        )
+        forwarder = ThoughtCoreAituberForwarder(
+            "http://127.0.0.1:3000/api/messages?clientId=test&type=direct_send",
+            timeout_s=0.1,
+            turn_id="turn_closed_loop",
+            closed_loop_recorder=recorder,
+        )
+
+        forwarder(
+            ThoughtCoreStreamEvent(
+                event_type="assistant.message",
+                turn_id="turn_closed_loop",
+                session_id="session_closed_loop",
+                event_id="evt_message_envelope",
+                data={
+                    "assistant_message_id": "msg_closed_loop_001",
+                    "speech": "bounded synthetic output",
+                },
+            )
+        )
+
+        urlopen.assert_not_called()
+        self.assertEqual(forwarder.dispatch_count, 0)
+        self.assertEqual(len(client.candidates), 3)
+        rejected = client.candidates[2]["details"]  # type: ignore[index]
+        self.assertEqual(rejected["submission_class"], "not_submitted")
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_thought_core.request.urlopen")
+    def test_closed_loop_ambiguous_tts_send_is_outcome_unknown_without_retry(
+        self,
+        urlopen: MagicMock,
+    ) -> None:
+        urlopen.side_effect = TimeoutError("ambiguous")
+        client = RecordingClosedLoopClient()
+        recorder = ClosedLoopOutputRecorder(
+            client,
+            session_id="session_closed_loop",
+            turn_id="turn_closed_loop",
+        )
+        forwarder = ThoughtCoreTtsForwarder(
+            "http://127.0.0.1:8765/api/tts/chunk",
+            timeout_s=0.1,
+            turn_id="turn_closed_loop",
+            closed_loop_recorder=recorder,
+        )
+        event = ThoughtCoreStreamEvent(
+            event_type="assistant.speech_delta",
+            turn_id="turn_closed_loop",
+            session_id="session_closed_loop",
+            event_id="evt_speech_envelope",
+            data={
+                "assistant_message_id": "msg_closed_loop_001",
+                "message_id": "msg_closed_loop_001",
+                "delta": "bounded synthetic speech",
+            },
+        )
+
+        forwarder(event)
+
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(len(client.candidates), 3)
+        feedback = client.candidates[2]["details"]  # type: ignore[index]
+        self.assertEqual(feedback["submission_class"], "may_have_submitted")
+        self.assertEqual(feedback["outcome_class"], "outcome_unknown")
+        self.assertEqual(feedback["verification_class"], "timeout_ambiguous")
 
     def test_aituber_forward_error_redacts_message_url(self) -> None:
         with workspace_tempdir() as tmp:

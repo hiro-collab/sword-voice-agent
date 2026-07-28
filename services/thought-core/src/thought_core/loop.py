@@ -48,6 +48,7 @@ from .ordinary_route_contract import (
     review_checkpoint_from_observation,
     review_checkpoint_payload,
 )
+from .operation_output_projection import OperationOutputProjection
 from .persona import AssistantPersona, build_persona_from_env, strip_persona_tags
 from .projection_effect_intent import (
     detect_projection_effect_intent,
@@ -538,6 +539,7 @@ class ThoughtLoop:
         capability_catalog: AgenticCapabilityCatalog | HomeCapabilityCatalog | None = None,
         persona: AssistantPersona | None = None,
         conversation_continuity: ConversationContinuity | None = None,
+        operation_output_projection: OperationOutputProjection | None = None,
         llm_visible_speech: bool | None = None,
         require_llm_visible_speech: bool | None = None,
     ) -> None:
@@ -560,6 +562,7 @@ class ThoughtLoop:
         self.conversation_continuity = (
             conversation_continuity or ConversationContinuity()
         )
+        self.operation_output_projection = operation_output_projection
         self.pending_confirmations: dict[str, dict[str, Any]] = _DeadlineGuardedDict()
         self.pending_action_reviews: dict[str, dict[str, Any]] = _DeadlineGuardedDict()
         self.pending_state_queries: dict[str, dict[str, Any]] = _DeadlineGuardedDict()
@@ -578,6 +581,12 @@ class ThoughtLoop:
 
     def _request_context(self) -> _TurnRequestContext | None:
         return _TURN_REQUEST_CONTEXT.get()
+
+    def attach_operation_output_projection(
+        self,
+        projection: OperationOutputProjection,
+    ) -> None:
+        self.operation_output_projection = projection
 
     def _replace_request_context(self, **changes: Any) -> None:
         current = self._request_context()
@@ -1581,11 +1590,14 @@ class ThoughtLoop:
         continuity_context: Mapping[str, Any],
         working_memory_context: Mapping[str, Any],
     ) -> AgenticPredecisionContext:
+        active_operations, feedback_context = self._agentic_closed_loop_sections()
         return AgenticPredecisionContext(
             latest_user_correction=self._latest_agentic_user_correction(
                 continuity_context
             ),
             environment_state=self._agentic_environment_section(observation),
+            active_operations=active_operations,
+            feedback_context=feedback_context,
             relevant_memory=self._agentic_memory_section(
                 memory_context,
                 working_memory_context,
@@ -1599,6 +1611,41 @@ class ThoughtLoop:
                 summary="System topology was not supplied for this decision.",
             ),
         )
+
+    def _agentic_closed_loop_sections(
+        self,
+    ) -> tuple[AgenticPredecisionContextSection, AgenticPredecisionContextSection]:
+        projection = self.operation_output_projection
+        if projection is None:
+            missing = AgenticPredecisionContextSection(
+                status="missing",
+                status_detail="closed_loop_feedback_v1_disabled",
+                summary="Closed loop feedback is disabled for this session.",
+            )
+            return missing, missing
+
+        sections = projection.provider_sections(session_id=self._active_session_id)
+        active_items = tuple(
+            MappingProxyType(dict(item))
+            for item in sections["active_operations"]
+        )
+        feedback_items = tuple(
+            MappingProxyType(dict(item))
+            for item in sections["feedback_context"]
+        )
+        active = AgenticPredecisionContextSection(
+            status="available",
+            status_detail="",
+            summary=f"{len(active_items)} active operations at the decision snapshot.",
+            items=active_items,
+        )
+        feedback = AgenticPredecisionContextSection(
+            status="available",
+            status_detail="",
+            summary=f"{len(feedback_items)} recent feedback items at the decision snapshot.",
+            items=feedback_items,
+        )
+        return active, feedback
 
     def _agentic_environment_section(
         self,
@@ -8096,6 +8143,7 @@ class ThoughtLoop:
             factory.emit(
                 "assistant.speech_delta",
                 {
+                    "assistant_message_id": message_id,
                     "message_id": message_id,
                     "delta": speech,
                     "channel": "speech",
@@ -8113,6 +8161,7 @@ class ThoughtLoop:
             factory.emit(
                 "assistant.message",
                 {
+                    "assistant_message_id": message_id,
                     "message_id": message_id,
                     "speech": speech,
                     "display": display,

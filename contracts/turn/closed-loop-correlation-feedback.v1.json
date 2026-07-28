@@ -1,0 +1,308 @@
+{
+  "contract_version": "closed-loop-correlation-feedback.v1",
+  "activation": {
+    "default": "disabled",
+    "environment_variable": "THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED",
+    "history_start": "fresh_v1_session"
+  },
+  "identities": {
+    "session_id": {"issuer": "input_edge"},
+    "input_attempt_id": {"issuer": "input_edge"},
+    "turn_id": {"issuer": "thought_core", "legacy_caller_compatibility": true},
+    "operation_id": {"issuer": "thought_core"},
+    "assistant_message_id": {"issuer": "thought_core"},
+    "event_id": {"issuer": "thought_core"},
+    "candidate_id": {"issuer": "memory_core"},
+    "memory_id": {"issuer": "memory_core"},
+    "journal_entry_id": {"issuer": "event_journal"},
+    "ingest_offset": {"issuer": "event_journal"},
+    "causal_parent_event_id": {"issuer": "referrer"},
+    "as_of_ingest_offset": {"issuer": "operation_output_projection"},
+    "responds_to_message_id": {"issuer": "thought_core"},
+    "target_operation_id": {"issuer": "thought_core"},
+    "operation_revision": {"issuer": "thought_core"}
+  },
+  "event_envelope": {
+    "required": [
+      "schema_version",
+      "event_id",
+      "event_kind",
+      "session_id",
+      "turn_id",
+      "source_authority",
+      "observed_at",
+      "details"
+    ],
+    "optional": [
+      "input_attempt_id",
+      "operation_id",
+      "assistant_message_id",
+      "causal_parent_event_id",
+      "responds_to_message_id",
+      "target_operation_id",
+      "operation_revision",
+      "stale_after"
+    ],
+    "max_string_length": 180,
+    "max_serialized_bytes": 8192
+  },
+  "event_kinds": {
+    "operation.transition": {
+      "requires": ["operation_id"],
+      "required_details": [
+        "phase",
+        "outcome_class",
+        "submission_class",
+        "receipt_class",
+        "cleanup_class",
+        "proof_layer",
+        "verification_class"
+      ]
+    },
+    "output.dispatch_intent": {
+      "requires": ["assistant_message_id"],
+      "required_details": [
+        "output_channel",
+        "phase",
+        "outcome_class",
+        "submission_class",
+        "receipt_class",
+        "cleanup_class",
+        "proof_layer",
+        "verification_class"
+      ]
+    },
+    "output.feedback": {
+      "requires": ["assistant_message_id"],
+      "required_details": [
+        "output_channel",
+        "phase",
+        "outcome_class",
+        "submission_class",
+        "receipt_class",
+        "cleanup_class",
+        "proof_layer",
+        "verification_class"
+      ]
+    }
+  },
+  "details": {
+    "allowed_fields": [
+      "phase",
+      "outcome_class",
+      "submission_class",
+      "receipt_class",
+      "cleanup_class",
+      "output_channel",
+      "proof_layer",
+      "verification_class",
+      "component",
+      "feedback_class",
+      "late",
+      "local_ref_kind",
+      "local_ref"
+    ],
+    "max_fields": 16
+  },
+  "enums": {
+    "phase": [
+      "proposed",
+      "awaiting_confirmation",
+      "authorized",
+      "dispatching",
+      "observing",
+      "active",
+      "cleaning",
+      "terminal"
+    ],
+    "outcome_class": [
+      "none",
+      "succeeded",
+      "failed",
+      "cancelled",
+      "rejected_busy",
+      "needs_feedback",
+      "outcome_unknown"
+    ],
+    "submission_class": [
+      "not_submitted",
+      "may_have_submitted",
+      "submitted"
+    ],
+    "receipt_class": [
+      "none",
+      "submission_ack",
+      "correlated_success",
+      "correlated_failure"
+    ],
+    "cleanup_class": [
+      "not_required",
+      "pending",
+      "complete",
+      "unproved"
+    ],
+    "output_channel": ["display", "tts", "playback"],
+    "proof_layer": [
+      "intent",
+      "transport_submission",
+      "correlated_receipt",
+      "runtime_handling",
+      "visible_output",
+      "physical_observation",
+      "user_observation",
+      "cleanup"
+    ],
+    "verification_class": [
+      "unverified",
+      "intent_recorded",
+      "submission_ack",
+      "correlated_success",
+      "correlated_failure",
+      "timeout_ambiguous",
+      "externally_observed",
+      "user_reported"
+    ],
+    "source_authority": [
+      "thought_core",
+      "control_output_adapter",
+      "display_transport",
+      "tts_transport",
+      "playback_transport"
+    ]
+  },
+  "http_output_ingress": {
+    "path": "/feedback/closed-loop",
+    "dispatch_source_authority": "control_output_adapter",
+    "send_attempt_profile": "send_attempt_started_outcome_unknown",
+    "channels": {
+      "display": {
+        "component": "aituber_direct_send",
+        "feedback_source_authority": "display_transport"
+      },
+      "tts": {
+        "component": "tts_chunk_post",
+        "feedback_source_authority": "tts_transport"
+      }
+    },
+    "profiles": {
+      "output.dispatch_intent": [
+        "dispatch_intent_recorded"
+      ],
+      "output.feedback": [
+        "send_attempt_started_outcome_unknown",
+        "submission_ack_needs_feedback",
+        "possible_send_timeout",
+        "dispatch_rejected_before_send"
+      ]
+    }
+  },
+  "transition_profiles": {
+    "dispatch_intent_recorded": {
+      "phase": "dispatching",
+      "outcome_class": "none",
+      "submission_class": "not_submitted",
+      "receipt_class": "none",
+      "cleanup_class": "not_required",
+      "proof_layer": "intent",
+      "verification_class": "intent_recorded"
+    },
+    "send_attempt_started_outcome_unknown": {
+      "phase": "dispatching",
+      "outcome_class": "outcome_unknown",
+      "submission_class": "may_have_submitted",
+      "receipt_class": "none",
+      "cleanup_class": "unproved",
+      "proof_layer": "transport_submission",
+      "verification_class": "unverified"
+    },
+    "submission_ack_needs_feedback": {
+      "phase": "observing",
+      "outcome_class": "needs_feedback",
+      "submission_class": "submitted",
+      "receipt_class": "submission_ack",
+      "cleanup_class": "not_required",
+      "proof_layer": "transport_submission",
+      "verification_class": "submission_ack"
+    },
+    "possible_send_timeout": {
+      "phase": "terminal",
+      "outcome_class": "outcome_unknown",
+      "submission_class": "may_have_submitted",
+      "receipt_class": "none",
+      "cleanup_class": "unproved",
+      "proof_layer": "transport_submission",
+      "verification_class": "timeout_ambiguous"
+    },
+    "dispatch_rejected_before_send": {
+      "phase": "terminal",
+      "outcome_class": "failed",
+      "submission_class": "not_submitted",
+      "receipt_class": "none",
+      "cleanup_class": "not_required",
+      "proof_layer": "transport_submission",
+      "verification_class": "correlated_failure"
+    },
+    "transient_external_mismatch": {
+      "phase": "observing",
+      "outcome_class": "needs_feedback",
+      "submission_class": "submitted",
+      "receipt_class": "correlated_success",
+      "cleanup_class": "not_required",
+      "proof_layer": "physical_observation",
+      "verification_class": "correlated_failure"
+    },
+    "projection_receipt_without_visible_pixels": {
+      "phase": "observing",
+      "outcome_class": "needs_feedback",
+      "submission_class": "submitted",
+      "receipt_class": "correlated_success",
+      "cleanup_class": "pending",
+      "proof_layer": "visible_output",
+      "verification_class": "correlated_failure"
+    },
+    "cleanup_complete": {
+      "phase": "terminal",
+      "outcome_class": "succeeded",
+      "submission_class": "submitted",
+      "receipt_class": "correlated_success",
+      "cleanup_class": "complete",
+      "proof_layer": "cleanup",
+      "verification_class": "correlated_success"
+    }
+  },
+  "limits": {
+    "active_operations": 8,
+    "feedback_context": 8,
+    "recent_projection_entries": 32
+  },
+  "provider_order": [
+    "latest_user_correction",
+    "environment_state",
+    "active_operations",
+    "feedback_context",
+    "same_session_continuity",
+    "relevant_memory",
+    "capability_view"
+  ],
+  "forbidden_key_parts": [
+    "authorization",
+    "api_key",
+    "apikey",
+    "access_token",
+    "refresh_token",
+    "confirmation_token",
+    "secret",
+    "password",
+    "credential",
+    "raw",
+    "payload",
+    "path",
+    "url",
+    "uri",
+    "command",
+    "prompt",
+    "transcript",
+    "audio",
+    "media"
+  ]
+}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import queue
 from dataclasses import dataclass
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -171,6 +172,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Split AITuber direct_send messages after roughly this many characters.",
     )
     parser.add_argument(
+        "--closed-loop-feedback-v1",
+        action="store_true",
+        default=default_closed_loop_feedback_v1(),
+        help="Enable the disabled-by-default v1 Journal barrier and bounded output feedback.",
+    )
+    parser.add_argument(
         "--local-ack-mode",
         choices=sorted(LOCAL_ACK_MODES),
         default=default_local_ack_mode(),
@@ -293,6 +300,17 @@ def run_once(
     result = build_result(args)
     status_store = StatusStore(args.status_dir) if args.status_dir else None
     turn_id = turn_id_from_result(result)
+    session_id = session_id_from_result(result)
+    thought_core = client or ThoughtCoreClient.from_env()
+    closed_loop_recorder = (
+        ClosedLoopOutputRecorder(
+            thought_core,
+            session_id=session_id or "",
+            turn_id=turn_id or "",
+        )
+        if bool(getattr(args, "closed_loop_feedback_v1", False))
+        else None
+    )
     stream_handlers: list[Callable[[ThoughtCoreStreamEvent], None]] = []
     status_writer = build_thought_core_status_writer(
         args.status_dir,
@@ -305,6 +323,7 @@ def run_once(
         args,
         store=status_store,
         turn_id=turn_id,
+        closed_loop_recorder=closed_loop_recorder,
     )
     if tts_forwarder is not None:
         stream_handlers.append(tts_forwarder)
@@ -312,6 +331,7 @@ def run_once(
         args,
         store=status_store,
         turn_id=turn_id,
+        closed_loop_recorder=closed_loop_recorder,
     )
     if aituber_forwarder is not None:
         stream_handlers.append(aituber_forwarder)
@@ -343,7 +363,6 @@ def run_once(
         if args.print_events:
             print(format_event_line(event), flush=True)
 
-    thought_core = client or ThoughtCoreClient.from_env()
     try:
         if should_post_local_ack(args, aituber_forwarder):
             aituber_forwarder.post_local_ack(build_local_ack(text))
@@ -374,6 +393,18 @@ def turn_id_from_result(result: dict[str, Any]) -> str | None:
     else:
         turn_id = str(turn_payload.get("turn_id") or "").strip()
     return turn_id or None
+
+
+def session_id_from_result(result: dict[str, Any]) -> str | None:
+    turn_payload = result.get("turn_payload")
+    if not isinstance(turn_payload, dict):
+        return None
+    private_turn = turn_payload.get("private_turn")
+    if isinstance(private_turn, dict):
+        session_id = str(private_turn.get("session_id") or "").strip()
+    else:
+        session_id = str(turn_payload.get("session_id") or "").strip()
+    return session_id or None
 
 
 def turn_text_from_result(result: dict[str, Any]) -> str:
@@ -453,6 +484,11 @@ def default_aituber_speech_max_chars() -> int:
         return max(8, int(os.environ.get("AITUBER_SPEECH_MAX_CHARS", "80")))
     except ValueError:
         return 80
+
+
+def default_closed_loop_feedback_v1() -> bool:
+    value = os.environ.get("THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def default_local_ack_mode() -> str:
@@ -557,6 +593,131 @@ def resolve_default_cache_dir(args: argparse.Namespace) -> Path | None:
     return None
 
 
+class ClosedLoopOutputRecorder:
+    """Append fixed output intent/feedback events through Thought Core."""
+
+    def __init__(self, client: Any, *, session_id: str, turn_id: str) -> None:
+        if not session_id or not turn_id:
+            raise ThoughtCoreClientError("closed-loop correlation identity missing")
+        self.client = client
+        self.session_id = session_id
+        self.turn_id = turn_id
+
+    def append_dispatch_intent(
+        self,
+        *,
+        assistant_message_id: str,
+        output_channel: str,
+        component: str,
+    ) -> str:
+        result = self.client.append_closed_loop_event(
+            {
+                "event_kind": "output.dispatch_intent",
+                "session_id": self.session_id,
+                "turn_id": self.turn_id,
+                "assistant_message_id": assistant_message_id,
+                "details": {
+                    **_closed_loop_transition_profile("dispatch_intent_recorded"),
+                    "output_channel": output_channel,
+                    "component": component,
+                },
+            }
+        )
+        return str(result["event_id"])
+
+    def append_transport_feedback(
+        self,
+        *,
+        assistant_message_id: str,
+        causal_parent_event_id: str,
+        output_channel: str,
+        component: str,
+        result_class: str,
+    ) -> str:
+        profiles = {
+            "submission_ack": "submission_ack_needs_feedback",
+            "ambiguous_send": "possible_send_timeout",
+            "rejected_before_send": "dispatch_rejected_before_send",
+        }
+        profile_name = profiles.get(result_class)
+        if profile_name is None:
+            raise ThoughtCoreClientError("closed-loop transport result invalid")
+        if output_channel not in {"display", "tts"}:
+            raise ThoughtCoreClientError("closed-loop output channel invalid")
+        result = self.client.append_closed_loop_event(
+            {
+                "event_kind": "output.feedback",
+                "session_id": self.session_id,
+                "turn_id": self.turn_id,
+                "assistant_message_id": assistant_message_id,
+                "causal_parent_event_id": causal_parent_event_id,
+                "details": {
+                    **_closed_loop_transition_profile(profile_name),
+                    "output_channel": output_channel,
+                    "component": component,
+                },
+            }
+        )
+        return str(result["event_id"])
+
+    def append_send_attempt_started(
+        self,
+        *,
+        assistant_message_id: str,
+        causal_parent_event_id: str,
+        output_channel: str,
+        component: str,
+    ) -> str:
+        if output_channel not in {"display", "tts"}:
+            raise ThoughtCoreClientError("closed-loop output channel invalid")
+        result = self.client.append_closed_loop_event(
+            {
+                "event_kind": "output.feedback",
+                "session_id": self.session_id,
+                "turn_id": self.turn_id,
+                "assistant_message_id": assistant_message_id,
+                "causal_parent_event_id": causal_parent_event_id,
+                "details": {
+                    **_closed_loop_transition_profile(
+                        "send_attempt_started_outcome_unknown"
+                    ),
+                    "output_channel": output_channel,
+                    "component": component,
+                },
+            }
+        )
+        return str(result["event_id"])
+
+
+@lru_cache(maxsize=1)
+def _closed_loop_contract_descriptor() -> dict[str, Any]:
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "contracts"
+        / "turn"
+        / "closed-loop-correlation-feedback.v1.json"
+    )
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ThoughtCoreClientError("closed-loop contract unavailable")
+    return value
+
+
+def _closed_loop_transition_profile(name: str) -> dict[str, Any]:
+    profiles = _closed_loop_contract_descriptor().get("transition_profiles")
+    profile = profiles.get(name) if isinstance(profiles, dict) else None
+    if not isinstance(profile, dict):
+        raise ThoughtCoreClientError("closed-loop transition profile unavailable")
+    return dict(profile)
+
+
+@dataclass(frozen=True)
+class JsonPostTask:
+    body: bytes
+    before_send: Callable[[], bool] | None = None
+    on_result: Callable[[bool], None] | None = None
+
+
 class AsyncJsonPostWorker:
     def __init__(
         self,
@@ -571,24 +732,36 @@ class AsyncJsonPostWorker:
         self.timeout_s = max(0.05, timeout_s)
         self.on_error = on_error
         self._closed = False
-        self._queue: queue.Queue[bytes | None] | None = None
+        self._queue: queue.Queue[JsonPostTask | None] | None = None
         self._thread: threading.Thread | None = None
         if enabled:
             self._queue = queue.Queue(maxsize=max(1, queue_size))
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
 
-    def post(self, body: bytes) -> None:
+    def post(
+        self,
+        body: bytes,
+        *,
+        before_send: Callable[[], bool] | None = None,
+        on_result: Callable[[bool], None] | None = None,
+    ) -> bool:
         if self._closed:
             self.on_error("forward worker is already closed")
-            return
+            return False
+        task = JsonPostTask(
+            body=body,
+            before_send=before_send,
+            on_result=on_result,
+        )
         if self._queue is None:
-            self._post_body(body)
-            return
+            return self._post_task(task)
         try:
-            self._queue.put_nowait(body)
+            self._queue.put_nowait(task)
         except queue.Full:
             self.on_error("forward queue full")
+            return False
+        return True
 
     def close(self) -> None:
         if self._closed:
@@ -611,29 +784,117 @@ class AsyncJsonPostWorker:
         if self._queue is None:
             return
         while True:
-            body = self._queue.get()
+            task = self._queue.get()
             try:
-                if body is None:
+                if task is None:
                     return
-                self._post_body(body)
+                self._post_task(task)
             finally:
                 self._queue.task_done()
 
-    def _post_body(self, body: bytes) -> None:
+    def _post_task(self, task: JsonPostTask) -> bool:
         req = request.Request(
             self.url,
-            data=body,
+            data=task.body,
             method="POST",
             headers={
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
         )
+        if task.before_send is not None:
+            try:
+                if not task.before_send():
+                    return False
+            except Exception:
+                self.on_error("forward pre-send barrier failed")
+                return False
+        succeeded = False
         try:
             with request.urlopen(req, timeout=self.timeout_s) as response:
                 response.read()
+            succeeded = True
         except (error.HTTPError, error.URLError, TimeoutError, OSError) as exc:
             self.on_error(str(exc))
+        if task.on_result is not None:
+            try:
+                task.on_result(succeeded)
+            except Exception:
+                self.on_error("closed-loop feedback callback failed")
+        return True
+
+
+def dispatch_with_closed_loop_barrier(
+    *,
+    poster: AsyncJsonPostWorker,
+    recorder: ClosedLoopOutputRecorder | None,
+    body: bytes,
+    assistant_message_id: str,
+    output_channel: str,
+    component: str,
+    on_error: Callable[[str], None],
+) -> bool:
+    if recorder is None:
+        return poster.post(body)
+    if not assistant_message_id:
+        on_error("canonical assistant_message_id missing")
+        return False
+    try:
+        intent_event_id = recorder.append_dispatch_intent(
+            assistant_message_id=assistant_message_id,
+            output_channel=output_channel,
+            component=component,
+        )
+    except Exception:
+        on_error("closed-loop dispatch-intent Journal append failed")
+        return False
+
+    send_attempt_event_id = ""
+
+    def before_send() -> bool:
+        nonlocal send_attempt_event_id
+        try:
+            send_attempt_event_id = recorder.append_send_attempt_started(
+                assistant_message_id=assistant_message_id,
+                causal_parent_event_id=intent_event_id,
+                output_channel=output_channel,
+                component=component,
+            )
+        except Exception:
+            on_error("closed-loop send-attempt Journal append failed")
+            return False
+        return True
+
+    def on_result(succeeded: bool) -> None:
+        try:
+            recorder.append_transport_feedback(
+                assistant_message_id=assistant_message_id,
+                causal_parent_event_id=send_attempt_event_id,
+                output_channel=output_channel,
+                component=component,
+                result_class="submission_ack" if succeeded else "ambiguous_send",
+            )
+        except Exception:
+            on_error("closed-loop transport feedback append failed")
+
+    accepted = poster.post(
+        body,
+        before_send=before_send,
+        on_result=on_result,
+    )
+    if accepted:
+        return True
+    try:
+        recorder.append_transport_feedback(
+            assistant_message_id=assistant_message_id,
+            causal_parent_event_id=intent_event_id,
+            output_channel=output_channel,
+            component=component,
+            result_class="rejected_before_send",
+        )
+    except Exception:
+        on_error("closed-loop pre-send failure append failed")
+    return False
 
 
 class ThoughtCoreTtsForwarder:
@@ -645,11 +906,13 @@ class ThoughtCoreTtsForwarder:
         async_post: bool = False,
         store: StatusStore | None = None,
         turn_id: str | None = None,
+        closed_loop_recorder: ClosedLoopOutputRecorder | None = None,
     ) -> None:
         self.chunk_url = validate_http_url(chunk_url, label="--tts-chunk-url")
         self.timeout_s = max(0.05, timeout_s)
         self.store = store
         self.turn_id = turn_id
+        self.closed_loop_recorder = closed_loop_recorder
         self.final_sent = False
         self.error_count = 0
         self.poster = AsyncJsonPostWorker(
@@ -666,6 +929,7 @@ class ThoughtCoreTtsForwarder:
         *,
         store: StatusStore | None = None,
         turn_id: str | None = None,
+        closed_loop_recorder: ClosedLoopOutputRecorder | None = None,
     ) -> "ThoughtCoreTtsForwarder | None":
         chunk_url = str(getattr(args, "tts_chunk_url", "") or "").strip()
         if not chunk_url:
@@ -676,11 +940,15 @@ class ThoughtCoreTtsForwarder:
             async_post=True,
             store=store,
             turn_id=turn_id,
+            closed_loop_recorder=closed_loop_recorder,
         )
 
     def __call__(self, event: ThoughtCoreStreamEvent) -> None:
         if event.is_speech_delta and event.speech_delta:
-            self.post(thought_core_tts_chunk_payload(event, turn_id=self.turn_id))
+            self.post(
+                thought_core_tts_chunk_payload(event, turn_id=self.turn_id),
+                assistant_message_id=event.assistant_message_id,
+            )
         if event.is_completed and not self.final_sent:
             self.final_sent = True
             self.post(
@@ -712,14 +980,30 @@ class ThoughtCoreTtsForwarder:
     def close(self) -> None:
         self.poster.close()
 
-    def post(self, payload: dict[str, Any]) -> None:
+    def post(
+        self,
+        payload: dict[str, Any],
+        *,
+        assistant_message_id: str = "",
+    ) -> None:
         clean_payload = {
             key: value
             for key, value in payload.items()
             if value is not None and value != ""
         }
         body = json.dumps(clean_payload, ensure_ascii=False).encode("utf-8")
-        self.poster.post(body)
+        if assistant_message_id or self.closed_loop_recorder is None:
+            dispatch_with_closed_loop_barrier(
+                poster=self.poster,
+                recorder=self.closed_loop_recorder,
+                body=body,
+                assistant_message_id=assistant_message_id,
+                output_channel="tts",
+                component="tts_chunk_post",
+                on_error=self.record_error,
+            )
+        else:
+            self.poster.post(body)
 
     def record_error(self, message: str) -> None:
         self.error_count += 1
@@ -748,6 +1032,7 @@ class ThoughtCoreAituberForwarder:
         store: StatusStore | None = None,
         turn_id: str | None = None,
         preserve_message_unit: bool = False,
+        closed_loop_recorder: ClosedLoopOutputRecorder | None = None,
     ) -> None:
         self.message_url = validate_http_url(message_url, label="--aituber-message-url")
         self.timeout_s = max(0.05, timeout_s)
@@ -755,6 +1040,7 @@ class ThoughtCoreAituberForwarder:
         self.store = store
         self.turn_id = turn_id
         self.preserve_message_unit = preserve_message_unit
+        self.closed_loop_recorder = closed_loop_recorder
         self.error_count = 0
         self.assistant_message_event_count = 0
         self.dispatch_count = 0
@@ -772,6 +1058,7 @@ class ThoughtCoreAituberForwarder:
         *,
         store: StatusStore | None = None,
         turn_id: str | None = None,
+        closed_loop_recorder: ClosedLoopOutputRecorder | None = None,
     ) -> "ThoughtCoreAituberForwarder | None":
         message_url = str(getattr(args, "aituber_message_url", "") or "").strip()
         if not message_url:
@@ -783,12 +1070,18 @@ class ThoughtCoreAituberForwarder:
             max_chars=int(getattr(args, "aituber_speech_max_chars", 80)),
             store=store,
             turn_id=turn_id,
+            closed_loop_recorder=closed_loop_recorder,
         )
 
     def __call__(self, event: ThoughtCoreStreamEvent) -> None:
         if event.is_message and event.speech:
             self.assistant_message_event_count += 1
-            self.post(event.speech, message_id=event.event_id)
+            canonical_message_id = event.assistant_message_id
+            self.post(
+                event.speech,
+                message_id=canonical_message_id or event.event_id,
+                canonical_message_id=canonical_message_id,
+            )
 
     def finish(self, result: dict[str, Any]) -> None:
         self.close()
@@ -799,7 +1092,13 @@ class ThoughtCoreAituberForwarder:
     def post_local_ack(self, message: str) -> None:
         self.post(message)
 
-    def post(self, message: str, *, message_id: str | None = None) -> None:
+    def post(
+        self,
+        message: str,
+        *,
+        message_id: str | None = None,
+        canonical_message_id: str = "",
+    ) -> None:
         normalized_message = message.strip()
         if self.preserve_message_unit:
             if not normalized_message or len(normalized_message) > self.max_chars:
@@ -813,10 +1112,25 @@ class ThoughtCoreAituberForwarder:
             if message_id and self.turn_id:
                 payload["turn_id"] = self.turn_id
                 payload["message_id"] = message_id
+                if canonical_message_id:
+                    payload["assistant_message_id"] = canonical_message_id
                 payload["response_source"] = "thought_core_assistant_message"
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self.poster.post(body)
-            self.dispatch_count += 1
+            dispatched = dispatch_with_closed_loop_barrier(
+                poster=self.poster,
+                recorder=(
+                    self.closed_loop_recorder
+                    if message_id is not None
+                    else None
+                ),
+                body=body,
+                assistant_message_id=canonical_message_id,
+                output_channel="display",
+                component="aituber_direct_send",
+                on_error=self.record_error,
+            )
+            if dispatched:
+                self.dispatch_count += 1
 
     def record_error(self, message: str) -> None:
         self.error_count += 1
@@ -880,15 +1194,19 @@ def thought_core_tts_chunk_payload(
     turn_id: str | None,
     final: bool = False,
 ) -> dict[str, Any]:
-    return {
+    assistant_message_id = event.assistant_message_id
+    payload = {
         "event": event.event_type,
         "delta": event.speech_delta,
         "final": final,
         "turn_id": turn_id or event.turn_id,
-        "message_id": event.event_id,
+        "message_id": assistant_message_id or event.event_id,
         "conversation_id": event.turn_id,
         "elapsed_s": event.elapsed_s,
     }
+    if assistant_message_id:
+        payload["assistant_message_id"] = assistant_message_id
+    return payload
 
 
 def run_watch(args: argparse.Namespace) -> None:

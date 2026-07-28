@@ -13,6 +13,22 @@
         "type": "string",
         "pattern": "\\S"
       }
+    },
+    "turn_id": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "assistant_message_id": {
+      "type": "string",
+      "pattern": "^msg_.+"
+    },
+    "message_id": {
+      "description": "Legacy alias carrying the same canonical assistant_message_id value.",
+      "type": "string",
+      "pattern": "^msg_.+"
+    },
+    "response_source": {
+      "const": "thought_core_assistant_message"
     }
   },
   "additionalProperties": false

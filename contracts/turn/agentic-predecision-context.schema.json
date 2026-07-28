@@ -8,8 +8,10 @@
     "schema_version",
     "latest_user_correction",
     "environment_state",
-    "relevant_memory",
+    "active_operations",
+    "feedback_context",
     "same_session_continuity",
+    "relevant_memory",
     "system_topology",
     "capability_view"
   ],
@@ -29,6 +31,8 @@
       ]
     },
     "environment_state": {"$ref": "#/$defs/context_section"},
+    "active_operations": {"$ref": "#/$defs/context_section"},
+    "feedback_context": {"$ref": "#/$defs/context_section"},
     "relevant_memory": {"$ref": "#/$defs/context_section"},
     "same_session_continuity": {"$ref": "#/$defs/context_section"},
     "system_topology": {"$ref": "#/$defs/context_section"},
@@ -74,7 +78,7 @@
     },
     "summary_item": {
       "type": "object",
-      "maxProperties": 12,
+      "maxProperties": 13,
       "propertyNames": {"$ref": "#/$defs/safe_key"},
       "additionalProperties": {"$ref": "#/$defs/bounded_value_level_1"}
     },

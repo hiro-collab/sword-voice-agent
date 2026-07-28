@@ -991,6 +991,8 @@ class AgenticTurnRuntimeProviderTest(TestCase):
         self.assertIsNone(predecision["latest_user_correction"])  # type: ignore[index]
         for section_name in (
             "environment_state",
+            "active_operations",
+            "feedback_context",
             "relevant_memory",
             "same_session_continuity",
             "system_topology",

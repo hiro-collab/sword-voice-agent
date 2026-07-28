@@ -21,8 +21,13 @@
       "pattern": "\\S"
     },
     "message_id": {
+      "description": "Legacy alias carrying the same canonical assistant_message_id when present.",
       "type": "string",
       "pattern": "\\S"
+    },
+    "assistant_message_id": {
+      "type": "string",
+      "pattern": "^msg_.+"
     },
     "conversation_id": {
       "type": "string",

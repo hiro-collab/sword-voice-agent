@@ -20,6 +20,10 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 
 from .agentic_turn_runtime_provider import build_agentic_turn_provider_from_env
+from .correlation_feedback_contract import (
+    closed_loop_enabled,
+    materialize_closed_loop_output_ingress,
+)
 from .event_journal import journal_from_env
 from .execution_deadline import (
     TURN_DEADLINE_EXCEEDED,
@@ -34,6 +38,7 @@ from .ordinary_route_contract import (
     max_route_deadline_seconds,
     route_deadline_header,
 )
+from .operation_output_projection import OperationOutputProjection
 from .provenance_diagnostics import build_child_provenance_diagnostics
 from .reasoning import LocalActionReasoner
 from .responders import LocalFallbackResponder
@@ -293,8 +298,16 @@ def create_server(
     *,
     thought_loop: ThoughtLoop | None = None,
 ) -> ThreadingHTTPServer:
-    loop = thought_loop if thought_loop is not None else _build_default_thought_loop()
     event_journal = journal_from_env()
+    closed_loop_v1_enabled = closed_loop_enabled()
+    operation_output_projection = (
+        OperationOutputProjection.from_journal(event_journal)
+        if closed_loop_v1_enabled and event_journal is not None
+        else None
+    )
+    loop = thought_loop if thought_loop is not None else _build_default_thought_loop()
+    if operation_output_projection is not None:
+        loop.attach_operation_output_projection(operation_output_projection)
     allow_remote_api = _env_bool("THOUGHT_CORE_ALLOW_REMOTE_API")
     require_api_token = _env_bool("THOUGHT_CORE_REQUIRE_API_TOKEN")
     api_token = os.environ.get("THOUGHT_CORE_API_TOKEN", "").strip()
@@ -352,6 +365,9 @@ def create_server(
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib handler name
             parsed = urlparse(self.path)
+            if parsed.path == "/feedback/closed-loop":
+                self._handle_closed_loop_feedback()
+                return
             if parsed.path not in {"/turn", "/turn/stream"}:
                 self._send_json({"error": "not_found"}, status=HTTPStatus.NOT_FOUND)
                 return
@@ -386,6 +402,68 @@ def create_server(
                 payload,
                 stream=stream,
                 deadline_monotonic=deadline_monotonic,
+            )
+
+        def _handle_closed_loop_feedback(self) -> None:
+            if not closed_loop_v1_enabled:
+                self._send_json(
+                    {"error": "closed_loop_feedback_v1_disabled"},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            if not self._api_allowed():
+                return
+            if event_journal is None or operation_output_projection is None:
+                self._send_json(
+                    {"error": "closed_loop_feedback_v1_unavailable"},
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            try:
+                payload = self._read_json_body()
+            except RequestBodyTooLarge as exc:
+                self._send_json(
+                    {"error": str(exc)},
+                    status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                )
+                return
+            except ValueError:
+                self._send_json(
+                    {"error": "closed_loop_event_invalid"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                event = materialize_closed_loop_output_ingress(payload)
+            except (TypeError, ValueError):
+                self._send_json(
+                    {"error": "closed_loop_event_invalid"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                entry = event_journal.append_closed_loop_event(event)
+            except (OSError, TypeError, ValueError):
+                self._send_json(
+                    {"error": "closed_loop_journal_append_failed"},
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            try:
+                operation_output_projection.ingest(entry)
+            except (TypeError, ValueError):
+                self._send_json(
+                    {"error": "closed_loop_projection_ingest_failed"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
+            self._send_json(
+                {
+                    "ok": True,
+                    "event_id": entry["event"]["event_id"],
+                    "journal_entry_id": entry["journal_entry_id"],
+                    "ingest_offset": entry["ingest_offset"],
+                }
             )
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
