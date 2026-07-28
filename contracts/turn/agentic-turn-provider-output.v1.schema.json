@@ -1,0 +1,139 @@
+{
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "kind",
+    "response",
+    "capability"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "enum": [
+        1
+      ]
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "conversation",
+        "clarification",
+        "hold",
+        "capability"
+      ]
+    },
+    "response": {
+      "$ref": "#/$defs/response"
+    },
+    "capability": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/capability"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "response": {
+      "type": "object",
+      "required": [
+        "speech",
+        "display"
+      ],
+      "properties": {
+        "speech": {
+          "type": "string"
+        },
+        "display": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "capability": {
+      "type": "object",
+      "required": [
+        "id",
+        "arguments"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "arguments": {
+          "$ref": "#/$defs/capabilityArguments"
+        }
+      },
+      "additionalProperties": false
+    },
+    "capabilityArguments": {
+      "type": "object",
+      "required": [
+        "position",
+        "strength",
+        "durationMs"
+      ],
+      "properties": {
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/position"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "strength": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "durationMs": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 500,
+              "maximum": 12000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "position": {
+      "type": "object",
+      "required": [
+        "x",
+        "y"
+      ],
+      "properties": {
+        "x": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "y": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

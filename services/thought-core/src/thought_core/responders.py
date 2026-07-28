@@ -75,6 +75,7 @@ class StructuredCompletion(Protocol):
         system_prompt: str,
         input_payload: Mapping[str, object],
         max_tokens: int,
+        response_format: Mapping[str, object] | None = None,
     ) -> object:
         """Return one untrusted JSON value without a local fallback."""
 
@@ -147,6 +148,7 @@ class OpenAICompatibleStructuredCompletion:
         system_prompt: str,
         input_payload: Mapping[str, object],
         max_tokens: int,
+        response_format: Mapping[str, object] | None = None,
     ) -> object:
         """Request and parse one JSON object without retaining raw content."""
 
@@ -156,6 +158,10 @@ class OpenAICompatibleStructuredCompletion:
             or not isinstance(input_payload, Mapping)
             or type(max_tokens) is not int
             or max_tokens <= 0
+            or (
+                response_format is not None
+                and type(response_format) is not dict
+            )
         ):
             raise StructuredCompletionInvalid("structured_completion_input_invalid")
         try:
@@ -164,6 +170,18 @@ class OpenAICompatibleStructuredCompletion:
                 ensure_ascii=False,
                 separators=(",", ":"),
                 sort_keys=True,
+            )
+            safe_response_format = (
+                {"type": "json_object"}
+                if response_format is None
+                else json.loads(
+                    json.dumps(
+                        response_format,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
             )
             body = json.dumps(
                 {
@@ -174,7 +192,7 @@ class OpenAICompatibleStructuredCompletion:
                     ],
                     "temperature": 0,
                     "max_tokens": max_tokens,
-                    "response_format": {"type": "json_object"},
+                    "response_format": safe_response_format,
                 },
                 ensure_ascii=False,
             ).encode("utf-8")

@@ -19,6 +19,9 @@ from thought_core.agentic_turn_provider import (  # noqa: E402
     StaticAgenticTurnProvider,
     UnavailableAgenticTurnProvider,
 )
+from thought_core.agentic_turn_runtime_provider import (  # noqa: E402
+    _normalize_agentic_turn_provider_output,
+)
 from thought_core.capability_catalog import (  # noqa: E402
     CapabilityCatalogError,
     HomeCapabilityCatalog,
@@ -362,6 +365,33 @@ class AgenticTurnIntegrationTest(TestCase):
                     events[-1]["data"]["execution_receipt"],
                     "downstream_required",
                 )
+
+    def test_provider_wire_fire_normalization_reaches_existing_projection_route(self) -> None:
+        candidate = _normalize_agentic_turn_provider_output(
+            {
+                "schemaVersion": 1,
+                "kind": "capability",
+                "response": {"speech": "炎を開始します。", "display": "Fire"},
+                "capability": {
+                    "id": "projection.fire.start",
+                    "arguments": {
+                        "position": {"x": 0.3, "y": -0.1},
+                        "strength": 0.7,
+                        "durationMs": 3000,
+                    },
+                },
+            }
+        )
+        events = ThoughtLoop(
+            tools=_DirectOnlyTools(),
+            agentic_turn_provider=StaticAgenticTurnProvider(candidate),
+        ).run_dicts(self._turn("会話の流れに合う炎を出して。"))
+
+        requested = next(
+            event for event in events if event["type"] == "projection.effect.requested"
+        )
+        self.assertEqual(requested["data"]["plan"]["effectId"], "fire")
+        self.assertEqual(requested["data"]["plan"]["durationMs"], 3000)
 
     def test_agentic_projection_arguments_fail_closed_without_dispatch(self) -> None:
         cases = (

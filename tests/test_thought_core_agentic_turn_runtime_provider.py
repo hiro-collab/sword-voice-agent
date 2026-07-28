@@ -26,6 +26,7 @@ from thought_core.agentic_turn_provider import (  # noqa: E402
     UnavailableAgenticTurnProvider,
 )
 from thought_core.agentic_turn_runtime_provider import (  # noqa: E402
+    AGENTIC_TURN_PROVIDER_OUTPUT_SCHEMA_NAME,
     OpenAICompatibleAgenticTurnProvider,
     MAX_PREDECISION_CONTEXT_SERIALIZED_BYTES,
     MAX_SWORD_OPENAI_BROKER_TIMEOUT_S,
@@ -64,17 +65,45 @@ class _CapturingCompletion:
         system_prompt: str,
         input_payload: Mapping[str, object],
         max_tokens: int,
+        response_format: Mapping[str, object] | None = None,
     ) -> object:
         self.calls.append(
             {
                 "system_prompt": system_prompt,
                 "input_payload": input_payload,
                 "max_tokens": max_tokens,
+                "response_format": response_format,
             }
         )
         result = self.results.pop(0)
         if isinstance(result, BaseException):
             raise result
+        return result
+
+
+class _MutatingResponseFormatCompletion(_CapturingCompletion):
+    def complete_json(
+        self,
+        *,
+        system_prompt: str,
+        input_payload: Mapping[str, object],
+        max_tokens: int,
+        response_format: Mapping[str, object] | None = None,
+    ) -> object:
+        result = super().complete_json(
+            system_prompt=system_prompt,
+            input_payload=input_payload,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
+        if len(self.calls) == 1:
+            if type(response_format) is not dict:
+                raise AssertionError("mutable response format required")
+            json_schema = response_format.get("json_schema")
+            if type(json_schema) is not dict:
+                raise AssertionError("mutable json schema required")
+            json_schema["name"] = "malicious_mutation"
+            json_schema["schema"] = {"type": "string"}
         return result
 
 
@@ -1354,6 +1383,169 @@ class AgenticTurnRuntimeProviderTest(TestCase):
         self.assertNotIn(private_wish, serialized)
         self.assertNotIn(private_ref, serialized)
         self.assertNotIn(preexecution_response, serialized)
+        decision_format = completion.calls[0]["response_format"]
+        self.assertEqual(decision_format["type"], "json_schema")  # type: ignore[index]
+        self.assertEqual(
+            decision_format["json_schema"]["name"],  # type: ignore[index]
+            AGENTIC_TURN_PROVIDER_OUTPUT_SCHEMA_NAME,
+        )
+        self.assertTrue(
+            decision_format["json_schema"]["strict"]  # type: ignore[index]
+        )
+        self.assertIsNone(receipt_call["response_format"])
+
+    def test_provider_wire_fire_decision_normalizes_nullable_arguments_once(self) -> None:
+        completion = _CapturingCompletion(
+            {
+                "schemaVersion": 1,
+                "kind": "capability",
+                "response": {"speech": "炎を出します。", "display": "Fire"},
+                "capability": {
+                    "id": "projection.fire.start",
+                    "arguments": {
+                        "position": {"x": 0.4, "y": -0.2},
+                        "strength": 0.8,
+                        "durationMs": None,
+                    },
+                },
+            }
+        )
+        provider = OpenAICompatibleAgenticTurnProvider(completion)
+
+        observed = provider.decide(
+            self._provider_request(
+                human_wish="右上に炎を出して。",
+                context_refs={},
+            )
+        )
+
+        self.assertEqual(
+            observed,
+            {
+                "schemaVersion": 1,
+                "kind": "capability",
+                "response": {"speech": "炎を出します。", "display": "Fire"},
+                "capability": {
+                    "id": "projection.fire.start",
+                    "arguments": {
+                        "position": {"x": 0.4, "y": -0.2},
+                        "strength": 0.8,
+                    },
+                },
+            },
+        )
+        self.assertEqual(len(completion.calls), 1)
+
+    def test_provider_wire_malformed_extra_and_wrong_branch_remain_fail_closed(self) -> None:
+        capability = {
+            "id": "projection.fire.start",
+            "arguments": {
+                "position": None,
+                "strength": None,
+                "durationMs": None,
+            },
+        }
+        cases = (
+            {
+                "schemaVersion": 1,
+                "kind": "conversation",
+                "response": {"speech": "会話です。", "display": "会話"},
+                "capability": None,
+                "extra": "PRIVATE_PROVIDER_TEXT",
+            },
+            {
+                "schemaVersion": 1,
+                "kind": "conversation",
+                "response": {"speech": "会話です。", "display": "会話"},
+                "capability": capability,
+            },
+            {
+                "schemaVersion": 1,
+                "kind": "capability",
+                "response": {"speech": "炎です。", "display": "Fire"},
+                "capability": None,
+            },
+        )
+        for candidate in cases:
+            completion = _CapturingCompletion(candidate)
+            provider = OpenAICompatibleAgenticTurnProvider(completion)
+            with self.subTest(candidate=candidate):
+                events = ThoughtLoop(agentic_turn_provider=provider).run_dicts(
+                    self._turn("演出を判断して。")
+                )
+                held = next(
+                    event for event in events if event["type"] == "agentic.decision"
+                )
+                self.assertEqual(held["data"]["status"], "held")
+                self.assertIn(
+                    held["data"].get("validation_subcode"),
+                    {"decision_shape_invalid", "capability_shape_invalid"},
+                )
+                self.assertEqual(len(completion.calls), 1)
+                self.assertNotIn(
+                    "PRIVATE_PROVIDER_TEXT",
+                    json.dumps(events, ensure_ascii=False),
+                )
+
+    def test_provider_wire_schema_uses_only_required_closed_objects(self) -> None:
+        completion = _CapturingCompletion(self._conversation_candidate())
+        provider = OpenAICompatibleAgenticTurnProvider(completion)
+        provider.decide(
+            self._provider_request(
+                human_wish="会話して。",
+                context_refs={},
+            )
+        )
+        response_format = completion.calls[0]["response_format"]
+        schema = response_format["json_schema"]["schema"]  # type: ignore[index]
+
+        def assert_strict_objects(node: object) -> None:
+            if type(node) is dict:
+                if node.get("type") == "object":
+                    self.assertFalse(node.get("additionalProperties", True))
+                    self.assertEqual(
+                        set(node.get("required", [])),
+                        set(node.get("properties", {})),
+                    )
+                for value in node.values():
+                    assert_strict_objects(value)
+            elif type(node) is list:
+                for value in node:
+                    assert_strict_objects(value)
+
+        assert_strict_objects(schema)
+
+    def test_provider_wire_schema_is_fresh_after_completion_mutation(self) -> None:
+        completion = _MutatingResponseFormatCompletion(
+            self._conversation_candidate(),
+            self._conversation_candidate(),
+        )
+        provider = OpenAICompatibleAgenticTurnProvider(completion)
+        request_payload = self._provider_request(
+            human_wish="会話して。",
+            context_refs={},
+        )
+
+        provider.decide(request_payload)
+        provider.decide(request_payload)
+
+        first_format = completion.calls[0]["response_format"]
+        second_format = completion.calls[1]["response_format"]
+        self.assertEqual(
+            first_format["json_schema"]["name"],  # type: ignore[index]
+            "malicious_mutation",
+        )
+        self.assertEqual(
+            second_format["json_schema"]["name"],  # type: ignore[index]
+            AGENTIC_TURN_PROVIDER_OUTPUT_SCHEMA_NAME,
+        )
+        self.assertTrue(
+            second_format["json_schema"]["strict"]  # type: ignore[index]
+        )
+        self.assertEqual(
+            second_format["json_schema"]["schema"]["type"],  # type: ignore[index]
+            "object",
+        )
 
     def test_structured_completion_parses_one_json_value_without_fallback(self) -> None:
         candidate = self._conversation_candidate()

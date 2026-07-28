@@ -11,6 +11,7 @@ import json
 import ssl
 import threading
 from collections.abc import Callable
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Protocol
 from urllib import error, request
@@ -38,6 +39,13 @@ MAX_REQUEST_BUDGET = 64
 
 _CONTROL_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SECRET_FILE = _CONTROL_ROOT / "services" / "thought-core" / ".env"
+AGENTIC_TURN_PROVIDER_OUTPUT_SCHEMA_NAME = "agentic_turn_provider_output_v1"
+_AGENTIC_TURN_PROVIDER_OUTPUT_SCHEMA_PATH = (
+    _CONTROL_ROOT
+    / "contracts"
+    / "turn"
+    / "agentic-turn-provider-output.v1.schema.json"
+)
 
 
 class BrokerError(Exception):
@@ -128,6 +136,38 @@ def build_safe_opener() -> Opener:
     )
 
 
+@lru_cache(maxsize=1)
+def _agentic_turn_provider_output_schema() -> dict[str, object]:
+    try:
+        schema = json.loads(
+            _AGENTIC_TURN_PROVIDER_OUTPUT_SCHEMA_PATH.read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise BrokerError("configuration_invalid") from None
+    if type(schema) is not dict:
+        raise BrokerError("configuration_invalid")
+    return schema
+
+
+def agentic_turn_provider_response_format() -> dict[str, object]:
+    schema = json.loads(
+        json.dumps(
+            _agentic_turn_provider_output_schema(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    )
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": AGENTIC_TURN_PROVIDER_OUTPUT_SCHEMA_NAME,
+            "strict": True,
+            "schema": schema,
+        },
+    }
+
+
 def validate_chat_payload(payload: object) -> dict[str, object]:
     """Reject all inbound shapes except the exact current bounded compatibility shape."""
 
@@ -136,9 +176,14 @@ def validate_chat_payload(payload: object) -> dict[str, object]:
         raise BrokerError("invalid_request")
     if payload["model"] != FIXED_MODEL or payload["temperature"] != 0:
         raise BrokerError("invalid_request")
-    if payload["response_format"] != {"type": "json_object"}:
-        raise BrokerError("invalid_request")
     if type(payload["max_tokens"]) is not int or payload["max_tokens"] not in ALLOWED_MAX_TOKENS:
+        raise BrokerError("invalid_request")
+    expected_response_format = (
+        agentic_turn_provider_response_format()
+        if payload["max_tokens"] == DECISION_MAX_TOKENS
+        else {"type": "json_object"}
+    )
+    if payload["response_format"] != expected_response_format:
         raise BrokerError("invalid_request")
     messages = payload["messages"]
     if type(messages) is not list or len(messages) != 2:
@@ -162,7 +207,7 @@ def validate_chat_payload(payload: object) -> dict[str, object]:
         "model": FIXED_MODEL,
         "messages": safe_messages,
         "temperature": 0,
-        "response_format": {"type": "json_object"},
+        "response_format": expected_response_format,
         "max_tokens": payload["max_tokens"],
     }
 

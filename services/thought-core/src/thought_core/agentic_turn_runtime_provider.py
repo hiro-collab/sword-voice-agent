@@ -6,6 +6,8 @@ import json
 import math
 import os
 from collections.abc import Mapping
+from functools import lru_cache
+from pathlib import Path
 
 from .agentic_turn_provider import (
     AGENTIC_PREDECISION_CONTEXT_SCHEMA_VERSION,
@@ -68,6 +70,14 @@ MAX_PREDECISION_STATUS_DETAIL_CHARS = 180
 MAX_PREDECISION_LATEST_CORRECTION_CHARS = 600
 MAX_AGENTIC_HUMAN_WISH_CHARS = 600
 MAX_AGENTIC_HUMAN_WISH_UTF8_BYTES = 2_400
+AGENTIC_TURN_PROVIDER_OUTPUT_SCHEMA_NAME = "agentic_turn_provider_output_v1"
+_CONTROL_ROOT = Path(__file__).resolve().parents[4]
+_AGENTIC_TURN_PROVIDER_OUTPUT_SCHEMA_PATH = (
+    _CONTROL_ROOT
+    / "contracts"
+    / "turn"
+    / "agentic-turn-provider-output.v1.schema.json"
+)
 
 _SUPPORTED_PROVIDER_NAMES = frozenset(
     {
@@ -134,8 +144,11 @@ _BLOCKED_PREDECISION_KEYS = frozenset(
 _DECISION_SYSTEM_PROMPT = (
     "Return exactly one JSON object for AgenticTurnDecision V1. Use schemaVersion 1; "
     "kind must be conversation, clarification, hold, or capability; response must "
-    "contain non-empty speech and display strings. A capability decision must also "
-    "contain capability with exactly id and arguments. Select only an available "
+    "contain non-empty speech and display strings. Always include capability. Use null "
+    "unless kind is capability. A capability "
+    "decision must contain capability with exactly id and arguments; arguments must "
+    "always contain position, strength, and durationMs, using null for omitted values. "
+    "Select only an available "
     "capability from the supplied catalog snapshot. Do not execute anything, do not "
     "invent evidence, and do not return markdown or explanatory text. The human_wish "
     "is the newest user instruction. When latest_user_correction is present in the "
@@ -162,11 +175,13 @@ class OpenAICompatibleAgenticTurnProvider:
     def decide(self, request: AgenticTurnProviderRequest) -> object:
         try:
             payload = _decision_input_payload(request)
-            return self._completion.complete_json(
+            candidate = self._completion.complete_json(
                 system_prompt=_DECISION_SYSTEM_PROMPT,
                 input_payload=payload,
                 max_tokens=DECISION_MAX_TOKENS,
+                response_format=_agentic_turn_provider_response_format(),
             )
+            return _normalize_agentic_turn_provider_output(candidate)
         except StructuredCompletionUnavailable:
             raise AgenticTurnProviderUnavailable(
                 "agentic_provider_unavailable"
@@ -202,6 +217,81 @@ class OpenAICompatibleAgenticTurnProvider:
             ) from None
         except (TypeError, ValueError):
             return None
+
+
+@lru_cache(maxsize=1)
+def _agentic_turn_provider_response_format_json() -> str:
+    try:
+        schema = json.loads(
+            _AGENTIC_TURN_PROVIDER_OUTPUT_SCHEMA_PATH.read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise ValueError("agentic_turn_provider_schema_unavailable") from None
+    if type(schema) is not dict:
+        raise ValueError("agentic_turn_provider_schema_invalid")
+    return json.dumps(
+        {
+            "type": "json_schema",
+            "json_schema": {
+                "name": AGENTIC_TURN_PROVIDER_OUTPUT_SCHEMA_NAME,
+                "strict": True,
+                "schema": schema,
+            },
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _agentic_turn_provider_response_format() -> dict[str, object]:
+    response_format = json.loads(_agentic_turn_provider_response_format_json())
+    if type(response_format) is not dict:
+        raise ValueError("agentic_turn_provider_schema_invalid")
+    return response_format
+
+
+def _normalize_agentic_turn_provider_output(candidate: object) -> object:
+    if type(candidate) is not dict or set(candidate) != {
+        "schemaVersion",
+        "kind",
+        "response",
+        "capability",
+    }:
+        return candidate
+
+    kind = candidate.get("kind")
+    capability = candidate.get("capability")
+    if kind != "capability":
+        if capability is not None:
+            return candidate
+        return {
+            "schemaVersion": candidate.get("schemaVersion"),
+            "kind": kind,
+            "response": candidate.get("response"),
+        }
+
+    if type(capability) is not dict or set(capability) != {"id", "arguments"}:
+        return candidate
+    arguments = capability.get("arguments")
+    if type(arguments) is not dict or set(arguments) != {
+        "position",
+        "strength",
+        "durationMs",
+    }:
+        return candidate
+    normalized_arguments = {
+        key: value for key, value in arguments.items() if value is not None
+    }
+    return {
+        "schemaVersion": candidate.get("schemaVersion"),
+        "kind": kind,
+        "response": candidate.get("response"),
+        "capability": {
+            "id": capability.get("id"),
+            "arguments": normalized_arguments,
+        },
+    }
 
 
 class SwordOpenAIBrokerAgenticTurnProvider(OpenAICompatibleAgenticTurnProvider):

@@ -34,6 +34,7 @@ from sword_voice_agent.adapters.openai_broker import (
     BrokerError,
     OpenAIBroker,
     _RejectRedirects,
+    agentic_turn_provider_response_format,
     build_safe_opener,
     read_openai_api_key,
 )
@@ -128,7 +129,11 @@ def _payload(max_tokens: int = DECISION_MAX_TOKENS) -> dict[str, object]:
             {"role": "user", "content": "synthetic bounded user wish"},
         ],
         "temperature": 0,
-        "response_format": {"type": "json_object"},
+        "response_format": (
+            agentic_turn_provider_response_format()
+            if max_tokens == DECISION_MAX_TOKENS
+            else {"type": "json_object"}
+        ),
         "max_tokens": max_tokens,
     }
 
@@ -198,10 +203,29 @@ class BrokerForwardingTests(unittest.TestCase):
         self.assertEqual(len(opener.calls), 1)
 
     def test_invalid_payloads_and_bounds_fail_before_secret_or_transport(self) -> None:
+        mutated_strict = json.loads(
+            json.dumps(agentic_turn_provider_response_format())
+        )
+        mutated_strict["json_schema"]["strict"] = False
+        mutated_name = json.loads(
+            json.dumps(agentic_turn_provider_response_format())
+        )
+        mutated_name["json_schema"]["name"] = "arbitrary_schema"
+        mutated_schema = json.loads(
+            json.dumps(agentic_turn_provider_response_format())
+        )
+        mutated_schema["json_schema"]["schema"]["additionalProperties"] = True
         cases = (
             {"model": "gpt-5.6-terra"},
             {"temperature": 1},
             {"response_format": {"type": "json_schema"}},
+            {"response_format": mutated_strict},
+            {"response_format": mutated_name},
+            {"response_format": mutated_schema},
+            {
+                "response_format": agentic_turn_provider_response_format(),
+                "max_tokens": RECEIPT_MAX_TOKENS,
+            },
             {"max_tokens": 721},
             {"messages": [{"role": "system", "content": "x"}]},
             {"extra": True},
