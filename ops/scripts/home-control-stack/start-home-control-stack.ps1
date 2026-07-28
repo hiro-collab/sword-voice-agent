@@ -2698,9 +2698,15 @@ if (-not $SkipAituber) {
         }
     }
     $gestureVoiceBridgeEnabled = if ($SkipMediapipe) { "false" } else { "true" }
+    $closedLoopFeedbackV1Enabled = $closedLoopFeedbackV1Environment[
+        "THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED"
+    ]
     $aituberEnvironment = @{
         THOUGHT_CORE_BASE_URL = $ThoughtCoreBaseUrl
+        THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_URL = "$ThoughtCoreBaseUrl/feedback/closed-loop"
+        THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = $closedLoopFeedbackV1Enabled
         NEXT_PUBLIC_THOUGHT_CORE_BASE_URL = $ThoughtCoreBaseUrl
+        NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = $closedLoopFeedbackV1Enabled
         NEXT_PUBLIC_THOUGHT_CORE_SESSION_ID = "aituber-kit"
         NEXT_PUBLIC_SYSTEM_CELL_AI_SERVICE = $aituberAIService
         NEXT_PUBLIC_SELECT_AI_SERVICE = $aituberAIService

@@ -177,10 +177,12 @@
     "channels": {
       "display": {
         "component": "aituber_direct_send",
+        "additional_components": ["aituber_message_store"],
         "feedback_source_authority": "display_transport"
       },
       "tts": {
         "component": "tts_chunk_post",
+        "additional_components": ["aituber_tts_synthesis"],
         "feedback_source_authority": "tts_transport"
       }
     },

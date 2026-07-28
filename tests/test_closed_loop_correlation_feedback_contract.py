@@ -161,6 +161,58 @@ class ClosedLoopCorrelationFeedbackContractTest(TestCase):
             send_attempt["details"]["submission_class"],
             "may_have_submitted",
         )
+        browser_display = materialize_closed_loop_output_ingress(
+            {
+                "event_kind": "output.feedback",
+                "session_id": "session_contract_001",
+                "turn_id": "turn_contract_001",
+                "assistant_message_id": "msg_contract_001",
+                "causal_parent_event_id": send_attempt["event_id"],
+                "details": {
+                    **contract["transition_profiles"][
+                        "submission_ack_needs_feedback"
+                    ],
+                    "output_channel": "display",
+                    "component": "aituber_message_store",
+                },
+            },
+            event_id="evt_contract_browser_display",
+            observed_at="2026-07-28T00:00:02Z",
+        )
+        self.assertEqual(browser_display["source_authority"], "display_transport")
+        browser_tts = materialize_closed_loop_output_ingress(
+            {
+                "event_kind": "output.feedback",
+                "session_id": "session_contract_001",
+                "turn_id": "turn_contract_001",
+                "assistant_message_id": "msg_contract_001",
+                "causal_parent_event_id": send_attempt["event_id"],
+                "details": {
+                    **contract["transition_profiles"][
+                        "submission_ack_needs_feedback"
+                    ],
+                    "output_channel": "tts",
+                    "component": "aituber_tts_synthesis",
+                },
+            },
+            event_id="evt_contract_browser_tts",
+            observed_at="2026-07-28T00:00:03Z",
+        )
+        self.assertEqual(browser_tts["source_authority"], "tts_transport")
+        unknown_component = {
+            **browser_display,
+            "event_kind": "output.feedback",
+            "details": {
+                **browser_display["details"],
+                "component": "aituber_unknown_output",
+            },
+        }
+        unknown_component.pop("event_id")
+        unknown_component.pop("schema_version")
+        unknown_component.pop("source_authority")
+        unknown_component.pop("observed_at")
+        with self.assertRaisesRegex(ValueError, "component_invalid"):
+            materialize_closed_loop_output_ingress(unknown_component)
         forged = {
             "event_kind": "output.feedback",
             "session_id": "session_contract_001",

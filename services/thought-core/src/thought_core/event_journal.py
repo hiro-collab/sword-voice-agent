@@ -14,12 +14,14 @@ from uuid import uuid4
 from .correlation_feedback_contract import (
     SECRET_LIKE_STRING_PATTERN,
     closed_loop_enabled,
+    load_closed_loop_contract,
     validate_closed_loop_event,
 )
 from .events import redact_secrets
 
 
 SAFE_SUMMARY_STRING_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,180}$")
+CLOSED_LOOP_OUTPUT_CHAIN_MAX = 3
 SENSITIVE_KEY_PARTS = (
     "authorization",
     "api_key",
@@ -50,6 +52,7 @@ PRESENCE_ONLY_KEYS = {
 }
 SUMMARY_CODE_KEYS = {
     "action_id",
+    "assistant_message_id",
     "contract_name",
     "error_code",
     "episode_id",
@@ -83,6 +86,10 @@ class ThoughtCoreEventJournal:
         self._lock = threading.Lock()
         self._closed_loop_index_loaded = False
         self._closed_loop_entries_by_event_id: dict[str, dict[str, Any]] = {}
+        self._closed_loop_chain_entries: dict[
+            tuple[str, str, str, str], list[dict[str, Any]]
+        ] = {}
+        self._authoritative_assistant_correlations: set[tuple[str, str, str]] = set()
         self._next_ingest_offset = 1
 
     def write_many(self, events: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -97,6 +104,7 @@ class ThoughtCoreEventJournal:
         entry = journal_entry_from_event(event)
         with self._lock:
             self._append_entry(path, entry)
+            self._remember_authoritative_assistant_correlation(entry)
         return entry
 
     def append_closed_loop_event(self, event: Mapping[str, Any]) -> dict[str, Any]:
@@ -105,32 +113,108 @@ class ThoughtCoreEventJournal:
         canonical_event = validate_closed_loop_event(event)
         with self._lock:
             self._load_closed_loop_index()
-            event_id = canonical_event["event_id"]
-            existing = self._closed_loop_entries_by_event_id.get(event_id)
-            if existing is not None:
-                if existing["event"] != canonical_event:
-                    raise ValueError("closed_loop_event_id_conflict")
-                return dict(existing)
+            return self._append_closed_loop_event_locked(canonical_event)
 
-            entry = {
-                "schema_version": "closed-loop-event-journal-entry.v1",
-                "journal_entry_id": f"jrn_{uuid4().hex}",
-                "ingest_offset": self._next_ingest_offset,
-                "recorded_at": _timestamp(),
-                "event": canonical_event,
-                "redaction": {
-                    "level": "fixed_safe_fields",
-                    "raw_text_stored": False,
-                    "raw_media_stored": False,
-                    "raw_secret_stored": False,
-                },
-            }
-            path = self._target_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            self._append_entry(path, entry, durable=True)
-            self._closed_loop_entries_by_event_id[event_id] = entry
-            self._next_ingest_offset += 1
-            return dict(entry)
+    def append_bound_closed_loop_output_event(
+        self, event: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Append one HTTP output event only when its authoritative chain exists."""
+
+        canonical_event = validate_closed_loop_event(event)
+        with self._lock:
+            self._load_closed_loop_index()
+            self._validate_closed_loop_output_binding(canonical_event)
+            return self._append_closed_loop_event_locked(canonical_event)
+
+    def _append_closed_loop_event_locked(
+        self, canonical_event: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        event_id = str(canonical_event["event_id"])
+        existing = self._closed_loop_entries_by_event_id.get(event_id)
+        if existing is not None:
+            if existing["event"] != canonical_event:
+                raise ValueError("closed_loop_event_id_conflict")
+            return dict(existing)
+        chain_key = _closed_loop_chain_key(canonical_event)
+        if (
+            chain_key is not None
+            and len(self._closed_loop_chain_entries.get(chain_key, []))
+            >= CLOSED_LOOP_OUTPUT_CHAIN_MAX
+        ):
+            raise ValueError("closed_loop_output_chain_budget_exceeded")
+
+        entry = {
+            "schema_version": "closed-loop-event-journal-entry.v1",
+            "journal_entry_id": f"jrn_{uuid4().hex}",
+            "ingest_offset": self._next_ingest_offset,
+            "recorded_at": _timestamp(),
+            "event": dict(canonical_event),
+            "redaction": {
+                "level": "fixed_safe_fields",
+                "raw_text_stored": False,
+                "raw_media_stored": False,
+                "raw_secret_stored": False,
+            },
+        }
+        path = self._target_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._append_entry(path, entry, durable=True)
+        self._closed_loop_entries_by_event_id[event_id] = entry
+        self._remember_closed_loop_chain_entry(entry)
+        self._next_ingest_offset += 1
+        return dict(entry)
+
+    def _validate_closed_loop_output_binding(
+        self, event: Mapping[str, Any]
+    ) -> None:
+        correlation = _closed_loop_correlation(event)
+        if correlation not in self._authoritative_assistant_correlations:
+            raise ValueError("closed_loop_assistant_authority_missing")
+
+        channel = str(event["details"]["output_channel"])
+        component = str(event["details"]["component"])
+        profile_name = _closed_loop_profile_name(event)
+        chain = self._closed_loop_chain_entries.get(
+            (*correlation, channel),
+            [],
+        )
+        if len(chain) >= CLOSED_LOOP_OUTPUT_CHAIN_MAX:
+            raise ValueError("closed_loop_output_chain_budget_exceeded")
+
+        if profile_name == "dispatch_intent_recorded":
+            if chain:
+                raise ValueError("closed_loop_output_chain_duplicate")
+            return
+
+        parent_id = event.get("causal_parent_event_id")
+        parent_entry = self._closed_loop_entries_by_event_id.get(str(parent_id))
+        if parent_entry is None:
+            raise ValueError("closed_loop_output_parent_missing")
+        parent = parent_entry["event"]
+        if (
+            _closed_loop_correlation(parent) != correlation
+            or parent["details"].get("output_channel") != channel
+            or parent["details"].get("component") != component
+        ):
+            raise ValueError("closed_loop_output_parent_mismatch")
+        if any(
+            item.get("causal_parent_event_id") == parent_id for item in chain
+        ):
+            raise ValueError("closed_loop_output_parent_replayed")
+
+        parent_profile = _closed_loop_profile_name(parent)
+        permitted_next = {
+            "dispatch_intent_recorded": {
+                "send_attempt_started_outcome_unknown"
+            },
+            "send_attempt_started_outcome_unknown": {
+                "submission_ack_needs_feedback",
+                "possible_send_timeout",
+                "dispatch_rejected_before_send",
+            },
+        }
+        if profile_name not in permitted_next.get(parent_profile, set()):
+            raise ValueError("closed_loop_output_transition_invalid")
 
     def replay_closed_loop_entries(self) -> list[dict[str, Any]]:
         """Read validated v1 entries only; historical v0 telemetry is ignored."""
@@ -156,18 +240,67 @@ class ThoughtCoreEventJournal:
     def _load_closed_loop_index(self) -> None:
         if self._closed_loop_index_loaded:
             return
-        entries = self._read_closed_loop_entries()
+        entries, correlations = self._read_closed_loop_index_snapshot()
         for entry in entries:
             event_id = entry["event"]["event_id"]
             existing = self._closed_loop_entries_by_event_id.get(event_id)
             if existing is not None and existing["event"] != entry["event"]:
                 raise ValueError("closed_loop_event_id_conflict")
-            self._closed_loop_entries_by_event_id[event_id] = entry
+            if existing is None:
+                self._closed_loop_entries_by_event_id[event_id] = entry
+                self._remember_closed_loop_chain_entry(entry)
             self._next_ingest_offset = max(
                 self._next_ingest_offset,
                 int(entry["ingest_offset"]) + 1,
             )
+        self._authoritative_assistant_correlations.update(correlations)
         self._closed_loop_index_loaded = True
+
+    def _read_closed_loop_index_snapshot(
+        self,
+    ) -> tuple[list[dict[str, Any]], set[tuple[str, str, str]]]:
+        entries: list[dict[str, Any]] = []
+        correlations: set[tuple[str, str, str]] = set()
+        for path in self._journal_paths():
+            with path.open("r", encoding="utf-8") as stream:
+                for line in stream:
+                    if not line.strip():
+                        continue
+                    try:
+                        value = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise ValueError("event_journal_replay_invalid_json") from exc
+                    if not isinstance(value, Mapping):
+                        raise ValueError("event_journal_replay_entry_not_object")
+                    if value.get("schema_version") == "thought-core.event-journal-entry.v0":
+                        candidate = _authoritative_assistant_correlation(value)
+                        if candidate is not None:
+                            correlations.add(candidate)
+                    elif value.get("schema_version") == "closed-loop-event-journal-entry.v1":
+                        entries.append(_validate_closed_loop_journal_entry(value))
+        entries.sort(key=lambda item: int(item["ingest_offset"]))
+        return entries, correlations
+
+    def _remember_authoritative_assistant_correlation(
+        self, entry: Mapping[str, Any]
+    ) -> None:
+        candidate = _authoritative_assistant_correlation(entry)
+        if candidate is not None:
+            self._authoritative_assistant_correlations.add(candidate)
+
+    def _remember_closed_loop_chain_entry(
+        self, entry: Mapping[str, Any]
+    ) -> None:
+        event = entry.get("event")
+        if not isinstance(event, Mapping):
+            return
+        key = _closed_loop_chain_key(event)
+        if key is None:
+            return
+        chain = self._closed_loop_chain_entries.setdefault(key, [])
+        if len(chain) >= CLOSED_LOOP_OUTPUT_CHAIN_MAX:
+            raise ValueError("closed_loop_output_chain_budget_exceeded")
+        chain.append(dict(event))
 
     def _read_closed_loop_entries(self) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
@@ -202,6 +335,73 @@ class ThoughtCoreEventJournal:
         assert self.directory is not None
         date = datetime.now(UTC).date().isoformat()
         return self.directory / f"events-{date}.jsonl"
+
+
+def _closed_loop_correlation(event: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(event.get("session_id") or ""),
+        str(event.get("turn_id") or ""),
+        str(event.get("assistant_message_id") or ""),
+    )
+
+
+def _closed_loop_chain_key(
+    event: Mapping[str, Any],
+) -> tuple[str, str, str, str] | None:
+    details = event.get("details")
+    if not isinstance(details, Mapping):
+        return None
+    channel = details.get("output_channel")
+    if not isinstance(channel, str) or not channel:
+        return None
+    return (*_closed_loop_correlation(event), channel)
+
+
+def _authoritative_assistant_correlation(
+    entry: Mapping[str, Any],
+) -> tuple[str, str, str] | None:
+    if entry.get("event_type") not in {
+        "assistant.message",
+        "assistant.speech_delta",
+    }:
+        return None
+    summary = entry.get("summary")
+    if not isinstance(summary, Mapping):
+        return None
+    candidate = (
+        entry.get("session_id"),
+        entry.get("turn_id"),
+        summary.get("assistant_message_id"),
+    )
+    if not all(
+        isinstance(item, str) and SAFE_SUMMARY_STRING_PATTERN.fullmatch(item)
+        for item in candidate
+    ):
+        return None
+    return candidate  # type: ignore[return-value]
+
+
+def _closed_loop_profile_name(event: Mapping[str, Any]) -> str:
+    details = event.get("details")
+    if not isinstance(details, Mapping):
+        raise ValueError("closed_loop_output_details_invalid")
+    contract = load_closed_loop_contract()
+    event_kind = str(event.get("event_kind") or "")
+    permitted = contract["http_output_ingress"]["profiles"].get(event_kind, [])
+    profile_fields = {
+        "phase",
+        "outcome_class",
+        "submission_class",
+        "receipt_class",
+        "cleanup_class",
+        "proof_layer",
+        "verification_class",
+    }
+    supplied = {key: details.get(key) for key in profile_fields}
+    for profile_name in permitted:
+        if supplied == contract["transition_profiles"][profile_name]:
+            return str(profile_name)
+    raise ValueError("closed_loop_output_profile_invalid")
 
 
 def journal_from_env() -> ThoughtCoreEventJournal | None:

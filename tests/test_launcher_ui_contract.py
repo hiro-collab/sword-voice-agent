@@ -144,6 +144,18 @@ class LauncherUiContractTest(TestCase):
         self.assertIn('"-ClosedLoopFeedbackV1Mode"', watcher_arguments)
         self.assertIn("$closedLoopFeedbackV1Mode", watcher_arguments)
         self.assertIn(
+            'THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_URL = "$ThoughtCoreBaseUrl/feedback/closed-loop"',
+            stack,
+        )
+        self.assertIn(
+            "THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = $closedLoopFeedbackV1Enabled",
+            stack,
+        )
+        self.assertIn(
+            "NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = $closedLoopFeedbackV1Enabled",
+            stack,
+        )
+        self.assertIn(
             '[ValidateSet("enabled", "disabled")]\n'
             '    [string]$ClosedLoopFeedbackV1Mode = "disabled"',
             watcher_start,

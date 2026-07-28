@@ -442,8 +442,14 @@ def create_server(
                 )
                 return
             try:
-                entry = event_journal.append_closed_loop_event(event)
-            except (OSError, TypeError, ValueError):
+                entry = event_journal.append_bound_closed_loop_output_event(event)
+            except (TypeError, ValueError):
+                self._send_json(
+                    {"error": "closed_loop_event_invalid"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            except OSError:
                 self._send_json(
                     {"error": "closed_loop_journal_append_failed"},
                     status=HTTPStatus.SERVICE_UNAVAILABLE,

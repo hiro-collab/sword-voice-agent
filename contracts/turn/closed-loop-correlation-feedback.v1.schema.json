@@ -221,9 +221,15 @@
     },
     "http_output_channel": {
       "type": "object",
-      "required": ["component", "feedback_source_authority"],
+      "required": ["component", "additional_components", "feedback_source_authority"],
       "properties": {
         "component": {"type": "string", "minLength": 1},
+        "additional_components": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
         "feedback_source_authority": {"type": "string", "minLength": 1}
       },
       "additionalProperties": false

@@ -114,7 +114,11 @@ def materialize_closed_loop_output_ingress(
     channel = ingress["channels"].get(normalized_details["output_channel"])
     if not isinstance(channel, Mapping):
         raise ValueError("closed_loop_output_ingress_channel_invalid")
-    if normalized_details["component"] != channel["component"]:
+    permitted_components = {
+        str(channel["component"]),
+        *(str(component) for component in channel["additional_components"]),
+    }
+    if normalized_details["component"] not in permitted_components:
         raise ValueError("closed_loop_output_ingress_component_invalid")
 
     supplied_profile = {key: normalized_details[key] for key in profile_fields}
@@ -270,10 +274,12 @@ def _validate_contract_descriptor(value: Mapping[str, Any]) -> None:
         "channels": {
             "display": {
                 "component": "aituber_direct_send",
+                "additional_components": ["aituber_message_store"],
                 "feedback_source_authority": "display_transport",
             },
             "tts": {
                 "component": "tts_chunk_post",
+                "additional_components": ["aituber_tts_synthesis"],
                 "feedback_source_authority": "tts_transport",
             },
         },

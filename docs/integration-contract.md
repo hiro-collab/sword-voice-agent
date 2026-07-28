@@ -206,6 +206,15 @@ If persistence is unavailable, return a non-2xx status with a short `error`; Tho
 |---|---|
 | `THOUGHT_CORE_BASE_URL` | Thought Core API base URL, for example `http://127.0.0.1:18787` |
 | `THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED` | Disabled by default. Enables the fresh-session v1 Journal/projection/output-feedback chain. |
+| `THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_URL` | Server-only, loopback-only AIT forwarding target for the fixed `/feedback/closed-loop` ingress. |
+| `NEXT_PUBLIC_THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED` | Safe activation bit used by the normal browser output path; it contains no endpoint or private value. |
+
+The ordinary browser path uses the existing v1 output channels without creating
+another ID family: `aituber_message_store` is the display component only after
+the canonical assistant message is present in the browser store, and
+`aituber_tts_synthesis` is the TTS component only after non-empty synthesized
+audio is accepted for queue handoff. Neither component is evidence of visible
+pixels or audible playback.
 | `THOUGHT_CORE_EVENT_JOURNAL_PATH` / `THOUGHT_CORE_EVENT_JOURNAL_DIR` | Existing local append-only Journal location; v0 telemetry and v1 closed-loop entries share the file without conversion. |
 | `ENVIRONMENT_STATE_URL` | URL for `/environment/current` |
 | `ENVIRONMENT_RELATIONS_URL` | URL for `/environment/relations` |
@@ -218,8 +227,13 @@ protects `POST /feedback/closed-loop`. The caller sends one bounded candidate
 without `schema_version`, `event_id`, `observed_at`, or `source_authority`.
 Thought Core derives source authority from the fixed route matrix, issues the
 canonical identity and timestamp, validates the exact event-kind, channel,
-component, and transition-profile tuple, durably appends the redacted entry,
-and updates the replay-derived projection. This route accepts only display/TTS
+component, and transition-profile tuple, then binds the exact
+`session_id`/`turn_id`/`assistant_message_id` to an already-journaled
+Thought-Core assistant event. Each message/channel admits one ordered
+intent -> send-attempt -> ack-or-reject chain of at most three entries; unknown,
+swapped, replayed, forked, duplicate, or out-of-order candidates are rejected
+before append. The route then durably appends the redacted entry and updates
+the replay-derived projection. This route accepts only display/TTS
 `output.dispatch_intent` and `output.feedback`; it rejects playback,
 `operation.transition`, visible/user-observation success, and every non-matrix
 tuple before Journal append. Success returns only:

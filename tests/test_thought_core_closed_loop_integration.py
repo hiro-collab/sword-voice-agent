@@ -162,6 +162,27 @@ def post_closed_loop(server, candidate: dict) -> dict:  # type: ignore[no-untype
         return json.loads(response.read().decode("utf-8"))
 
 
+def seed_authoritative_assistant_event(
+    journal_path: Path,
+    assistant_message_id: str,
+    *,
+    session_id: str = "session_closed_loop_integration",
+    turn_id: str = "turn_closed_loop_first",
+) -> None:
+    ThoughtCoreEventJournal(path=journal_path).write_event(
+        {
+            "schema_version": "thought-core.event.v1",
+            "event_id": f"evt_authoritative_{assistant_message_id}",
+            "type": "assistant.speech_delta",
+            "timestamp": "2026-07-28T00:00:00Z",
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "seq": 1,
+            "data": {"assistant_message_id": assistant_message_id},
+        }
+    )
+
+
 class ThoughtCoreClosedLoopIntegrationTest(TestCase):
     def test_secret_like_strings_reject_before_journal_projection_and_provider(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -383,6 +404,10 @@ class ThoughtCoreClosedLoopIntegrationTest(TestCase):
     def test_enabled_http_ingest_derives_display_and_tts_authority(self) -> None:
         with TemporaryDirectory() as tmp:
             journal_path = Path(tmp) / "closed-loop-http.jsonl"
+            seed_authoritative_assistant_event(
+                journal_path,
+                "msg_closed_loop_http_display",
+            )
             with patch.dict(
                 "os.environ",
                 {
@@ -437,7 +462,7 @@ class ThoughtCoreClosedLoopIntegrationTest(TestCase):
                     http_output_event_candidate(
                         "output.dispatch_intent",
                         profile_name="dispatch_intent_recorded",
-                        assistant_message_id="msg_closed_loop_http_tts",
+                        assistant_message_id="msg_closed_loop_http_display",
                         output_channel="tts",
                     ),
                 )
@@ -446,7 +471,7 @@ class ThoughtCoreClosedLoopIntegrationTest(TestCase):
                     http_output_event_candidate(
                         "output.feedback",
                         profile_name="send_attempt_started_outcome_unknown",
-                        assistant_message_id="msg_closed_loop_http_tts",
+                        assistant_message_id="msg_closed_loop_http_display",
                         output_channel="tts",
                         causal_parent_event_id=tts_intent["event_id"],
                     ),
@@ -456,7 +481,7 @@ class ThoughtCoreClosedLoopIntegrationTest(TestCase):
                     http_output_event_candidate(
                         "output.feedback",
                         profile_name="possible_send_timeout",
-                        assistant_message_id="msg_closed_loop_http_tts",
+                        assistant_message_id="msg_closed_loop_http_display",
                         output_channel="tts",
                         causal_parent_event_id=tts_feedback["event_id"],
                     ),
@@ -469,6 +494,7 @@ class ThoughtCoreClosedLoopIntegrationTest(TestCase):
             stored = [
                 json.loads(line)
                 for line in journal_path.read_text(encoding="utf-8").splitlines()
+                if '"closed-loop-event-journal-entry.v1"' in line
             ]
 
         for payload in (
@@ -512,6 +538,295 @@ class ThoughtCoreClosedLoopIntegrationTest(TestCase):
             "outcome_unknown",
         )
         self.assertNotIn("feedback_id", json.dumps(stored))
+
+    def test_bound_feedback_loads_authority_once_and_remembers_new_assistant_events(self) -> None:
+        with TemporaryDirectory() as tmp:
+            journal_path = Path(tmp) / "closed-loop-index-once.jsonl"
+            message_id = "msg_closed_loop_indexed"
+            seed_authoritative_assistant_event(journal_path, message_id)
+            journal = ThoughtCoreEventJournal(path=journal_path)
+
+            with patch.object(
+                journal,
+                "_read_closed_loop_index_snapshot",
+                wraps=journal._read_closed_loop_index_snapshot,
+            ) as index_scan:
+                intent = journal.append_bound_closed_loop_output_event(
+                    materialize_closed_loop_output_ingress(
+                        http_output_event_candidate(
+                            "output.dispatch_intent",
+                            profile_name="dispatch_intent_recorded",
+                            assistant_message_id=message_id,
+                            output_channel="display",
+                        )
+                    )
+                )
+                sent = journal.append_bound_closed_loop_output_event(
+                    materialize_closed_loop_output_ingress(
+                        http_output_event_candidate(
+                            "output.feedback",
+                            profile_name="send_attempt_started_outcome_unknown",
+                            assistant_message_id=message_id,
+                            output_channel="display",
+                            causal_parent_event_id=intent["event"]["event_id"],
+                        )
+                    )
+                )
+                journal.append_bound_closed_loop_output_event(
+                    materialize_closed_loop_output_ingress(
+                        http_output_event_candidate(
+                            "output.feedback",
+                            profile_name="submission_ack_needs_feedback",
+                            assistant_message_id=message_id,
+                            output_channel="display",
+                            causal_parent_event_id=sent["event"]["event_id"],
+                        )
+                    )
+                )
+
+                new_message_id = "msg_closed_loop_incremental"
+                journal.write_event(
+                    {
+                        "schema_version": "thought-core.event.v1",
+                        "event_id": "evt_authoritative_incremental",
+                        "type": "assistant.message",
+                        "timestamp": "2026-07-28T00:00:01Z",
+                        "session_id": "session_closed_loop_integration",
+                        "turn_id": "turn_closed_loop_first",
+                        "seq": 2,
+                        "data": {"assistant_message_id": new_message_id},
+                    }
+                )
+                journal.append_bound_closed_loop_output_event(
+                    materialize_closed_loop_output_ingress(
+                        http_output_event_candidate(
+                            "output.dispatch_intent",
+                            profile_name="dispatch_intent_recorded",
+                            assistant_message_id=new_message_id,
+                            output_channel="tts",
+                        )
+                    )
+                )
+
+            self.assertEqual(index_scan.call_count, 1)
+
+    def test_bound_feedback_uses_only_the_bounded_target_chain_after_restart(self) -> None:
+        class NoWholeIndexIteration(dict):
+            def values(self):  # type: ignore[no-untyped-def]
+                raise AssertionError("whole_closed_loop_index_iteration_forbidden")
+
+        with TemporaryDirectory() as tmp:
+            journal_path = Path(tmp) / "closed-loop-many-chains.jsonl"
+            writer = ThoughtCoreEventJournal(path=journal_path)
+            for index in range(64):
+                message_id = f"msg_closed_loop_unrelated_{index:03d}"
+                writer.write_event(
+                    {
+                        "schema_version": "thought-core.event.v1",
+                        "event_id": f"evt_authoritative_unrelated_{index:03d}",
+                        "type": "assistant.speech_delta",
+                        "timestamp": "2026-07-28T00:00:00Z",
+                        "session_id": "session_closed_loop_integration",
+                        "turn_id": "turn_closed_loop_first",
+                        "seq": index + 1,
+                        "data": {"assistant_message_id": message_id},
+                    }
+                )
+                writer.append_closed_loop_event(
+                    materialize_closed_loop_output_ingress(
+                        http_output_event_candidate(
+                            "output.dispatch_intent",
+                            profile_name="dispatch_intent_recorded",
+                            assistant_message_id=message_id,
+                            output_channel="display",
+                        )
+                    )
+                )
+
+            target_message_id = "msg_closed_loop_target_bounded"
+            writer.write_event(
+                {
+                    "schema_version": "thought-core.event.v1",
+                    "event_id": "evt_authoritative_target_bounded",
+                    "type": "assistant.message",
+                    "timestamp": "2026-07-28T00:00:01Z",
+                    "session_id": "session_closed_loop_integration",
+                    "turn_id": "turn_closed_loop_first",
+                    "seq": 65,
+                    "data": {"assistant_message_id": target_message_id},
+                }
+            )
+
+            replay = ThoughtCoreEventJournal(path=journal_path)
+            intent = replay.append_bound_closed_loop_output_event(
+                materialize_closed_loop_output_ingress(
+                    http_output_event_candidate(
+                        "output.dispatch_intent",
+                        profile_name="dispatch_intent_recorded",
+                        assistant_message_id=target_message_id,
+                        output_channel="tts",
+                    )
+                )
+            )
+            self.assertEqual(len(replay._closed_loop_chain_entries), 65)
+            replay._closed_loop_entries_by_event_id = NoWholeIndexIteration(
+                replay._closed_loop_entries_by_event_id
+            )
+
+            sent = replay.append_bound_closed_loop_output_event(
+                materialize_closed_loop_output_ingress(
+                    http_output_event_candidate(
+                        "output.feedback",
+                        profile_name="send_attempt_started_outcome_unknown",
+                        assistant_message_id=target_message_id,
+                        output_channel="tts",
+                        causal_parent_event_id=intent["event"]["event_id"],
+                    )
+                )
+            )
+            replay.append_bound_closed_loop_output_event(
+                materialize_closed_loop_output_ingress(
+                    http_output_event_candidate(
+                        "output.feedback",
+                        profile_name="submission_ack_needs_feedback",
+                        assistant_message_id=target_message_id,
+                        output_channel="tts",
+                        causal_parent_event_id=sent["event"]["event_id"],
+                    )
+                )
+            )
+
+            target_key = (
+                "session_closed_loop_integration",
+                "turn_closed_loop_first",
+                target_message_id,
+                "tts",
+            )
+            self.assertEqual(len(replay._closed_loop_chain_entries[target_key]), 3)
+            self.assertTrue(
+                all(
+                    len(chain) <= 3
+                    for chain in replay._closed_loop_chain_entries.values()
+                )
+            )
+
+    def test_http_ingest_binds_authoritative_tuple_parent_order_and_budget(self) -> None:
+        with TemporaryDirectory() as tmp:
+            journal_path = Path(tmp) / "closed-loop-http-binding.jsonl"
+            message_id = "msg_closed_loop_bound"
+            seed_authoritative_assistant_event(journal_path, message_id)
+            with patch.dict(
+                "os.environ",
+                {
+                    "THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED": "1",
+                    "THOUGHT_CORE_EVENT_JOURNAL_PATH": str(journal_path),
+                    "THOUGHT_CORE_EVENT_JOURNAL_DIR": "",
+                },
+                clear=False,
+            ):
+                server = create_server(
+                    "127.0.0.1",
+                    0,
+                    thought_loop=ThoughtLoop(
+                        tools=MockThoughtTools(),
+                        agentic_turn_provider=CapturingConversationProvider(),
+                    ),
+                )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+
+            def rejected(candidate: dict) -> None:
+                with self.assertRaises(error.HTTPError) as raised:
+                    post_closed_loop(server, candidate)
+                self.assertEqual(raised.exception.code, 400)
+
+            try:
+                unknown = http_output_event_candidate(
+                    "output.dispatch_intent",
+                    profile_name="dispatch_intent_recorded",
+                    assistant_message_id="msg_closed_loop_unknown",
+                    output_channel="display",
+                )
+                rejected(unknown)
+                swapped = http_output_event_candidate(
+                    "output.dispatch_intent",
+                    profile_name="dispatch_intent_recorded",
+                    assistant_message_id=message_id,
+                    output_channel="display",
+                )
+                swapped["turn_id"] = "turn_closed_loop_swapped"
+                rejected(swapped)
+
+                intent_candidate = http_output_event_candidate(
+                    "output.dispatch_intent",
+                    profile_name="dispatch_intent_recorded",
+                    assistant_message_id=message_id,
+                    output_channel="display",
+                )
+                intent = post_closed_loop(server, intent_candidate)
+                rejected(intent_candidate)
+                rejected(
+                    http_output_event_candidate(
+                        "output.feedback",
+                        profile_name="send_attempt_started_outcome_unknown",
+                        assistant_message_id=message_id,
+                        output_channel="display",
+                        causal_parent_event_id="evt_unknown_parent",
+                    )
+                )
+
+                send_candidate = http_output_event_candidate(
+                    "output.feedback",
+                    profile_name="send_attempt_started_outcome_unknown",
+                    assistant_message_id=message_id,
+                    output_channel="display",
+                    causal_parent_event_id=intent["event_id"],
+                )
+                sent = post_closed_loop(server, send_candidate)
+                rejected(send_candidate)
+                rejected(
+                    http_output_event_candidate(
+                        "output.feedback",
+                        profile_name="submission_ack_needs_feedback",
+                        assistant_message_id=message_id,
+                        output_channel="tts",
+                        causal_parent_event_id=sent["event_id"],
+                    )
+                )
+
+                ack_candidate = http_output_event_candidate(
+                    "output.feedback",
+                    profile_name="submission_ack_needs_feedback",
+                    assistant_message_id=message_id,
+                    output_channel="display",
+                    causal_parent_event_id=sent["event_id"],
+                )
+                post_closed_loop(server, ack_candidate)
+                rejected(ack_candidate)
+                rejected(
+                    http_output_event_candidate(
+                        "output.feedback",
+                        profile_name="possible_send_timeout",
+                        assistant_message_id=message_id,
+                        output_channel="display",
+                        causal_parent_event_id=sent["event_id"],
+                    )
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+            stored = [
+                json.loads(line)
+                for line in journal_path.read_text(encoding="utf-8").splitlines()
+                if '"closed-loop-event-journal-entry.v1"' in line
+            ]
+        self.assertEqual(len(stored), 3)
+        self.assertEqual(
+            [entry["event"]["details"]["phase"] for entry in stored],
+            ["dispatching", "dispatching", "observing"],
+        )
 
     def test_http_ingest_rejects_forged_playback_success_before_all_consumers(self) -> None:
         with TemporaryDirectory() as tmp:

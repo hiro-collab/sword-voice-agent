@@ -52,6 +52,14 @@ profiles, proof enums, redaction allowlists, and provider bounds. The feature
 starts disabled and is enabled only for a fresh session with
 `THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED=1`.
 
+For the ordinary AIT browser route, Thought Core remains the sole issuer of
+`session_id`, `turn_id`, `assistant_message_id`, and feedback `event_id`.
+The browser preserves those identifiers through message-store and TTS
+synthesis acknowledgement; it does not mint replacement correlation IDs.
+Message-store acknowledgement proves bounded display-state acceptance only,
+and TTS acknowledgement proves non-empty synthesis acceptance only. Visible
+pixels, audible playback, and user observation remain separate proof layers.
+
 The canonical shared identity vocabulary is limited to `session_id`,
 `input_attempt_id`, `turn_id`, `operation_id`, `assistant_message_id`,
 `event_id`, `candidate_id`, and `memory_id`, plus the ordering and causal refs
@@ -67,6 +75,11 @@ The Control HTTP output route does not accept caller-authored
 intent and the display/TTS transport authority for feedback. Its fixed ingress
 matrix rejects playback, operation transitions, and success claims; those
 remain available only to future internal producers with their own authority.
+Before append, Event Journal must already contain the exact Thought-Core-issued
+assistant tuple. The same Journal enforces one bounded, non-forking transition
+chain per assistant message/channel, so caller-selected tuple swaps, unknown
+parents, replay, duplicates, and event-volume multiplication cannot enter
+Current View or later predecision context.
 Immediately before the real output `urlopen`, the watcher durably records a
 distinct Control-authored send-attempt transition as
 `may_have_submitted / outcome_unknown`. It is provider-visible after replay and
