@@ -1,0 +1,49 @@
+{
+  "binding_sha256": "b42cc188c1b64097bfdf1c6d5606f42da8cd2217ee5dd55f7b64c8cf08fbfb2d",
+  "binding": {
+    "binding_version": "launcher_service_graph.binding.v1",
+    "profile_id": "thought-core-v0",
+    "graph_sha256": "31a38cd01e3fa6f295c398d264a5667cac5d959fc75c40e7e9427f54b8b79b0c",
+    "graph_schema_sha256": "d0f91c53450e32e5dde0af4739fb15e235c383a8e1fe099965e545306e4ea87e",
+    "operation_schema_sha256": "0c47057c094095fcac857c7d0ade0fa4e4ec51e74c34643f52de56aa35eb4a11",
+    "service_order": [
+      "aituber_kit",
+      "home_assistant_bridge",
+      "mediapipe_camera_hub_stack",
+      "openai_provider_broker",
+      "touchdesigner_control_gui",
+      "voicevox",
+      "environment_state_server",
+      "vision_snapshot_processor",
+      "thought_core_api",
+      "thought_core_watcher"
+    ],
+    "public_readiness_ids": [
+      "aituber_kit",
+      "environment_state_server",
+      "home_assistant_bridge",
+      "mediapipe",
+      "thought_core_api",
+      "thought_core_watcher",
+      "touchdesigner_control_gui",
+      "vision_snapshot_processor",
+      "voicevox"
+    ],
+    "required_service_ids": [
+      "aituber_kit",
+      "environment_state_server",
+      "home_assistant_bridge",
+      "openai_provider_broker",
+      "thought_core_api",
+      "thought_core_watcher",
+      "touchdesigner_control_gui"
+    ],
+    "optional_service_ids": [
+      "mediapipe_camera_hub_stack",
+      "vision_snapshot_processor"
+    ],
+    "external_service_ids": [
+      "voicevox"
+    ]
+  }
+}

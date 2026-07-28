@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword.local/contracts/launcher/launcher-operation.v1.schema.json",
+  "title": "Sword Launcher Operation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "graph_sha256", "binding_sha256", "operation_id", "intent",
+    "phase", "reason", "cleanup", "revision", "joined_existing",
+    "rollback_required", "recovery_required", "services", "residue_service_ids"
+  ],
+  "properties": {
+    "schema_version": { "const": "launcher_operation.v1" },
+    "graph_sha256": { "$ref": "#/$defs/sha256" },
+    "binding_sha256": { "$ref": "#/$defs/sha256" },
+    "operation_id": { "type": "string", "pattern": "^lop_[a-z0-9]{8,64}$" },
+    "intent": { "enum": ["start", "stop"] },
+    "phase": {
+      "enum": [
+        "planned", "preflight", "prepared", "starting", "waiting_ready", "ready",
+        "rolling_back", "failed", "stopping", "stopped", "recovering", "residue"
+      ]
+    },
+    "reason": {
+      "enum": [
+        "none", "preflight_failed", "spawn_failed", "early_exit", "listener_mismatch",
+        "readiness_timeout", "rollback_failed", "stop_failed", "supervisor_crash",
+        "residue_present", "invalid_event"
+      ]
+    },
+    "cleanup": { "enum": ["not_started", "in_progress", "clear", "residue", "unknown"] },
+    "revision": { "type": "integer", "minimum": 0 },
+    "joined_existing": { "type": "boolean" },
+    "rollback_required": { "type": "boolean" },
+    "recovery_required": { "type": "boolean" },
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["service_id", "state"],
+        "properties": {
+          "service_id": { "$ref": "#/$defs/id" },
+          "state": {
+            "enum": [
+              "pending", "starting", "ready", "optional_absent", "external_ready",
+              "stop_requested", "stopped", "failed", "residue", "unknown"
+            ]
+          }
+        }
+      }
+    },
+    "residue_service_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/id" }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword.local/contracts/launcher/launcher-service-graph.v1.schema.json",
+  "title": "Sword Launcher Service Graph v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile_id", "start_policy", "stop_policy", "services"],
+  "properties": {
+    "schema_version": { "const": "launcher_service_graph.v1" },
+    "profile_id": { "$ref": "#/$defs/id" },
+    "start_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["duplicate_start", "optional_absent"],
+      "properties": {
+        "duplicate_start": { "const": "join_active" },
+        "optional_absent": { "const": "continue_degraded" }
+      }
+    },
+    "stop_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idempotent", "residue"],
+      "properties": {
+        "idempotent": { "const": true },
+        "residue": { "const": "retain_fixed_state" }
+      }
+    },
+    "services": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/service" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "service_id", "public_readiness_id", "dependencies", "requirement",
+        "ownership", "legacy_profile_member", "start", "readiness",
+        "ready_deadline_ms", "port", "stop"
+      ],
+      "properties": {
+        "service_id": { "$ref": "#/$defs/id" },
+        "public_readiness_id": {
+          "oneOf": [
+            { "$ref": "#/$defs/id" },
+            { "type": "null" }
+          ]
+        },
+        "dependencies": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "requirement": { "enum": ["required", "optional", "external"] },
+        "ownership": { "enum": ["owned", "external"] },
+        "legacy_profile_member": { "type": "boolean" },
+        "start": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["adapter_id", "absent_behavior", "legacy_spec_ids"],
+          "properties": {
+            "adapter_id": { "$ref": "#/$defs/id" },
+            "absent_behavior": { "enum": ["fail", "optional_absent", "external_probe_only"] },
+            "legacy_spec_ids": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/id" }
+            }
+          }
+        },
+        "readiness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["probe_id", "success", "degraded_allowed"],
+          "properties": {
+            "probe_id": { "$ref": "#/$defs/id" },
+            "success": { "enum": ["owned_identity_and_probe", "external_probe", "module_status"] },
+            "degraded_allowed": { "type": "boolean" }
+          }
+        },
+        "ready_deadline_ms": { "type": "integer", "minimum": 1, "maximum": 300000 },
+        "port": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ownership", "port_mode", "transport", "loopback_port", "endpoint_ref"],
+          "properties": {
+            "ownership": { "enum": ["owned", "external", "none"] },
+            "port_mode": { "enum": ["manifest_default", "launcher_default", "none"] },
+            "transport": { "enum": ["http", "websocket", "none"] },
+            "loopback_port": {
+              "oneOf": [
+                { "type": "integer", "minimum": 1, "maximum": 65535 },
+                { "type": "null" }
+              ]
+            },
+            "endpoint_ref": {
+              "oneOf": [
+                { "$ref": "#/$defs/id" },
+                { "type": "null" }
+              ]
+            }
+          }
+        },
+        "stop": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["adapter_id", "graceful_timeout_ms", "escalation"],
+          "properties": {
+            "adapter_id": { "$ref": "#/$defs/id" },
+            "graceful_timeout_ms": { "type": "integer", "minimum": 0, "maximum": 120000 },
+            "escalation": { "enum": ["owned_only", "none"] }
+          }
+        }
+      }
+    }
+  }
+}
