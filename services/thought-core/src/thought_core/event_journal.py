@@ -11,6 +11,7 @@ import threading
 from typing import Any, Mapping
 from uuid import uuid4
 
+from .agentic_turn_provider import AGENTIC_DECISION_VALIDATION_SUBCODES
 from .correlation_feedback_contract import (
     SECRET_LIKE_STRING_PATTERN,
     closed_loop_enabled,
@@ -72,6 +73,7 @@ SUMMARY_CODE_KEYS = {
     "tool",
     "tool_call_id",
     "trace_id",
+    "validation_subcode",
 }
 
 
@@ -493,6 +495,13 @@ def summarize_event_data(data: Mapping[str, Any]) -> dict[str, Any]:
     }
     for key in SUMMARY_CODE_KEYS:
         if key not in redacted:
+            continue
+        if (
+            key == "validation_subcode"
+            and redacted[key] not in AGENTIC_DECISION_VALIDATION_SUBCODES
+        ):
+            if redacted[key] is not None:
+                summary["validation_subcode_present"] = True
             continue
         safe_value = _safe_summary_scalar(redacted[key])
         if safe_value is not None:

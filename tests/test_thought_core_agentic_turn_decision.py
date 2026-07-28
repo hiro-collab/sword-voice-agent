@@ -81,6 +81,50 @@ class _FloatSubclass(float):
 
 
 class AgenticTurnDecisionTest(TestCase):
+    def test_rejections_report_one_fixed_validation_subcode_without_private_text(self) -> None:
+        cases = (
+            (None, None, "candidate_not_object"),
+            (
+                {**self._valid("conversation"), "schemaVersion": 2},
+                None,
+                "decision_shape_invalid",
+            ),
+            (
+                self._response_mutation("speech", ""),
+                None,
+                "response_invalid",
+            ),
+            (
+                self._capability_extra("provider_payload", "PRIVATE_PROVIDER_TEXT"),
+                lambda capability_id, arguments: True,
+                "capability_shape_invalid",
+            ),
+            (
+                self._valid("capability"),
+                lambda capability_id, arguments: False,
+                "catalog_rejected",
+            ),
+        )
+        for candidate, catalog, expected in cases:
+            with self.subTest(expected=expected):
+                result = validate_agentic_turn_decision(
+                    candidate,
+                    capability_catalog_validator=catalog,
+                )
+                self._assert_fixed_rejection(result)
+                self.assertEqual(result.validation_subcode, expected)
+                self.assertNotIn("PRIVATE_PROVIDER_TEXT", repr(result))
+
+        with patch.object(
+            agentic_turn_decision_module,
+            "_validate_response",
+            side_effect=RuntimeError("PRIVATE_VALIDATOR_EXCEPTION"),
+        ):
+            internal = validate_agentic_turn_decision(self._valid("conversation"))
+        self._assert_fixed_rejection(internal)
+        self.assertEqual(internal.validation_subcode, "validation_internal")
+        self.assertNotIn("PRIVATE_VALIDATOR_EXCEPTION", repr(internal))
+
     def test_every_kind_preserves_multiple_free_unicode_replies(self) -> None:
         replies = {
             "conversation": (
@@ -113,6 +157,7 @@ class AgenticTurnDecisionTest(TestCase):
                     self.assertTrue(result.accepted)
                     self.assertEqual(result.status, "accepted")
                     self.assertIsNone(result.reason)
+                    self.assertIsNone(result.validation_subcode)
                     self.assertIsNotNone(result.decision)
                     self.assertEqual(result.decision.kind, kind)  # type: ignore[union-attr]
                     self.assertEqual(result.decision.response.speech, speech)  # type: ignore[union-attr]

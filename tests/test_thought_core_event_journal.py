@@ -14,6 +14,7 @@ sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 
 from thought_core.agentic_turn_provider import StaticAgenticTurnProvider  # noqa: E402
 from thought_core.event_journal import journal_entry_from_event  # noqa: E402
+from thought_core.events import EventFactory  # noqa: E402
 from thought_core.execution_deadline import (  # noqa: E402
     TurnDeadlineExceeded,
     issue_turn_execution_deadline,
@@ -272,9 +273,34 @@ class ThoughtCoreEventJournalTest(TestCase):
         serialized = json.dumps(journal_events, ensure_ascii=False)
         self.assertIn("event: agentic.decision", sse_payload)
         self.assertEqual(decision["summary"]["reason_code"], "agentic_decision_invalid")
+        self.assertEqual(
+            decision["summary"]["validation_subcode"],
+            "decision_shape_invalid",
+        )
         self.assertTrue(decision["summary"]["reason_present"])
         self.assertNotIn("reason", decision["summary"])
         self.assertNotIn("炎を出して", serialized)
+        self.assertNotIn(private_sentinel, serialized)
+
+    def test_unknown_validation_subcode_is_presence_only(self) -> None:
+        private_sentinel = "PRIVATE_VALIDATION_SUBCODE"
+        entry = journal_entry_from_event(
+            EventFactory("turn_validation_subcode", "session_validation_subcode")
+            .emit(
+                "agentic.decision",
+                {
+                    "status": "held",
+                    "reason": "agentic_decision_invalid",
+                    "reason_code": "agentic_decision_invalid",
+                    "validation_subcode": private_sentinel,
+                },
+            )
+            .to_dict()
+        )
+        serialized = json.dumps(entry, ensure_ascii=False)
+
+        self.assertTrue(entry["summary"]["validation_subcode_present"])
+        self.assertNotIn("validation_subcode", entry["summary"])
         self.assertNotIn(private_sentinel, serialized)
 
     def test_journal_write_failure_does_not_break_turn_response(self) -> None:

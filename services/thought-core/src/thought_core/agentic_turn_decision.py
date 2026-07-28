@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal
 
+from .agentic_turn_provider import AgenticDecisionValidationSubcode
+
 
 SCHEMA_VERSION = 1
 MAX_RESPONSE_LENGTH = 600
@@ -68,21 +70,21 @@ class AgenticTurnDecisionValidationResult:
     status: AgenticTurnDecisionStatus
     reason: AgenticTurnDecisionReason | None
     decision: AgenticTurnDecision | None
+    validation_subcode: AgenticDecisionValidationSubcode | None = None
 
     @property
     def accepted(self) -> bool:
         return self.status == "accepted" and self.decision is not None
 
 
-_REJECTED_RESULT = AgenticTurnDecisionValidationResult(
-    status="rejected",
-    reason="invalid_decision",
-    decision=None,
-)
-
-
 class _InvalidDecision(Exception):
     """Internal text-free rejection signal."""
+
+    __slots__ = ("validation_subcode",)
+
+    def __init__(self, validation_subcode: AgenticDecisionValidationSubcode) -> None:
+        self.validation_subcode = validation_subcode
+        super().__init__("invalid_decision")
 
 
 @dataclass
@@ -92,7 +94,7 @@ class _NodeBudget:
     def add(self) -> None:
         self.count += 1
         if self.count > MAX_ARGUMENT_NODES:
-            _reject()
+            _reject("capability_shape_invalid")
 
 
 @dataclass
@@ -199,35 +201,47 @@ def validate_agentic_turn_decision(
 
     try:
         return _validate(candidate, capability_catalog_validator)
+    except _InvalidDecision as exc:
+        return _rejected(exc.validation_subcode)
     except Exception:
-        return _REJECTED_RESULT
+        return _rejected("validation_internal")
 
 
 def _validate(
     candidate: object,
     capability_catalog_validator: CapabilityCatalogValidator | None,
 ) -> AgenticTurnDecisionValidationResult:
-    mapping = _exact_object_shell(candidate, allowed=_CAPABILITY_FIELDS)
+    if type(candidate) is not dict:
+        _reject("candidate_not_object")
+    mapping = _exact_object_shell(
+        candidate,
+        allowed=_CAPABILITY_FIELDS,
+        subcode="decision_shape_invalid",
+    )
 
     schema_version = mapping.get("schemaVersion")
     kind = mapping.get("kind")
     if type(schema_version) is not int or schema_version != SCHEMA_VERSION:
-        _reject()
+        _reject("decision_shape_invalid")
     if type(kind) is not str or kind not in _KINDS:
-        _reject()
+        _reject("decision_shape_invalid")
 
     expected_fields = _CAPABILITY_FIELDS if kind == "capability" else _BASE_FIELDS
     if frozenset(mapping) != expected_fields:
-        _reject()
+        _reject("decision_shape_invalid")
 
     response = _validate_response(mapping["response"])
     capability: AgenticCapabilityCall | None = None
     if kind == "capability":
-        call = _exact_object(mapping["capability"], _CALL_FIELDS)
+        call = _exact_object(
+            mapping["capability"],
+            _CALL_FIELDS,
+            subcode="capability_shape_invalid",
+        )
         capability_id = _validate_capability_id(call["id"])
         raw_arguments = call["arguments"]
         if type(raw_arguments) is not dict:
-            _reject()
+            _reject("capability_shape_invalid")
 
         canonical_arguments = _canonical_json(
             raw_arguments,
@@ -235,23 +249,23 @@ def _validate(
             budget=_NodeBudget(),
         )
         if type(canonical_arguments) is not dict:
-            _reject()
+            _reject("capability_shape_invalid")
         immutable_arguments = _immutable_json(canonical_arguments)
         if not isinstance(immutable_arguments, Mapping):
-            _reject()
+            _reject("capability_shape_invalid")
         guard = _MutationGuard()
         guarded_arguments = _guarded_json(canonical_arguments, guard)
         if not isinstance(guarded_arguments, _GuardedObject):
-            _reject()
+            _reject("capability_shape_invalid")
         if capability_catalog_validator is None:
-            _reject()
+            _reject("catalog_rejected")
 
         catalog_result = capability_catalog_validator(
             capability_id,
             guarded_arguments,
         )
         if guard.attempted or catalog_result is not True:
-            _reject()
+            _reject("catalog_rejected")
         capability = AgenticCapabilityCall(
             capability_id=capability_id,
             arguments=immutable_arguments,
@@ -267,6 +281,7 @@ def _validate(
         status="accepted",
         reason=None,
         decision=decision,
+        validation_subcode=None,
     )
 
 
@@ -274,26 +289,32 @@ def _exact_object_shell(
     value: object,
     *,
     allowed: frozenset[str],
+    subcode: AgenticDecisionValidationSubcode,
 ) -> dict[str, object]:
     if type(value) is not dict:
-        _reject()
+        _reject(subcode)
     if not 1 <= len(value) <= len(allowed):
-        _reject()
+        _reject(subcode)
     for key in value:
         if type(key) is not str or key not in allowed:
-            _reject()
+            _reject(subcode)
     return value
 
 
-def _exact_object(value: object, fields: frozenset[str]) -> dict[str, object]:
-    mapping = _exact_object_shell(value, allowed=fields)
+def _exact_object(
+    value: object,
+    fields: frozenset[str],
+    *,
+    subcode: AgenticDecisionValidationSubcode,
+) -> dict[str, object]:
+    mapping = _exact_object_shell(value, allowed=fields, subcode=subcode)
     if frozenset(mapping) != fields:
-        _reject()
+        _reject(subcode)
     return mapping
 
 
 def _validate_response(value: object) -> AgenticTurnResponse:
-    mapping = _exact_object(value, _RESPONSE_FIELDS)
+    mapping = _exact_object(value, _RESPONSE_FIELDS, subcode="response_invalid")
     return AgenticTurnResponse(
         speech=_bounded_response_text(mapping["speech"]),
         display=_bounded_response_text(mapping["display"]),
@@ -306,7 +327,7 @@ def _bounded_response_text(value: object) -> str:
         or not 1 <= len(value) <= MAX_RESPONSE_LENGTH
         or not value.strip()
     ):
-        _reject()
+        _reject("response_invalid")
     return value
 
 
@@ -316,13 +337,13 @@ def _validate_capability_id(value: object) -> str:
         or not 1 <= len(value) <= MAX_CAPABILITY_ID_LENGTH
         or _CAPABILITY_ID_PATTERN.fullmatch(value) is None
     ):
-        _reject()
+        _reject("capability_shape_invalid")
     return value
 
 
 def _canonical_json(value: object, *, depth: int, budget: _NodeBudget) -> object:
     if depth > MAX_ARGUMENT_DEPTH:
-        _reject()
+        _reject("capability_shape_invalid")
     budget.add()
     value_type = type(value)
 
@@ -330,28 +351,28 @@ def _canonical_json(value: object, *, depth: int, budget: _NodeBudget) -> object
         return value
     if value_type is int:
         if abs(value) > MAX_ARGUMENT_NUMBER_ABS:
-            _reject()
+            _reject("capability_shape_invalid")
         return value
     if value_type is float:
         if not math.isfinite(value) or abs(value) > MAX_ARGUMENT_NUMBER_ABS:
-            _reject()
+            _reject("capability_shape_invalid")
         return value
     if value_type is str:
         if len(value) > MAX_ARGUMENT_STRING_LENGTH:
-            _reject()
+            _reject("capability_shape_invalid")
         return value
     if value_type is dict:
         if len(value) > MAX_CONTAINER_ITEMS:
-            _reject()
+            _reject("capability_shape_invalid")
         snapshot: dict[str, object] = {}
         for key, item in value.items():
             if len(snapshot) >= MAX_CONTAINER_ITEMS:
-                _reject()
+                _reject("capability_shape_invalid")
             if (
                 type(key) is not str
                 or not 1 <= len(key) <= MAX_ARGUMENT_KEY_LENGTH
             ):
-                _reject()
+                _reject("capability_shape_invalid")
             snapshot[key] = _canonical_json(
                 item,
                 depth=depth + 1,
@@ -360,11 +381,11 @@ def _canonical_json(value: object, *, depth: int, budget: _NodeBudget) -> object
         return snapshot
     if value_type is list:
         if len(value) > MAX_CONTAINER_ITEMS:
-            _reject()
+            _reject("capability_shape_invalid")
         snapshot_list: list[object] = []
         for item in value:
             if len(snapshot_list) >= MAX_CONTAINER_ITEMS:
-                _reject()
+                _reject("capability_shape_invalid")
             snapshot_list.append(
                 _canonical_json(
                     item,
@@ -373,7 +394,7 @@ def _canonical_json(value: object, *, depth: int, budget: _NodeBudget) -> object
                 )
             )
         return snapshot_list
-    _reject()
+    _reject("capability_shape_invalid")
 
 
 def _guarded_json(value: object, guard: _MutationGuard) -> object:
@@ -390,7 +411,7 @@ def _guarded_json(value: object, guard: _MutationGuard) -> object:
         )
     if value is None or value_type in {bool, int, float, str}:
         return value
-    _reject()
+    _reject("capability_shape_invalid")
 
 
 def _immutable_json(value: object) -> object:
@@ -403,8 +424,19 @@ def _immutable_json(value: object) -> object:
         return tuple(_immutable_json(item) for item in value)
     if value is None or value_type in {bool, int, float, str}:
         return value
-    _reject()
+    _reject("capability_shape_invalid")
 
 
-def _reject() -> None:
-    raise _InvalidDecision()
+def _rejected(
+    validation_subcode: AgenticDecisionValidationSubcode,
+) -> AgenticTurnDecisionValidationResult:
+    return AgenticTurnDecisionValidationResult(
+        status="rejected",
+        reason="invalid_decision",
+        decision=None,
+        validation_subcode=validation_subcode,
+    )
+
+
+def _reject(validation_subcode: AgenticDecisionValidationSubcode) -> None:
+    raise _InvalidDecision(validation_subcode)

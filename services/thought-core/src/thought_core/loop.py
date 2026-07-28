@@ -15,10 +15,12 @@ from typing import Any, Callable, Mapping
 
 from .agentic_turn_decision import validate_agentic_turn_decision
 from .agentic_turn_provider import (
+    AGENTIC_DECISION_VALIDATION_SUBCODES,
     AgenticActionReceipt,
     AgenticPredecisionContext,
     AgenticPredecisionContextSection,
     AgenticTurnProvider,
+    AgenticTurnProviderDecisionInvalid,
     AgenticTurnProviderRequest,
     AgenticTurnProviderUnavailable,
     UnavailableAgenticTurnProvider,
@@ -2020,6 +2022,14 @@ class ThoughtLoop:
         )
         try:
             candidate = provider.decide(request)
+        except AgenticTurnProviderDecisionInvalid as exc:
+            self._emit_agentic_hold(
+                events,
+                factory,
+                reason="agentic_decision_invalid",
+                validation_subcode=exc.validation_subcode,
+            )
+            return True, None
         except AgenticTurnProviderUnavailable:
             self._emit_agentic_hold(
                 events,
@@ -2044,6 +2054,7 @@ class ThoughtLoop:
                 events,
                 factory,
                 reason="agentic_decision_invalid",
+                validation_subcode=result.validation_subcode,
             )
             return True, None
 
@@ -2152,19 +2163,23 @@ class ThoughtLoop:
         factory: EventFactory,
         *,
         reason: str,
+        validation_subcode: str | None = None,
     ) -> None:
         reason_code = classify_agentic_hold_reason(reason)
         speech = "AIの判断を安全に受け取れないため、今は操作を保留しています。"
+        hold_data = {
+            "status": "held",
+            "reason": reason,
+            "reason_code": reason_code,
+            "semantic_authority": "agentic_provider",
+            "degraded": True,
+        }
+        if validation_subcode in AGENTIC_DECISION_VALIDATION_SUBCODES:
+            hold_data["validation_subcode"] = validation_subcode
         events.append(
             factory.emit(
                 "agentic.decision",
-                {
-                    "status": "held",
-                    "reason": reason,
-                    "reason_code": reason_code,
-                    "semantic_authority": "agentic_provider",
-                    "degraded": True,
-                },
+                dict(hold_data),
             )
         )
         self._emit_message(
@@ -2179,13 +2194,7 @@ class ThoughtLoop:
         events.append(
             factory.emit(
                 "turn.completed",
-                {
-                    "status": "held",
-                    "reason": reason,
-                    "reason_code": reason_code,
-                    "semantic_authority": "agentic_provider",
-                    "degraded": True,
-                },
+                dict(hold_data),
             )
         )
 

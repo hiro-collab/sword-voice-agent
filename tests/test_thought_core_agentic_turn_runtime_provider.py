@@ -22,6 +22,7 @@ from thought_core.agentic_turn_provider import (  # noqa: E402
     AgenticPredecisionContext,
     AgenticPredecisionContextSection,
     AgenticTurnProviderRequest,
+    AgenticTurnProviderDecisionInvalid,
     UnavailableAgenticTurnProvider,
 )
 from thought_core.agentic_turn_runtime_provider import (  # noqa: E402
@@ -1510,11 +1511,35 @@ class AgenticTurnRuntimeProviderTest(TestCase):
 
                 self.assertEqual(held["data"]["status"], "held")
                 self.assertEqual(held["data"]["reason"], expected_reason)
+                if isinstance(failure, StructuredCompletionInvalid):
+                    self.assertEqual(
+                        held["data"]["validation_subcode"],
+                        "provider_content_invalid",
+                    )
+                else:
+                    self.assertNotIn("validation_subcode", held["data"])
                 self.assertNotIn("PRIVATE_WISH_SENTINEL", serialized)
                 self.assertNotIn("PRIVATE_MALFORMED_SENTINEL", serialized)
                 self.assertNotIn("PRIVATE_TIMEOUT_SENTINEL", serialized)
                 self.assertNotIn("PRIVATE_TRANSPORT_SENTINEL", serialized)
                 self.assertNotIn("action.proposed", [event["type"] for event in events])
+
+    def test_provider_content_invalid_is_fixed_and_completion_is_called_once(self) -> None:
+        completion = _CapturingCompletion(
+            StructuredCompletionInvalid("PRIVATE_PROVIDER_CONTENT")
+        )
+        provider = OpenAICompatibleAgenticTurnProvider(completion)
+        request_value = self._provider_request(
+            human_wish="PRIVATE_WISH_SENTINEL",
+            context_refs={},
+        )
+
+        with self.assertRaises(AgenticTurnProviderDecisionInvalid) as raised:
+            provider.decide(request_value)
+
+        self.assertEqual(raised.exception.validation_subcode, "provider_content_invalid")
+        self.assertEqual(len(completion.calls), 1)
+        self.assertNotIn("PRIVATE_PROVIDER_CONTENT", repr(raised.exception))
 
     def test_structured_transport_malformed_and_timeout_have_fixed_failures(self) -> None:
         malformed_opener = _FakeOpener(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Protocol
+from typing import Literal, Protocol
 
 
 # V1 keeps a compact, fixed-cost provider view: 24 entries leave nine slots
@@ -30,6 +30,40 @@ AGENTIC_PREDECISION_CONTEXT_STATUSES = frozenset(
 
 class AgenticTurnProviderUnavailable(Exception):
     """The semantic provider cannot produce a bounded decision for this turn."""
+
+
+AgenticDecisionValidationSubcode = Literal[
+    "provider_content_invalid",
+    "candidate_not_object",
+    "decision_shape_invalid",
+    "response_invalid",
+    "capability_shape_invalid",
+    "catalog_rejected",
+    "validation_internal",
+]
+AGENTIC_DECISION_VALIDATION_SUBCODES = frozenset(
+    {
+        "provider_content_invalid",
+        "candidate_not_object",
+        "decision_shape_invalid",
+        "response_invalid",
+        "capability_shape_invalid",
+        "catalog_rejected",
+        "validation_internal",
+    }
+)
+
+
+class AgenticTurnProviderDecisionInvalid(Exception):
+    """A text-free provider-boundary failure with one fixed safe subcode."""
+
+    __slots__ = ("validation_subcode",)
+
+    def __init__(self, validation_subcode: AgenticDecisionValidationSubcode) -> None:
+        if validation_subcode not in AGENTIC_DECISION_VALIDATION_SUBCODES:
+            validation_subcode = "validation_internal"
+        self.validation_subcode = validation_subcode
+        super().__init__("agentic_decision_invalid")
 
 
 @dataclass(frozen=True)

@@ -19,6 +19,7 @@ from .agentic_turn_provider import (
     AgenticPredecisionContext,
     AgenticPredecisionContextSection,
     AgenticTurnProvider,
+    AgenticTurnProviderDecisionInvalid,
     AgenticTurnProviderRequest,
     AgenticTurnProviderUnavailable,
     UnavailableAgenticTurnProvider,
@@ -171,7 +172,9 @@ class OpenAICompatibleAgenticTurnProvider:
                 "agentic_provider_unavailable"
             ) from None
         except StructuredCompletionInvalid:
-            return None
+            raise AgenticTurnProviderDecisionInvalid(
+                "provider_content_invalid"
+            ) from None
         except (OSError, TimeoutError):
             raise AgenticTurnProviderUnavailable(
                 "agentic_provider_unavailable"
