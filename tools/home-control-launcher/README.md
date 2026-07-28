@@ -143,6 +143,48 @@ Job Object worker, while future Ubuntu support can attach an owned process-
 group/cgroup worker without changing graph, reducer, operation record, or UI
 contracts. Neither platform adapter is enabled in N0.
 
+## Launcher Supervisor Node N1 Windows worker
+
+N1 adds a bounded Windows worker behind the adopted N0 authority without
+cutting the current Launcher over to it:
+
+- `launcher-job-worker-client.js` validates every request against the loaded
+  graph/binding authority, permits one in-flight JSON-line exchange, validates
+  and correlates the bounded result, and discards worker stderr. It also
+  provides the no-signal PID/creation-time observer that N0 can inject for
+  stale-lock classification. The adapter requires an explicit existing,
+  absolute, non-reparse PowerShell executable path; it never resolves a worker
+  executable from the repository working directory or ambient `PATH`.
+- `launcher-service-plan.psm1` reads one private, identity-bound service-plan
+  document. The public request carries only `service_id`; executable paths,
+  arguments, environment values, and working directories never enter the
+  public worker result. Service IDs and executable families are allowlisted,
+  required plans must be present, optional camera plans may be absent, and
+  VOICEVOX remains external probe-only. Owned children receive only the
+  per-service environment explicitly present in that private plan; broad
+  inheritance from the Launcher process is rejected.
+- `launcher-job-worker.ps1` is a dumb Windows OS adapter. It creates each owned
+  process suspended, assigns it to a per-service Job Object configured with
+  `KILL_ON_JOB_CLOSE`, and only then resumes the process. Listener readiness is
+  accepted only when the listener belongs to that exact job. Stop closes only
+  the retained owned job after PID/creation-time and listener revalidation;
+  PID reuse, foreign listeners, and unverifiable identity fail closed.
+
+The worker retains Job handles only in its private process. Closing stdin,
+worker exit, or an exception reaches `finally`; Windows also closes the handles
+on a worker crash, so `KILL_ON_JOB_CLOSE` cleans the exact owned descendants.
+Repeated Start/Stop is idempotent, external Stop is a no-op, and public JSON is
+restricted to the existing `launcher-worker.v1` enums and correlation fields.
+
+N1 remains source/static and synthetic-only. `server.js` and the legacy
+start/status/stop scripts do not import or invoke it, and no organ is started.
+A later reviewed cutover must generate the private plan from the selected
+standard manifest, prove normal-user ACL inheritance and real listener/job
+ownership, and then retire the legacy execution authority rather than run two
+long-lived supervisors. Ubuntu remains an adapter replacement: a future
+process-group/cgroup worker can consume the same N0 request/result contract and
+private plan boundary without changing the reducer, operation record, or UI.
+
 Runtime state is written under `.cache/home-control-stack/` by default:
 
 ```text
