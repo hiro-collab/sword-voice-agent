@@ -107,6 +107,10 @@ const canFailOwned = (operation, serviceId, authority) => {
   const spec = specOf(authority, serviceId)
   return Boolean(spec && spec.ownership === 'owned' && [SERVICE.STARTING, SERVICE.READY].includes(stateOf(operation, serviceId)))
 }
+const canFailExternalReadiness = (operation, serviceId, authority) => {
+  const spec = specOf(authority, serviceId)
+  return Boolean(spec && spec.requirement === 'external' && stateOf(operation, serviceId) === SERVICE.PENDING && dependenciesReady(operation, spec, authority))
+}
 const canOptionalAbsent = (operation, serviceId, authority) => {
   const spec = specOf(authority, serviceId)
   return Boolean(spec && spec.requirement === 'optional' && stateOf(operation, serviceId) === SERVICE.PENDING && dependenciesReady(operation, spec, authority))
@@ -209,7 +213,8 @@ const reduce = (operation, event, authority) => {
       ? failAndRollback(operation, serviceId, REASON.EARLY_EXIT) : invalid(operation)
     case 'listener_mismatch': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) && canFailOwned(operation, serviceId, authority)
       ? failAndRollback(operation, serviceId, REASON.LISTENER_MISMATCH) : invalid(operation)
-    case 'readiness_timeout': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) && canFailOwned(operation, serviceId, authority)
+    case 'readiness_timeout': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) &&
+      (canFailOwned(operation, serviceId, authority) || canFailExternalReadiness(operation, serviceId, authority))
       ? failAndRollback(operation, serviceId, REASON.READINESS_TIMEOUT) : invalid(operation)
     case 'service_ready': return operation.phase === PHASE.WAITING_READY && canCompleteSpawn(operation, serviceId, authority)
       ? ready(operation, serviceId, SERVICE.READY, authority) : invalid(operation)
@@ -304,7 +309,7 @@ const validateSnapshot = (operation, authority) => {
     const spec = specs.get(serviceId)
     if (state === SERVICE.OPTIONAL_ABSENT && spec.requirement !== 'optional') fail('operation_store_record_invalid')
     if (spec.ownership === 'external') {
-      if (![SERVICE.PENDING, SERVICE.EXTERNAL_READY].includes(state) || residueIds.has(serviceId)) fail('operation_store_record_invalid')
+      if (![SERVICE.PENDING, SERVICE.EXTERNAL_READY, SERVICE.FAILED].includes(state) || residueIds.has(serviceId)) fail('operation_store_record_invalid')
     } else if (state === SERVICE.EXTERNAL_READY) fail('operation_store_record_invalid')
     if ([SERVICE.RESIDUE, SERVICE.UNKNOWN].includes(state) && !residueIds.has(serviceId)) fail('operation_store_record_invalid')
   }

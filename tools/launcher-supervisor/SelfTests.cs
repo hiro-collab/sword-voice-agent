@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text;
 using System.Security.AccessControl;
 
 namespace Sword.LauncherSupervisor;
@@ -16,6 +17,8 @@ internal static class SelfTests
         {
             ("graph_and_legacy_drift", () => DriftValidator.Validate(repositoryRoot, graph)),
             ("binding_deterministic", () => Assert(BindingGenerator.Render(repositoryRoot, graph) == BindingGenerator.Render(repositoryRoot, graph), "binding_nondeterministic")),
+            ("binding_utf8_lf_authority", TestCanonicalLfHashMode),
+            ("binding_current_and_content_drift", () => TestBindingCurrentAndContentDrift(repositoryRoot, graphPath, graph)),
             ("planned_preflight_prepared_lifecycle", () => TestLifecycle(graph)),
             ("operation_identity_rejected", () => TestOperationIdentity(graph)),
             ("atomic_operation_record", () => TestAtomicOperationRecord(graph)),
@@ -53,6 +56,8 @@ internal static class SelfTests
             ("optional_semantics_rejected", () => TestMutatedService(graphPath, "mediapipe_camera_hub_stack", service => service["readiness"]!["degraded_allowed"] = false, "graph_optional_semantics_invalid")),
             ("external_semantics_rejected", () => TestMutatedService(graphPath, "voicevox", service => service["stop"]!["adapter_id"] = "legacy_owned_pid", "graph_external_semantics_invalid")),
             ("owned_semantics_rejected", () => TestMutatedService(graphPath, "home_assistant_bridge", service => service["stop"]!["adapter_id"] = "external_noop", "graph_owned_semantics_invalid")),
+            ("owned_legacy_start_adapter_rejected", () => TestMutatedService(graphPath, "home_assistant_bridge", service => service["start"]!["adapter_id"] = "legacy_stack_script", "graph_owned_semantics_invalid")),
+            ("owned_legacy_stop_adapter_rejected", () => TestMutatedService(graphPath, "home_assistant_bridge", service => service["stop"]!["adapter_id"] = "legacy_owned_pid", "graph_owned_semantics_invalid")),
             ("readiness_port_semantics_rejected", () => TestMutatedService(graphPath, "thought_core_watcher", service => service["readiness"]!["success"] = "owned_identity_and_probe", "graph_readiness_port_semantics_invalid")),
             ("drift_rejected", () => TestDrift(repositoryRoot, graphPath)),
             ("port_drift_rejected", () => TestPortDrift(repositoryRoot, graphPath)),
@@ -578,6 +583,36 @@ internal static class SelfTests
             var changed = GraphLoader.Load(path);
             ExpectCode(() => DriftValidator.Validate(repositoryRoot, changed), "drift_service_port");
         });
+    }
+
+    private static void TestCanonicalLfHashMode()
+    {
+        var lf = Encoding.UTF8.GetBytes("{\n  \"value\": 1\n}\n");
+        var crlf = Encoding.UTF8.GetBytes("{\r\n  \"value\": 1\r\n}\r\n");
+        var changed = Encoding.UTF8.GetBytes("{\n  \"value\": 2\n}\n");
+        Assert(GraphLoader.CanonicalLfSha256(lf) == GraphLoader.CanonicalLfSha256(crlf), "binding_crlf_not_canonicalized");
+        Assert(GraphLoader.CanonicalLfSha256(lf) != GraphLoader.CanonicalLfSha256(changed), "binding_content_drift_not_detected");
+        ExpectCode(() => GraphLoader.CanonicalLfSha256(new byte[] { 0xEF, 0xBB, 0xBF, 0x7B, 0x7D }), "contract_text_bom_invalid");
+    }
+
+    private static void TestBindingCurrentAndContentDrift(string repositoryRoot, string graphPath, ServiceGraph graph)
+    {
+        var actual = File.ReadAllText(Paths.Binding(repositoryRoot)).Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\r", "\n", StringComparison.Ordinal);
+        var expected = BindingGenerator.Render(repositoryRoot, graph);
+        Assert(actual == expected, "binding_stale_or_drifted");
+
+        var root = JsonNode.Parse(File.ReadAllText(graphPath))!.AsObject();
+        root["profile_id"] = "thought-core-v1";
+        WithTemporaryJson(root, path =>
+        {
+            var changed = BindingGenerator.Render(repositoryRoot, GraphLoader.Load(path));
+            ExpectCode(() => RequireBindingMatch(actual, changed), "binding_stale_or_drifted");
+        });
+    }
+
+    private static void RequireBindingMatch(string actual, string expected)
+    {
+        if (actual != expected) throw new ContractException("binding_stale_or_drifted");
     }
 
     private static void TestPrivacy(ServiceGraph graph)

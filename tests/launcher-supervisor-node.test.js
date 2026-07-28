@@ -201,6 +201,31 @@ test('worker result correlation protects revision, nonce, ownership, PID, and li
   assert.equal(reducer.workerResultToEvent(probeResult, operation, probeRequest, authority).event_type, 'service_ready')
 })
 
+test('external probe timeout becomes a bounded failure without fake external readiness', () => {
+  let operation = startLifecycle()
+  const externalSpec = authority.graph.services.find((service) => service.service_id === 'voicevox')
+  const request = workerRequest(operation, 'voicevox', 'probe', 'external_probe_only', externalSpec.ready_deadline_ms)
+  const result = {
+    schema_version: 'launcher_worker.v1', message_type: 'result', operation_id: OPERATION_ID,
+    service_id: 'voicevox', action: 'probe', expected_revision: operation.revision,
+    worker_nonce: request.worker_nonce, result_class: 'readiness_timeout', ownership_class: 'not_applicable',
+    listener_class: 'not_applicable', descendant_class: 'not_applicable'
+  }
+  const timeoutEvent = reducer.workerResultToEvent(result, operation, request, authority)
+  assert.deepEqual(timeoutEvent, { event_type: 'readiness_timeout', operation_id: OPERATION_ID, service_id: 'voicevox' })
+  operation = reducer.reduce(operation, timeoutEvent, authority)
+  assert.equal(operation.phase, 'rolling_back')
+  assert.equal(operation.reason, 'readiness_timeout')
+  assert.equal(operation.rollback_required, true)
+  assert.equal(operation.services.find((service) => service.service_id === 'voicevox').state, 'failed')
+  reducer.validateSnapshot(operation, authority)
+  operation = reducer.reduce(operation, event('rollback_completed'), authority)
+  assert.equal(operation.phase, 'failed')
+  assert.equal(operation.cleanup, 'clear')
+  assert.equal(operation.services.find((service) => service.service_id === 'voicevox').state, 'failed')
+  reducer.validateSnapshot(operation, authority)
+})
+
 test('all immutable reducer vectors execute and preserve valid snapshots', () => {
   const coverage = new Set()
   for (const vector of authority.reducerVectors.vectors) {

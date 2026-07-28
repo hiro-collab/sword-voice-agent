@@ -166,9 +166,9 @@ class LauncherSupervisorContractTests(unittest.TestCase):
 
     def test_adopted_csharp_m0_m1_sources_are_byte_frozen(self) -> None:
         expected = {
-            "LauncherDomain.cs": "02214affef5db1784e73f92fb2581894144afb461b05c01d7af58aaefac397eb",
+            "LauncherDomain.cs": "49f9a502cf80da7f4f233ad0ae6949f629720d7f96c509d08ed9cf8005b62747",
             "OperationReducer.cs": "d051527717c62889693f7f7c15223509befeba371133a276a41f3a08c569cef3",
-            "SelfTests.cs": "d8f1793f137d425aeae632ae026400a04ed1f755b91883e8b0f707dff06b5176",
+            "SelfTests.cs": "2bda999e8218e04aa520f043993b47c097cccacd3b276cd0e436a3efce9788d8",
             "SupervisorProgram.cs": "3c6a2a3c727c058225e403b36469411685e673bc4560c21f3d86a8b6e0f6b697",
             "Program.cs": "acbe9beb96e6c1bd4ff715c4546b2f0b3058106eb05a278a23518d2ebee42604",
             "LauncherSupervisor.Domain.csproj": "c8b40283f0ec46a046d43e6db80ad027b3d3ea90343be22a2e5943e80de4bb1f",

@@ -41,6 +41,7 @@ internal sealed record ServiceGraph(
 internal static class GraphLoader
 {
     private static readonly Regex IdPattern = new("^[a-z][a-z0-9_-]{0,63}$", RegexOptions.CultureInvariant);
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     public static ServiceGraph Load(string path)
     {
@@ -72,7 +73,7 @@ internal static class GraphLoader
             throw new ContractException("graph_services_invalid");
         var services = servicesElement.EnumerateArray().Select(ParseService).ToArray();
         ValidateServices(services);
-        return new ServiceGraph(schemaVersion, profileId, startPolicy, stopPolicy, services, Sha256(bytes));
+        return new ServiceGraph(schemaVersion, profileId, startPolicy, stopPolicy, services, CanonicalLfSha256(bytes));
     }
 
     private static ServiceSpec ParseService(JsonElement element)
@@ -166,9 +167,9 @@ internal static class GraphLoader
                 continue;
             }
 
-            if (service.Ownership != "owned" || !service.LegacyProfileMember || service.Start.AdapterId != "legacy_stack_script" ||
+            if (service.Ownership != "owned" || !service.LegacyProfileMember || service.Start.AdapterId != "job_worker_service" ||
                 !service.Start.LegacySpecIds.Contains(service.ServiceId, StringComparer.Ordinal) ||
-                service.Stop.AdapterId is not ("legacy_owned_pid" or "legacy_owned_pid_tree") || service.Stop.Escalation != "owned_only" ||
+                service.Stop.AdapterId != "job_worker_job_close" || service.Stop.Escalation != "owned_only" ||
                 service.Port.Ownership == "external" || (!noPort && service.Port.PortMode != "manifest_default"))
                 throw new ContractException("graph_owned_semantics_invalid");
 
@@ -277,14 +278,32 @@ internal static class GraphLoader
     }
 
     internal static string Sha256(ReadOnlySpan<byte> bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+    internal static string CanonicalLfSha256(ReadOnlySpan<byte> bytes)
+    {
+        try
+        {
+            var text = StrictUtf8.GetString(bytes);
+            if (text.StartsWith('\uFEFF')) throw new ContractException("contract_text_bom_invalid");
+            var normalized = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\r", "\n", StringComparison.Ordinal);
+            return Sha256(Encoding.UTF8.GetBytes(normalized));
+        }
+        catch (DecoderFallbackException)
+        {
+            throw new ContractException("contract_text_utf8_invalid");
+        }
+    }
 }
 
 internal sealed record BindingBody(
     [property: JsonPropertyName("binding_version")] string BindingVersion,
+    [property: JsonPropertyName("text_hash_mode")] string TextHashMode,
     [property: JsonPropertyName("profile_id")] string ProfileId,
     [property: JsonPropertyName("graph_sha256")] string GraphSha256,
     [property: JsonPropertyName("graph_schema_sha256")] string GraphSchemaSha256,
     [property: JsonPropertyName("operation_schema_sha256")] string OperationSchemaSha256,
+    [property: JsonPropertyName("worker_schema_sha256")] string WorkerSchemaSha256,
+    [property: JsonPropertyName("reducer_vectors_sha256")] string ReducerVectorsSha256,
     [property: JsonPropertyName("service_order")] IReadOnlyList<string> ServiceOrder,
     [property: JsonPropertyName("public_readiness_ids")] IReadOnlyList<string> PublicReadinessIds,
     [property: JsonPropertyName("required_service_ids")] IReadOnlyList<string> RequiredServiceIds,
@@ -304,18 +323,39 @@ internal static class BindingGenerator
     {
         var graphSchema = Path.Combine(repositoryRoot, "contracts", "launcher", "launcher-service-graph.v1.schema.json");
         var operationSchema = Path.Combine(repositoryRoot, "contracts", "launcher", "launcher-operation.v1.schema.json");
+        var workerSchema = Path.Combine(repositoryRoot, "contracts", "launcher", "launcher-worker.v1.schema.json");
+        var reducerVectors = Path.Combine(repositoryRoot, "contracts", "launcher", "launcher-reducer-vectors.v1.json");
         var body = new BindingBody(
             "launcher_service_graph.binding.v1",
+            "utf8_lf_v1",
             graph.ProfileId,
             graph.Sha256,
-            GraphLoader.Sha256(File.ReadAllBytes(graphSchema)),
-            GraphLoader.Sha256(File.ReadAllBytes(operationSchema)),
+            GraphLoader.CanonicalLfSha256(File.ReadAllBytes(graphSchema)),
+            GraphLoader.CanonicalLfSha256(File.ReadAllBytes(operationSchema)),
+            GraphLoader.CanonicalLfSha256(File.ReadAllBytes(workerSchema)),
+            GraphLoader.CanonicalLfSha256(File.ReadAllBytes(reducerVectors)),
             GraphLoader.TopologicalOrder(graph.Services),
             graph.Services.Where(item => item.PublicReadinessId is not null).Select(item => item.PublicReadinessId!).OrderBy(item => item, StringComparer.Ordinal).ToArray(),
             graph.Services.Where(item => item.Requirement == "required").Select(item => item.ServiceId).OrderBy(item => item, StringComparer.Ordinal).ToArray(),
             graph.Services.Where(item => item.Requirement == "optional").Select(item => item.ServiceId).OrderBy(item => item, StringComparer.Ordinal).ToArray(),
             graph.Services.Where(item => item.Requirement == "external").Select(item => item.ServiceId).OrderBy(item => item, StringComparer.Ordinal).ToArray());
-        var hash = GraphLoader.Sha256(JsonSerializer.SerializeToUtf8Bytes(body, Compact));
+        var canonicalBody = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["binding_version"] = body.BindingVersion,
+            ["external_service_ids"] = body.ExternalServiceIds,
+            ["graph_schema_sha256"] = body.GraphSchemaSha256,
+            ["graph_sha256"] = body.GraphSha256,
+            ["operation_schema_sha256"] = body.OperationSchemaSha256,
+            ["optional_service_ids"] = body.OptionalServiceIds,
+            ["profile_id"] = body.ProfileId,
+            ["public_readiness_ids"] = body.PublicReadinessIds,
+            ["reducer_vectors_sha256"] = body.ReducerVectorsSha256,
+            ["required_service_ids"] = body.RequiredServiceIds,
+            ["service_order"] = body.ServiceOrder,
+            ["text_hash_mode"] = body.TextHashMode,
+            ["worker_schema_sha256"] = body.WorkerSchemaSha256,
+        };
+        var hash = GraphLoader.Sha256(JsonSerializer.SerializeToUtf8Bytes(canonicalBody, Compact));
         return JsonSerializer.Serialize(new BindingDocument(hash, body), Indented).Replace("\r\n", "\n", StringComparison.Ordinal) + "\n";
     }
 }
