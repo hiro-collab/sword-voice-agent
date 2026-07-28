@@ -1,6 +1,8 @@
 param(
     [string]$WorkspaceRoot = "",
     [string]$StackStateDir = "",
+    [ValidatePattern("^[a-z0-9][a-z0-9-]{0,63}$")]
+    [string]$OpsProfile = "",
     [string]$HomeAssistantServerRoot = "",
     [string]$MediapipeRoot = "",
     [string]$VisionSnapshotProcessorRoot = "",
@@ -184,6 +186,19 @@ function Resolve-WorkspaceDirectory {
     }
 
     return Join-Path $WorkspaceRoot $FallbackRelativePath
+}
+
+function Get-ClosedLoopFeedbackV1ServiceEnvironment {
+    param([string]$EffectiveProfile = "")
+
+    return @{
+        THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = if ($EffectiveProfile -ceq "thought-core-v0") {
+            "1"
+        }
+        else {
+            ""
+        }
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($HomeAssistantServerRoot)) {
@@ -2318,7 +2333,20 @@ if (-not $SkipEnvironmentState) {
         -Role "api" `
         -AllowedProcessNames @("uv", "python")
 }
+$closedLoopFeedbackV1Environment = Get-ClosedLoopFeedbackV1ServiceEnvironment `
+    -EffectiveProfile $OpsProfile
+$closedLoopFeedbackV1Mode = if (
+    $closedLoopFeedbackV1Environment["THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED"] -ceq "1"
+) {
+    "enabled"
+}
+else {
+    "disabled"
+}
 $thoughtCoreEnvironment = @{}
+foreach ($name in $closedLoopFeedbackV1Environment.Keys) {
+    $thoughtCoreEnvironment[$name] = $closedLoopFeedbackV1Environment[$name]
+}
 foreach ($name in @(
     "THOUGHT_CORE_LLM_ENABLED",
     "THOUGHT_CORE_LLM_PROVIDER",
@@ -2717,7 +2745,9 @@ if ($EnableThoughtCoreWatch) {
         "-ThoughtCoreBaseUrl",
         $ThoughtCoreBaseUrl,
         "-StatusDir",
-        $ThoughtCoreWatchStatusDir
+        $ThoughtCoreWatchStatusDir,
+        "-ClosedLoopFeedbackV1Mode",
+        $closedLoopFeedbackV1Mode
     )
     if (-not $SkipAituber) {
         $thoughtCoreWatchArgs += @(
@@ -2736,6 +2766,7 @@ if ($EnableThoughtCoreWatch) {
         -FilePath $powerShell `
         -Arguments $thoughtCoreWatchArgs `
         -WorkingDirectory $ThoughtCoreRoot `
+        -Environment $closedLoopFeedbackV1Environment `
         -Module "control-plane-core" `
         -Role "thought_core_watcher" `
         -AllowedProcessNames @("pwsh", "powershell", "uv", "python")

@@ -444,12 +444,14 @@ function New-StackStartArguments {
     param(
         [Parameter(Mandatory = $true)][string[]]$Services,
         [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
-        [Parameter(Mandatory = $true)][string]$StackStateDir
+        [Parameter(Mandatory = $true)][string]$StackStateDir,
+        [Parameter(Mandatory = $true)][string]$EffectiveProfile
     )
     $arguments = [System.Collections.Generic.List[string]]::new()
     foreach ($argument in (New-CommonStackArguments -WorkspaceRoot $WorkspaceRoot -StackStateDir $StackStateDir)) {
         $arguments.Add($argument)
     }
+    Add-NamedArgument -Arguments $arguments -Name "-OpsProfile" -Value $EffectiveProfile
     Add-NamedArgument -Arguments $arguments -Name "-HomeAssistantBridgePort" -Value $HomeAssistantBridgePort
     Add-NamedArgument -Arguments $arguments -Name "-HomeAssistantBridgeHost" -Value $HomeAssistantBridgeHost
     Add-NamedArgument -Arguments $arguments -Name "-HomeControlConfigPath" -Value $HomeControlConfigPath -SkipWhenBlank $true
@@ -642,7 +644,11 @@ if ($effectiveProfile -ne $Profile) {
 
 switch ($Command) {
     "start" {
-        $arguments = New-StackStartArguments -Services $services -WorkspaceRoot $workspaceRoot -StackStateDir $stackStateDir
+        $arguments = New-StackStartArguments `
+            -Services $services `
+            -WorkspaceRoot $workspaceRoot `
+            -StackStateDir $stackStateDir `
+            -EffectiveProfile $effectiveProfile
         Write-Host ("[ops] command=start profile={0} state_dir={1}" -f $Profile, $stackStateDir)
         Invoke-StackScript -ScriptName "start-home-control-stack.ps1" -Arguments $arguments -Operation "start"
     }

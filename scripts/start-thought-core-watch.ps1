@@ -13,6 +13,8 @@ param(
     [string]$AituberHttpTimeout = "",
     [int]$AituberSpeechMaxChars = 80,
     [int]$AituberPort = 0,
+    [ValidateSet("enabled", "disabled")]
+    [string]$ClosedLoopFeedbackV1Mode = "disabled",
     [ValidateSet("", "auto", "off")]
     [string]$LocalAckMode = "",
     [switch]$NoSkipExisting,
@@ -25,6 +27,21 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "common.ps1")
 
+function Set-ClosedLoopFeedbackV1ModeEnvironment {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("enabled", "disabled")]
+        [string]$Mode
+    )
+
+    $env:THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = if ($Mode -ceq "enabled") {
+        "1"
+    }
+    else {
+        ""
+    }
+}
+
 $repoRoot = Get-SwordRepoRoot
 $workspaceRoot = Get-SwordWorkspaceRoot
 $resolvedEnvPath = Resolve-SwordPath -Path $EnvPath
@@ -34,6 +51,7 @@ if (Test-Path -LiteralPath $resolvedEnvPath -PathType Leaf) {
 else {
     Write-Warning "env file not found, continuing with process environment: $resolvedEnvPath"
 }
+Set-ClosedLoopFeedbackV1ModeEnvironment -Mode $ClosedLoopFeedbackV1Mode
 Set-SwordPythonPath
 
 if ([string]::IsNullOrWhiteSpace($AiTalkCoreRoot)) {

@@ -25,6 +25,7 @@ STACK_STATUS_SCRIPT = ROOT / "ops" / "scripts" / "home-control-stack" / "status-
 LAUNCHER_START_SCRIPT = ROOT / "ops" / "scripts" / "home-control-stack" / "start-home-control-launcher.ps1"
 SYSTEM_SCRIPT = ROOT / "ops" / "scripts" / "system.ps1"
 THOUGHT_CORE_START_SCRIPT = ROOT / "scripts" / "start-thought-core.ps1"
+THOUGHT_CORE_WATCH_START_SCRIPT = ROOT / "scripts" / "start-thought-core-watch.ps1"
 
 
 def read_public(name: str) -> str:
@@ -71,6 +72,10 @@ def read_thought_core_start_script() -> str:
     return THOUGHT_CORE_START_SCRIPT.read_text(encoding="utf-8")
 
 
+def read_thought_core_watch_start_script() -> str:
+    return THOUGHT_CORE_WATCH_START_SCRIPT.read_text(encoding="utf-8")
+
+
 def extract_between(text: str, start: str, end: str) -> str:
     start_index = text.index(start)
     end_index = text.index(end, start_index)
@@ -78,6 +83,143 @@ def extract_between(text: str, start: str, end: str) -> str:
 
 
 class LauncherUiContractTest(TestCase):
+    def test_standard_ops_profile_activates_closed_loop_feedback_for_both_services(self) -> None:
+        system = read_system_script()
+        stack = read_stack_start_script()
+        watcher_start = read_thought_core_watch_start_script()
+        profiles = {profile["id"]: profile for profile in read_launcher_profiles()}
+        start_arguments = extract_between(
+            system,
+            "function New-StackStartArguments",
+            "function New-StackStatusArguments",
+        )
+        start_dispatch = extract_between(
+            system,
+            '    "start" {',
+            '    "stop" {',
+        )
+        resolver = extract_between(
+            stack,
+            "function Get-ClosedLoopFeedbackV1ServiceEnvironment",
+            "if ([string]::IsNullOrWhiteSpace($HomeAssistantServerRoot))",
+        )
+        watcher_mode_enforcer = extract_between(
+            watcher_start,
+            "function Set-ClosedLoopFeedbackV1ModeEnvironment",
+            "$repoRoot = Get-SwordRepoRoot",
+        )
+        thought_core_service = extract_between(
+            stack,
+            '-Name "thought_core_api"',
+            "if (-not $SkipMediapipe)",
+        )
+        watcher_service = extract_between(
+            stack,
+            '-Name "thought_core_watcher"',
+            "if (-not $SkipTouchDesignerGui)",
+        )
+        watcher_arguments = extract_between(
+            stack,
+            "if ($EnableThoughtCoreWatch) {\n    $thoughtCoreWatchArgs = @(",
+            "\n\n    $specs += New-ServiceSpec",
+        )
+
+        self.assertIn(
+            'Add-NamedArgument -Arguments $arguments -Name "-OpsProfile" -Value $EffectiveProfile',
+            start_arguments,
+        )
+        self.assertIn("-EffectiveProfile $effectiveProfile", start_dispatch)
+        self.assertNotIn('-Name "-OpsProfile" -Value $Profile', system)
+        self.assertIn(
+            '[ValidatePattern("^[a-z0-9][a-z0-9-]{0,63}$")]\n'
+            '    [string]$OpsProfile = ""',
+            stack,
+        )
+        self.assertIn("-Environment $thoughtCoreEnvironment", thought_core_service)
+        self.assertIn(
+            "-Environment $closedLoopFeedbackV1Environment",
+            watcher_service,
+        )
+        self.assertNotIn("-Environment $thoughtCoreEnvironment", watcher_service)
+        self.assertIn('"-ClosedLoopFeedbackV1Mode"', watcher_arguments)
+        self.assertIn("$closedLoopFeedbackV1Mode", watcher_arguments)
+        self.assertIn(
+            '[ValidateSet("enabled", "disabled")]\n'
+            '    [string]$ClosedLoopFeedbackV1Mode = "disabled"',
+            watcher_start,
+        )
+        import_index = watcher_start.index("Import-SwordEnv -EnvPath $resolvedEnvPath")
+        reassert_index = watcher_start.index(
+            "Set-ClosedLoopFeedbackV1ModeEnvironment -Mode $ClosedLoopFeedbackV1Mode",
+            import_index,
+        )
+        self.assertLess(import_index, reassert_index)
+
+        ordinary = profiles["thought-core-v0"]["options"]
+        self.assertTrue(ordinary["EnableThoughtCore"])
+        self.assertTrue(ordinary["EnableThoughtCoreWatch"])
+        self.assertEqual(ordinary["ThoughtCoreLlmProvider"], "sword-openai-broker")
+        for compatibility_profile in ("demo-fast", "demo-fast-action"):
+            self.assertEqual(profiles[compatibility_profile]["group"], "Compatibility")
+
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        if not powershell:
+            self.skipTest("PowerShell is required for closed-loop activation contract tests")
+        powershell_program = r'''
+$ErrorActionPreference = "Stop"
+$env:THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = "inherited-sentinel"
+''' + resolver + watcher_mode_enforcer + r'''
+$cases = @(
+    @{ name = "ordinary"; profile = "thought-core-v0" }
+    @{ name = "compatibility-visible"; profile = "demo-fast" }
+    @{ name = "compatibility-action"; profile = "demo-fast-action" }
+    @{ name = "diagnostics"; profile = "camera-debug" }
+    @{ name = "direct"; profile = "" }
+)
+@(
+    foreach ($item in $cases) {
+        $environment = Get-ClosedLoopFeedbackV1ServiceEnvironment `
+            -EffectiveProfile $item.profile
+        $mode = if (
+            $environment["THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED"] -eq "1"
+        ) {
+            "enabled"
+        }
+        else {
+            "disabled"
+        }
+        $env:THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = "1"
+        Set-ClosedLoopFeedbackV1ModeEnvironment -Mode $mode
+        [pscustomobject]@{
+            name = $item.name
+            child_value = $environment["THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED"]
+            watcher_value_after_import = $env:THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED
+        }
+    }
+) | ConvertTo-Json -Compress
+'''
+        completed = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                powershell_program,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        cases = json.loads(completed.stdout)
+        self.assertEqual(cases[0]["child_value"], "1")
+        self.assertEqual(cases[0]["watcher_value_after_import"], "1")
+        for case in cases[1:]:
+            self.assertEqual(case["child_value"], "")
+            self.assertEqual(case["watcher_value_after_import"], "")
+
     def test_launcher_propagates_explicit_thought_core_selection_to_system(self) -> None:
         server = read_launcher_server()
         helper = extract_between(
