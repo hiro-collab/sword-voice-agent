@@ -81,6 +81,68 @@ supervisor implementation:
 - `ops/scripts/home-control-stack/status-home-control-stack.ps1`
 - `ops/scripts/home-control-stack/stop-home-control-stack.ps1`
 
+## Launcher Supervisor Node N0
+
+The repository now also contains the dependency-free Node contract/reducer
+boundary for the future single Launcher lifecycle authority:
+
+- `launcher-supervisor-contract.js` loads and validates the versioned service
+  graph, operation schema, worker schema, immutable reducer vectors, generated
+  binding, and current legacy drift surfaces before operation-store access.
+- `launcher-supervisor-reducer.js` is the pure lifecycle reducer. It has no OS
+  or process I/O and keeps the adopted planned/preflight/prepared/start/ready,
+  rollback, recovery, stop, residue, optional-camera, and external-VOICEVOX
+  semantics.
+- `launcher-operation-store.js` owns the fixed private
+  `launcher-operation.v1` child record, exclusive lock, revision compare-and-
+  swap, duplicate-Start join, restart recovery record, reparse/path rejection,
+  and atomic bounded state persistence.
+
+`launcher-operation.v1.schema.json#/$defs/service_id` is the sole service-ID
+pattern authority consumed by the graph, worker protocol, reducer, and store.
+Operation and worker revisions share the JavaScript safe-integer ceiling.
+Validated authority documents are defensive-copied and recursively frozen;
+contract and operation-record reads use strict UTF-8 and fixed byte/count
+ceilings. The private store can reclaim only a structurally valid stale owned
+lock and can promote or discard only a fully validated fixed-name crash temp;
+unknown or foreign bytes are retained untouched and fail closed.
+Stale-lock recovery records the owner PID only inside the private lock file and
+requires two positive `absent` observations from the injected bounded liveness
+observer. A live or reused PID, denied/unknown observation, malformed result,
+or observer failure cannot rename or remove the lock. The observer never
+signals or stops a process. If an operation and lock release both fail, the
+bounded error retains the primary fixed code plus a separate fixed cleanup
+code; neither code carries raw process, path, or exception data.
+The N0 default liveness observer is deliberately self-only and performs no OS
+process inspection: it reports the current process as `alive` and every
+non-self PID as `unknown`, so it never reclaims a non-self stale lock. Actual
+stale recovery requires a bounded injected observer that positively confirms
+owner absence twice. Until N1 supplies that observer, a crash lock encountered
+through the default path remains fail-closed and requires manual diagnosis.
+
+N0 is source/static preparation only. It does not start, stop, probe, or spawn
+services, does not replace the current Launcher UI/API or PowerShell lifecycle
+facade, and is not a runtime cutover. The standard graph pins the later Windows
+worker adapter classes as `job_worker_service` and
+`job_worker_job_close`; external services remain `external_probe_only` and
+`external_noop`. Worker results expose only bounded ownership/listener/
+descendant classifications. Raw commands, process IDs, private paths, output,
+and environment values are not part of the public operation record.
+N0 verifies fixed-child containment, reparse rejection, owner-only file modes,
+and private-field exclusion. The Windows worker cutover must additionally prove
+the authorized parent ACL and inherited child ACL in a normal-user runtime;
+that live ACL proof is intentionally not claimed by this source/static slice.
+
+All graph/schema/vector identities use the same `utf8_lf_v1` text hash rule,
+so CRLF and LF checkouts bind to one authority. The generated binding includes
+those hashes and fails closed on stale or partial files before operation-store
+I/O.
+
+The reducer and contracts are OS-neutral. A later Windows cutover can attach a
+Job Object worker, while future Ubuntu support can attach an owned process-
+group/cgroup worker without changing graph, reducer, operation record, or UI
+contracts. Neither platform adapter is enabled in N0.
+
 Runtime state is written under `.cache/home-control-stack/` by default:
 
 ```text

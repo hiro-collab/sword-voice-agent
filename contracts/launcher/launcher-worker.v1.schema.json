@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword.local/contracts/launcher/launcher-worker.v1.schema.json",
+  "title": "Sword Launcher Worker Protocol v1",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/result" }
+  ],
+  "$defs": {
+    "operation_id": {
+      "type": "string",
+      "pattern": "^lop_[a-z0-9]{8,64}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "message_type", "operation_id", "graph_sha256",
+        "binding_sha256", "service_id", "action", "adapter_class",
+        "expected_revision", "deadline_ms", "worker_nonce"
+      ],
+      "properties": {
+        "schema_version": { "const": "launcher_worker.v1" },
+        "message_type": { "const": "request" },
+        "operation_id": { "$ref": "#/$defs/operation_id" },
+        "graph_sha256": { "$ref": "#/$defs/sha256" },
+        "binding_sha256": { "$ref": "#/$defs/sha256" },
+        "service_id": { "$ref": "launcher-operation.v1.schema.json#/$defs/service_id" },
+        "action": { "enum": ["start", "probe", "stop"] },
+        "adapter_class": {
+          "enum": ["job_worker_service", "job_worker_job_close", "external_probe_only", "external_noop"]
+        },
+        "expected_revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "deadline_ms": { "type": "integer", "minimum": 0, "maximum": 300000 },
+        "worker_nonce": {
+          "type": "string",
+          "pattern": "^lw_[a-z0-9]{16,64}$"
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "message_type", "operation_id", "service_id",
+        "action", "expected_revision", "worker_nonce", "result_class",
+        "ownership_class", "listener_class", "descendant_class"
+      ],
+      "properties": {
+        "schema_version": { "const": "launcher_worker.v1" },
+        "message_type": { "const": "result" },
+        "operation_id": { "$ref": "#/$defs/operation_id" },
+        "service_id": { "$ref": "launcher-operation.v1.schema.json#/$defs/service_id" },
+        "action": { "enum": ["start", "probe", "stop"] },
+        "expected_revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "worker_nonce": {
+          "type": "string",
+          "pattern": "^lw_[a-z0-9]{16,64}$"
+        },
+        "result_class": {
+          "enum": [
+            "accepted", "ready", "optional_absent", "external_ready", "stopped",
+            "spawn_failed", "early_exit", "listener_mismatch", "readiness_timeout",
+            "stop_failed", "deadline", "cancelled", "invalid_request", "internal_failure"
+          ]
+        },
+        "ownership_class": { "enum": ["matched", "mismatch", "unknown", "not_applicable"] },
+        "listener_class": { "enum": ["matched", "mismatch", "unknown", "not_applicable"] },
+        "descendant_class": { "enum": ["owned_clear", "owned_active", "foreign", "unknown", "not_applicable"] }
+      }
+    }
+  }
+}

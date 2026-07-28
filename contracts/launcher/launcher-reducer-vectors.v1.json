@@ -1,0 +1,180 @@
+{
+  "schema_version": "launcher_reducer_vectors.v1",
+  "vectors": [
+    {
+      "vector_id": "planned_preflight_prepared_start",
+      "events": [
+        { "event_type": "preflight_started" },
+        { "event_type": "preflight_passed" },
+        { "event_type": "start_requested" }
+      ],
+      "expected": { "phase": "starting", "reason": "none", "cleanup": "not_started", "residue_service_ids": [] },
+      "coverage": ["planned", "preflight", "prepared", "starting"]
+    },
+    {
+      "vector_id": "preflight_failure_zero_resource",
+      "events": [
+        { "event_type": "preflight_started" },
+        { "event_type": "preflight_failed" }
+      ],
+      "expected": { "phase": "failed", "reason": "preflight_failed", "cleanup": "clear", "residue_service_ids": [] },
+      "coverage": ["preflight", "failure", "cleanup"]
+    },
+    {
+      "vector_id": "dependency_not_ready",
+      "events": [
+        { "event_type": "preflight_started" },
+        { "event_type": "preflight_passed" },
+        { "event_type": "start_requested" },
+        { "event_type": "spawn_requested", "service_id": "thought_core_api" }
+      ],
+      "expected": { "phase": "starting", "reason": "invalid_event", "cleanup": "not_started", "residue_service_ids": [] },
+      "coverage": ["dependency", "invalid_event"]
+    },
+    {
+      "vector_id": "external_spawn_rejected",
+      "events": [
+        { "event_type": "preflight_started" },
+        { "event_type": "preflight_passed" },
+        { "event_type": "start_requested" },
+        { "event_type": "spawn_requested", "service_id": "voicevox" }
+      ],
+      "expected": { "phase": "starting", "reason": "invalid_event", "cleanup": "not_started", "residue_service_ids": [] },
+      "coverage": ["external", "ownership"]
+    },
+    {
+      "vector_id": "spawn_failure_clean_rollback",
+      "events": [
+        { "event_type": "preflight_started" }, { "event_type": "preflight_passed" }, { "event_type": "start_requested" },
+        { "event_type": "spawn_requested", "service_id": "home_assistant_bridge" },
+        { "event_type": "spawn_failed", "service_id": "home_assistant_bridge" },
+        { "event_type": "rollback_started" },
+        { "event_type": "service_stopped", "service_id": "home_assistant_bridge" },
+        { "event_type": "rollback_completed" }
+      ],
+      "expected": { "phase": "failed", "reason": "spawn_failed", "cleanup": "clear", "residue_service_ids": [] },
+      "coverage": ["spawn", "failure", "rollback", "cleanup"]
+    },
+    {
+      "vector_id": "early_exit_clean_rollback",
+      "events": [
+        { "event_type": "preflight_started" }, { "event_type": "preflight_passed" }, { "event_type": "start_requested" },
+        { "event_type": "spawn_requested", "service_id": "home_assistant_bridge" },
+        { "event_type": "spawn_succeeded", "service_id": "home_assistant_bridge" },
+        { "event_type": "early_exit", "service_id": "home_assistant_bridge" },
+        { "event_type": "service_stopped", "service_id": "home_assistant_bridge" },
+        { "event_type": "rollback_completed" }
+      ],
+      "expected": { "phase": "failed", "reason": "early_exit", "cleanup": "clear", "residue_service_ids": [] },
+      "coverage": ["early_exit", "rollback", "cleanup"]
+    },
+    {
+      "vector_id": "listener_identity_mismatch",
+      "events": [
+        { "event_type": "preflight_started" }, { "event_type": "preflight_passed" }, { "event_type": "start_requested" },
+        { "event_type": "spawn_requested", "service_id": "home_assistant_bridge" },
+        { "event_type": "spawn_succeeded", "service_id": "home_assistant_bridge" },
+        { "event_type": "listener_mismatch", "service_id": "home_assistant_bridge" },
+        { "event_type": "service_stopped", "service_id": "home_assistant_bridge" },
+        { "event_type": "rollback_completed" }
+      ],
+      "expected": { "phase": "failed", "reason": "listener_mismatch", "cleanup": "clear", "residue_service_ids": [] },
+      "coverage": ["ownership", "pid_reuse", "listener", "rollback"]
+    },
+    {
+      "vector_id": "readiness_timeout",
+      "events": [
+        { "event_type": "preflight_started" }, { "event_type": "preflight_passed" }, { "event_type": "start_requested" },
+        { "event_type": "spawn_requested", "service_id": "home_assistant_bridge" },
+        { "event_type": "spawn_succeeded", "service_id": "home_assistant_bridge" },
+        { "event_type": "readiness_timeout", "service_id": "home_assistant_bridge" },
+        { "event_type": "service_stopped", "service_id": "home_assistant_bridge" },
+        { "event_type": "rollback_completed" }
+      ],
+      "expected": { "phase": "failed", "reason": "readiness_timeout", "cleanup": "clear", "residue_service_ids": [] },
+      "coverage": ["deadline", "readiness", "rollback"]
+    },
+    {
+      "vector_id": "rollback_retains_unknown_residue",
+      "events": [
+        { "event_type": "preflight_started" }, { "event_type": "preflight_passed" }, { "event_type": "start_requested" },
+        { "event_type": "spawn_requested", "service_id": "home_assistant_bridge" },
+        { "event_type": "spawn_failed", "service_id": "home_assistant_bridge" },
+        { "event_type": "rollback_completed" }
+      ],
+      "expected": { "phase": "residue", "reason": "spawn_failed", "cleanup": "unknown", "residue_service_ids": ["home_assistant_bridge"] },
+      "coverage": ["rollback", "residue", "first_failure"]
+    },
+    {
+      "vector_id": "supervisor_crash_recovery",
+      "events": [
+        { "event_type": "preflight_started" }, { "event_type": "preflight_passed" }, { "event_type": "start_requested" },
+        { "event_type": "spawn_requested", "service_id": "home_assistant_bridge" },
+        { "event_type": "spawn_succeeded", "service_id": "home_assistant_bridge" },
+        { "event_type": "supervisor_crashed" },
+        { "event_type": "recovery_started" },
+        { "event_type": "service_stopped", "service_id": "home_assistant_bridge" },
+        { "event_type": "recovery_completed" }
+      ],
+      "expected": { "phase": "failed", "reason": "supervisor_crash", "cleanup": "clear", "residue_service_ids": [] },
+      "coverage": ["crash", "recovery", "cleanup"]
+    },
+    {
+      "vector_id": "optional_camera_absent",
+      "events": [
+        { "event_type": "preflight_started" }, { "event_type": "preflight_passed" }, { "event_type": "start_requested" },
+        { "event_type": "optional_absent", "service_id": "mediapipe_camera_hub_stack" },
+        { "event_type": "optional_absent", "service_id": "vision_snapshot_processor" }
+      ],
+      "expected": { "phase": "waiting_ready", "reason": "none", "cleanup": "not_started", "residue_service_ids": [] },
+      "coverage": ["optional_camera", "degraded"]
+    },
+    {
+      "vector_id": "external_voicevox_ready",
+      "events": [
+        { "event_type": "preflight_started" }, { "event_type": "preflight_passed" }, { "event_type": "start_requested" },
+        { "event_type": "external_ready", "service_id": "voicevox" }
+      ],
+      "expected": { "phase": "waiting_ready", "reason": "none", "cleanup": "not_started", "residue_service_ids": [] },
+      "coverage": ["external_voicevox", "probe_only"]
+    },
+    {
+      "vector_id": "stop_from_planned_is_clean",
+      "events": [
+        { "event_type": "stop_requested" },
+        { "event_type": "service_stopped", "service_id": "home_assistant_bridge" },
+        { "event_type": "service_stopped", "service_id": "environment_state_server" },
+        { "event_type": "service_stopped", "service_id": "openai_provider_broker" },
+        { "event_type": "service_stopped", "service_id": "thought_core_api" },
+        { "event_type": "service_stopped", "service_id": "mediapipe_camera_hub_stack" },
+        { "event_type": "service_stopped", "service_id": "vision_snapshot_processor" },
+        { "event_type": "service_stopped", "service_id": "aituber_kit" },
+        { "event_type": "service_stopped", "service_id": "thought_core_watcher" },
+        { "event_type": "service_stopped", "service_id": "touchdesigner_control_gui" }
+      ],
+      "expected": { "phase": "stopped", "reason": "none", "cleanup": "clear", "residue_service_ids": [] },
+      "coverage": ["stop", "external_noop", "cleanup"]
+    },
+    {
+      "vector_id": "stop_failure_retains_residue",
+      "events": [
+        { "event_type": "stop_requested" },
+        { "event_type": "stop_failed", "service_id": "home_assistant_bridge" }
+      ],
+      "expected": {
+        "phase": "residue", "reason": "stop_failed", "cleanup": "residue",
+        "residue_service_ids": ["aituber_kit", "environment_state_server", "home_assistant_bridge", "mediapipe_camera_hub_stack", "openai_provider_broker", "thought_core_api", "thought_core_watcher", "touchdesigner_control_gui", "vision_snapshot_processor"]
+      },
+      "coverage": ["stop", "failure", "residue"]
+    },
+    {
+      "vector_id": "foreign_operation_is_noop",
+      "event_operation_id": "lop_foreign00",
+      "events": [
+        { "event_type": "preflight_started" }
+      ],
+      "expected": { "phase": "planned", "reason": "none", "cleanup": "not_started", "residue_service_ids": [] },
+      "coverage": ["correlation", "stale_no_write"]
+    }
+  ]
+}

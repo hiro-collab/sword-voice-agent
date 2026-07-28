@@ -17,11 +17,11 @@
       "requirement": "required",
       "ownership": "owned",
       "legacy_profile_member": true,
-      "start": { "adapter_id": "legacy_stack_script", "absent_behavior": "fail", "legacy_spec_ids": ["home_assistant_bridge"] },
+      "start": { "adapter_id": "job_worker_service", "absent_behavior": "fail", "legacy_spec_ids": ["home_assistant_bridge"] },
       "readiness": { "probe_id": "home_assistant_health", "success": "owned_identity_and_probe", "degraded_allowed": false },
       "ready_deadline_ms": 60000,
       "port": { "ownership": "owned", "port_mode": "manifest_default", "transport": "http", "loopback_port": 8787, "endpoint_ref": "home_assistant_bridge_http" },
-      "stop": { "adapter_id": "legacy_owned_pid", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
+      "stop": { "adapter_id": "job_worker_job_close", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
     },
     {
       "service_id": "environment_state_server",
@@ -30,11 +30,11 @@
       "requirement": "required",
       "ownership": "owned",
       "legacy_profile_member": true,
-      "start": { "adapter_id": "legacy_stack_script", "absent_behavior": "fail", "legacy_spec_ids": ["environment_state_server"] },
+      "start": { "adapter_id": "job_worker_service", "absent_behavior": "fail", "legacy_spec_ids": ["environment_state_server"] },
       "readiness": { "probe_id": "environment_state_health", "success": "owned_identity_and_probe", "degraded_allowed": false },
       "ready_deadline_ms": 60000,
       "port": { "ownership": "owned", "port_mode": "manifest_default", "transport": "http", "loopback_port": 8790, "endpoint_ref": "environment_state_http" },
-      "stop": { "adapter_id": "legacy_owned_pid", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
+      "stop": { "adapter_id": "job_worker_job_close", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
     },
     {
       "service_id": "openai_provider_broker",
@@ -43,11 +43,11 @@
       "requirement": "required",
       "ownership": "owned",
       "legacy_profile_member": true,
-      "start": { "adapter_id": "legacy_stack_script", "absent_behavior": "fail", "legacy_spec_ids": ["openai_provider_broker"] },
+      "start": { "adapter_id": "job_worker_service", "absent_behavior": "fail", "legacy_spec_ids": ["openai_provider_broker"] },
       "readiness": { "probe_id": "provider_broker_health", "success": "owned_identity_and_probe", "degraded_allowed": false },
       "ready_deadline_ms": 60000,
       "port": { "ownership": "owned", "port_mode": "manifest_default", "transport": "http", "loopback_port": 18786, "endpoint_ref": "provider_broker_http" },
-      "stop": { "adapter_id": "legacy_owned_pid", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
+      "stop": { "adapter_id": "job_worker_job_close", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
     },
     {
       "service_id": "thought_core_api",
@@ -56,11 +56,11 @@
       "requirement": "required",
       "ownership": "owned",
       "legacy_profile_member": true,
-      "start": { "adapter_id": "legacy_stack_script", "absent_behavior": "fail", "legacy_spec_ids": ["thought_core_api"] },
+      "start": { "adapter_id": "job_worker_service", "absent_behavior": "fail", "legacy_spec_ids": ["thought_core_api"] },
       "readiness": { "probe_id": "thought_core_health", "success": "owned_identity_and_probe", "degraded_allowed": false },
       "ready_deadline_ms": 60000,
       "port": { "ownership": "owned", "port_mode": "manifest_default", "transport": "http", "loopback_port": 18787, "endpoint_ref": "thought_core_http" },
-      "stop": { "adapter_id": "legacy_owned_pid_tree", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
+      "stop": { "adapter_id": "job_worker_job_close", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
     },
     {
       "service_id": "mediapipe_camera_hub_stack",
@@ -69,11 +69,11 @@
       "requirement": "optional",
       "ownership": "owned",
       "legacy_profile_member": true,
-      "start": { "adapter_id": "legacy_stack_script", "absent_behavior": "optional_absent", "legacy_spec_ids": ["mediapipe_camera_hub_stack", "mediapipe_camera_hub", "mediapipe_camera_hub_gui"] },
+      "start": { "adapter_id": "job_worker_service", "absent_behavior": "optional_absent", "legacy_spec_ids": ["mediapipe_camera_hub_stack", "mediapipe_camera_hub", "mediapipe_camera_hub_gui"] },
       "readiness": { "probe_id": "mediapipe_websocket", "success": "owned_identity_and_probe", "degraded_allowed": true },
       "ready_deadline_ms": 90000,
       "port": { "ownership": "owned", "port_mode": "manifest_default", "transport": "websocket", "loopback_port": 8765, "endpoint_ref": "mediapipe_websocket" },
-      "stop": { "adapter_id": "legacy_owned_pid_tree", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
+      "stop": { "adapter_id": "job_worker_job_close", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
     },
     {
       "service_id": "vision_snapshot_processor",
@@ -82,11 +82,11 @@
       "requirement": "optional",
       "ownership": "owned",
       "legacy_profile_member": true,
-      "start": { "adapter_id": "legacy_stack_script", "absent_behavior": "optional_absent", "legacy_spec_ids": ["vision_snapshot_processor"] },
+      "start": { "adapter_id": "job_worker_service", "absent_behavior": "optional_absent", "legacy_spec_ids": ["vision_snapshot_processor"] },
       "readiness": { "probe_id": "vision_snapshot_websocket", "success": "owned_identity_and_probe", "degraded_allowed": true },
       "ready_deadline_ms": 60000,
       "port": { "ownership": "owned", "port_mode": "manifest_default", "transport": "websocket", "loopback_port": 8776, "endpoint_ref": "vision_snapshot_websocket" },
-      "stop": { "adapter_id": "legacy_owned_pid_tree", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
+      "stop": { "adapter_id": "job_worker_job_close", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
     },
     {
       "service_id": "aituber_kit",
@@ -95,11 +95,11 @@
       "requirement": "required",
       "ownership": "owned",
       "legacy_profile_member": true,
-      "start": { "adapter_id": "legacy_stack_script", "absent_behavior": "fail", "legacy_spec_ids": ["aituber_kit"] },
+      "start": { "adapter_id": "job_worker_service", "absent_behavior": "fail", "legacy_spec_ids": ["aituber_kit"] },
       "readiness": { "probe_id": "aituber_health", "success": "owned_identity_and_probe", "degraded_allowed": false },
       "ready_deadline_ms": 60000,
       "port": { "ownership": "owned", "port_mode": "manifest_default", "transport": "http", "loopback_port": 3000, "endpoint_ref": "aituber_http" },
-      "stop": { "adapter_id": "legacy_owned_pid", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
+      "stop": { "adapter_id": "job_worker_job_close", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
     },
     {
       "service_id": "thought_core_watcher",
@@ -108,11 +108,11 @@
       "requirement": "required",
       "ownership": "owned",
       "legacy_profile_member": true,
-      "start": { "adapter_id": "legacy_stack_script", "absent_behavior": "fail", "legacy_spec_ids": ["thought_core_watcher"] },
+      "start": { "adapter_id": "job_worker_service", "absent_behavior": "fail", "legacy_spec_ids": ["thought_core_watcher"] },
       "readiness": { "probe_id": "thought_core_watcher_status", "success": "module_status", "degraded_allowed": false },
       "ready_deadline_ms": 60000,
       "port": { "ownership": "none", "port_mode": "none", "transport": "none", "loopback_port": null, "endpoint_ref": null },
-      "stop": { "adapter_id": "legacy_owned_pid", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
+      "stop": { "adapter_id": "job_worker_job_close", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
     },
     {
       "service_id": "touchdesigner_control_gui",
@@ -121,11 +121,11 @@
       "requirement": "required",
       "ownership": "owned",
       "legacy_profile_member": true,
-      "start": { "adapter_id": "legacy_stack_script", "absent_behavior": "fail", "legacy_spec_ids": ["touchdesigner_control_gui"] },
+      "start": { "adapter_id": "job_worker_service", "absent_behavior": "fail", "legacy_spec_ids": ["touchdesigner_control_gui"] },
       "readiness": { "probe_id": "touchdesigner_gui_health", "success": "owned_identity_and_probe", "degraded_allowed": false },
       "ready_deadline_ms": 60000,
       "port": { "ownership": "owned", "port_mode": "manifest_default", "transport": "http", "loopback_port": 8788, "endpoint_ref": "touchdesigner_gui_http" },
-      "stop": { "adapter_id": "legacy_owned_pid", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
+      "stop": { "adapter_id": "job_worker_job_close", "graceful_timeout_ms": 10000, "escalation": "owned_only" }
     },
     {
       "service_id": "voicevox",

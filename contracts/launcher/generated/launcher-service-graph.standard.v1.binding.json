@@ -1,11 +1,14 @@
 {
-  "binding_sha256": "b42cc188c1b64097bfdf1c6d5606f42da8cd2217ee5dd55f7b64c8cf08fbfb2d",
+  "binding_sha256": "4d4ff64b7c9ed68fa7b5685d4452a5148ad2ebf6d39f56ade98a93a54cb6f6e8",
   "binding": {
     "binding_version": "launcher_service_graph.binding.v1",
+    "text_hash_mode": "utf8_lf_v1",
     "profile_id": "thought-core-v0",
-    "graph_sha256": "31a38cd01e3fa6f295c398d264a5667cac5d959fc75c40e7e9427f54b8b79b0c",
-    "graph_schema_sha256": "d0f91c53450e32e5dde0af4739fb15e235c383a8e1fe099965e545306e4ea87e",
-    "operation_schema_sha256": "0c47057c094095fcac857c7d0ade0fa4e4ec51e74c34643f52de56aa35eb4a11",
+    "graph_sha256": "d5514bcbdd1e1499ac7fc025ea985d39cef83d3dff75552fc93296d7d3172b23",
+    "graph_schema_sha256": "263b5e7093fce33cd94769a910cecf837b522ca03cc75294ce815135d62e3ee0",
+    "operation_schema_sha256": "6351f8059adf0e76ec0d60b93d2ccaa3cc7357ca247d1797bfd74d7059c4cb26",
+    "worker_schema_sha256": "78ca68ba468bf47c4a83cbb1b41a70cfa7fe51736dd42ee50c6c5635b9a4806e",
+    "reducer_vectors_sha256": "afd848c20ec063aa5442be19ef96c0cb66d0b859aaa834296180308a0e5f28a5",
     "service_order": [
       "aituber_kit",
       "home_assistant_bridge",
