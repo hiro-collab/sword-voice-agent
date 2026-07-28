@@ -159,6 +159,28 @@ PROVIDER_CONTEXT_REF_NUMBER_ABS = 1_000_000
 PROJECTION_EFFECT_COMPANION_MAX_CHARS = 120
 PROJECTION_EFFECT_PLAN_IDENTITY_MAX_CHARS = 128
 PROJECTION_EFFECT_PLAN_ID_NAMESPACE = b"sword.projection-performance-plan.v1"
+AGENTIC_HOLD_REASON_CODES = frozenset(
+    {
+        "agentic_capability_catalog_unavailable",
+        "agentic_capability_not_authorized",
+        "agentic_context_refs_invalid",
+        "agentic_decision_invalid",
+        "agentic_projection_capability_invalid",
+        "agentic_provider_invalid",
+        "agentic_provider_unavailable",
+    }
+)
+AGENTIC_HOLD_INTERNAL_FAILURE_REASON_CODE = "agentic_internal_failure"
+
+
+def classify_agentic_hold_reason(reason: object) -> str:
+    """Return the bounded journal-safe classification for an agentic hold."""
+
+    if isinstance(reason, str) and reason in AGENTIC_HOLD_REASON_CODES:
+        return reason
+    return AGENTIC_HOLD_INTERNAL_FAILURE_REASON_CODE
+
+
 PROJECTION_EFFECT_PLAN_EFFECT_MARKERS = (
     "炎",
     "火炎",
@@ -2131,6 +2153,7 @@ class ThoughtLoop:
         *,
         reason: str,
     ) -> None:
+        reason_code = classify_agentic_hold_reason(reason)
         speech = "AIの判断を安全に受け取れないため、今は操作を保留しています。"
         events.append(
             factory.emit(
@@ -2138,6 +2161,7 @@ class ThoughtLoop:
                 {
                     "status": "held",
                     "reason": reason,
+                    "reason_code": reason_code,
                     "semantic_authority": "agentic_provider",
                     "degraded": True,
                 },
@@ -2158,6 +2182,7 @@ class ThoughtLoop:
                 {
                     "status": "held",
                     "reason": reason,
+                    "reason_code": reason_code,
                     "semantic_authority": "agentic_provider",
                     "degraded": True,
                 },

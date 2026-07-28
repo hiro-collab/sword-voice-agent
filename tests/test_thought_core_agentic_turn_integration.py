@@ -24,8 +24,14 @@ from thought_core.capability_catalog import (  # noqa: E402
     HomeCapabilityCatalog,
 )
 from thought_core.execution_deadline import TurnDeadlineExceeded  # noqa: E402
+from thought_core.event_journal import journal_entry_from_event  # noqa: E402
+from thought_core.events import EventFactory  # noqa: E402
 from thought_core.input_understanding import InputFrame  # noqa: E402
-from thought_core.loop import ThoughtLoop  # noqa: E402
+from thought_core.loop import (  # noqa: E402
+    AGENTIC_HOLD_INTERNAL_FAILURE_REASON_CODE,
+    AGENTIC_HOLD_REASON_CODES,
+    ThoughtLoop,
+)
 from thought_core.tools import MockThoughtTools  # noqa: E402
 
 
@@ -922,6 +928,45 @@ class AgenticTurnIntegrationTest(TestCase):
                 self.assertNotIn("action.proposed", [event["type"] for event in events])
         self.assertEqual(context_provider.requests, [])
         self.assertEqual(catalog_provider.requests, [])
+
+    def test_all_agentic_hold_branches_emit_bounded_journal_reason_codes(self) -> None:
+        loop = ThoughtLoop(agentic_turn_provider=UnavailableAgenticTurnProvider())
+        for reason in sorted(AGENTIC_HOLD_REASON_CODES):
+            with self.subTest(reason=reason):
+                events = []
+                loop._emit_agentic_hold(  # noqa: SLF001 - exact hold boundary contract
+                    events,
+                    EventFactory(f"turn_{reason}", "session_hold_reason_codes"),
+                    reason=reason,
+                )
+                decision = next(event for event in events if event.type == "agentic.decision")
+                entry = journal_entry_from_event(decision.to_dict())
+
+                self.assertEqual(decision.data["reason_code"], reason)
+                self.assertEqual(entry["summary"]["reason_code"], reason)
+                self.assertTrue(entry["summary"]["reason_present"])
+                self.assertNotIn("reason", entry["summary"])
+
+    def test_unknown_agentic_hold_reason_fails_closed_without_persisting_raw_text(self) -> None:
+        private_sentinel = "Bearer PRIVATE_PROVIDER_REASON_SENTINEL"
+        events = []
+        ThoughtLoop()._emit_agentic_hold(  # noqa: SLF001 - exact hold boundary contract
+            events,
+            EventFactory("turn_private_hold_reason", "session_private_hold_reason"),
+            reason=private_sentinel,
+        )
+        journal_entries = [journal_entry_from_event(event.to_dict()) for event in events]
+        serialized = json.dumps(journal_entries, ensure_ascii=False)
+
+        self.assertTrue(
+            all(
+                event.data["reason_code"] == AGENTIC_HOLD_INTERNAL_FAILURE_REASON_CODE
+                for event in events
+                if event.type in {"agentic.decision", "turn.completed"}
+            )
+        )
+        self.assertNotIn(private_sentinel, serialized)
+        self.assertNotIn("PRIVATE_PROVIDER_REASON_SENTINEL", serialized)
 
     def test_over_limit_provider_context_refs_hold_before_provider_call(self) -> None:
         candidate = {

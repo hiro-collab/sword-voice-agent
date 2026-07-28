@@ -12,11 +12,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core" / "src"
 sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 
+from thought_core.agentic_turn_provider import StaticAgenticTurnProvider  # noqa: E402
 from thought_core.event_journal import journal_entry_from_event  # noqa: E402
 from thought_core.execution_deadline import (  # noqa: E402
     TurnDeadlineExceeded,
     issue_turn_execution_deadline,
 )
+from thought_core.loop import ThoughtLoop  # noqa: E402
 from thought_core.server import _write_journal_safely, create_server  # noqa: E402
 
 
@@ -211,6 +213,69 @@ class ThoughtCoreEventJournalTest(TestCase):
         self.assertNotIn("電気つけて", serialized)
         self.assertNotIn("了解", serialized)
         self.assertNotIn("confirmation_token", serialized)
+
+    def test_fire_hold_reason_code_remains_after_stream_end_and_server_stop(self) -> None:
+        private_sentinel = "PRIVATE_FIRE_PROVIDER_SENTINEL"
+        invalid_fire_decision = {
+            "schemaVersion": 1,
+            "kind": "capability",
+            "provider_debug": private_sentinel,
+        }
+        with TemporaryDirectory() as tmp:
+            journal_path = Path(tmp) / "fire-hold-events.jsonl"
+            with patch.dict(
+                "os.environ",
+                {"THOUGHT_CORE_EVENT_JOURNAL_PATH": str(journal_path)},
+                clear=False,
+            ):
+                server = create_server(
+                    "127.0.0.1",
+                    0,
+                    thought_loop=ThoughtLoop(
+                        agentic_turn_provider=StaticAgenticTurnProvider(invalid_fire_decision)
+                    ),
+                )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                port = server.server_address[1]
+                req = request.Request(
+                    f"http://127.0.0.1:{port}/turn/stream",
+                    data=json.dumps(
+                        {
+                            **TURN,
+                            "text": "炎を出して",
+                            "turn_id": "turn_fire_hold_after_stop",
+                        }
+                    ).encode("utf-8"),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "text/event-stream",
+                    },
+                    method="POST",
+                )
+                with request.urlopen(req, timeout=5) as response:
+                    sse_payload = response.read().decode("utf-8")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+            journal_events = [
+                json.loads(line)
+                for line in journal_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+        decision = next(
+            event for event in journal_events if event["event_type"] == "agentic.decision"
+        )
+        serialized = json.dumps(journal_events, ensure_ascii=False)
+        self.assertIn("event: agentic.decision", sse_payload)
+        self.assertEqual(decision["summary"]["reason_code"], "agentic_decision_invalid")
+        self.assertTrue(decision["summary"]["reason_present"])
+        self.assertNotIn("reason", decision["summary"])
+        self.assertNotIn("炎を出して", serialized)
+        self.assertNotIn(private_sentinel, serialized)
 
     def test_journal_write_failure_does_not_break_turn_response(self) -> None:
         with TemporaryDirectory() as tmp:
