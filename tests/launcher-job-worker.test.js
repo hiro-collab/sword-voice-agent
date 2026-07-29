@@ -846,6 +846,10 @@ test('actual Windows Job worker contains descendants, survives foreign listeners
       schema_version: 'launcher_private_service_plans.v1',
       graph_sha256: authority.identities.graphSha256,
       binding_sha256: authority.identities.bindingSha256,
+      profile_id: CONFIG_IDENTITY.profile_id,
+      effective_config_sha256: CONFIG_IDENTITY.effective_config_sha256,
+      camera_policy: CONFIG_IDENTITY.camera_policy,
+      worker_file_path: powershellPath,
       services
     }), { encoding: 'utf8', mode: 0o600 })
     return planPath

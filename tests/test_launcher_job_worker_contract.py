@@ -233,6 +233,10 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
             "schema_version": "launcher_private_service_plans.v1",
             "graph_sha256": "a" * 64,
             "binding_sha256": "b" * 64,
+            "profile_id": "thought-core-v0",
+            "effective_config_sha256": "c" * 64,
+            "camera_policy": "camera_excluded_by_profile",
+            "worker_file_path": str(Path(powershell).resolve()),
             "services": services,
         }
         with tempfile.TemporaryDirectory(prefix="launcher-n1-plan-") as directory:

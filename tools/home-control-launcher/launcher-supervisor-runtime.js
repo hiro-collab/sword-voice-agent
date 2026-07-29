@@ -14,6 +14,7 @@ const {
   LauncherPrivatePlanError,
   compilePrivateServicePlan,
   deriveEffectiveConfigIdentity,
+  readPrivateServicePlan,
   removePrivateServicePlan,
   writePrivateServicePlan
 } = require('./launcher-private-service-plan')
@@ -194,6 +195,7 @@ class LauncherSupervisorRuntime {
     authority = null,
     store = operationStore,
     planCompiler = compilePrivateServicePlan,
+    planReader = readPrivateServicePlan,
     planWriter = writePrivateServicePlan,
     planRemover = removePrivateServicePlan,
     workerFactory = null,
@@ -214,6 +216,7 @@ class LauncherSupervisorRuntime {
       typeof store.reduceAndPersist !== 'function' ||
       typeof store.readOperation !== 'function' ||
       typeof planCompiler !== 'function' ||
+      typeof planReader !== 'function' ||
       typeof planWriter !== 'function' ||
       typeof planRemover !== 'function' ||
       typeof operationIdFactory !== 'function' ||
@@ -231,6 +234,7 @@ class LauncherSupervisorRuntime {
     }
     this.store = store
     this.planCompiler = planCompiler
+    this.planReader = planReader
     this.planWriter = planWriter
     this.planRemover = planRemover
     this.workerFactory = workerFactory || (({ compiled, planPath, supervisorLease }) => new LauncherJobWorkerClient({
@@ -389,18 +393,38 @@ class LauncherSupervisorRuntime {
     })
   }
 
+  readPersistedPlan (operation = this.current) {
+    if (!operation) throw new LauncherPrivatePlanError('private_plan_identity_invalid')
+    return this.planReader({
+      privateRuntimeRoot: this.privateRuntimeRoot,
+      configIdentity: {
+        profile_id: operation.profile_id,
+        effective_config_sha256: operation.effective_config_sha256,
+        camera_policy: operation.camera_policy
+      },
+      authority: this.authority
+    })
+  }
+
   ensureClient (compiled) {
     if (this.client) return
     if (!this.supervisorLease || !this.leaseBinding) throw new Error('supervisor_runtime_lease_missing')
-    this.planRemover(this.privateRuntimeRoot)
-    const planPath = this.planWriter(compiled, this.privateRuntimeRoot)
+    const planPath = typeof compiled?.plan_path === 'string'
+      ? compiled.plan_path
+      : (() => {
+          this.planRemover(this.privateRuntimeRoot)
+          return this.planWriter(compiled, this.privateRuntimeRoot)
+        })()
+    const retainedCompiled = typeof compiled?.plan_path === 'string'
+      ? compiled
+      : Object.freeze({ ...compiled, plan_path: planPath })
     this.client = this.workerFactory({
       authority: this.authority,
-      compiled,
+      compiled: retainedCompiled,
       planPath,
       supervisorLease: this.supervisorLease
     })
-    this.compiled = compiled
+    this.compiled = retainedCompiled
   }
 
   ensureProbeExecutor (compiled) {
@@ -420,20 +444,29 @@ class LauncherSupervisorRuntime {
     this.generatedProbeExecutor = true
   }
 
-  async closeClientAndPlan () {
+  async closeClientAndPlan ({ removePlan = true } = {}) {
     const client = this.client
     let clientClear = true
     if (client) {
       try { await client.close() } catch { clientClear = false }
     }
     if (clientClear) this.client = null
-    let planClear = true
-    try { this.planRemover(this.privateRuntimeRoot) } catch { planClear = false }
+    let planClear = !removePlan
+    if (removePlan && clientClear) {
+      try {
+        this.planRemover(this.privateRuntimeRoot)
+        planClear = true
+      } catch {
+        planClear = false
+      }
+    }
     if (planClear) {
-      this.compiled = null
-      if (this.generatedProbeExecutor) {
-        this.probeExecutor = null
-        this.generatedProbeExecutor = false
+      if (removePlan) {
+        this.compiled = null
+        if (this.generatedProbeExecutor) {
+          this.probeExecutor = null
+          this.generatedProbeExecutor = false
+        }
       }
     }
     return clientClear && planClear
@@ -563,7 +596,7 @@ class LauncherSupervisorRuntime {
           workerEvent = await this.exchange(serviceId, 'stop')
         } catch {
           this.cleanupFailure(mode, serviceId)
-          const closed = await this.closeClientAndPlan()
+          const closed = await this.closeClientAndPlan({ removePlan: false })
           if (closed && [reducer.PHASE.FAILED, reducer.PHASE.RESIDUE].includes(this.current?.phase)) {
             this.releaseSupervisorLease()
           }
@@ -571,7 +604,7 @@ class LauncherSupervisorRuntime {
         }
         if (workerEvent.event_type !== 'service_stopped') {
           this.cleanupFailure(mode, serviceId)
-          const closed = await this.closeClientAndPlan()
+          const closed = await this.closeClientAndPlan({ removePlan: false })
           if (closed && [reducer.PHASE.FAILED, reducer.PHASE.RESIDUE].includes(this.current?.phase)) {
             this.releaseSupervisorLease()
           }
@@ -593,7 +626,7 @@ class LauncherSupervisorRuntime {
       if (held) this.apply(held.event_type, held.service_id, { dispatch_id: held.dispatch_id })
       return true
     } catch {
-      const closed = await this.closeClientAndPlan()
+      const closed = await this.closeClientAndPlan({ removePlan: false })
       const serviceId = heldServiceId || candidates[0]
       if (serviceId && this.current && this.current.phase !== reducer.PHASE.RESIDUE) {
         try { this.cleanupFailure(mode, serviceId) } catch {}
@@ -607,19 +640,21 @@ class LauncherSupervisorRuntime {
 
   async rollback (compiled) {
     if (this.current?.phase !== reducer.PHASE.ROLLING_BACK) return
+    const retainedCompiled = this.compiled || compiled
     this.apply('rollback_started')
-    const clear = await this.stopOwnedServices('rollback', compiled)
+    const clear = await this.stopOwnedServices('rollback', retainedCompiled)
     if (clear && this.current.phase === reducer.PHASE.ROLLING_BACK) this.apply('rollback_completed')
     if ([reducer.PHASE.FAILED, reducer.PHASE.RESIDUE].includes(this.current?.phase)) this.releaseSupervisorLease()
   }
 
   async recover (compiled) {
     if (!this.current || !ACTIVE_PHASES.has(this.current.phase)) return
+    const retainedCompiled = this.compiled || compiled
     if (this.current.phase !== reducer.PHASE.RECOVERING) this.apply('supervisor_crashed')
     if (this.current.phase !== reducer.PHASE.RECOVERING) return
-    if (!(await this.closeClientAndPlan())) return false
+    if (!(await this.closeClientAndPlan({ removePlan: false }))) return false
     this.apply('recovery_started')
-    const clear = await this.stopOwnedServices('recovery', compiled)
+    const clear = await this.stopOwnedServices('recovery', retainedCompiled)
     if (clear && this.current.phase === reducer.PHASE.RECOVERING) this.apply('recovery_completed')
     if ([reducer.PHASE.FAILED, reducer.PHASE.RESIDUE].includes(this.current?.phase)) this.releaseSupervisorLease()
     return clear
@@ -719,7 +754,35 @@ class LauncherSupervisorRuntime {
         })
       }
       if (decision.joined_existing) {
-        await this.recover(compiled)
+        let persistedPlan
+        try {
+          persistedPlan = this.readPersistedPlan(this.current)
+        } catch (error) {
+          if (this.generatedProbeExecutor) {
+            this.probeExecutor = null
+            this.generatedProbeExecutor = false
+          }
+          this.releaseSupervisorLease()
+          return publicResult({
+            ok: false,
+            resultClass: 'preflight_failed',
+            operation: this.current,
+            profileId,
+            errorClass: error instanceof LauncherPrivatePlanError ? 'private_plan_invalid' : 'supervisor_runtime_failed'
+          })
+        }
+        if (this.generatedProbeExecutor) {
+          this.probeExecutor = null
+          this.generatedProbeExecutor = false
+        }
+        if (!(await this.recover(persistedPlan))) {
+          return publicResult({
+            ok: false,
+            resultClass: resultClassFor(this.current),
+            operation: this.current,
+            profileId
+          })
+        }
         decision = this.store.startAndPersist(
           this.operationIdFactory(),
           validatedConfigIdentity,
@@ -736,6 +799,7 @@ class LauncherSupervisorRuntime {
             profileId
           })
         }
+        this.ensureProbeExecutor(compiled)
       }
 
       this.apply('preflight_started')
@@ -825,7 +889,7 @@ class LauncherSupervisorRuntime {
     }
   }
 
-  async stop ({ profileId, options }) {
+  async stop ({ profileId }) {
     if (this.inflight) {
       return publicResult({
         ok: false,
@@ -865,16 +929,14 @@ class LauncherSupervisorRuntime {
           profileId
         })
       }
-      if (!this.supervisorLease) this.acquireExistingSupervisorLease()
+      const acquiredSupervisorLease = !this.supervisorLease
+      if (acquiredSupervisorLease) this.acquireExistingSupervisorLease()
       let compiled = this.compiled
       if (!compiled) {
         try {
-          compiled = this.compile(profileId, options, {
-            profile_id: this.current.profile_id,
-            effective_config_sha256: this.current.effective_config_sha256,
-            camera_policy: this.current.camera_policy
-          })
+          compiled = this.readPersistedPlan(this.current)
         } catch (error) {
+          if (acquiredSupervisorLease) this.releaseSupervisorLease()
           return publicResult({
             ok: false,
             resultClass: 'preflight_failed',

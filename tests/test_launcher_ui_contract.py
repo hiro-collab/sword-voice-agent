@@ -262,6 +262,12 @@ $cases = @(
         self.assertNotIn("launcher_worker.v1", server)
         self.assertIn("await launcherRuntime.start", start_stack)
         self.assertIn("launcherRuntime.stop", stop_stack)
+        self.assertIn("const activeOperation = operationState()", stop_stack)
+        self.assertLess(
+            stop_stack.index("const activeOperation = operationState()"),
+            stop_stack.index("const config = readLauncherConfig()"),
+        )
+        self.assertIn("return launcherRuntime.stop({ profileId })", stop_stack)
         self.assertNotIn("childProcess.spawn", start_stack)
         self.assertNotIn("childProcess.spawnSync", start_stack)
         self.assertIn("status_script_execution: false", status_route)
@@ -1043,15 +1049,29 @@ $cases = @(
                 self.assertEqual(locked["resultClass"], "blocked_operation_config_locked")
                 self.assertEqual(locked["operation"]["phase"], "ready")
 
+                config_path = state_dir / "launcher-config.json"
+                drifted_config = json.loads(config_path.read_text(encoding="utf-8"))
+                drifted_config["selectedProfileId"] = "retired-profile"
+                config_path.write_text(json.dumps(drifted_config), encoding="utf-8")
+                foreign_sentinel = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                foreign_sentinel.bind(("127.0.0.1", 0))
+                foreign_sentinel.listen(1)
+                sentinel_address = foreign_sentinel.getsockname()
                 stop_request = urllib.request.Request(
                     f"http://127.0.0.1:{launcher_port}/api/stop",
-                    data=json.dumps({"profileId": "thought-core-v0"}).encode("utf-8"),
+                    data=b"{}",
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
-                with urllib.request.urlopen(stop_request, timeout=8) as response:
-                    stopped = json.loads(response.read().decode("utf-8"))
+                try:
+                    with urllib.request.urlopen(stop_request, timeout=8) as response:
+                        stopped = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(foreign_sentinel.getsockname(), sentinel_address)
+                finally:
+                    foreign_sentinel.close()
                 self.assertEqual(stopped["result_class"], "stopped")
+                self.assertNotIn(str(temporary_root), json.dumps(stopped))
+                self.assertNotIn("working_directory", json.dumps(stopped))
 
                 with urllib.request.urlopen(locked_request, timeout=5) as response:
                     saved_after_stop = json.loads(response.read().decode("utf-8"))

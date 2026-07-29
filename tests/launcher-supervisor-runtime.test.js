@@ -14,8 +14,11 @@ const realStore = require('../tools/home-control-launcher/launcher-operation-sto
 const reducer = require('../tools/home-control-launcher/launcher-supervisor-reducer')
 const { LauncherJobWorkerError } = require('../tools/home-control-launcher/launcher-job-worker-client')
 const {
+  LauncherPrivatePlanError,
   compilePrivateServicePlan,
-  deriveEffectiveConfigIdentity
+  deriveEffectiveConfigIdentity,
+  readPrivateServicePlan,
+  writePrivateServicePlan
 } = require('../tools/home-control-launcher/launcher-private-service-plan')
 const { LauncherProbeExecutorError } = require('../tools/home-control-launcher/launcher-probe-executor')
 const {
@@ -125,6 +128,7 @@ const makeHarness = ({
   responses = {},
   operationPrefix = 'runtime',
   planCompiler = null,
+  planReader = null,
   planRemover = null,
   probeExecutor = undefined,
   probeExecutorFactory = null,
@@ -133,6 +137,7 @@ const makeHarness = ({
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-runtime-'))
   const events = []
   const workers = []
+  let planPresent = false
   let operationSequence = 0
   let nonceSequence = 0
   let dispatchSequence = 0
@@ -144,6 +149,7 @@ const makeHarness = ({
       profile_id: CONFIG_IDENTITY.profile_id,
       effective_config_sha256: CONFIG_IDENTITY.effective_config_sha256,
       camera_policy: CONFIG_IDENTITY.camera_policy,
+      worker_file_path: process.execPath,
       services: []
     },
     powershell_path: process.execPath,
@@ -166,7 +172,7 @@ const makeHarness = ({
     },
     ...storeOverrides
   }
-  const runtime = new LauncherSupervisorRuntime({
+  const createRuntime = () => new LauncherSupervisorRuntime({
     repositoryRoot: ROOT,
     workspaceRoot: ROOT,
     privateRuntimeRoot: root,
@@ -176,11 +182,21 @@ const makeHarness = ({
       events.push('plan:compile')
       return compiled
     }),
+    planReader: planReader || (() => {
+      events.push('plan:read')
+      if (!planPresent) throw new LauncherPrivatePlanError('private_plan_config_invalid')
+      return Object.freeze({ ...compiled, plan_path: __filename })
+    }),
     planWriter: () => {
       events.push('plan:write')
+      planPresent = true
       return __filename
     },
-    planRemover: planRemover || (() => events.push('plan:remove')),
+    planRemover: () => {
+      if (planRemover) planRemover()
+      else events.push('plan:remove')
+      planPresent = false
+    },
     workerFactory: ({ supervisorLease }) => {
       events.push('worker:create')
       assert.ok(supervisorLease)
@@ -216,6 +232,7 @@ const makeHarness = ({
       return `ld_${String(dispatchSequence).padStart(16, '0')}`
     }
   })
+  const runtime = createRuntime()
   const startWithIdentity = runtime.start.bind(runtime)
   runtime.start = (request) => startWithIdentity({
     ...request,
@@ -224,6 +241,7 @@ const makeHarness = ({
   return {
     root,
     runtime,
+    createRuntime,
     events,
     workers,
     cleanup: () => fs.rmSync(root, { recursive: true, force: true })
@@ -332,6 +350,60 @@ test('Stop rejects a different profile before cleanup mutation', async () => {
     const stopped = await harness.runtime.stop({ profileId: 'thought-core-v0', options: canonicalOptions })
     assert.equal(stopped.ok, true)
     assert.equal(stopped.result_class, 'stopped')
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('a fresh runtime stops from the immutable start plan without recompiling drifted options', async () => {
+  const harness = makeHarness()
+  try {
+    const started = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(started.result_class, 'ready')
+    assert.equal(harness.events.filter((event) => event === 'plan:compile').length, 1)
+
+    // Model the old Launcher owner exiting: the operation and private plan remain,
+    // while the process-local client, compiled plan and supervisor lease do not.
+    assert.equal(harness.runtime.releaseSupervisorLease(), true)
+    const replacement = harness.createRuntime()
+
+    const stopped = await replacement.stop({ profileId: 'thought-core-v0' })
+    assert.equal(stopped.ok, true)
+    assert.equal(stopped.result_class, 'stopped')
+    assert.equal(stopped.operation.cleanup, 'clear')
+    assert.equal(harness.events.filter((event) => event === 'plan:compile').length, 1)
+    assert.equal(harness.events.filter((event) => event === 'plan:read').length, 1)
+    assert.equal(harness.events.filter((event) => event === 'plan:write').length, 1)
+    assert.equal(harness.workers.length, 2)
+    assert.ok(harness.workers[1].requests.some((request) => request.action === 'stop'))
+    assert.equal(replacement.supervisorLease, null)
+    for (const privateMarker of ['file_path', 'working_directory', '"arguments":', '"environment":']) {
+      assert.equal(JSON.stringify(stopped).includes(privateMarker), false)
+    }
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('fresh-runtime Stop releases its new lease and makes no cleanup mutation when the plan is unavailable', async () => {
+  const harness = makeHarness()
+  try {
+    const started = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(started.result_class, 'ready')
+    assert.equal(harness.runtime.releaseSupervisorLease(), true)
+    harness.runtime.planRemover(harness.root)
+    const replacement = harness.createRuntime()
+    const requestCount = harness.workers[0].requests.length
+
+    const stopped = await replacement.stop({ profileId: 'thought-core-v0' })
+    assert.equal(stopped.ok, false)
+    assert.equal(stopped.result_class, 'preflight_failed')
+    assert.equal(stopped.error_class, 'private_plan_invalid')
+    assert.equal(harness.workers.length, 1)
+    assert.equal(harness.workers[0].requests.length, requestCount)
+    assert.equal(stopped.operation.phase, 'ready')
+    assert.equal(replacement.supervisorLease, null)
+    assert.ok(harness.events.filter((event) => event === 'store:lease:release').length >= 2)
   } finally {
     harness.cleanup()
   }
@@ -827,7 +899,7 @@ test('worker result contract failure retains the responsible service without raw
   }
 })
 
-test('failed initial worker or plan cleanup cannot become clear through a fresh cleanup worker', async () => {
+test('failed cleanup remains truthful and a retained plan can be retried by a fresh runtime', async () => {
   for (const failureMode of ['worker_close', 'plan_remove']) {
     let planRemoveCalls = 0
     const harness = makeHarness({
@@ -853,18 +925,35 @@ test('failed initial worker or plan cleanup cannot become clear through a fresh 
     try {
       const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
       assert.equal(result.ok, false, failureMode)
-      assert.equal(result.operation.phase, 'recovering', failureMode)
-      assert.equal(result.operation.cleanup, 'unknown', failureMode)
       assert.equal(result.operation.recovery_required, true, failureMode)
-      assert.notEqual(harness.runtime.supervisorLease, null, failureMode)
       assert.equal(harness.events.includes('store:recovery_completed'), false, failureMode)
-      assert.equal(harness.events.includes('store:lease:release'), false, failureMode)
-      assert.equal(harness.workers.length, 1, failureMode)
-      assert.equal(harness.workers[0].requests.filter((request) => request.action === 'stop').length, 0, failureMode)
       assert.equal(result.operation.services
         .filter((service) => allOwnedIds.includes(service.service_id))
         .some((service) => service.state === 'ready'), false, failureMode)
-      assert.deepEqual(result.operation.residue_service_ids, [], failureMode)
+      if (failureMode === 'worker_close') {
+        assert.equal(result.operation.phase, 'recovering')
+        assert.equal(result.operation.cleanup, 'unknown')
+        assert.notEqual(harness.runtime.supervisorLease, null)
+        assert.equal(harness.events.includes('store:lease:release'), false)
+        assert.equal(harness.workers.length, 1)
+        assert.equal(harness.workers[0].requests.filter((request) => request.action === 'stop').length, 0)
+        assert.deepEqual(result.operation.residue_service_ids, [])
+      } else {
+        assert.equal(result.operation.phase, 'residue')
+        assert.equal(result.operation.cleanup, 'residue')
+        assert.equal(harness.runtime.supervisorLease, null)
+        assert.equal(planRemoveCalls, 2)
+        assert.equal(harness.workers.length, 2)
+        assert.ok(result.operation.residue_service_ids.length > 0)
+
+        const replacement = harness.createRuntime()
+        const retried = await replacement.stop({ profileId: 'thought-core-v0' })
+        assert.equal(retried.ok, true)
+        assert.equal(retried.result_class, 'stopped')
+        assert.equal(retried.operation.cleanup, 'clear')
+        assert.equal(replacement.supervisorLease, null)
+        assert.equal(planRemoveCalls, 3)
+      }
     } finally {
       harness.cleanup()
     }
@@ -1078,6 +1167,28 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
       resolveExecutable: (name) => executables[name],
       nonceFactory: () => '00112233445566778899aabbccddeeff'
     })
+    const privateRuntimeRoot = path.join(workspace, 'state')
+    const planPath = writePrivateServicePlan(compiled, privateRuntimeRoot)
+    const recovered = readPrivateServicePlan({
+      privateRuntimeRoot,
+      configIdentity: configIdentityFor(effectiveOptions),
+      authority
+    })
+    assert.deepEqual(recovered.document, compiled.document)
+    assert.deepEqual(recovered.included_service_ids, compiled.included_service_ids)
+    assert.equal(recovered.plan_path, planPath)
+    assert.equal(recovered.powershell_path, executables.pwsh)
+    const driftedPlan = JSON.parse(fs.readFileSync(planPath, 'utf8'))
+    driftedPlan.effective_config_sha256 = 'f'.repeat(64)
+    fs.writeFileSync(planPath, `${JSON.stringify(driftedPlan)}\n`, 'utf8')
+    assert.throws(
+      () => readPrivateServicePlan({
+        privateRuntimeRoot,
+        configIdentity: configIdentityFor(effectiveOptions),
+        authority
+      }),
+      (error) => error?.code === 'private_plan_identity_invalid'
+    )
     assert.equal(compiled.document.services.some((service) => service.service_id === 'voicevox'), false)
     const aituberPlan = compiled.document.services.find((service) => service.service_id === 'aituber_kit')
     const homePlan = compiled.document.services.find((service) => service.service_id === 'home_assistant_bridge')

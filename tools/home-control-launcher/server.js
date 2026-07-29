@@ -2267,11 +2267,18 @@ const reclaimManagedPortResidue = async (options) => {
 }
 
 const stopStack = async (body) => {
-  const config = readLauncherConfig()
   const activeOperation = operationState()
   const activeProfileId = activeOperation.operation_id ? activeOperation.profile_id : null
-  const requestedProfileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
-  const profileId = activeProfileId || requestedProfileId
+  let requestedProfileId
+  let profileId
+  if (activeProfileId) {
+    requestedProfileId = (body && body.profileId) || activeProfileId
+    profileId = activeProfileId
+  } else {
+    const config = readLauncherConfig()
+    requestedProfileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
+    profileId = requestedProfileId
+  }
   const profileError = requireSupervisorProfile(profileId)
   if (profileError) {
     return profileError
@@ -2279,11 +2286,7 @@ const stopStack = async (body) => {
   if (activeProfileId && requestedProfileId !== activeProfileId) {
     return unsupportedSupervisorProfilePayload(requestedProfileId)
   }
-  const options = normalizeOptions(profileId, config.options || {})
-  return launcherRuntime.stop({
-    profileId,
-    options
-  })
+  return launcherRuntime.stop({ profileId })
 }
 
 const reclaimManagedPortsFromLauncher = async (body) => {
@@ -4336,13 +4339,6 @@ const handleApi = async (request, response, requestUrl) => {
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/stop') {
     const body = await readBody(request)
-    const config = readLauncherConfig()
-    const profileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
-    const profileError = requireSupervisorProfile(profileId)
-    if (profileError) {
-      sendJson(response, 400, profileError)
-      return
-    }
     const result = await runExclusiveStackOperation(
       'stop',
       async () => stopStack(body)

@@ -235,11 +235,24 @@ function Read-LauncherPrivateServicePlans {
     try { $text = $strictUtf8.GetString($bytes) } catch { throw "launcher_private_plan_invalid" }
     if ($text.StartsWith([char]0xFEFF)) { throw "launcher_private_plan_invalid" }
     try { $document = $text | ConvertFrom-Json -Depth 32 -ErrorAction Stop } catch { throw "launcher_private_plan_invalid" }
-    Assert-LauncherExactKeys -InputObject $document -Expected @("schema_version", "graph_sha256", "binding_sha256", "services")
+    Assert-LauncherExactKeys -InputObject $document -Expected @(
+        "schema_version", "graph_sha256", "binding_sha256", "profile_id",
+        "effective_config_sha256", "camera_policy", "worker_file_path", "services"
+    )
     if ((Get-LauncherProperty $document "schema_version") -cne "launcher_private_service_plans.v1") { throw "launcher_private_plan_invalid" }
     $graphSha256 = Assert-LauncherBoundedString -Value (Get-LauncherProperty $document "graph_sha256") -Maximum 64
     $bindingSha256 = Assert-LauncherBoundedString -Value (Get-LauncherProperty $document "binding_sha256") -Maximum 64
-    if ($graphSha256 -cnotmatch $script:Sha256Pattern -or $bindingSha256 -cnotmatch $script:Sha256Pattern) { throw "launcher_private_plan_invalid" }
+    $profileId = Assert-LauncherBoundedString -Value (Get-LauncherProperty $document "profile_id") -Maximum 64
+    $effectiveConfigSha256 = Assert-LauncherBoundedString -Value (Get-LauncherProperty $document "effective_config_sha256") -Maximum 64
+    $cameraPolicy = Assert-LauncherBoundedString -Value (Get-LauncherProperty $document "camera_policy") -Maximum 64
+    $workerFilePath = Assert-LauncherBoundedString -Value (Get-LauncherProperty $document "worker_file_path") -Maximum 1024
+    if ($graphSha256 -cnotmatch $script:Sha256Pattern -or $bindingSha256 -cnotmatch $script:Sha256Pattern -or
+        $effectiveConfigSha256 -cnotmatch $script:Sha256Pattern -or $profileId -cne "thought-core-v0" -or
+        @("required", "camera_excluded_by_profile") -cnotcontains $cameraPolicy -or
+        -not [IO.Path]::IsPathFullyQualified($workerFilePath) -or
+        @("pwsh", "powershell") -cnotcontains [IO.Path]::GetFileNameWithoutExtension($workerFilePath).ToLowerInvariant()) {
+        throw "launcher_private_plan_invalid"
+    }
     $servicesValue = Get-LauncherProperty $document "services"
     if ($servicesValue -isnot [System.Collections.IEnumerable] -or $servicesValue -is [string]) { throw "launcher_private_plan_invalid" }
     $plans = @{}
@@ -259,6 +272,10 @@ function Read-LauncherPrivateServicePlans {
         SchemaVersion = "launcher_private_service_plans.v1"
         GraphSha256 = $graphSha256
         BindingSha256 = $bindingSha256
+        ProfileId = $profileId
+        EffectiveConfigSha256 = $effectiveConfigSha256
+        CameraPolicy = $cameraPolicy
+        WorkerFilePath = $workerFilePath
         Plans = $plans
     }
 }

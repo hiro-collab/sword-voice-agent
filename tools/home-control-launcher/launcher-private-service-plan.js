@@ -4,6 +4,7 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
+const { TextDecoder } = require('node:util')
 
 const { assertAuthority, canonicalJsonSha256, deepFreeze } = require('./launcher-supervisor-contract')
 
@@ -14,7 +15,21 @@ const MAX_PLAN_BYTES = 256 * 1024
 const PROFILE_ID = 'thought-core-v0'
 const EFFECTIVE_CONFIG_SCHEMA = 'launcher_effective_config.v1'
 const CAMERA_POLICIES = new Set(['required', 'camera_excluded_by_profile'])
+const SHA256 = /^[a-f0-9]{64}$/u
+const SERVICE_ID = /^[a-z][a-z0-9_]{0,63}$/u
 const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]{0,127}$/u
+const RESERVED_ENVIRONMENT_NAMES = new Set([
+  'SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE',
+  'SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF'
+])
+const PLAN_DOCUMENT_FIELDS = [
+  'schema_version', 'graph_sha256', 'binding_sha256', 'profile_id',
+  'effective_config_sha256', 'camera_policy', 'worker_file_path', 'services'
+]
+const PLAN_SERVICE_FIELDS = [
+  'service_id', 'file_path', 'arguments', 'working_directory', 'environment',
+  'remove_environment', 'clear_inherited_environment', 'listener_port'
+]
 const SAFE_CODE = new Set([
   'private_plan_authority_invalid',
   'private_plan_config_invalid',
@@ -84,6 +99,9 @@ class LauncherPrivatePlanError extends Error {
 const fail = (code) => { throw new LauncherPrivatePlanError(code) }
 const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 const loopbackHost = (value) => String(value || '').trim() === '0.0.0.0' ? '127.0.0.1' : String(value || '').trim()
+const requireExactKeys = (value, expected, code = 'private_plan_config_invalid') => {
+  if (!isPlainObject(value) || Object.keys(value).sort().join(',') !== [...expected].sort().join(',')) fail(code)
+}
 
 const exactAbsoluteDirectory = (value, { existsSync = fs.existsSync, lstatSync = fs.lstatSync } = {}) => {
   if (typeof value !== 'string' || !path.isAbsolute(value) || value.includes('\u0000')) fail('private_plan_root_invalid')
@@ -143,7 +161,8 @@ const boundedEnvironment = (value) => {
   if (!isPlainObject(value) || Object.keys(value).length > 64) fail('private_plan_config_invalid')
   const result = {}
   for (const [name, raw] of Object.entries(value)) {
-    if (!ENVIRONMENT_NAME.test(name) || typeof raw !== 'string' || raw.length > 8192 || raw.includes('\u0000')) {
+    if (RESERVED_ENVIRONMENT_NAMES.has(name) || !ENVIRONMENT_NAME.test(name) ||
+        typeof raw !== 'string' || raw.length > 8192 || raw.includes('\u0000')) {
       fail('private_plan_config_invalid')
     }
     result[name] = raw
@@ -591,6 +610,7 @@ const compilePrivateServicePlan = ({
     profile_id: derivedConfigIdentity.profile_id,
     effective_config_sha256: derivedConfigIdentity.effective_config_sha256,
     camera_policy: derivedConfigIdentity.camera_policy,
+    worker_file_path: powershell,
     services: plans
   }
   const serialized = JSON.stringify(document)
@@ -611,6 +631,120 @@ const resolvePlanPaths = (privateRuntimeRoot) => {
     root,
     planPath: path.join(root, PLAN_FILE),
     temporaryPath: path.join(root, PLAN_TEMP_FILE)
+  }
+}
+
+const boundedStringArray = (value, { maximumItems = 128, maximumLength = 4096, pattern = null } = {}) => {
+  if (!Array.isArray(value) || value.length > maximumItems) fail('private_plan_config_invalid')
+  const result = value.map((item) => {
+    if (typeof item !== 'string' || item.length > maximumLength || item.includes('\u0000') || (pattern && !pattern.test(item))) {
+      fail('private_plan_config_invalid')
+    }
+    return item
+  })
+  if (new Set(result).size !== result.length && pattern === ENVIRONMENT_NAME) fail('private_plan_config_invalid')
+  return result
+}
+
+const validatePersistedPlanDocument = ({ document, configIdentity, authority, io }) => {
+  try { assertAuthority(authority) } catch { fail('private_plan_authority_invalid') }
+  requireExactKeys(document, PLAN_DOCUMENT_FIELDS)
+  requireExactKeys(configIdentity, ['profile_id', 'effective_config_sha256', 'camera_policy'], 'private_plan_identity_invalid')
+  if (document.schema_version !== 'launcher_private_service_plans.v1' ||
+      document.graph_sha256 !== authority.identities.graphSha256 ||
+      document.binding_sha256 !== authority.identities.bindingSha256 ||
+      document.profile_id !== configIdentity.profile_id || document.profile_id !== authority.graph.profile_id ||
+      document.effective_config_sha256 !== configIdentity.effective_config_sha256 ||
+      !SHA256.test(document.effective_config_sha256) ||
+      document.camera_policy !== configIdentity.camera_policy || !CAMERA_POLICIES.has(document.camera_policy)) {
+    fail('private_plan_identity_invalid')
+  }
+  const workerFilePath = exactAbsoluteFile(document.worker_file_path, io)
+  if (!['pwsh', 'powershell'].includes(path.basename(workerFilePath, path.extname(workerFilePath)).toLowerCase())) {
+    fail('private_plan_identity_invalid')
+  }
+  if (!Array.isArray(document.services) || document.services.length > authority.graph.services.length) {
+    fail('private_plan_config_invalid')
+  }
+  const planIds = new Set()
+  for (const plan of document.services) {
+    requireExactKeys(plan, PLAN_SERVICE_FIELDS)
+    if (typeof plan.service_id !== 'string' || !SERVICE_ID.test(plan.service_id) || planIds.has(plan.service_id)) {
+      fail('private_plan_config_invalid')
+    }
+    const spec = authority.graph.services.find((service) => service.service_id === plan.service_id)
+    if (!spec || spec.ownership !== 'owned') fail('private_plan_config_invalid')
+    exactAbsoluteFile(plan.file_path, io)
+    exactAbsoluteDirectory(plan.working_directory, io)
+    boundedStringArray(plan.arguments)
+    boundedEnvironment(plan.environment)
+    const removed = boundedStringArray(plan.remove_environment, {
+      maximumItems: 64,
+      maximumLength: 128,
+      pattern: ENVIRONMENT_NAME
+    })
+    if (removed.some((name) => RESERVED_ENVIRONMENT_NAMES.has(name)) ||
+        plan.clear_inherited_environment !== true || !Number.isSafeInteger(plan.listener_port) ||
+        plan.listener_port !== Number(spec.port.loopback_port || 0)) {
+      fail('private_plan_config_invalid')
+    }
+    planIds.add(plan.service_id)
+  }
+  for (const spec of authority.graph.services) {
+    if (spec.ownership === 'external' && planIds.has(spec.service_id)) fail('private_plan_config_invalid')
+    if (spec.ownership === 'owned' && spec.requirement === 'required' && !planIds.has(spec.service_id)) {
+      fail('private_plan_config_invalid')
+    }
+  }
+  if (document.camera_policy === 'camera_excluded_by_profile' &&
+      (planIds.has('mediapipe_camera_hub_stack') || planIds.has('vision_snapshot_processor'))) {
+    fail('private_plan_identity_invalid')
+  }
+  if (document.camera_policy === 'required' && !planIds.has('mediapipe_camera_hub_stack')) {
+    fail('private_plan_identity_invalid')
+  }
+  return [...planIds].sort()
+}
+
+const readPrivateServicePlan = ({
+  privateRuntimeRoot,
+  configIdentity,
+  authority,
+  io = {}
+}) => {
+  const paths = resolvePlanPaths(privateRuntimeRoot)
+  const effectiveIo = {
+    existsSync: io.existsSync || fs.existsSync,
+    lstatSync: io.lstatSync || fs.lstatSync
+  }
+  const readFileSync = io.readFileSync || fs.readFileSync
+  try {
+    exactAbsoluteDirectory(paths.root, effectiveIo)
+    exactAbsoluteFile(paths.planPath, effectiveIo)
+    const bytes = readFileSync(paths.planPath)
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_PLAN_BYTES ||
+        (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)) {
+      fail('private_plan_config_invalid')
+    }
+    let text
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) } catch { fail('private_plan_config_invalid') }
+    let document
+    try { document = JSON.parse(text) } catch { fail('private_plan_config_invalid') }
+    const includedServiceIds = validatePersistedPlanDocument({
+      document,
+      configIdentity,
+      authority,
+      io: effectiveIo
+    })
+    return deepFreeze({
+      document,
+      plan_path: paths.planPath,
+      powershell_path: document.worker_file_path,
+      included_service_ids: includedServiceIds
+    })
+  } catch (error) {
+    if (error instanceof LauncherPrivatePlanError) throw error
+    fail('private_plan_config_invalid')
   }
 }
 
@@ -656,6 +790,7 @@ module.exports = {
   PROFILE_ID,
   compilePrivateServicePlan,
   deriveEffectiveConfigIdentity,
+  readPrivateServicePlan,
   removePrivateServicePlan,
   resolvePlanPaths,
   writePrivateServicePlan

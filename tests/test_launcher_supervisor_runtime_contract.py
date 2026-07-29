@@ -26,7 +26,7 @@ def between(source: str, start: str, end: str) -> str:
 class LauncherSupervisorRuntimeContractTest(TestCase):
     def test_preflight_is_persisted_before_first_worker_exchange(self) -> None:
         runtime = read(RUNTIME)
-        start = between(runtime, "  async start ({ profileId, options, configIdentity })", "  async stop ({ profileId, options })")
+        start = between(runtime, "  async start ({ profileId, options, configIdentity })", "  async stop ({ profileId })")
 
         identity_index = start.index("validatedConfigIdentity = deriveEffectiveConfigIdentity({")
         inflight_index = start.index("if (this.inflight)")
@@ -49,7 +49,7 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
 
     def test_node_owns_external_probe_rollback_and_finalization(self) -> None:
         runtime = read(RUNTIME)
-        start = between(runtime, "  async start ({ profileId, options, configIdentity })", "  async stop ({ profileId, options })")
+        start = between(runtime, "  async start ({ profileId, options, configIdentity })", "  async stop ({ profileId })")
         external = between(
             start,
             "if (spec.ownership === 'external')",
@@ -103,6 +103,30 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
         self.assertIn("process.on('SIGINT', () => { void finalizeSignalShutdown() })", server)
         self.assertIn("process.on('SIGTERM', () => { void finalizeSignalShutdown() })", server)
         self.assertNotIn("SYSTEM_SCRIPT", server)
+
+    def test_active_stop_uses_durable_operation_and_persisted_plan_only(self) -> None:
+        runtime = read(RUNTIME)
+        server = read(SERVER)
+        stop = between(runtime, "  async stop ({ profileId })", "module.exports")
+        stop_stack = between(server, "const stopStack", "const reclaimManagedPortsFromLauncher")
+        stop_route = between(
+            server,
+            "requestUrl.pathname === '/api/stop'",
+            "requestUrl.pathname === '/api/reclaim-managed-ports'",
+        )
+
+        self.assertIn("compiled = this.readPersistedPlan(this.current)", stop)
+        self.assertNotIn("this.compile(", stop)
+        self.assertNotIn("options", stop)
+        self.assertIn("const activeOperation = operationState()", stop_stack)
+        self.assertLess(
+            stop_stack.index("const activeOperation = operationState()"),
+            stop_stack.index("const config = readLauncherConfig()"),
+        )
+        self.assertIn("if (activeProfileId)", stop_stack)
+        self.assertIn("return launcherRuntime.stop({ profileId })", stop_stack)
+        self.assertNotIn("readLauncherConfig", stop_route)
+        self.assertNotIn("requireSupervisorProfile", stop_route)
 
     def test_system_facade_is_loopback_only_and_has_no_legacy_fallback(self) -> None:
         system = read(SYSTEM)
