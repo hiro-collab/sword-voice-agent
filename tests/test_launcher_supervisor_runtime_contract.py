@@ -155,11 +155,17 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
             "arguments",
             "powershell_path",
             "private_plan",
+            "private_plan_sha256",
+            "worker_executable_class",
+            "worker_executable_sha256",
             "pid",
         ):
             self.assertNotIn(private_name, public_projection)
         self.assertIn("raw_private_publication_flags: false", public_projection)
         self.assertIn("compilePrivateServicePlan", private_plan)
+        self.assertIn("verifyTrustedWindowsWorkerExecutable", private_plan)
+        self.assertIn("serializePrivateServicePlan", private_plan)
+        self.assertIn("planIdentity: {", runtime)
         self.assertIn("requireCanonicalOptions", private_plan)
         self.assertIn("const fixedPorts =", private_plan)
         self.assertIn("HomeAssistantBridgeHost", private_plan)

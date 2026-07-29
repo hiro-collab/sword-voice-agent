@@ -1,6 +1,7 @@
 'use strict'
 
 const assert = require('node:assert/strict')
+const crypto = require('node:crypto')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -18,6 +19,8 @@ const {
   compilePrivateServicePlan,
   deriveEffectiveConfigIdentity,
   readPrivateServicePlan,
+  serializePrivateServicePlan,
+  verifyTrustedWindowsWorkerExecutable,
   writePrivateServicePlan
 } = require('../tools/home-control-launcher/launcher-private-service-plan')
 const { LauncherProbeExecutorError } = require('../tools/home-control-launcher/launcher-probe-executor')
@@ -34,6 +37,45 @@ const requiredOwnedIds = authority.graph.services
 const allOwnedIds = authority.graph.services
   .filter((service) => service.ownership === 'owned')
   .map((service) => service.service_id)
+const PLAN_IDENTITY = Object.freeze({
+  private_plan_sha256: '1'.repeat(64),
+  worker_executable_class: 'powershell_7_program_files',
+  worker_executable_sha256: '2'.repeat(64)
+})
+const simulatedWindowsReparseIo = ({ filePath, reparseName, onWorkerRead }) => {
+  const target = path.win32.normalize(filePath)
+  const parsed = path.win32.parse(target)
+  const segments = target.slice(parsed.root.length).split(/[\\/]+/u).filter(Boolean)
+  const key = (value) => path.win32.normalize(value).toLowerCase()
+  const parentIndex = new Map()
+  for (let index = 0; index < segments.length; index += 1) {
+    parentIndex.set(key(path.win32.join(parsed.root, ...segments.slice(0, index))), index)
+  }
+  return {
+    existsSync: () => true,
+    lstatSync: (candidate) => {
+      const leaf = key(candidate) === key(target)
+      return { isFile: () => leaf, isDirectory: () => !leaf, isSymbolicLink: () => false }
+    },
+    readdirSync: (parent) => {
+      const index = parentIndex.get(key(parent))
+      if (index === undefined) throw new Error('PRIVATE_REPARSE_PARENT')
+      const name = segments[index]
+      const leaf = index === segments.length - 1
+      return [{
+        name,
+        isFile: () => leaf,
+        isDirectory: () => !leaf,
+        isSymbolicLink: () => name.toLowerCase() === reparseName.toLowerCase()
+      }]
+    },
+    realpathSync: (candidate) => candidate,
+    readFileSync: () => {
+      onWorkerRead()
+      return Buffer.from('PRIVATE_WORKER_BYTES')
+    }
+  }
+}
 
 const resultFor = (request, values = {}) => {
   const defaults = request.action === 'start'
@@ -153,6 +195,7 @@ const makeHarness = ({
       services: []
     },
     powershell_path: process.execPath,
+    ...PLAN_IDENTITY,
     included_service_ids: [...includedServiceIds]
   }
   const store = {
@@ -242,6 +285,7 @@ const makeHarness = ({
     root,
     runtime,
     createRuntime,
+    compiled,
     events,
     workers,
     cleanup: () => fs.rmSync(root, { recursive: true, force: true })
@@ -380,6 +424,50 @@ test('a fresh runtime stops from the immutable start plan without recompiling dr
     for (const privateMarker of ['file_path', 'working_directory', '"arguments":', '"environment":']) {
       assert.equal(JSON.stringify(stopped).includes(privateMarker), false)
     }
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('fresh Start recovers with the joined operation plan identity before publishing replacement identity', async () => {
+  let harness
+  let compileCalls = 0
+  const replacementIdentity = Object.freeze({
+    private_plan_sha256: '3'.repeat(64),
+    worker_executable_class: 'windows_powershell_system32',
+    worker_executable_sha256: '4'.repeat(64)
+  })
+  const recoveredIdentities = []
+  harness = makeHarness({
+    operationPrefix: 'planidentity',
+    planCompiler: () => {
+      compileCalls += 1
+      return compileCalls === 1
+        ? harness.compiled
+        : Object.freeze({ ...harness.compiled, ...replacementIdentity })
+    },
+    planReader: ({ planIdentity }) => {
+      recoveredIdentities.push(planIdentity)
+      return Object.freeze({ ...harness.compiled, plan_path: __filename })
+    }
+  })
+  try {
+    const first = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(first.result_class, 'ready')
+    assert.equal(harness.runtime.releaseSupervisorLease(), true)
+
+    const replacement = harness.createRuntime()
+    const restarted = await replacement.start({
+      profileId: 'thought-core-v0',
+      options: canonicalOptions,
+      configIdentity: CONFIG_IDENTITY
+    })
+    assert.equal(restarted.result_class, 'ready')
+    assert.deepEqual(recoveredIdentities, [PLAN_IDENTITY])
+    assert.equal(replacement.current.private_plan_sha256, replacementIdentity.private_plan_sha256)
+    assert.equal(replacement.current.worker_executable_class, replacementIdentity.worker_executable_class)
+    assert.equal(replacement.current.worker_executable_sha256, replacementIdentity.worker_executable_sha256)
+    assert.equal(harness.workers.length, 3)
   } finally {
     harness.cleanup()
   }
@@ -813,7 +901,7 @@ test('unknown supervisor crash attribution remains launcher_supervisor', () => {
   const operationId = 'lop_crashresponsible'
   const operation = reducer.reduce(
     reducer.reduce(
-      reducer.startOperation(null, operationId, authority, CONFIG_IDENTITY).operation,
+      reducer.startOperation(null, operationId, authority, CONFIG_IDENTITY, PLAN_IDENTITY).operation,
       { event_type: 'preflight_started', operation_id: operationId },
       authority
     ),
@@ -1027,6 +1115,33 @@ test('private plan preflight rejects noncanonical profiles before operation-stor
   })
 })
 
+test('private plan preflight rejects an intermediate non-symlink Windows reparse before worker bytes or actions', async () => {
+  const workerPath = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
+  let workerReads = 0
+  const harness = makeHarness({
+    planCompiler: () => verifyTrustedWindowsWorkerExecutable({
+      filePath: workerPath,
+      io: simulatedWindowsReparseIo({
+        filePath: workerPath,
+        reparseName: 'PowerShell',
+        onWorkerRead: () => { workerReads += 1 }
+      })
+    })
+  })
+  try {
+    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(result.ok, false)
+    assert.equal(result.error_class, 'private_plan_invalid')
+    assert.equal(workerReads, 0)
+    assert.equal(harness.workers.length, 0)
+    assert.equal(harness.events.some((event) => event.startsWith('exchange:')), false)
+    assert.equal(JSON.stringify(result).includes(workerPath), false)
+    assert.equal(JSON.stringify(result).includes('PRIVATE_REPARSE_PARENT'), false)
+  } finally {
+    harness.cleanup()
+  }
+})
+
 test('idle stop does not compile a private plan or create a worker', async () => {
   let compileCalls = 0
   const harness = makeHarness({
@@ -1072,12 +1187,16 @@ test('public projection exposes only bounded reducer fields', () => {
     'services'
   ])
   assert.equal(projected.raw_private_publication_flags, false)
+  assert.equal(Object.hasOwn(projected, 'private_plan_sha256'), false)
+  assert.equal(Object.hasOwn(projected, 'worker_executable_class'), false)
+  assert.equal(Object.hasOwn(projected, 'worker_executable_sha256'), false)
 })
 
 const reducerFixture = () => ({
   profile_id: CONFIG_IDENTITY.profile_id,
   effective_config_sha256: CONFIG_IDENTITY.effective_config_sha256,
   camera_policy: CONFIG_IDENTITY.camera_policy,
+  ...PLAN_IDENTITY,
   operation_id: 'lop_publicfixture01',
   intent: 'start',
   phase: 'ready',
@@ -1128,6 +1247,15 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
     fs.writeFileSync(target, content, 'utf8')
     return target
   }
+  const verifyTestWorkerExecutable = ({ filePath, expectedClass = null, expectedSha256 = null }) => {
+    if (expectedClass !== null) assert.equal(expectedClass, PLAN_IDENTITY.worker_executable_class)
+    if (expectedSha256 !== null) assert.equal(expectedSha256, PLAN_IDENTITY.worker_executable_sha256)
+    return Object.freeze({
+      worker_file_path: path.resolve(filePath),
+      worker_executable_class: PLAN_IDENTITY.worker_executable_class,
+      worker_executable_sha256: PLAN_IDENTITY.worker_executable_sha256
+    })
+  }
   try {
     for (const relative of [
       'organs/action/home-assistant-server/config',
@@ -1165,6 +1293,7 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
         SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE: 'must-not-be-inherited'
       },
       resolveExecutable: (name) => executables[name],
+      verifyWorkerExecutable: verifyTestWorkerExecutable,
       nonceFactory: () => '00112233445566778899aabbccddeeff'
     })
     const privateRuntimeRoot = path.join(workspace, 'state')
@@ -1172,12 +1301,21 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
     const recovered = readPrivateServicePlan({
       privateRuntimeRoot,
       configIdentity: configIdentityFor(effectiveOptions),
+      planIdentity: {
+        private_plan_sha256: compiled.private_plan_sha256,
+        worker_executable_class: compiled.worker_executable_class,
+        worker_executable_sha256: compiled.worker_executable_sha256
+      },
+      verifyWorkerExecutable: verifyTestWorkerExecutable,
       authority
     })
     assert.deepEqual(recovered.document, compiled.document)
     assert.deepEqual(recovered.included_service_ids, compiled.included_service_ids)
     assert.equal(recovered.plan_path, planPath)
     assert.equal(recovered.powershell_path, executables.pwsh)
+    const canonicalBytes = fs.readFileSync(planPath)
+    assert.equal(canonicalBytes.toString('utf8'), serializePrivateServicePlan(compiled.document))
+    assert.equal(crypto.createHash('sha256').update(canonicalBytes).digest('hex'), compiled.private_plan_sha256)
     const driftedPlan = JSON.parse(fs.readFileSync(planPath, 'utf8'))
     driftedPlan.effective_config_sha256 = 'f'.repeat(64)
     fs.writeFileSync(planPath, `${JSON.stringify(driftedPlan)}\n`, 'utf8')
@@ -1185,6 +1323,12 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
       () => readPrivateServicePlan({
         privateRuntimeRoot,
         configIdentity: configIdentityFor(effectiveOptions),
+        planIdentity: {
+          private_plan_sha256: compiled.private_plan_sha256,
+          worker_executable_class: compiled.worker_executable_class,
+          worker_executable_sha256: compiled.worker_executable_sha256
+        },
+        verifyWorkerExecutable: verifyTestWorkerExecutable,
         authority
       }),
       (error) => error?.code === 'private_plan_identity_invalid'
@@ -1278,6 +1422,7 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
         ENVIRONMENT_API_TOKEN: 'fedcba9876543210'
       },
       resolveExecutable: (name) => executables[name],
+      verifyWorkerExecutable: verifyTestWorkerExecutable,
       nonceFactory: () => 'ffeeddccbbaa99887766554433221100'
     })
     assert.equal(
@@ -1311,6 +1456,7 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
           ENVIRONMENT_API_TOKEN: 'fedcba9876543210'
         },
         resolveExecutable: (name) => executables[name],
+        verifyWorkerExecutable: verifyTestWorkerExecutable,
         nonceFactory: () => '00112233445566778899aabbccddeeff'
       }),
       (error) => error?.code === 'private_plan_config_invalid'
@@ -1334,6 +1480,7 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
           ENVIRONMENT_API_TOKEN: 'fedcba9876543210'
         },
         resolveExecutable: (name) => executables[name],
+        verifyWorkerExecutable: verifyTestWorkerExecutable,
         nonceFactory: () => '00112233445566778899aabbccddeeff'
       }),
       (error) => error?.code === 'private_plan_config_invalid'
@@ -1357,6 +1504,7 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
           ENVIRONMENT_API_TOKEN: 'fedcba9876543210'
         },
         resolveExecutable: (name) => executables[name],
+        verifyWorkerExecutable: verifyTestWorkerExecutable,
         nonceFactory: () => '00112233445566778899aabbccddeeff'
       }),
       (error) => error?.code === 'private_plan_config_invalid'

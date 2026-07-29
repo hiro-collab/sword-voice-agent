@@ -26,9 +26,9 @@ FROZEN_N0 = {
     "contracts/launcher/generated/launcher-service-graph.standard.v1.binding.json": "3a74d2c620f55c8203b6a1e9cc66c631c1867d131d69362743fe73e300bd9229",
     "ops/manifests/launcher-service-graph.standard.v1.json": "dc548b8ddd9528af3a6d10325f868af200fe3d85d1e88182cdcf32407506ea77",
     "tools/home-control-launcher/launcher-supervisor-contract.js": "eed1faaa0d3b75c068f608ac6dd83ae26ffbcf997e0395d914b3de25b36a68f8",
-    "tools/home-control-launcher/launcher-supervisor-reducer.js": "faa0f9dccd0e7997efdcb9f2ce73e047a6f944daada4d0698505e6fab76c5c9a",
-    "tools/home-control-launcher/launcher-operation-store.js": "e238960f92b1df664c6ab2c03144b8c5a4c0487222ccbc8f5efedba76b494c4e",
-    "tools/home-control-launcher/server.js": "811488b149c0919b50ae887d695fdc63e4616e0993b2647ee6143e6114c82bfe",
+    "tools/home-control-launcher/launcher-supervisor-reducer.js": "4188cddeab48b712655c26efe0b8bd5d20c126fcd0df47d477ffdf3cd7562615",
+    "tools/home-control-launcher/launcher-operation-store.js": "fd4854c4696205142e366021b37bbbd6f8bf096ac31a8a3144010fb9f76d6d3c",
+    "tools/home-control-launcher/server.js": "2f9d6ca281374951241b69e7bd73a1bca1a250793ab7b2af5bd58978a514f219",
     "ops/scripts/home-control-stack/start-home-control-stack.ps1": "d5f1b2556e3a71520b5117eef8774326b70b05221064122dccc9c1296ac8d1ec",
     "ops/scripts/home-control-stack/stop-home-control-stack.ps1": "acdb237f13f76eabfd743f24619b8b5c90512a7f1149ab55232239d476e67619",
     "ops/scripts/home-control-stack/status-home-control-stack.ps1": "db2ed1f9e7f6e21785d4a081cc35db818d1fbbd4e9c2b7e88d40ddbb628eda44",
@@ -51,6 +51,8 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
         self.assertIn("correlateWorkerResult", client)
         self.assertIn("createOwnerLivenessObserver", client)
         self.assertIn("SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE", client)
+        self.assertIn("SWORD_LAUNCHER_N1_PRIVATE_PLAN_SHA256", client)
+        self.assertIn("verifyTrustedWindowsWorkerExecutable", client)
         self.assertIn("exactAbsoluteFile(powershellPath)", client)
         self.assertIn("DEFAULT_RESPONSE_GRACE_MS", client)
         self.assertIn("this.terminal = true", client)
@@ -66,7 +68,9 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
         self.assertIn("IsProcessInJob", worker)
         self.assertIn("finally {", worker)
         self.assertIn("$record.Native.Dispose()", worker)
-        self.assertIn('$ReservedEnvironmentNames = @("SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE", "SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF")', worker)
+        self.assertIn('"SWORD_LAUNCHER_N1_PRIVATE_PLAN_SHA256"', worker)
+        self.assertIn("-ExpectedPlanSha256 $ExpectedPlanSha256", worker)
+        self.assertIn("ComputeHash($bytes)", plan)
         self.assertIn("$environment.Remove($name)", worker)
         self.assertNotIn("Get-ChildItem Env:", worker)
         self.assertIn('schema_version = "launcher_worker.v2"', worker)
@@ -262,17 +266,21 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
             test_environment = os.environ.copy()
             test_environment["PATH"] = os.pathsep.join((str(executable_root), test_environment.get("PATH", "")))
             plan_path = directory_path / "private-plan.json"
-            valid_command = "Import-Module $args[0] -Force; Read-LauncherPrivateServicePlans -Path $args[1] | Out-Null"
+            valid_command = (
+                "Import-Module $args[0] -Force; "
+                "Read-LauncherPrivateServicePlans -Path $args[1] -ExpectedPlanSha256 $args[2] | Out-Null"
+            )
             reject_command = (
                 "Import-Module $args[0] -Force;"
-                "try { Read-LauncherPrivateServicePlans -Path $args[1] | Out-Null; exit 2 } "
+                "try { Read-LauncherPrivateServicePlans -Path $args[1] -ExpectedPlanSha256 $args[2] | Out-Null; exit 2 } "
                 "catch { if($_.Exception.Message -cne 'launcher_private_plan_invalid'){exit 3}; exit 0 }"
             )
 
             def run_reader(command: str) -> subprocess.CompletedProcess[str]:
                 plan_path.write_text(json.dumps(document), encoding="utf-8")
+                plan_sha256 = hashlib.sha256(plan_path.read_bytes()).hexdigest()
                 return subprocess.run(
-                    [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-CommandWithArgs", command, str(PLAN), str(plan_path)],
+                    [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-CommandWithArgs", command, str(PLAN), str(plan_path), plan_sha256],
                     cwd=ROOT,
                     check=False,
                     capture_output=True,
@@ -290,6 +298,7 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
 
             for reserved_name in (
                 "SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE",
+                "SWORD_LAUNCHER_N1_PRIVATE_PLAN_SHA256",
                 "SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF",
             ):
                 document["services"][0]["environment"] = {

@@ -1,12 +1,12 @@
 {
-  "binding_sha256": "5351357288239d957ca949872c9b8aaf893373ce4f61bb03340818c924a3dd3c",
+  "binding_sha256": "be877b223f8bd7af14a8430ff25a49e0aa1b6ae9422992fec745ae053f0b68c8",
   "binding": {
     "binding_version": "launcher_service_graph.binding.v2",
     "text_hash_mode": "utf8_lf_v1",
     "profile_id": "thought-core-v0",
     "graph_sha256": "d5514bcbdd1e1499ac7fc025ea985d39cef83d3dff75552fc93296d7d3172b23",
     "graph_schema_sha256": "263b5e7093fce33cd94769a910cecf837b522ca03cc75294ce815135d62e3ee0",
-    "operation_schema_sha256": "a894462a8647732ae609b588010514351247591de5cc9aecb5873af7cf672b9a",
+    "operation_schema_sha256": "758139f1942ca790257b9874ace62cc58b384f6d433d2f9cf5961b9708f77576",
     "worker_schema_sha256": "801efc3bbf58b940dd2f157eba0ebab632ea0638795f268f9596463bd9ae996c",
     "reducer_vectors_sha256": "a615610293e5eb6c820e4a96d701179b27194627b9d0119afa75fbb288899602",
     "probe_schema_sha256": "2df1303b021adfa4e7eb2a1271ec1d5b358f6864a26a8ba5d9b81cf4b0b03872",

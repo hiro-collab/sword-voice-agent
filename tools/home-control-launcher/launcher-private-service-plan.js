@@ -12,6 +12,7 @@ const PLAN_DIRECTORY = 'launcher-private-plan.v1'
 const PLAN_FILE = 'launcher-private-service-plan.v1.json'
 const PLAN_TEMP_FILE = 'launcher-private-service-plan.v1.json.tmp'
 const MAX_PLAN_BYTES = 256 * 1024
+const MAX_WORKER_EXECUTABLE_BYTES = 64 * 1024 * 1024
 const PROFILE_ID = 'thought-core-v0'
 const EFFECTIVE_CONFIG_SCHEMA = 'launcher_effective_config.v1'
 const CAMERA_POLICIES = new Set(['required', 'camera_excluded_by_profile'])
@@ -20,8 +21,13 @@ const SERVICE_ID = /^[a-z][a-z0-9_]{0,63}$/u
 const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]{0,127}$/u
 const RESERVED_ENVIRONMENT_NAMES = new Set([
   'SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE',
+  'SWORD_LAUNCHER_N1_PRIVATE_PLAN_SHA256',
   'SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF'
 ])
+const TRUSTED_WINDOWS_WORKERS = Object.freeze({
+  powershell_7_program_files: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+  windows_powershell_system32: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+})
 const PLAN_DOCUMENT_FIELDS = [
   'schema_version', 'graph_sha256', 'binding_sha256', 'profile_id',
   'effective_config_sha256', 'camera_policy', 'worker_file_path', 'services'
@@ -101,6 +107,84 @@ const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && 
 const loopbackHost = (value) => String(value || '').trim() === '0.0.0.0' ? '127.0.0.1' : String(value || '').trim()
 const requireExactKeys = (value, expected, code = 'private_plan_config_invalid') => {
   if (!isPlainObject(value) || Object.keys(value).sort().join(',') !== [...expected].sort().join(',')) fail(code)
+}
+
+const canonicalJsonValue = (value) => {
+  if (Array.isArray(value)) return `[${value.map(canonicalJsonValue).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJsonValue(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+const serializePrivateServicePlan = (document) => `${canonicalJsonValue(document)}\n`
+const sha256Bytes = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex')
+const normalizedWindowsPath = (value) => path.win32.normalize(value).toLowerCase()
+
+const rejectReparseChain = (filePath, { lstatSync, readdirSync }) => {
+  const parsed = path.win32.parse(filePath)
+  if (!/^[A-Za-z]:\\$/u.test(parsed.root)) fail('private_plan_identity_invalid')
+  const segments = filePath.slice(parsed.root.length).split(/[\\/]+/u).filter(Boolean)
+  let cursor = parsed.root
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index]
+    const entries = readdirSync(cursor, { withFileTypes: true })
+    if (!Array.isArray(entries)) fail('private_plan_identity_invalid')
+    const matches = entries.filter((entry) => (
+      typeof entry?.name === 'string' && entry.name.toLowerCase() === segment.toLowerCase()
+    ))
+    if (matches.length !== 1) fail('private_plan_identity_invalid')
+    const entry = matches[0]
+    if (typeof entry.isSymbolicLink !== 'function' || typeof entry.isDirectory !== 'function' ||
+        typeof entry.isFile !== 'function' || entry.isSymbolicLink()) fail('private_plan_identity_invalid')
+    const leaf = index === segments.length - 1
+    if ((leaf && !entry.isFile()) || (!leaf && !entry.isDirectory())) fail('private_plan_identity_invalid')
+    cursor = path.win32.join(cursor, entry.name)
+    const stat = lstatSync(cursor)
+    if (!stat || typeof stat.isSymbolicLink !== 'function' || typeof stat.isDirectory !== 'function' ||
+        typeof stat.isFile !== 'function' || stat.isSymbolicLink() ||
+        (leaf && !stat.isFile()) || (!leaf && !stat.isDirectory())) fail('private_plan_identity_invalid')
+  }
+}
+
+const verifyTrustedWindowsWorkerExecutable = ({
+  filePath,
+  expectedClass = null,
+  expectedSha256 = null,
+  io = {}
+}) => {
+  const existsSync = io.existsSync || fs.existsSync
+  const lstatSync = io.lstatSync || fs.lstatSync
+  const readdirSync = io.readdirSync || fs.readdirSync
+  const readFileSync = io.readFileSync || fs.readFileSync
+  const realpathSync = io.realpathSync || fs.realpathSync.native
+  const candidate = exactAbsoluteFile(filePath, { existsSync, lstatSync })
+  let canonicalPath
+  try {
+    rejectReparseChain(candidate, { lstatSync, readdirSync })
+    canonicalPath = realpathSync(candidate)
+    rejectReparseChain(canonicalPath, { lstatSync, readdirSync })
+  } catch (error) {
+    if (error instanceof LauncherPrivatePlanError) throw error
+    fail('private_plan_identity_invalid')
+  }
+  const workerExecutableClass = Object.entries(TRUSTED_WINDOWS_WORKERS).find(([, trustedPath]) => (
+    normalizedWindowsPath(canonicalPath) === normalizedWindowsPath(trustedPath)
+  ))?.[0]
+  if (!workerExecutableClass || (expectedClass !== null && workerExecutableClass !== expectedClass)) {
+    fail('private_plan_identity_invalid')
+  }
+  let bytes
+  try { bytes = readFileSync(canonicalPath) } catch { fail('private_plan_identity_invalid') }
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_WORKER_EXECUTABLE_BYTES) {
+    fail('private_plan_identity_invalid')
+  }
+  const workerExecutableSha256 = sha256Bytes(bytes)
+  if (expectedSha256 !== null && workerExecutableSha256 !== expectedSha256) fail('private_plan_identity_invalid')
+  return deepFreeze({
+    worker_file_path: canonicalPath,
+    worker_executable_class: workerExecutableClass,
+    worker_executable_sha256: workerExecutableSha256
+  })
 }
 
 const exactAbsoluteDirectory = (value, { existsSync = fs.existsSync, lstatSync = fs.lstatSync } = {}) => {
@@ -326,13 +410,15 @@ const compilePrivateServicePlan = ({
   authority,
   processEnvironment = process.env,
   resolveExecutable = defaultResolveExecutable,
+  verifyWorkerExecutable = verifyTrustedWindowsWorkerExecutable,
   nonceFactory = () => crypto.randomBytes(16).toString('hex'),
   io = {}
 }) => {
   try { assertAuthority(authority) } catch { fail('private_plan_authority_invalid') }
   const effectiveIo = {
     existsSync: io.existsSync || fs.existsSync,
-    lstatSync: io.lstatSync || fs.lstatSync
+    lstatSync: io.lstatSync || fs.lstatSync,
+    readdirSync: io.readdirSync || fs.readdirSync
   }
   const readFileSync = io.readFileSync || fs.readFileSync
   const repo = exactAbsoluteDirectory(repositoryRoot, effectiveIo)
@@ -377,7 +463,16 @@ const compilePrivateServicePlan = ({
 
   const uv = validatedExecutable('uv', resolveExecutable, effectiveIo)
   const node = validatedExecutable('node', resolveExecutable, effectiveIo)
-  const powershell = validatedExecutable('pwsh', resolveExecutable, effectiveIo)
+  const workerIdentity = verifyWorkerExecutable({
+    filePath: validatedExecutable('pwsh', resolveExecutable, effectiveIo),
+    io: { ...effectiveIo, readFileSync }
+  })
+  requireExactKeys(workerIdentity, ['worker_file_path', 'worker_executable_class', 'worker_executable_sha256'], 'private_plan_identity_invalid')
+  if (!Object.hasOwn(TRUSTED_WINDOWS_WORKERS, workerIdentity.worker_executable_class) ||
+      typeof workerIdentity.worker_executable_sha256 !== 'string' || !SHA256.test(workerIdentity.worker_executable_sha256)) {
+    fail('private_plan_identity_invalid')
+  }
+  const powershell = exactAbsoluteFile(workerIdentity.worker_file_path, effectiveIo)
   const nextEntrypoint = exactAbsoluteFile(
     path.join(roots.aituber, 'node_modules', 'next', 'dist', 'bin', 'next'),
     effectiveIo
@@ -613,11 +708,14 @@ const compilePrivateServicePlan = ({
     worker_file_path: powershell,
     services: plans
   }
-  const serialized = JSON.stringify(document)
+  const serialized = serializePrivateServicePlan(document)
   if (Buffer.byteLength(serialized, 'utf8') > MAX_PLAN_BYTES) fail('private_plan_config_invalid')
   return deepFreeze({
     document,
     powershell_path: powershell,
+    private_plan_sha256: sha256Bytes(Buffer.from(serialized, 'utf8')),
+    worker_executable_class: workerIdentity.worker_executable_class,
+    worker_executable_sha256: workerIdentity.worker_executable_sha256,
     included_service_ids: [...planIds].sort()
   })
 }
@@ -709,13 +807,16 @@ const validatePersistedPlanDocument = ({ document, configIdentity, authority, io
 const readPrivateServicePlan = ({
   privateRuntimeRoot,
   configIdentity,
+  planIdentity,
   authority,
+  verifyWorkerExecutable = verifyTrustedWindowsWorkerExecutable,
   io = {}
 }) => {
   const paths = resolvePlanPaths(privateRuntimeRoot)
   const effectiveIo = {
     existsSync: io.existsSync || fs.existsSync,
-    lstatSync: io.lstatSync || fs.lstatSync
+    lstatSync: io.lstatSync || fs.lstatSync,
+    readdirSync: io.readdirSync || fs.readdirSync
   }
   const readFileSync = io.readFileSync || fs.readFileSync
   try {
@@ -726,20 +827,39 @@ const readPrivateServicePlan = ({
         (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)) {
       fail('private_plan_config_invalid')
     }
+    requireExactKeys(planIdentity, [
+      'private_plan_sha256', 'worker_executable_class', 'worker_executable_sha256'
+    ], 'private_plan_identity_invalid')
+    if (!SHA256.test(planIdentity.private_plan_sha256) ||
+        !Object.hasOwn(TRUSTED_WINDOWS_WORKERS, planIdentity.worker_executable_class) ||
+        !SHA256.test(planIdentity.worker_executable_sha256) ||
+        sha256Bytes(bytes) !== planIdentity.private_plan_sha256) {
+      fail('private_plan_identity_invalid')
+    }
     let text
     try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) } catch { fail('private_plan_config_invalid') }
     let document
     try { document = JSON.parse(text) } catch { fail('private_plan_config_invalid') }
+    if (text !== serializePrivateServicePlan(document)) fail('private_plan_identity_invalid')
     const includedServiceIds = validatePersistedPlanDocument({
       document,
       configIdentity,
       authority,
       io: effectiveIo
     })
+    const workerIdentity = verifyWorkerExecutable({
+      filePath: document.worker_file_path,
+      expectedClass: planIdentity.worker_executable_class,
+      expectedSha256: planIdentity.worker_executable_sha256,
+      io: { ...effectiveIo, readFileSync }
+    })
     return deepFreeze({
       document,
       plan_path: paths.planPath,
-      powershell_path: document.worker_file_path,
+      powershell_path: workerIdentity.worker_file_path,
+      private_plan_sha256: planIdentity.private_plan_sha256,
+      worker_executable_class: planIdentity.worker_executable_class,
+      worker_executable_sha256: planIdentity.worker_executable_sha256,
       included_service_ids: includedServiceIds
     })
   } catch (error) {
@@ -749,7 +869,8 @@ const readPrivateServicePlan = ({
 }
 
 const writePrivateServicePlan = (compiled, privateRuntimeRoot) => {
-  if (!compiled || !isPlainObject(compiled.document)) fail('private_plan_config_invalid')
+  if (!compiled || !isPlainObject(compiled.document) || typeof compiled.private_plan_sha256 !== 'string' ||
+      !SHA256.test(compiled.private_plan_sha256)) fail('private_plan_config_invalid')
   const paths = resolvePlanPaths(privateRuntimeRoot)
   try {
     fs.mkdirSync(paths.root, { recursive: true, mode: 0o700 })
@@ -758,8 +879,9 @@ const writePrivateServicePlan = (compiled, privateRuntimeRoot) => {
     for (const target of [paths.planPath, paths.temporaryPath]) {
       if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink()) fail('private_plan_root_invalid')
     }
-    const payload = `${JSON.stringify(compiled.document)}\n`
+    const payload = serializePrivateServicePlan(compiled.document)
     if (Buffer.byteLength(payload, 'utf8') > MAX_PLAN_BYTES) fail('private_plan_config_invalid')
+    if (sha256Bytes(Buffer.from(payload, 'utf8')) !== compiled.private_plan_sha256) fail('private_plan_identity_invalid')
     fs.writeFileSync(paths.temporaryPath, payload, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
     fs.renameSync(paths.temporaryPath, paths.planPath)
     try { fs.chmodSync(paths.planPath, 0o600) } catch {}
@@ -788,10 +910,13 @@ module.exports = {
   PLAN_DIRECTORY,
   PLAN_FILE,
   PROFILE_ID,
+  TRUSTED_WINDOWS_WORKERS,
   compilePrivateServicePlan,
   deriveEffectiveConfigIdentity,
   readPrivateServicePlan,
   removePrivateServicePlan,
   resolvePlanPaths,
+  serializePrivateServicePlan,
+  verifyTrustedWindowsWorkerExecutable,
   writePrivateServicePlan
 }

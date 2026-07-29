@@ -7,13 +7,17 @@ $ErrorActionPreference = "Stop"
 $MaximumWorkerLineBytes = 4096
 $PlanPath = [Environment]::GetEnvironmentVariable("SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE", "Process")
 if ([string]::IsNullOrWhiteSpace($PlanPath)) { throw "launcher_private_plan_missing" }
+$ExpectedPlanSha256 = [Environment]::GetEnvironmentVariable("SWORD_LAUNCHER_N1_PRIVATE_PLAN_SHA256", "Process")
+if ([string]::IsNullOrWhiteSpace($ExpectedPlanSha256) -or $ExpectedPlanSha256 -cnotmatch "^[a-f0-9]{64}$") {
+    throw "launcher_private_plan_identity_missing"
+}
 $ExpectedAuthorityLeaseProof = [Environment]::GetEnvironmentVariable("SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF", "Process")
 if ([string]::IsNullOrWhiteSpace($ExpectedAuthorityLeaseProof) -or $ExpectedAuthorityLeaseProof -cnotmatch "^lp_[a-f0-9]{64}$") {
     throw "launcher_private_lease_missing"
 }
 
 Import-Module (Join-Path $PSScriptRoot "launcher-service-plan.psm1") -Force -ErrorAction Stop
-$PlanSet = Read-LauncherPrivateServicePlans -Path $PlanPath
+$PlanSet = Read-LauncherPrivateServicePlans -Path $PlanPath -ExpectedPlanSha256 $ExpectedPlanSha256
 
 $nativeSource = @'
 using System;
@@ -373,7 +377,11 @@ $Jobs = @{}
 $ActiveSupervisorGeneration = $null
 $ActiveAuthorityLeaseProof = $null
 $SeenDispatches = @{}
-$ReservedEnvironmentNames = @("SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE", "SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF")
+$ReservedEnvironmentNames = @(
+    "SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE",
+    "SWORD_LAUNCHER_N1_PRIVATE_PLAN_SHA256",
+    "SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF"
+)
 $OperationPattern = "^lop_[a-z0-9]{8,64}$"
 $NoncePattern = "^lw_[a-z0-9]{16,64}$"
 $DispatchPattern = "^ld_[a-z0-9]{16,64}$"

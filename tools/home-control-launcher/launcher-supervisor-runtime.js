@@ -80,6 +80,19 @@ const PUBLIC_ERROR_CLASSES = new Set([
   'private_plan_invalid',
   'supervisor_runtime_failed'
 ])
+const planIdentityOf = (compiled) => {
+  const identity = {
+    private_plan_sha256: compiled?.private_plan_sha256,
+    worker_executable_class: compiled?.worker_executable_class,
+    worker_executable_sha256: compiled?.worker_executable_sha256
+  }
+  try { reducer.validatePlanIdentity(identity) } catch { throw new LauncherPrivatePlanError('private_plan_identity_invalid') }
+  return Object.freeze(identity)
+}
+const samePlanIdentity = (operation, identity) => Boolean(operation) &&
+  operation.private_plan_sha256 === identity.private_plan_sha256 &&
+  operation.worker_executable_class === identity.worker_executable_class &&
+  operation.worker_executable_sha256 === identity.worker_executable_sha256
 const SHA256 = /^[a-f0-9]{64}$/u
 
 const safeResultClass = (value) => PUBLIC_RESULT_CLASSES.has(value) ? value : 'failed'
@@ -244,6 +257,9 @@ class LauncherSupervisorRuntime {
         repositoryRoot: this.repositoryRoot,
         privatePlanPath: planPath,
         powershellPath: compiled.powershell_path,
+        privatePlanSha256: compiled.private_plan_sha256,
+        workerExecutableClass: compiled.worker_executable_class,
+        workerExecutableSha256: compiled.worker_executable_sha256,
         authority: this.authority,
         supervisorLease
       })
@@ -402,6 +418,11 @@ class LauncherSupervisorRuntime {
         effective_config_sha256: operation.effective_config_sha256,
         camera_policy: operation.camera_policy
       },
+      planIdentity: {
+        private_plan_sha256: operation.private_plan_sha256,
+        worker_executable_class: operation.worker_executable_class,
+        worker_executable_sha256: operation.worker_executable_sha256
+      },
       authority: this.authority
     })
   }
@@ -409,6 +430,8 @@ class LauncherSupervisorRuntime {
   ensureClient (compiled) {
     if (this.client) return
     if (!this.supervisorLease || !this.leaseBinding) throw new Error('supervisor_runtime_lease_missing')
+    const planIdentity = planIdentityOf(compiled)
+    if (!samePlanIdentity(this.current, planIdentity)) throw new LauncherPrivatePlanError('private_plan_identity_invalid')
     const planPath = typeof compiled?.plan_path === 'string'
       ? compiled.plan_path
       : (() => {
@@ -720,8 +743,10 @@ class LauncherSupervisorRuntime {
         return publicResult({ ok: true, resultClass: 'joined_existing', operation: current, profileId })
       }
       let compiled
+      let compiledPlanIdentity
       try {
         compiled = this.compile(profileId, options, validatedConfigIdentity)
+        compiledPlanIdentity = planIdentityOf(compiled)
         this.ensureProbeExecutor(compiled)
       } catch (error) {
         if (this.generatedProbeExecutor) {
@@ -740,6 +765,7 @@ class LauncherSupervisorRuntime {
       let decision = this.store.startAndPersist(
         this.operationIdFactory(),
         validatedConfigIdentity,
+        compiledPlanIdentity,
         this.authority,
         this.privateRuntimeRoot
       )
@@ -786,6 +812,7 @@ class LauncherSupervisorRuntime {
         decision = this.store.startAndPersist(
           this.operationIdFactory(),
           validatedConfigIdentity,
+          compiledPlanIdentity,
           this.authority,
           this.privateRuntimeRoot
         )

@@ -1,6 +1,7 @@
 'use strict'
 
 const assert = require('node:assert/strict')
+const crypto = require('node:crypto')
 const { spawn: spawnChild } = require('node:child_process')
 const { EventEmitter } = require('node:events')
 const fs = require('node:fs')
@@ -21,6 +22,7 @@ const {
   PowerShellJsonLineTransport: RawPowerShellJsonLineTransport,
   createOwnerLivenessObserver
 } = require('../tools/home-control-launcher/launcher-job-worker-client')
+const { verifyTrustedWindowsWorkerExecutable } = require('../tools/home-control-launcher/launcher-private-service-plan')
 
 const ROOT = path.resolve(__dirname, '..')
 const authority = loadAuthority(ROOT)
@@ -29,17 +31,56 @@ const CONFIG_IDENTITY = Object.freeze({
   effective_config_sha256: 'e'.repeat(64),
   camera_policy: 'camera_excluded_by_profile'
 })
+const PLAN_IDENTITY = Object.freeze({
+  private_plan_sha256: '1'.repeat(64),
+  worker_executable_class: 'powershell_7_program_files',
+  worker_executable_sha256: '2'.repeat(64)
+})
+const simulatedWindowsReparseIo = ({ filePath, reparseName, onWorkerRead }) => {
+  const target = path.win32.normalize(filePath)
+  const parsed = path.win32.parse(target)
+  const segments = target.slice(parsed.root.length).split(/[\\/]+/u).filter(Boolean)
+  const key = (value) => path.win32.normalize(value).toLowerCase()
+  const parentIndex = new Map()
+  for (let index = 0; index < segments.length; index += 1) {
+    parentIndex.set(key(path.win32.join(parsed.root, ...segments.slice(0, index))), index)
+  }
+  return {
+    existsSync: () => true,
+    lstatSync: (candidate) => {
+      const leaf = key(candidate) === key(target)
+      return { isFile: () => leaf, isDirectory: () => !leaf, isSymbolicLink: () => false }
+    },
+    readdirSync: (parent) => {
+      const index = parentIndex.get(key(parent))
+      if (index === undefined) throw new Error('PRIVATE_REPARSE_PARENT')
+      const name = segments[index]
+      const leaf = index === segments.length - 1
+      return [{
+        name,
+        isFile: () => leaf,
+        isDirectory: () => !leaf,
+        isSymbolicLink: () => name.toLowerCase() === reparseName.toLowerCase()
+      }]
+    },
+    realpathSync: (candidate) => candidate,
+    readFileSync: () => {
+      onWorkerRead()
+      return Buffer.from('PRIVATE_WORKER_BYTES')
+    }
+  }
+}
 const reducer = {
   ...rawReducer,
   createOperation: (operationId, suppliedAuthority, generation = 1) =>
-    rawReducer.createOperation(operationId, suppliedAuthority, CONFIG_IDENTITY, generation),
+    rawReducer.createOperation(operationId, suppliedAuthority, CONFIG_IDENTITY, PLAN_IDENTITY, generation),
   startOperation: (active, operationId, suppliedAuthority, generation = 1) =>
-    rawReducer.startOperation(active, operationId, suppliedAuthority, CONFIG_IDENTITY, generation)
+    rawReducer.startOperation(active, operationId, suppliedAuthority, CONFIG_IDENTITY, PLAN_IDENTITY, generation)
 }
 const store = {
   ...rawStore,
   startAndPersist: (operationId, suppliedAuthority, root, observer) =>
-    rawStore.startAndPersist(operationId, CONFIG_IDENTITY, suppliedAuthority, root, observer)
+    rawStore.startAndPersist(operationId, CONFIG_IDENTITY, PLAN_IDENTITY, suppliedAuthority, root, observer)
 }
 const OPERATION_ID = 'lop_n1synthetic01'
 const PRIVATE_RUNTIME_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'sword-launcher-worker-lease-'))
@@ -62,7 +103,23 @@ class LauncherJobWorkerClient extends RawLauncherJobWorkerClient {
 
 class PowerShellJsonLineTransport extends RawPowerShellJsonLineTransport {
   constructor (options) {
-    super({ ...options, authority, supervisorLease: SUPERVISOR_LEASE })
+    const privatePlanSha256 = options.privatePlanSha256 || crypto.createHash('sha256').update(fs.readFileSync(options.privatePlanPath)).digest('hex')
+    const workerExecutableClass = options.workerExecutableClass || 'powershell_7_program_files'
+    const workerExecutableSha256 = options.workerExecutableSha256 || '2'.repeat(64)
+    const workerExecutableVerifier = options.workerExecutableVerifier || (({ filePath }) => ({
+      worker_file_path: path.resolve(filePath),
+      worker_executable_class: workerExecutableClass,
+      worker_executable_sha256: workerExecutableSha256
+    }))
+    super({
+      ...options,
+      privatePlanSha256,
+      workerExecutableClass,
+      workerExecutableSha256,
+      workerExecutableVerifier,
+      authority,
+      supervisorLease: SUPERVISOR_LEASE
+    })
   }
 }
 
@@ -609,7 +666,96 @@ test('PowerShell transport uses fixed no-shell invocation, one inflight request,
     assert.equal(invocations[0].options.shell, false)
     assert.deepEqual(invocations[0].options.stdio, ['pipe', 'pipe', 'ignore'])
     assert.equal(invocations[0].options.env.SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE, planPath)
+    assert.equal(invocations[0].options.env.SWORD_LAUNCHER_N1_PRIVATE_PLAN_SHA256, transport.privatePlanSha256)
     assert.match(invocations[0].args.join(' '), /launcher-job-worker\.ps1/u)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('PowerShell transport rejects plan or executable byte mutation before spawn', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-job-worker-identity-'))
+  const planPath = path.join(root, 'private-plan.json')
+  const workerPath = path.join(root, 'pwsh.exe')
+  fs.writeFileSync(planPath, '{}\n', { encoding: 'utf8', mode: 0o600 })
+  fs.writeFileSync(workerPath, 'worker-v1', { encoding: 'utf8', mode: 0o700 })
+  let spawnCalls = 0
+  const spawnImpl = () => { spawnCalls += 1; throw new Error('must_not_spawn') }
+  const verifyWorker = ({ filePath, expectedClass, expectedSha256 }) => {
+    const actual = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
+    if (expectedClass !== 'powershell_7_program_files' || actual !== expectedSha256) throw new Error('identity_mismatch')
+    return {
+      worker_file_path: path.resolve(filePath),
+      worker_executable_class: expectedClass,
+      worker_executable_sha256: actual
+    }
+  }
+  try {
+    const planMutation = new PowerShellJsonLineTransport({
+      repositoryRoot: ROOT,
+      privatePlanPath: planPath,
+      powershellPath: workerPath,
+      spawnImpl,
+      workerExecutableSha256: crypto.createHash('sha256').update(fs.readFileSync(workerPath)).digest('hex'),
+      workerExecutableVerifier: verifyWorker
+    })
+    fs.appendFileSync(planPath, ' ')
+    assert.throws(() => planMutation.start(), (error) => (
+      error instanceof LauncherJobWorkerError && error.code === 'worker_configuration_invalid'
+    ))
+
+    fs.writeFileSync(planPath, '{}\n', 'utf8')
+    const executableMutation = new PowerShellJsonLineTransport({
+      repositoryRoot: ROOT,
+      privatePlanPath: planPath,
+      powershellPath: workerPath,
+      spawnImpl,
+      workerExecutableSha256: crypto.createHash('sha256').update(fs.readFileSync(workerPath)).digest('hex'),
+      workerExecutableVerifier: verifyWorker
+    })
+    fs.writeFileSync(workerPath, 'worker-v2', 'utf8')
+    assert.throws(() => executableMutation.start(), (error) => (
+      error instanceof LauncherJobWorkerError && error.code === 'worker_configuration_invalid'
+    ))
+    assert.equal(spawnCalls, 0)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('PowerShell transport rejects a leaf non-symlink Windows reparse before spawn or action', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-job-worker-reparse-'))
+  const planPath = path.join(root, 'private-plan.json')
+  const workerPath = process.execPath
+  fs.writeFileSync(planPath, '{}\n', { encoding: 'utf8', mode: 0o600 })
+  let workerReads = 0
+  let spawnCalls = 0
+  let observedError = null
+  const transport = new PowerShellJsonLineTransport({
+    repositoryRoot: ROOT,
+    privatePlanPath: planPath,
+    powershellPath: workerPath,
+    spawnImpl: () => { spawnCalls += 1; throw new Error('PRIVATE_SPAWN') },
+    workerExecutableVerifier: (request) => verifyTrustedWindowsWorkerExecutable({
+      ...request,
+      io: simulatedWindowsReparseIo({
+        filePath: workerPath,
+        reparseName: path.win32.basename(workerPath),
+        onWorkerRead: () => { workerReads += 1 }
+      })
+    })
+  })
+  const client = new LauncherJobWorkerClient({ authority, transport })
+  try {
+    await assert.rejects(client.execute(requestFor('touchdesigner_control_gui', 'start')), (error) => {
+      observedError = error
+      return error instanceof LauncherJobWorkerError && error.code === 'worker_configuration_invalid'
+    })
+    assert.equal(spawnCalls, 0)
+    assert.equal(workerReads, 0)
+    assert.equal(JSON.stringify(observedError).includes(workerPath), false)
+    assert.equal(JSON.stringify(observedError).includes('PRIVATE_REPARSE_PARENT'), false)
+    await client.close()
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -781,6 +927,7 @@ test('actual Windows Job worker contains descendants, survives foreign listeners
   if (process.env.SWORD_LAUNCHER_N1_ACTUAL_TEST !== '1') return context.skip('explicit_normal_user_gate_required')
   const powershellPath = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
   assert.equal(fs.existsSync(powershellPath), true)
+  const powershellSha256 = crypto.createHash('sha256').update(fs.readFileSync(powershellPath)).digest('hex')
   const port = 8788
   await assertPortFree(port)
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-job-worker-live-'))
@@ -859,6 +1006,9 @@ test('actual Windows Job worker contains descendants, survives foreign listeners
       repositoryRoot: ROOT,
       privatePlanPath: writePlan(name, targetScript),
       powershellPath,
+      workerExecutableClass: 'powershell_7_program_files',
+      workerExecutableSha256: powershellSha256,
+      workerExecutableVerifier: verifyTrustedWindowsWorkerExecutable,
       responseGraceMs: 1000,
       closeTimeoutMs: 5000
     })

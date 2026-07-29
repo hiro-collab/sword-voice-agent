@@ -17,17 +17,22 @@ const CONFIG_IDENTITY = Object.freeze({
   effective_config_sha256: 'e'.repeat(64),
   camera_policy: 'camera_excluded_by_profile'
 })
+const PLAN_IDENTITY = Object.freeze({
+  private_plan_sha256: '1'.repeat(64),
+  worker_executable_class: 'powershell_7_program_files',
+  worker_executable_sha256: '2'.repeat(64)
+})
 const reducer = {
   ...rawReducer,
   createOperation: (operationId, suppliedAuthority, generation = 1) =>
-    rawReducer.createOperation(operationId, suppliedAuthority, CONFIG_IDENTITY, generation),
+    rawReducer.createOperation(operationId, suppliedAuthority, CONFIG_IDENTITY, PLAN_IDENTITY, generation),
   startOperation: (active, operationId, suppliedAuthority, generation = 1) =>
-    rawReducer.startOperation(active, operationId, suppliedAuthority, CONFIG_IDENTITY, generation)
+    rawReducer.startOperation(active, operationId, suppliedAuthority, CONFIG_IDENTITY, PLAN_IDENTITY, generation)
 }
 const store = {
   ...rawStore,
   startAndPersist: (operationId, suppliedAuthority, root, observer) =>
-    rawStore.startAndPersist(operationId, CONFIG_IDENTITY, suppliedAuthority, root, observer)
+    rawStore.startAndPersist(operationId, CONFIG_IDENTITY, PLAN_IDENTITY, suppliedAuthority, root, observer)
 }
 const OPERATION_ID = 'lop_node0001'
 const LEASE_PROOF = `lp_${'a'.repeat(64)}`
@@ -83,6 +88,7 @@ test('operation identity is immutable, persisted before mutation, and rejects dr
   const started = rawStore.startAndPersist(
     OPERATION_ID,
     CONFIG_IDENTITY,
+    PLAN_IDENTITY,
     authority,
     runtimeRoot
   )
@@ -92,6 +98,29 @@ test('operation identity is immutable, persisted before mutation, and rejects dr
     CONFIG_IDENTITY.effective_config_sha256
   )
   assert.equal(started.operation.camera_policy, CONFIG_IDENTITY.camera_policy)
+  assert.equal(started.operation.private_plan_sha256, PLAN_IDENTITY.private_plan_sha256)
+  assert.equal(started.operation.worker_executable_class, PLAN_IDENTITY.worker_executable_class)
+  assert.equal(started.operation.worker_executable_sha256, PLAN_IDENTITY.worker_executable_sha256)
+  const joinedWithNewPlan = rawReducer.startOperation(
+    started.operation,
+    'lop_planrefresh01',
+    authority,
+    CONFIG_IDENTITY,
+    {
+      private_plan_sha256: '3'.repeat(64),
+      worker_executable_class: 'windows_powershell_system32',
+      worker_executable_sha256: '4'.repeat(64)
+    },
+    started.operation.supervisor_generation + 1
+  )
+  assert.equal(joinedWithNewPlan.joined_existing, true)
+  assert.equal(joinedWithNewPlan.operation.private_plan_sha256, PLAN_IDENTITY.private_plan_sha256)
+  assert.equal(joinedWithNewPlan.operation.worker_executable_class, PLAN_IDENTITY.worker_executable_class)
+  assert.equal(joinedWithNewPlan.operation.worker_executable_sha256, PLAN_IDENTITY.worker_executable_sha256)
+  expectCode(
+    () => rawReducer.validateSnapshot({ ...started.operation, private_plan_sha256: 'x'.repeat(64) }, authority),
+    'operation_plan_identity_invalid'
+  )
   const serialized = JSON.stringify(started.operation)
   assert.equal(serialized.includes('MediapipeCameraName'), false)
   assert.equal(serialized.includes('MediapipeCameraSelectionKey'), false)
@@ -101,6 +130,7 @@ test('operation identity is immutable, persisted before mutation, and rejects dr
       'lop_configdrift01',
       authority,
       { ...CONFIG_IDENTITY, effective_config_sha256: 'f'.repeat(64) },
+      PLAN_IDENTITY,
       started.operation.supervisor_generation
     ),
     'operation_active_identity_mismatch'
@@ -111,6 +141,7 @@ test('operation identity is immutable, persisted before mutation, and rejects dr
       'lop_configdrift02',
       authority,
       { ...CONFIG_IDENTITY, camera_policy: 'required' },
+      PLAN_IDENTITY,
       started.operation.supervisor_generation
     ),
     'operation_active_identity_mismatch'

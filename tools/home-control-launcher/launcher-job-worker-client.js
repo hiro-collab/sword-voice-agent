@@ -1,5 +1,6 @@
 'use strict'
 
+const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
@@ -10,8 +11,13 @@ const {
   validateWorkerRequestAgainstAuthority
 } = require('./launcher-supervisor-contract')
 const { getSupervisorLeaseBinding } = require('./launcher-operation-store')
+const {
+  TRUSTED_WINDOWS_WORKERS,
+  verifyTrustedWindowsWorkerExecutable
+} = require('./launcher-private-service-plan')
 
 const MAX_WORKER_LINE_BYTES = 4096
+const MAX_PRIVATE_PLAN_BYTES = 256 * 1024
 const DEFAULT_CLOSE_TIMEOUT_MS = 5000
 const DEFAULT_RESPONSE_GRACE_MS = 1000
 const RESULT_FIELDS = [
@@ -28,6 +34,8 @@ const SAFE_ERROR_CODES = new Set([
   'worker_transport_timeout',
   'worker_configuration_invalid'
 ])
+const SHA256 = /^[a-f0-9]{64}$/u
+const WORKER_EXECUTABLE_CLASSES = new Set(Object.keys(TRUSTED_WINDOWS_WORKERS))
 
 class LauncherJobWorkerError extends Error {
   constructor (code) {
@@ -44,7 +52,9 @@ const exactAbsoluteFile = (value) => {
     fail('worker_configuration_invalid')
   }
   const resolved = path.resolve(value)
-  if (!fs.existsSync(resolved) || !fs.lstatSync(resolved).isFile()) fail('worker_configuration_invalid')
+  if (!fs.existsSync(resolved)) fail('worker_configuration_invalid')
+  const stat = fs.lstatSync(resolved)
+  if (!stat.isFile() || stat.isSymbolicLink()) fail('worker_configuration_invalid')
   return resolved
 }
 
@@ -137,9 +147,13 @@ class PowerShellJsonLineTransport {
     repositoryRoot,
     privatePlanPath,
     powershellPath,
+    privatePlanSha256,
+    workerExecutableClass,
+    workerExecutableSha256,
     authority,
     supervisorLease,
     spawnImpl = spawn,
+    workerExecutableVerifier = verifyTrustedWindowsWorkerExecutable,
     closeTimeoutMs = DEFAULT_CLOSE_TIMEOUT_MS,
     responseGraceMs = DEFAULT_RESPONSE_GRACE_MS
   }) {
@@ -147,12 +161,20 @@ class PowerShellJsonLineTransport {
     try { leaseBinding = getSupervisorLeaseBinding(supervisorLease, authority) } catch { fail('worker_configuration_invalid') }
     this.repositoryRoot = exactAbsoluteDirectory(repositoryRoot)
     this.privatePlanPath = exactAbsoluteFile(privatePlanPath)
-    if (typeof spawnImpl !== 'function' || !Number.isSafeInteger(closeTimeoutMs) || closeTimeoutMs < 100 || closeTimeoutMs > 30000 ||
+    if (typeof privatePlanSha256 !== 'string' || !SHA256.test(privatePlanSha256) ||
+        !WORKER_EXECUTABLE_CLASSES.has(workerExecutableClass) ||
+        typeof workerExecutableSha256 !== 'string' || !SHA256.test(workerExecutableSha256) ||
+        typeof spawnImpl !== 'function' || typeof workerExecutableVerifier !== 'function' ||
+        !Number.isSafeInteger(closeTimeoutMs) || closeTimeoutMs < 100 || closeTimeoutMs > 30000 ||
         !Number.isSafeInteger(responseGraceMs) || responseGraceMs < 100 || responseGraceMs > 5000) {
       fail('worker_configuration_invalid')
     }
     this.powershellPath = exactAbsoluteFile(powershellPath)
+    this.privatePlanSha256 = privatePlanSha256
+    this.workerExecutableClass = workerExecutableClass
+    this.workerExecutableSha256 = workerExecutableSha256
     this.spawnImpl = spawnImpl
+    this.workerExecutableVerifier = workerExecutableVerifier
     this.closeTimeoutMs = closeTimeoutMs
     this.responseGraceMs = responseGraceMs
     this.authorityLeaseProof = leaseBinding.authority_lease_proof
@@ -166,12 +188,33 @@ class PowerShellJsonLineTransport {
   start () {
     if (this.child || this.closed) return
     const workerPath = exactAbsoluteFile(path.join(this.repositoryRoot, 'ops', 'scripts', 'home-control-stack', 'launcher-job-worker.ps1'))
+    let privatePlanBytes
+    let verifiedWorker
+    try {
+      privatePlanBytes = fs.readFileSync(this.privatePlanPath)
+      if (!Buffer.isBuffer(privatePlanBytes) || privatePlanBytes.length === 0 || privatePlanBytes.length > MAX_PRIVATE_PLAN_BYTES ||
+          crypto.createHash('sha256').update(privatePlanBytes).digest('hex') !== this.privatePlanSha256) {
+        fail('worker_configuration_invalid')
+      }
+      verifiedWorker = this.workerExecutableVerifier({
+        filePath: this.powershellPath,
+        expectedClass: this.workerExecutableClass,
+        expectedSha256: this.workerExecutableSha256
+      })
+      if (!verifiedWorker || path.win32.normalize(verifiedWorker.worker_file_path).toLowerCase() !== path.win32.normalize(this.powershellPath).toLowerCase()) {
+        fail('worker_configuration_invalid')
+      }
+    } catch (error) {
+      if (error instanceof LauncherJobWorkerError) throw error
+      fail('worker_configuration_invalid')
+    }
     const environment = {
       ...process.env,
       SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE: this.privatePlanPath,
+      SWORD_LAUNCHER_N1_PRIVATE_PLAN_SHA256: this.privatePlanSha256,
       SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF: this.authorityLeaseProof
     }
-    const child = this.spawnImpl(this.powershellPath, [
+    const child = this.spawnImpl(verifiedWorker.worker_file_path, [
       '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', workerPath
     ], {
       cwd: this.repositoryRoot,

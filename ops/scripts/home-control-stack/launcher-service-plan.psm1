@@ -4,7 +4,11 @@ $ErrorActionPreference = "Stop"
 $script:MaximumPlanBytes = 262144
 $script:Sha256Pattern = "^[a-f0-9]{64}$"
 $script:EnvironmentNamePattern = "^[A-Z][A-Z0-9_]{0,127}$"
-$script:ReservedEnvironmentNames = @("SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE", "SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF")
+$script:ReservedEnvironmentNames = @(
+    "SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE",
+    "SWORD_LAUNCHER_N1_PRIVATE_PLAN_SHA256",
+    "SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF"
+)
 $script:Descriptors = [ordered]@{
     home_assistant_bridge = [pscustomobject]@{
         ServiceId = "home_assistant_bridge"; Requirement = "required"; Ownership = "owned"
@@ -224,13 +228,24 @@ function ConvertTo-LauncherOwnedPlan {
 }
 
 function Read-LauncherPrivateServicePlans {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExpectedPlanSha256
+    )
+    if ($ExpectedPlanSha256 -cnotmatch $script:Sha256Pattern) { throw "launcher_private_plan_invalid" }
     if (-not [IO.Path]::IsPathFullyQualified($Path)) { throw "launcher_private_plan_invalid" }
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-    if (-not $item.PSIsContainer -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and $item.Length -le $script:MaximumPlanBytes) {
+    if (-not $item.PSIsContainer -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and
+        $item.Length -gt 0 -and $item.Length -le $script:MaximumPlanBytes) {
         $bytes = [IO.File]::ReadAllBytes($item.FullName)
     }
     else { throw "launcher_private_plan_invalid" }
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $actualPlanSha256 = ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+    }
+    finally { $sha256.Dispose() }
+    if ($actualPlanSha256 -cne $ExpectedPlanSha256) { throw "launcher_private_plan_invalid" }
     $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
     try { $text = $strictUtf8.GetString($bytes) } catch { throw "launcher_private_plan_invalid" }
     if ($text.StartsWith([char]0xFEFF)) { throw "launcher_private_plan_invalid" }
