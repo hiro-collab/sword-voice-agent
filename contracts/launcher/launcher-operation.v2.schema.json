@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword.local/contracts/launcher/launcher-operation.v2.schema.json",
+  "title": "Sword Launcher Operation v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "graph_sha256", "binding_sha256", "operation_id",
+    "supervisor_generation", "intent", "phase", "reason", "cleanup",
+    "primary_result", "cleanup_result", "revision", "joined_existing", "rollback_required",
+    "recovery_required", "services", "residue_service_ids"
+  ],
+  "properties": {
+    "schema_version": { "const": "launcher_operation.v2" },
+    "graph_sha256": { "$ref": "#/$defs/sha256" },
+    "binding_sha256": { "$ref": "#/$defs/sha256" },
+    "operation_id": { "type": "string", "pattern": "^lop_[a-z0-9]{8,64}$" },
+    "supervisor_generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "intent": { "enum": ["start", "stop"] },
+    "phase": { "enum": ["planned", "preflight", "prepared", "starting", "waiting_ready", "ready", "rolling_back", "failed", "stopping", "stopped", "recovering", "residue"] },
+    "reason": { "$ref": "#/$defs/result_class" },
+    "cleanup": { "enum": ["not_started", "in_progress", "clear", "residue", "unknown"] },
+    "primary_result": { "$ref": "#/$defs/primary_result" },
+    "cleanup_result": { "$ref": "#/$defs/cleanup_result" },
+    "revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "joined_existing": { "type": "boolean" },
+    "rollback_required": { "type": "boolean" },
+    "recovery_required": { "type": "boolean" },
+    "services": {
+      "type": "array", "maxItems": 64,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["service_id", "state", "attempt_sequence", "pending_dispatch_id", "pending_action"],
+        "properties": {
+          "service_id": { "$ref": "#/$defs/service_id" },
+          "state": { "enum": ["pending", "starting", "ready", "optional_absent", "external_ready", "stop_requested", "stopped", "failed", "residue", "unknown"] },
+          "attempt_sequence": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+          "pending_dispatch_id": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/dispatch_id" }] },
+          "pending_action": { "enum": [null, "start", "probe", "stop"] }
+        }
+      }
+    },
+    "residue_service_ids": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/service_id" } }
+  },
+  "$defs": {
+    "service_id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+    "dispatch_id": { "type": "string", "pattern": "^ld_[a-z0-9]{16,64}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "result_class": { "enum": ["none", "preflight_failed", "spawn_failed", "early_exit", "listener_mismatch", "readiness_timeout", "rollback_failed", "stop_failed", "supervisor_crash", "residue_present", "invalid_event"] },
+    "responsible_id": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/service_id" }, { "enum": ["launcher_supervisor", "launcher_worker", "operation_store"] }] },
+    "primary_result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["class", "responsible_id", "action_certainty"],
+      "properties": {
+        "class": { "$ref": "#/$defs/result_class" },
+        "responsible_id": { "$ref": "#/$defs/responsible_id" },
+        "action_certainty": { "enum": ["not_attempted", "not_submitted", "may_have_occurred", "observed"] }
+      }
+    },
+    "cleanup_result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["class", "responsible_id"],
+      "properties": {
+        "class": { "enum": ["not_started", "in_progress", "clear", "rollback_failed", "stop_failed", "residue", "unknown"] },
+        "responsible_id": { "$ref": "#/$defs/responsible_id" }
+      }
+    }
+  }
+}

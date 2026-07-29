@@ -1,0 +1,29 @@
+{
+  "schema_version": "launcher_reducer_vectors.v2",
+  "vectors": [
+    {
+      "vector_id": "preflight_failure_keeps_primary_and_cleanup",
+      "events": [{ "event_type": "preflight_started" }, { "event_type": "preflight_failed" }],
+      "expected": { "phase": "failed", "reason": "preflight_failed", "cleanup": "clear", "residue_service_ids": [] },
+      "coverage": ["primary_result", "cleanup_result", "zero_resource"]
+    },
+    {
+      "vector_id": "spawn_failure_rollback_failure_dual_result",
+      "events": [
+        { "event_type": "preflight_started" }, { "event_type": "preflight_passed" }, { "event_type": "start_requested" },
+        { "event_type": "spawn_requested", "service_id": "home_assistant_bridge" },
+        { "event_type": "spawn_failed", "service_id": "home_assistant_bridge" },
+        { "event_type": "rollback_failed", "service_id": "home_assistant_bridge" }
+      ],
+      "expected": { "phase": "residue", "reason": "spawn_failed", "cleanup": "residue", "residue_service_ids": ["home_assistant_bridge"] },
+      "coverage": ["dispatch", "primary_result", "cleanup_result", "residue"]
+    },
+    {
+      "vector_id": "foreign_operation_is_noop",
+      "event_operation_id": "lop_foreign00",
+      "events": [{ "event_type": "preflight_started" }],
+      "expected": { "phase": "planned", "reason": "none", "cleanup": "not_started", "residue_service_ids": [] },
+      "coverage": ["operation_identity", "replay"]
+    }
+  ]
+}

@@ -22,9 +22,9 @@ FROZEN_N0 = {
     "contracts/launcher/launcher-reducer-vectors.v1.json": "379fc9998a943b98a56857bc494f5840c2662cfdce7ab5bfb270b678d78ccf1c",
     "contracts/launcher/generated/launcher-service-graph.standard.v1.binding.json": "3a74d2c620f55c8203b6a1e9cc66c631c1867d131d69362743fe73e300bd9229",
     "ops/manifests/launcher-service-graph.standard.v1.json": "dc548b8ddd9528af3a6d10325f868af200fe3d85d1e88182cdcf32407506ea77",
-    "tools/home-control-launcher/launcher-supervisor-contract.js": "90212e330049bc2e5b0fabec50de270ffdb9f12b08b0f2cfb1df7c28a67b0a61",
-    "tools/home-control-launcher/launcher-supervisor-reducer.js": "e8375a1fba2cd0c54dfd84ae7bb471635215050ca8662c07c657f2884d0ab673",
-    "tools/home-control-launcher/launcher-operation-store.js": "9ca00cfaea8c8058ef7cfb99e11e39b991ea09082f698304efeb908068c8410f",
+    "tools/home-control-launcher/launcher-supervisor-contract.js": "d55254a6d620319be6421d5aa239a00691b5c36bde69ccd51bd195167b69f6a5",
+    "tools/home-control-launcher/launcher-supervisor-reducer.js": "d2ae81341474537d21572da61cbae544423d0236ea19d825317655779403d40a",
+    "tools/home-control-launcher/launcher-operation-store.js": "e238960f92b1df664c6ab2c03144b8c5a4c0487222ccbc8f5efedba76b494c4e",
     "tools/home-control-launcher/server.js": "99bdc202bd5b8cafa0e3463801df961728ad4612d3f00a4f9f09b77c8b581606",
     "ops/scripts/home-control-stack/start-home-control-stack.ps1": "d5f1b2556e3a71520b5117eef8774326b70b05221064122dccc9c1296ac8d1ec",
     "ops/scripts/home-control-stack/stop-home-control-stack.ps1": "acdb237f13f76eabfd743f24619b8b5c90512a7f1149ab55232239d476e67619",
@@ -61,7 +61,7 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
         self.assertIn("IsProcessInJob", worker)
         self.assertIn("finally {", worker)
         self.assertIn("$record.Native.Dispose()", worker)
-        self.assertIn('$ReservedEnvironmentNames = @("SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE")', worker)
+        self.assertIn('$ReservedEnvironmentNames = @("SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE", "SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF")', worker)
         self.assertIn("$environment.Remove($name)", worker)
         self.assertNotIn("Get-ChildItem Env:", worker)
         self.assertNotIn("launcher-job-worker-client", (ROOT / "tools/home-control-launcher/server.js").read_text(encoding="utf-8"))
@@ -73,6 +73,9 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
             "schema_version",
             "message_type",
             "operation_id",
+            "supervisor_generation",
+            "authority_lease_proof",
+            "dispatch_id",
             "service_id",
             "action",
             "expected_revision",
@@ -82,7 +85,7 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
             "listener_class",
             "descendant_class",
         }
-        schema = json.loads((ROOT / "contracts/launcher/launcher-worker.v1.schema.json").read_text(encoding="utf-8"))
+        schema = json.loads((ROOT / "contracts/launcher/launcher-worker.v2.schema.json").read_text(encoding="utf-8"))
         self.assertEqual(set(schema["$defs"]["result"]["required"]), expected)
         self.assertEqual(set(schema["$defs"]["result"]["properties"]), expected)
         for prohibited in (
@@ -90,6 +93,19 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
             "raw_stderr", "secret_value", "PRIVATE_SENTINEL",
         ):
             self.assertNotIn(prohibited, worker)
+
+    def test_worker_v2_fences_generation_and_replayed_dispatch_before_action(self) -> None:
+        worker = WORKER.read_text(encoding="utf-8")
+        self.assertIn('$ActiveSupervisorGeneration = $null', worker)
+        self.assertIn('$ActiveAuthorityLeaseProof = $null', worker)
+        self.assertIn('$SeenDispatches = @{}', worker)
+        self.assertIn('[long]$request.supervisor_generation -ne [long]$ActiveSupervisorGeneration', worker)
+        self.assertIn('$SeenDispatches.ContainsKey([string]$request.dispatch_id)', worker)
+        marker = '$SeenDispatches[[string]$request.dispatch_id] = $true'
+        resolve = worker.index('$plan = Resolve-LauncherServicePlan `')
+        latch = worker.index('$ActiveSupervisorGeneration = [long]$request.supervisor_generation')
+        self.assertLess(resolve, latch)
+        self.assertLess(latch, worker.index(marker))
 
     def test_powershell_sources_parse_without_execution(self) -> None:
         powershell = shutil.which("pwsh")

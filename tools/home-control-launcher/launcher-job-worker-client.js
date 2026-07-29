@@ -9,12 +9,13 @@ const {
   validateWorkerMessage,
   validateWorkerRequestAgainstAuthority
 } = require('./launcher-supervisor-contract')
+const { getSupervisorLeaseBinding } = require('./launcher-operation-store')
 
 const MAX_WORKER_LINE_BYTES = 4096
 const DEFAULT_CLOSE_TIMEOUT_MS = 5000
 const DEFAULT_RESPONSE_GRACE_MS = 1000
 const RESULT_FIELDS = [
-  'operation_id', 'service_id', 'action', 'expected_revision', 'worker_nonce'
+  'operation_id', 'supervisor_generation', 'authority_lease_proof', 'dispatch_id', 'service_id', 'action', 'expected_revision', 'worker_nonce'
 ]
 const SAFE_ERROR_CODES = new Set([
   'worker_request_oversized',
@@ -84,13 +85,17 @@ const correlateWorkerResult = (request, result, authority) => {
 }
 
 class LauncherJobWorkerClient {
-  constructor ({ authority, transport }) {
+  constructor ({ authority, transport, supervisorLease }) {
     assertAuthority(authority)
     if (!transport || typeof transport.exchange !== 'function' || typeof transport.close !== 'function') {
       fail('worker_configuration_invalid')
     }
+    let leaseBinding
+    try { leaseBinding = getSupervisorLeaseBinding(supervisorLease, authority) } catch { fail('worker_configuration_invalid') }
+    if (transport.authorityLeaseProof !== leaseBinding.authority_lease_proof) fail('worker_configuration_invalid')
     this.authority = authority
     this.transport = transport
+    this.leaseBinding = leaseBinding
     this.closed = false
     this.inflight = false
   }
@@ -99,6 +104,9 @@ class LauncherJobWorkerClient {
     if (this.closed) fail('worker_transport_closed')
     if (this.inflight) fail('worker_transport_busy')
     try { validateWorkerRequestAgainstAuthority(request, this.authority) } catch { fail('worker_response_invalid') }
+    if (request.operation_id !== this.leaseBinding.operation_id ||
+        request.supervisor_generation !== this.leaseBinding.supervisor_generation ||
+        request.authority_lease_proof !== this.leaseBinding.authority_lease_proof) fail('worker_response_invalid')
     const line = JSON.stringify(request)
     if (Buffer.byteLength(line, 'utf8') > MAX_WORKER_LINE_BYTES) fail('worker_request_oversized')
     this.inflight = true
@@ -129,10 +137,14 @@ class PowerShellJsonLineTransport {
     repositoryRoot,
     privatePlanPath,
     powershellPath,
+    authority,
+    supervisorLease,
     spawnImpl = spawn,
     closeTimeoutMs = DEFAULT_CLOSE_TIMEOUT_MS,
     responseGraceMs = DEFAULT_RESPONSE_GRACE_MS
   }) {
+    let leaseBinding
+    try { leaseBinding = getSupervisorLeaseBinding(supervisorLease, authority) } catch { fail('worker_configuration_invalid') }
     this.repositoryRoot = exactAbsoluteDirectory(repositoryRoot)
     this.privatePlanPath = exactAbsoluteFile(privatePlanPath)
     if (typeof spawnImpl !== 'function' || !Number.isSafeInteger(closeTimeoutMs) || closeTimeoutMs < 100 || closeTimeoutMs > 30000 ||
@@ -143,6 +155,7 @@ class PowerShellJsonLineTransport {
     this.spawnImpl = spawnImpl
     this.closeTimeoutMs = closeTimeoutMs
     this.responseGraceMs = responseGraceMs
+    this.authorityLeaseProof = leaseBinding.authority_lease_proof
     this.child = null
     this.pending = null
     this.buffer = ''
@@ -153,7 +166,11 @@ class PowerShellJsonLineTransport {
   start () {
     if (this.child || this.closed) return
     const workerPath = exactAbsoluteFile(path.join(this.repositoryRoot, 'ops', 'scripts', 'home-control-stack', 'launcher-job-worker.ps1'))
-    const environment = { ...process.env, SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE: this.privatePlanPath }
+    const environment = {
+      ...process.env,
+      SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE: this.privatePlanPath,
+      SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF: this.authorityLeaseProof
+    }
     const child = this.spawnImpl(this.powershellPath, [
       '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', workerPath
     ], {
@@ -290,8 +307,9 @@ const createOwnerLivenessObserver = ({ inspectProcess }) => {
     try { observation = inspectProcess(owner.owner_pid) } catch { return 'unknown' }
     if (!observation || typeof observation !== 'object' || Array.isArray(observation)) return 'unknown'
     if (observation.status === 'absent') return 'absent'
+    if (observation.status === 'access_denied') return 'access_denied'
     if (observation.status !== 'alive' || !Number.isSafeInteger(observation.creation_time_ms) || observation.creation_time_ms < 0) return 'unknown'
-    return observation.creation_time_ms > owner.created_at_ms ? 'reused' : 'alive'
+    return observation.creation_time_ms > owner.created_at_ms ? 'pid_reused' : 'alive'
   }
 }
 

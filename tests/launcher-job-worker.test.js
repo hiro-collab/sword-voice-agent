@@ -12,21 +12,55 @@ const test = require('node:test')
 
 const { loadAuthority } = require('../tools/home-control-launcher/launcher-supervisor-contract')
 const reducer = require('../tools/home-control-launcher/launcher-supervisor-reducer')
+const store = require('../tools/home-control-launcher/launcher-operation-store')
 const {
-  LauncherJobWorkerClient,
+  LauncherJobWorkerClient: RawLauncherJobWorkerClient,
   LauncherJobWorkerError,
   MAX_WORKER_LINE_BYTES,
-  PowerShellJsonLineTransport,
+  PowerShellJsonLineTransport: RawPowerShellJsonLineTransport,
   createOwnerLivenessObserver
 } = require('../tools/home-control-launcher/launcher-job-worker-client')
 
 const ROOT = path.resolve(__dirname, '..')
 const authority = loadAuthority(ROOT)
 const OPERATION_ID = 'lop_n1synthetic01'
+const PRIVATE_RUNTIME_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'sword-launcher-worker-lease-'))
+const SEED_START = store.startAndPersist('lop_n1seed0001', authority, PRIVATE_RUNTIME_ROOT)
+let SEED_OPERATION = SEED_START.operation
+SEED_OPERATION = store.reduceAndPersist(SEED_OPERATION, { event_type: 'preflight_started', operation_id: SEED_OPERATION.operation_id }, authority, PRIVATE_RUNTIME_ROOT)
+SEED_OPERATION = store.reduceAndPersist(SEED_OPERATION, { event_type: 'preflight_failed', operation_id: SEED_OPERATION.operation_id }, authority, PRIVATE_RUNTIME_ROOT)
+store.releaseSupervisorLease(SEED_START.supervisorLease, authority)
+const STARTED = store.startAndPersist(OPERATION_ID, authority, PRIVATE_RUNTIME_ROOT)
+const STARTED_OPERATION = STARTED.operation
+const SUPERVISOR_LEASE = STARTED.supervisorLease
+const LEASE_BINDING = store.getSupervisorLeaseBinding(SUPERVISOR_LEASE, authority)
+
+class LauncherJobWorkerClient extends RawLauncherJobWorkerClient {
+  constructor ({ authority: suppliedAuthority, transport }) {
+    transport.authorityLeaseProof = LEASE_BINDING.authority_lease_proof
+    super({ authority: suppliedAuthority, transport, supervisorLease: SUPERVISOR_LEASE })
+  }
+}
+
+class PowerShellJsonLineTransport extends RawPowerShellJsonLineTransport {
+  constructor (options) {
+    super({ ...options, authority, supervisorLease: SUPERVISOR_LEASE })
+  }
+}
+
+test.after(() => {
+  store.releaseSupervisorLease(SUPERVISOR_LEASE, authority)
+  fs.rmSync(PRIVATE_RUNTIME_ROOT, { recursive: true, force: true })
+})
+const dispatchId = (serviceId, action, sequence = 1) => `ld_${Buffer.from(`${serviceId}:${action}:${sequence}`).toString('hex').slice(0, 32).padEnd(32, '0')}`
+const actionForEvent = (eventType) => eventType.startsWith('spawn_') ? 'start' :
+  ['probe_requested', 'service_ready', 'optional_absent', 'external_ready', 'readiness_timeout'].includes(eventType) ? 'probe' :
+    ['stop_dispatch_requested', 'service_stopped', 'stop_failed'].includes(eventType) ? 'stop' : null
 const event = (eventType, serviceId) => ({
   event_type: eventType,
   operation_id: OPERATION_ID,
-  ...(serviceId ? { service_id: serviceId } : {})
+  ...(serviceId ? { service_id: serviceId } : {}),
+  ...(serviceId && actionForEvent(eventType) ? { dispatch_id: dispatchId(serviceId, actionForEvent(eventType)), ...(eventType.endsWith('_requested') ? { action: actionForEvent(eventType) } : {}) } : {})
 })
 
 const startLifecycle = () => {
@@ -42,11 +76,17 @@ const stoppingLifecycle = () => {
   const specs = new Map(authority.graph.services.map((service) => [service.service_id, service]))
   for (const serviceId of authority.bindingDocument.binding.service_order) {
     const spec = specs.get(serviceId)
-    if (spec.requirement === 'external') operation = reducer.reduce(operation, event('external_ready', serviceId), authority)
-    else if (spec.requirement === 'optional') operation = reducer.reduce(operation, event('optional_absent', serviceId), authority)
+    if (spec.requirement === 'external') {
+      operation = reducer.reduce(operation, event('probe_requested', serviceId), authority)
+      operation = reducer.reduce(operation, event('external_ready', serviceId), authority)
+    } else if (spec.requirement === 'optional') {
+      operation = reducer.reduce(operation, event('probe_requested', serviceId), authority)
+      operation = reducer.reduce(operation, event('optional_absent', serviceId), authority)
+    }
     else {
       operation = reducer.reduce(operation, event('spawn_requested', serviceId), authority)
       operation = reducer.reduce(operation, event('spawn_succeeded', serviceId), authority)
+      operation = reducer.reduce(operation, event('probe_requested', serviceId), authority)
       operation = reducer.reduce(operation, event('service_ready', serviceId), authority)
     }
   }
@@ -65,9 +105,12 @@ const requestFor = (serviceId, action, revision = 1) => {
   const deadlineMs = action === 'stop' ? spec.stop.graceful_timeout_ms : spec.ready_deadline_ms
   nonceSequence++
   return {
-    schema_version: 'launcher_worker.v1',
+    schema_version: 'launcher_worker.v2',
     message_type: 'request',
     operation_id: OPERATION_ID,
+    supervisor_generation: LEASE_BINDING.supervisor_generation,
+    authority_lease_proof: LEASE_BINDING.authority_lease_proof,
+    dispatch_id: `ld_n1synthetic${String(nonceSequence).padStart(8, '0')}`,
     graph_sha256: authority.identities.graphSha256,
     binding_sha256: authority.identities.bindingSha256,
     service_id: serviceId,
@@ -80,9 +123,12 @@ const requestFor = (serviceId, action, revision = 1) => {
 }
 
 const resultFor = (request, values = {}) => ({
-  schema_version: 'launcher_worker.v1',
+  schema_version: 'launcher_worker.v2',
   message_type: 'result',
   operation_id: request.operation_id,
+  supervisor_generation: request.supervisor_generation,
+  authority_lease_proof: request.authority_lease_proof,
+  dispatch_id: request.dispatch_id,
   service_id: request.service_id,
   action: request.action,
   expected_revision: request.expected_revision,
@@ -303,9 +349,45 @@ test('owner liveness distinguishes absent alive reused and unknown without a sig
   const owner = { owner_pid: 100, owner_nonce: 'lock_nonce', created_at_ms: 5000 }
   assert.equal(createOwnerLivenessObserver({ inspectProcess: () => ({ status: 'absent' }) })(owner), 'absent')
   assert.equal(createOwnerLivenessObserver({ inspectProcess: () => ({ status: 'alive', creation_time_ms: 4000 }) })(owner), 'alive')
-  assert.equal(createOwnerLivenessObserver({ inspectProcess: () => ({ status: 'alive', creation_time_ms: 6000 }) })(owner), 'reused')
+  assert.equal(createOwnerLivenessObserver({ inspectProcess: () => ({ status: 'alive', creation_time_ms: 6000 }) })(owner), 'pid_reused')
+  assert.equal(createOwnerLivenessObserver({ inspectProcess: () => ({ status: 'access_denied' }) })(owner), 'access_denied')
   assert.equal(createOwnerLivenessObserver({ inspectProcess: () => ({ status: 'unknown' }) })(owner), 'unknown')
   assert.equal(createOwnerLivenessObserver({ inspectProcess: () => { throw new Error('PRIVATE_SENTINEL') } })(owner), 'unknown')
+})
+
+test('lease-bound client rejects old generation unknown service and forged same-generation proof before transport mutation', async () => {
+  let exchanges = 0
+  const transport = {
+    authorityLeaseProof: LEASE_BINDING.authority_lease_proof,
+    exchange: async (line) => { exchanges++; return JSON.stringify(resultFor(JSON.parse(line))) },
+    close: async () => {}
+  }
+  const client = new RawLauncherJobWorkerClient({ authority, transport, supervisorLease: SUPERVISOR_LEASE })
+  const oldGeneration = { ...requestFor('home_assistant_bridge', 'start'), supervisor_generation: LEASE_BINDING.supervisor_generation - 1 }
+  await assert.rejects(client.execute(oldGeneration), (error) => error instanceof LauncherJobWorkerError && error.code === 'worker_response_invalid')
+  const unknownService = {
+    ...requestFor('home_assistant_bridge', 'start'), service_id: 'unknown_service', adapter_class: 'job_worker_service'
+  }
+  await assert.rejects(client.execute(unknownService), (error) => error instanceof LauncherJobWorkerError && error.code === 'worker_response_invalid')
+  assert.equal(exchanges, 0)
+  assert.throws(() => new RawLauncherJobWorkerClient({
+    authority,
+    transport: { ...transport, authorityLeaseProof: `lp_${'f'.repeat(64)}` },
+    supervisorLease: SUPERVISOR_LEASE
+  }), (error) => error instanceof LauncherJobWorkerError && error.code === 'worker_configuration_invalid')
+  assert.equal((await client.execute(requestFor('home_assistant_bridge', 'start'))).result_class, 'ready')
+  assert.equal(exchanges, 1)
+  await client.close()
+})
+
+test('PowerShell worker resolves service membership and adapter before latching its generation lease fence', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'ops', 'scripts', 'home-control-stack', 'launcher-job-worker.ps1'), 'utf8')
+  const resolveIndex = source.indexOf('$plan = Resolve-LauncherServicePlan')
+  const latchIndex = source.indexOf('$ActiveSupervisorGeneration = [long]$request.supervisor_generation')
+  const dispatchIndex = source.indexOf('$SeenDispatches[[string]$request.dispatch_id] = $true')
+  assert.ok(resolveIndex > 0 && latchIndex > resolveIndex && dispatchIndex > latchIndex)
+  assert.match(source, /SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF/u)
+  assert.match(source, /\[string\]\$Request\.authority_lease_proof -cne \$ExpectedAuthorityLeaseProof/u)
 })
 
 test('correlation, malformed, oversize, and private sentinel responses fail closed', async () => {
@@ -313,6 +395,8 @@ test('correlation, malformed, oversize, and private sentinel responses fail clos
   for (const [response, code] of [
     ['not-json', 'worker_response_invalid'],
     ['x'.repeat(MAX_WORKER_LINE_BYTES + 1), 'worker_response_oversized'],
+    [JSON.stringify({ ...resultFor(request), supervisor_generation: request.supervisor_generation + 1 }), 'worker_response_mismatch'],
+    [JSON.stringify({ ...resultFor(request), dispatch_id: 'ld_ffffffffffffffff' }), 'worker_response_mismatch'],
     [JSON.stringify({ ...resultFor(request), worker_nonce: 'lw_wrongnonce000000' }), 'worker_response_mismatch'],
     [JSON.stringify({ ...resultFor(request), raw_error: 'PRIVATE_SENTINEL' }), 'worker_response_invalid']
   ]) {
@@ -325,38 +409,36 @@ test('correlation, malformed, oversize, and private sentinel responses fail clos
 test('worker-shaped results map through the frozen N0 reducer contract', () => {
   let operation = startLifecycle()
   operation = reducer.reduce(operation, event('spawn_requested', 'home_assistant_bridge'), authority)
-  const startRequest = requestFor('home_assistant_bridge', 'start', operation.revision)
+  const startRequest = { ...requestFor('home_assistant_bridge', 'start', operation.revision), supervisor_generation: operation.supervisor_generation, dispatch_id: operation.services.find((service) => service.service_id === 'home_assistant_bridge').pending_dispatch_id }
   const accepted = resultFor(startRequest, {
     result_class: 'accepted', listener_class: 'not_applicable', descendant_class: 'owned_active'
   })
   assert.equal(reducer.workerResultToEvent(accepted, operation, startRequest, authority).event_type, 'spawn_succeeded')
 
-  const probeRequest = requestFor('thought_core_watcher', 'probe', operation.revision)
+  operation = reducer.reduce(operation, reducer.workerResultToEvent(accepted, operation, startRequest, authority), authority)
+  operation = reducer.reduce(operation, event('probe_requested', 'home_assistant_bridge'), authority)
+  const probeRequest = { ...requestFor('home_assistant_bridge', 'probe', operation.revision), supervisor_generation: operation.supervisor_generation, dispatch_id: operation.services.find((service) => service.service_id === 'home_assistant_bridge').pending_dispatch_id }
   const noPortReady = resultFor(probeRequest, { listener_class: 'matched' })
   assert.equal(reducer.workerResultToEvent(noPortReady, operation, probeRequest, authority).event_type, 'service_ready')
 
   const externalSpec = authority.graph.services.find((service) => service.service_id === 'voicevox')
-  const externalRequest = requestFor('voicevox', 'probe', operation.revision)
+  let externalOperation = startLifecycle()
+  externalOperation = reducer.reduce(externalOperation, event('probe_requested', 'voicevox'), authority)
+  const externalRequest = { ...requestFor('voicevox', 'probe', externalOperation.revision), supervisor_generation: externalOperation.supervisor_generation, dispatch_id: externalOperation.services.find((service) => service.service_id === 'voicevox').pending_dispatch_id }
   assert.equal(externalRequest.deadline_ms, externalSpec.ready_deadline_ms)
   const externalReady = resultFor(externalRequest, {
     result_class: 'external_ready', ownership_class: 'not_applicable',
     listener_class: 'matched', descendant_class: 'not_applicable'
   })
-  assert.equal(reducer.workerResultToEvent(externalReady, operation, externalRequest, authority).event_type, 'external_ready')
+  assert.equal(reducer.workerResultToEvent(externalReady, externalOperation, externalRequest, authority).event_type, 'external_ready')
 
-  const stopping = stoppingLifecycle()
-  const stopRequest = requestFor('home_assistant_bridge', 'stop', stopping.revision)
+  let stopping = stoppingLifecycle()
+  stopping = reducer.reduce(stopping, event('stop_dispatch_requested', 'home_assistant_bridge'), authority)
+  const stopRequest = { ...requestFor('home_assistant_bridge', 'stop', stopping.revision), supervisor_generation: stopping.supervisor_generation, dispatch_id: stopping.services.find((service) => service.service_id === 'home_assistant_bridge').pending_dispatch_id }
   const stopped = resultFor(stopRequest, { result_class: 'stopped', descendant_class: 'owned_clear' })
   const stoppedEvent = reducer.workerResultToEvent(stopped, stopping, stopRequest, authority)
   assert.equal(stoppedEvent.event_type, 'service_stopped')
   assert.notEqual(reducer.reduce(stopping, stoppedEvent, authority).reason, 'invalid_event')
-  const optionalStopRequest = requestFor('mediapipe_camera_hub_stack', 'stop', stopping.revision)
-  const optionalAbsentStopped = resultFor(optionalStopRequest, {
-    result_class: 'stopped', listener_class: 'not_applicable', descendant_class: 'owned_clear'
-  })
-  const optionalStoppedEvent = reducer.workerResultToEvent(optionalAbsentStopped, stopping, optionalStopRequest, authority)
-  assert.equal(optionalStoppedEvent.event_type, 'service_stopped')
-  assert.notEqual(reducer.reduce(stopping, optionalStoppedEvent, authority).reason, 'invalid_event')
   const stopFailed = resultFor(stopRequest, {
     result_class: 'stop_failed', ownership_class: 'unknown',
     listener_class: 'unknown', descendant_class: 'unknown'

@@ -7,6 +7,10 @@ $ErrorActionPreference = "Stop"
 $MaximumWorkerLineBytes = 4096
 $PlanPath = [Environment]::GetEnvironmentVariable("SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE", "Process")
 if ([string]::IsNullOrWhiteSpace($PlanPath)) { throw "launcher_private_plan_missing" }
+$ExpectedAuthorityLeaseProof = [Environment]::GetEnvironmentVariable("SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF", "Process")
+if ([string]::IsNullOrWhiteSpace($ExpectedAuthorityLeaseProof) -or $ExpectedAuthorityLeaseProof -cnotmatch "^lp_[a-f0-9]{64}$") {
+    throw "launcher_private_lease_missing"
+}
 
 Import-Module (Join-Path $PSScriptRoot "launcher-service-plan.psm1") -Force -ErrorAction Stop
 $PlanSet = Read-LauncherPrivateServicePlans -Path $PlanPath
@@ -366,9 +370,13 @@ public sealed class SwordLauncherOwnedJob : IDisposable
 Add-Type -TypeDefinition $nativeSource -Language CSharp -ErrorAction Stop
 
 $Jobs = @{}
-$ReservedEnvironmentNames = @("SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE")
+$ActiveSupervisorGeneration = $null
+$ActiveAuthorityLeaseProof = $null
+$SeenDispatches = @{}
+$ReservedEnvironmentNames = @("SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE", "SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF")
 $OperationPattern = "^lop_[a-z0-9]{8,64}$"
 $NoncePattern = "^lw_[a-z0-9]{16,64}$"
+$DispatchPattern = "^ld_[a-z0-9]{16,64}$"
 $ShaPattern = "^[a-f0-9]{64}$"
 $ServicePattern = "^[a-z][a-z0-9_]{0,63}$"
 $ResultClasses = @(
@@ -386,9 +394,12 @@ function New-LauncherWorkerResult {
     )
     if ($ResultClasses -notcontains $ResultClass) { throw "launcher_worker_result_invalid" }
     return [ordered]@{
-        schema_version = "launcher_worker.v1"
+        schema_version = "launcher_worker.v2"
         message_type = "result"
         operation_id = [string]$Request.operation_id
+        supervisor_generation = [long]$Request.supervisor_generation
+        authority_lease_proof = [string]$Request.authority_lease_proof
+        dispatch_id = [string]$Request.dispatch_id
         service_id = [string]$Request.service_id
         action = [string]$Request.action
         expected_revision = [long]$Request.expected_revision
@@ -411,29 +422,34 @@ function Write-LauncherWorkerResult {
 function Test-LauncherWorkerRequest {
     param([Parameter(Mandatory = $true)][object]$Request)
     $expected = @(
-        "schema_version", "message_type", "operation_id", "graph_sha256", "binding_sha256",
+        "schema_version", "message_type", "operation_id", "supervisor_generation", "authority_lease_proof", "dispatch_id", "graph_sha256", "binding_sha256",
         "service_id", "action", "adapter_class", "expected_revision", "deadline_ms", "worker_nonce"
     ) | Sort-Object
     $actual = @($Request.PSObject.Properties.Name | Sort-Object)
     if (($actual -join "`n") -cne ($expected -join "`n")) { return $false }
-    if ($Request.schema_version -cne "launcher_worker.v1" -or $Request.message_type -cne "request") { return $false }
+    if ($Request.schema_version -cne "launcher_worker.v2" -or $Request.message_type -cne "request") { return $false }
     if ([string]$Request.operation_id -cnotmatch $OperationPattern -or [string]$Request.graph_sha256 -cnotmatch $ShaPattern -or
         [string]$Request.binding_sha256 -cnotmatch $ShaPattern -or [string]$Request.service_id -cnotmatch $ServicePattern -or
-        [string]$Request.worker_nonce -cnotmatch $NoncePattern) { return $false }
+        [string]$Request.worker_nonce -cnotmatch $NoncePattern -or [string]$Request.dispatch_id -cnotmatch $DispatchPattern) { return $false }
+    if ($Request.supervisor_generation -isnot [int] -and $Request.supervisor_generation -isnot [long]) { return $false }
+    if ([long]$Request.supervisor_generation -lt 1 -or [long]$Request.supervisor_generation -gt 9007199254740991) { return $false }
+    if ([string]$Request.authority_lease_proof -cne $ExpectedAuthorityLeaseProof) { return $false }
     if (@("start", "probe", "stop") -notcontains [string]$Request.action) { return $false }
     if (@("job_worker_service", "job_worker_job_close", "external_probe_only", "external_noop") -notcontains [string]$Request.adapter_class) { return $false }
     if ($Request.expected_revision -isnot [int] -and $Request.expected_revision -isnot [long]) { return $false }
     if ([long]$Request.expected_revision -lt 0 -or [long]$Request.expected_revision -gt 9007199254740991) { return $false }
     if ($Request.deadline_ms -isnot [int] -and $Request.deadline_ms -isnot [long]) { return $false }
     if ([long]$Request.deadline_ms -lt 0 -or [long]$Request.deadline_ms -gt 300000) { return $false }
+    return $true
+}
+
+function Test-LauncherResolvedAdapter {
+    param([Parameter(Mandatory = $true)][object]$Request, [Parameter(Mandatory = $true)][object]$Plan)
+    $external = [string]$Plan.Ownership -ceq "external"
     $allowedAdapter = switch ([string]$Request.action) {
-        "start" { "job_worker_service" }
-        "stop" {
-            if ([string]$Request.service_id -ceq "voicevox") { "external_noop" } else { "job_worker_job_close" }
-        }
-        "probe" {
-            if ([string]$Request.service_id -ceq "voicevox") { "external_probe_only" } else { "job_worker_service" }
-        }
+        "start" { if ($external) { return $false } else { "job_worker_service" } }
+        "stop" { if ($external) { "external_noop" } else { "job_worker_job_close" } }
+        "probe" { if ($external) { "external_probe_only" } else { "job_worker_service" } }
     }
     return [string]$Request.adapter_class -ceq $allowedAdapter
 }
@@ -591,6 +607,8 @@ function New-LauncherInvalidRequestResult {
     try {
         if ([string]$Request.operation_id -notmatch $OperationPattern -or [string]$Request.service_id -notmatch $ServicePattern -or
             [string]$Request.action -notin @("start", "probe", "stop") -or [string]$Request.worker_nonce -notmatch $NoncePattern -or
+            [string]$Request.dispatch_id -notmatch $DispatchPattern -or
+            ($Request.supervisor_generation -isnot [int] -and $Request.supervisor_generation -isnot [long]) -or
             ($Request.expected_revision -isnot [int] -and $Request.expected_revision -isnot [long])) { return $null }
         return New-LauncherWorkerResult $Request "invalid_request" "unknown" "unknown" "unknown"
     }
@@ -614,6 +632,27 @@ try {
                 -ServiceId ([string]$request.service_id) `
                 -GraphSha256 ([string]$request.graph_sha256) `
                 -BindingSha256 ([string]$request.binding_sha256)
+        }
+        catch {
+            Write-LauncherWorkerResult -Result (New-LauncherWorkerResult $request "invalid_request" "unknown" "unknown" "unknown")
+            continue
+        }
+        if (-not (Test-LauncherResolvedAdapter -Request $request -Plan $plan)) {
+            Write-LauncherWorkerResult -Result (New-LauncherWorkerResult $request "invalid_request" "unknown" "unknown" "unknown")
+            continue
+        }
+        if ($null -eq $ActiveSupervisorGeneration) {
+            $ActiveSupervisorGeneration = [long]$request.supervisor_generation
+            $ActiveAuthorityLeaseProof = [string]$request.authority_lease_proof
+        }
+        if ([long]$request.supervisor_generation -ne [long]$ActiveSupervisorGeneration -or
+            [string]$request.authority_lease_proof -cne [string]$ActiveAuthorityLeaseProof -or
+            $SeenDispatches.ContainsKey([string]$request.dispatch_id)) {
+            Write-LauncherWorkerResult -Result (New-LauncherWorkerResult $request "invalid_request" "unknown" "unknown" "unknown")
+            continue
+        }
+        $SeenDispatches[[string]$request.dispatch_id] = $true
+        try {
             $result = switch ([string]$request.action) {
                 "start" { Invoke-LauncherStart -Request $request -Plan $plan }
                 "probe" { Invoke-LauncherProbe -Request $request -Plan $plan }

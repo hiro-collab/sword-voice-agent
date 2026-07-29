@@ -13,16 +13,41 @@ const store = require('../tools/home-control-launcher/launcher-operation-store')
 
 const authority = contract.loadAuthority(ROOT)
 const OPERATION_ID = 'lop_node0001'
-const event = (eventType, serviceId = undefined, operationId = OPERATION_ID) => ({ event_type: eventType, operation_id: operationId, ...(serviceId ? { service_id: serviceId } : {}) })
+const LEASE_PROOF = `lp_${'a'.repeat(64)}`
+const dispatchId = (serviceId, action, sequence = 1) => `ld_${Buffer.from(`${serviceId}:${action}:${sequence}`).toString('hex').slice(0, 32).padEnd(32, '0')}`
+const actionForEvent = (eventType) => eventType.startsWith('spawn_') ? 'start' :
+  ['probe_requested', 'service_ready', 'optional_absent', 'external_ready', 'readiness_timeout'].includes(eventType) ? 'probe' :
+    ['stop_dispatch_requested', 'service_stopped', 'stop_failed'].includes(eventType) ? 'stop' : null
+const event = (eventType, serviceId = undefined, operationId = OPERATION_ID, dispatch = undefined) => ({
+  event_type: eventType, operation_id: operationId, ...(serviceId ? { service_id: serviceId } : {}),
+  ...(serviceId && actionForEvent(eventType) ? { dispatch_id: dispatch || dispatchId(serviceId, actionForEvent(eventType)), ...(eventType.endsWith('_requested') ? { action: actionForEvent(eventType) } : {}) } : {})
+})
 const workerRequest = (operation, serviceId = 'home_assistant_bridge', action = 'start', adapterClass = 'job_worker_service', deadlineMs = 60000) => ({
-  schema_version: 'launcher_worker.v1', message_type: 'request', operation_id: operation.operation_id,
+  schema_version: 'launcher_worker.v2', message_type: 'request', operation_id: operation.operation_id,
+  supervisor_generation: operation.supervisor_generation || 1,
+  authority_lease_proof: LEASE_PROOF,
+  dispatch_id: operation.services?.find((service) => service.service_id === serviceId)?.pending_dispatch_id || dispatchId(serviceId, action),
   graph_sha256: authority.identities.graphSha256, binding_sha256: authority.identities.bindingSha256,
   service_id: serviceId, action, adapter_class: adapterClass, expected_revision: operation.revision,
   deadline_ms: deadlineMs, worker_nonce: 'lw_0000000000000001'
 })
+const workerResult = (request, values = {}) => ({
+  schema_version: 'launcher_worker.v2', message_type: 'result', operation_id: request.operation_id,
+  supervisor_generation: request.supervisor_generation, dispatch_id: request.dispatch_id,
+  authority_lease_proof: request.authority_lease_proof,
+  service_id: request.service_id, action: request.action, expected_revision: request.expected_revision,
+  worker_nonce: request.worker_nonce, result_class: 'accepted', ownership_class: 'matched',
+  listener_class: 'not_applicable', descendant_class: 'owned_active', ...values
+})
 const staleLockRecord = (ownerPid, ownerNonce = 'll_00000000000000000000000000000000') => ({
   schema_version: 'launcher_operation_lock.v1', owner_nonce: ownerNonce, owner_pid: ownerPid,
   created_at_ms: Date.now() - store.LOCK_STALE_MS - 1000
+})
+const abandonedSupervisorLeaseRecord = (ownerPid, generation = 1, ownerNonce = `sl_${'0'.repeat(64)}`) => ({
+  schema_version: 'launcher_supervisor_lease.v2', operation_id: OPERATION_ID,
+  supervisor_generation: generation, graph_sha256: authority.identities.graphSha256,
+  binding_sha256: authority.identities.bindingSha256, owner_nonce: ownerNonce,
+  owner_pid: ownerPid, created_at_ms: Date.now() - 1000
 })
 
 const expectCode = (action, code) => assert.throws(action, (error) => error instanceof contract.LauncherContractError && error.code === code)
@@ -47,12 +72,15 @@ const fullReady = () => {
   for (const serviceId of authority.bindingDocument.binding.service_order) {
     const spec = specs.get(serviceId)
     if (spec.requirement === 'external') {
+      operation = reducer.reduce(operation, event('probe_requested', serviceId), authority)
       operation = reducer.reduce(operation, event('external_ready', serviceId), authority)
     } else if (spec.requirement === 'optional') {
+      operation = reducer.reduce(operation, event('probe_requested', serviceId), authority)
       operation = reducer.reduce(operation, event('optional_absent', serviceId), authority)
     } else {
       operation = reducer.reduce(operation, event('spawn_requested', serviceId), authority)
       operation = reducer.reduce(operation, event('spawn_succeeded', serviceId), authority)
+      operation = reducer.reduce(operation, event('probe_requested', serviceId), authority)
       operation = reducer.reduce(operation, event('service_ready', serviceId), authority)
     }
     reducer.validateSnapshot(operation, authority)
@@ -151,7 +179,8 @@ test('worker request deadlines are derived from the exact service and action aut
   assert.equal(contract.validateWorkerRequestAgainstAuthority(startRequest, authority), startRequest)
   expectCode(() => contract.validateWorkerRequestAgainstAuthority({ ...startRequest, deadline_ms: 1 }, authority), 'worker_request_deadline_mismatch')
   const startResult = {
-    schema_version: 'launcher_worker.v1', message_type: 'result', operation_id: startOperation.operation_id,
+    schema_version: 'launcher_worker.v2', message_type: 'result', operation_id: startOperation.operation_id,
+    supervisor_generation: startRequest.supervisor_generation, dispatch_id: startRequest.dispatch_id,
     service_id: 'home_assistant_bridge', action: 'start', expected_revision: startOperation.revision,
     worker_nonce: startRequest.worker_nonce, result_class: 'accepted', ownership_class: 'matched',
     listener_class: 'not_applicable', descendant_class: 'owned_active'
@@ -182,7 +211,9 @@ test('worker result correlation protects revision, nonce, ownership, PID, and li
   operation = reducer.reduce(operation, event('spawn_requested', 'home_assistant_bridge'), authority)
   const request = workerRequest(operation)
   const result = {
-    schema_version: 'launcher_worker.v1', message_type: 'result', operation_id: OPERATION_ID,
+    schema_version: 'launcher_worker.v2', message_type: 'result', operation_id: OPERATION_ID,
+    supervisor_generation: request.supervisor_generation, authority_lease_proof: request.authority_lease_proof,
+    dispatch_id: request.dispatch_id,
     service_id: 'home_assistant_bridge', action: 'start', expected_revision: operation.revision,
     worker_nonce: 'lw_0000000000000001', result_class: 'accepted', ownership_class: 'matched',
     listener_class: 'matched', descendant_class: 'owned_active'
@@ -196,23 +227,348 @@ test('worker result correlation protects revision, nonce, ownership, PID, and li
   const mismatch = reducer.workerResultToEvent({ ...result, ownership_class: 'mismatch' }, operation, request, authority)
   assert.equal(mismatch.event_type, 'listener_mismatch')
   assert.equal(reducer.workerResultToEvent({ ...result, ownership_class: 'unknown' }, operation, request, authority).event_type, 'listener_mismatch')
+  operation = reducer.reduce(operation, reducer.workerResultToEvent(result, operation, request, authority), authority)
+  operation = reducer.reduce(operation, event('probe_requested', 'home_assistant_bridge'), authority)
   const probeRequest = workerRequest(operation, 'home_assistant_bridge', 'probe', 'job_worker_service')
-  const probeResult = { ...result, action: 'probe', result_class: 'ready', listener_class: 'matched' }
+  const probeResult = {
+    ...result, action: 'probe', result_class: 'ready', listener_class: 'matched',
+    expected_revision: probeRequest.expected_revision, dispatch_id: probeRequest.dispatch_id
+  }
   assert.equal(reducer.workerResultToEvent(probeResult, operation, probeRequest, authority).event_type, 'service_ready')
+})
+
+test('generation fencing and dispatch correlation reject losers without global revision coupling', () => {
+  let operation = reducer.createOperation(OPERATION_ID, authority, 7)
+  for (const nextEvent of [event('preflight_started'), event('preflight_passed'), event('start_requested')]) operation = reducer.reduce(operation, nextEvent, authority)
+  operation = reducer.reduce(operation, event('spawn_requested', 'home_assistant_bridge'), authority)
+  const firstRequest = workerRequest(operation, 'home_assistant_bridge')
+  const firstResult = workerResult(firstRequest)
+  expectCode(() => reducer.workerResultToEvent({ ...firstResult, supervisor_generation: 6 }, operation, firstRequest, authority), 'worker_result_correlation_mismatch')
+  expectCode(() => reducer.workerResultToEvent({ ...firstResult, dispatch_id: 'ld_ffffffffffffffff' }, operation, firstRequest, authority), 'worker_result_correlation_mismatch')
+
+  operation = reducer.reduce(operation, event('spawn_requested', 'aituber_kit'), authority)
+  assert.notEqual(operation.revision, firstRequest.expected_revision)
+  assert.equal(reducer.workerResultToEvent(firstResult, operation, firstRequest, authority).event_type, 'spawn_succeeded')
+
+  operation = reducer.reduce(operation, reducer.workerResultToEvent(firstResult, operation, firstRequest, authority), authority)
+  operation = reducer.reduce(operation, event('probe_requested', 'home_assistant_bridge'), authority)
+  expectCode(() => reducer.workerResultToEvent(firstResult, operation, firstRequest, authority), 'worker_result_correlation_mismatch')
+})
+
+test('same-service dispatch is single-flight and primary failure survives cleanup failure', () => {
+  let operation = startLifecycle()
+  operation = reducer.reduce(operation, event('spawn_requested', 'home_assistant_bridge'), authority)
+  const duplicate = reducer.reduce(operation, event('spawn_requested', 'home_assistant_bridge', OPERATION_ID, dispatchId('home_assistant_bridge', 'start', 2)), authority)
+  assert.equal(duplicate.reason, 'invalid_event')
+  assert.equal(duplicate.services.find((service) => service.service_id === 'home_assistant_bridge').attempt_sequence, 1)
+
+  operation = reducer.reduce(operation, event('spawn_failed', 'home_assistant_bridge'), authority)
+  operation = reducer.reduce(operation, event('rollback_failed', 'home_assistant_bridge'), authority)
+  assert.deepEqual(operation.primary_result, {
+    class: 'spawn_failed', responsible_id: 'home_assistant_bridge', action_certainty: 'may_have_occurred'
+  })
+  assert.deepEqual(operation.cleanup_result, { class: 'rollback_failed', responsible_id: 'home_assistant_bridge' })
+  assert.equal(operation.reason, 'spawn_failed')
+  assert.equal(operation.cleanup, 'residue')
+  reducer.validateSnapshot(operation, authority)
+})
+
+test('operation store generations increase only when a terminal operation is replaced', () => withRuntimeRoot((runtimeRoot) => {
+  const first = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  assert.equal(first.operation.supervisor_generation, 1)
+  store.releaseSupervisorLease(first.supervisorLease, authority)
+  const joined = store.startAndPersist('lop_node0002', authority, runtimeRoot)
+  assert.equal(joined.joined_existing, true)
+  assert.equal(joined.operation.supervisor_generation, 1)
+  let current = joined.operation
+  current = store.reduceAndPersist(current, event('preflight_started'), authority, runtimeRoot)
+  current = store.reduceAndPersist(current, event('preflight_failed'), authority, runtimeRoot)
+  store.releaseSupervisorLease(joined.supervisorLease, authority)
+  const replacement = store.startAndPersist('lop_node0003', authority, runtimeRoot)
+  assert.equal(replacement.joined_existing, false)
+  assert.equal(replacement.operation.supervisor_generation, 2)
+  store.releaseSupervisorLease(replacement.supervisorLease, authority)
+}))
+
+test('private supervisor lifetime lease rejects a competing nonterminal Start without record mutation', () => withRuntimeRoot((runtimeRoot) => {
+  const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  const binding = store.getSupervisorLeaseBinding(started.supervisorLease, authority)
+  assert.match(binding.authority_lease_proof, /^lp_[a-f0-9]{64}$/u)
+  assert.deepEqual(Object.keys(binding).sort(), ['authority_lease_proof', 'operation_id', 'supervisor_generation'])
+  const recordPath = path.join(runtimeRoot, store.STORE_DIRECTORY, store.RECORD_FILE)
+  const leasePath = path.join(runtimeRoot, store.STORE_DIRECTORY, store.SUPERVISOR_LEASE_FILE)
+  const recordBefore = fs.readFileSync(recordPath)
+  const leaseBefore = fs.readFileSync(leasePath)
+  expectCode(() => store.startAndPersist('lop_competing01', authority, runtimeRoot), 'supervisor_lease_unavailable')
+  assert.deepEqual(fs.readFileSync(recordPath), recordBefore)
+  assert.deepEqual(fs.readFileSync(leasePath), leaseBefore)
+  assert.equal(store.readOperation(authority, runtimeRoot).revision, 0)
+  store.releaseSupervisorLease(started.supervisorLease, authority)
+}))
+
+test('private supervisor lifetime lease rejects a competing terminal replacement without generation mutation', () => withRuntimeRoot((runtimeRoot) => {
+  const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  let terminal = store.reduceAndPersist(started.operation, event('preflight_started'), authority, runtimeRoot)
+  terminal = store.reduceAndPersist(terminal, event('preflight_failed'), authority, runtimeRoot)
+  const recordPath = path.join(runtimeRoot, store.STORE_DIRECTORY, store.RECORD_FILE)
+  const leasePath = path.join(runtimeRoot, store.STORE_DIRECTORY, store.SUPERVISOR_LEASE_FILE)
+  const recordBefore = fs.readFileSync(recordPath)
+  const leaseBefore = fs.readFileSync(leasePath)
+  expectCode(() => store.startAndPersist('lop_competing02', authority, runtimeRoot), 'supervisor_lease_unavailable')
+  assert.deepEqual(fs.readFileSync(recordPath), recordBefore)
+  assert.deepEqual(fs.readFileSync(leasePath), leaseBefore)
+  const persisted = store.readOperation(authority, runtimeRoot)
+  assert.equal(persisted.phase, 'failed')
+  assert.equal(persisted.supervisor_generation, 1)
+  assert.equal(persisted.operation_id, terminal.operation_id)
+  store.releaseSupervisorLease(started.supervisorLease, authority)
+}))
+
+test('first-operation publish has no fallible access step after its atomic rename', () => withRuntimeRoot((runtimeRoot) => {
+  const child = path.join(runtimeRoot, store.STORE_DIRECTORY)
+  const temporaryPath = path.join(child, store.TEMP_FILE)
+  const recordPath = path.join(child, store.RECORD_FILE)
+  const originalRename = fs.renameSync
+  const originalChmod = fs.chmodSync
+  let recordCommitted = false
+  let postCommitAccessAttempts = 0
+  fs.renameSync = (source, destination) => {
+    const result = originalRename(source, destination)
+    if (path.resolve(source) === path.resolve(temporaryPath) && path.resolve(destination) === path.resolve(recordPath)) recordCommitted = true
+    return result
+  }
+  fs.chmodSync = (target, mode) => {
+    if (recordCommitted && path.resolve(target) === path.resolve(recordPath)) {
+      postCommitAccessAttempts++
+      throw new Error('PRIVATE_SENTINEL')
+    }
+    return originalChmod(target, mode)
+  }
+  let started
+  try { started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot) } finally {
+    fs.renameSync = originalRename
+    fs.chmodSync = originalChmod
+  }
+  assert.equal(recordCommitted, true)
+  assert.equal(postCommitAccessAttempts, 0)
+  assert.equal(store.readOperation(authority, runtimeRoot).supervisor_generation, 1)
+  assert.equal(fs.existsSync(path.join(child, store.SUPERVISOR_LEASE_FILE)), true)
+  assert.equal(store.getSupervisorLeaseBinding(started.supervisorLease, authority).supervisor_generation, 1)
+  store.releaseSupervisorLease(started.supervisorLease, authority)
+}))
+
+test('terminal replacement publish has no fallible access step after its atomic rename', () => withRuntimeRoot((runtimeRoot) => {
+  const first = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  let terminal = store.reduceAndPersist(first.operation, event('preflight_started'), authority, runtimeRoot)
+  terminal = store.reduceAndPersist(terminal, event('preflight_failed'), authority, runtimeRoot)
+  store.releaseSupervisorLease(first.supervisorLease, authority)
+  const child = path.join(runtimeRoot, store.STORE_DIRECTORY)
+  const temporaryPath = path.join(child, store.TEMP_FILE)
+  const recordPath = path.join(child, store.RECORD_FILE)
+  const originalRename = fs.renameSync
+  const originalChmod = fs.chmodSync
+  let recordCommitted = false
+  let postCommitAccessAttempts = 0
+  fs.renameSync = (source, destination) => {
+    const result = originalRename(source, destination)
+    if (path.resolve(source) === path.resolve(temporaryPath) && path.resolve(destination) === path.resolve(recordPath)) recordCommitted = true
+    return result
+  }
+  fs.chmodSync = (target, mode) => {
+    if (recordCommitted && path.resolve(target) === path.resolve(recordPath)) {
+      postCommitAccessAttempts++
+      throw new Error('PRIVATE_SENTINEL')
+    }
+    return originalChmod(target, mode)
+  }
+  let replacement
+  try { replacement = store.startAndPersist('lop_replacement01', authority, runtimeRoot) } finally {
+    fs.renameSync = originalRename
+    fs.chmodSync = originalChmod
+  }
+  assert.equal(recordCommitted, true)
+  assert.equal(postCommitAccessAttempts, 0)
+  assert.equal(replacement.operation.supervisor_generation, 2)
+  assert.equal(store.readOperation(authority, runtimeRoot).supervisor_generation, 2)
+  assert.equal(fs.existsSync(path.join(child, store.SUPERVISOR_LEASE_FILE)), true)
+  assert.equal(store.getSupervisorLeaseBinding(replacement.supervisorLease, authority).supervisor_generation, 2)
+  store.releaseSupervisorLease(replacement.supervisorLease, authority)
+}))
+
+test('post-commit transient lock release failure returns the committed result and an idempotent cleanup route', () => withRuntimeRoot((runtimeRoot) => {
+  const child = path.join(runtimeRoot, store.STORE_DIRECTORY)
+  const temporaryPath = path.join(child, store.TEMP_FILE)
+  const recordPath = path.join(child, store.RECORD_FILE)
+  const lockPath = path.join(child, store.LOCK_FILE)
+  const originalRename = fs.renameSync
+  const originalUnlink = fs.unlinkSync
+  let recordCommitted = false
+  let injectedFailures = 0
+  fs.renameSync = (source, destination) => {
+    const result = originalRename(source, destination)
+    if (path.resolve(source) === path.resolve(temporaryPath) && path.resolve(destination) === path.resolve(recordPath)) recordCommitted = true
+    return result
+  }
+  fs.unlinkSync = (target) => {
+    if (recordCommitted && path.resolve(target) === path.resolve(lockPath) && injectedFailures === 0) {
+      injectedFailures++
+      throw new Error('PRIVATE_SENTINEL')
+    }
+    return originalUnlink(target)
+  }
+  let started
+  try { started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot) } finally {
+    fs.renameSync = originalRename
+    fs.unlinkSync = originalUnlink
+  }
+  assert.equal(recordCommitted, true)
+  assert.equal(injectedFailures, 1)
+  assert.equal(started.operation_lock_cleanup_class, 'operation_lock_release_failed')
+  assert.equal(started.operation.supervisor_generation, 1)
+  assert.equal(fs.existsSync(recordPath), true)
+  assert.equal(fs.existsSync(path.join(child, store.SUPERVISOR_LEASE_FILE)), true)
+  assert.equal(fs.existsSync(lockPath), true)
+  assert.equal(store.getSupervisorLeaseBinding(started.supervisorLease, authority).supervisor_generation, 1)
+  const publicRecord = fs.readFileSync(recordPath, 'utf8')
+  assert.equal(publicRecord.includes('operation_lock_cleanup_class'), false)
+  assert.equal(JSON.stringify(started).includes('PRIVATE_SENTINEL'), false)
+  assert.equal(store.retryStartCleanup(started, authority), 'clear')
+  assert.equal(store.retryStartCleanup(started, authority), 'clear')
+  assert.equal(fs.existsSync(lockPath), false)
+  store.releaseSupervisorLease(started.supervisorLease, authority)
+}))
+
+test('stale recovery may clear a retained post-commit lock without orphaning the lifetime lease', () => withRuntimeRoot((runtimeRoot) => {
+  const first = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  let terminal = store.reduceAndPersist(first.operation, event('preflight_started'), authority, runtimeRoot)
+  terminal = store.reduceAndPersist(terminal, event('preflight_failed'), authority, runtimeRoot)
+  store.releaseSupervisorLease(first.supervisorLease, authority)
+  const child = path.join(runtimeRoot, store.STORE_DIRECTORY)
+  const temporaryPath = path.join(child, store.TEMP_FILE)
+  const recordPath = path.join(child, store.RECORD_FILE)
+  const lockPath = path.join(child, store.LOCK_FILE)
+  const originalRename = fs.renameSync
+  const originalUnlink = fs.unlinkSync
+  let recordCommitted = false
+  let injectedFailures = 0
+  fs.renameSync = (source, destination) => {
+    const result = originalRename(source, destination)
+    if (path.resolve(source) === path.resolve(temporaryPath) && path.resolve(destination) === path.resolve(recordPath)) recordCommitted = true
+    return result
+  }
+  fs.unlinkSync = (target) => {
+    if (recordCommitted && path.resolve(target) === path.resolve(lockPath) && injectedFailures === 0) {
+      injectedFailures++
+      throw new Error('PRIVATE_SENTINEL')
+    }
+    return originalUnlink(target)
+  }
+  let replacement
+  try { replacement = store.startAndPersist('lop_replacement02', authority, runtimeRoot) } finally {
+    fs.renameSync = originalRename
+    fs.unlinkSync = originalUnlink
+  }
+  assert.equal(replacement.operation_lock_cleanup_class, 'operation_lock_release_failed')
+  const stale = JSON.parse(fs.readFileSync(lockPath, 'utf8'))
+  stale.created_at_ms = Date.now() - store.LOCK_STALE_MS - 1000
+  fs.writeFileSync(lockPath, `${JSON.stringify(stale)}\n`)
+  const recovered = store.readOperation(authority, runtimeRoot, () => 'absent')
+  assert.equal(recovered.supervisor_generation, 2)
+  assert.equal(fs.existsSync(lockPath), false)
+  assert.equal(store.retryStartCleanup(replacement, authority), 'clear')
+  assert.equal(store.retryStartCleanup(replacement, authority), 'clear')
+  assert.equal(store.getSupervisorLeaseBinding(replacement.supervisorLease, authority).supervisor_generation, 2)
+  store.releaseSupervisorLease(replacement.supervisorLease, authority)
+}))
+
+test('supervisor lease fails closed for live reused denied unknown malformed and old-generation owners', () => {
+  for (const ownerState of ['alive', 'pid_reused', 'access_denied', 'unknown']) {
+    withRuntimeRoot((runtimeRoot) => {
+      const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+      store.releaseSupervisorLease(started.supervisorLease, authority)
+      const leasePath = path.join(runtimeRoot, store.STORE_DIRECTORY, store.SUPERVISOR_LEASE_FILE)
+      const bytes = Buffer.from(`${JSON.stringify(abandonedSupervisorLeaseRecord(424242))}\n`)
+      fs.writeFileSync(leasePath, bytes, { mode: 0o600 })
+      expectCode(() => store.acquireSupervisorLease({
+        operationId: OPERATION_ID, supervisorGeneration: started.operation.supervisor_generation,
+        authority, authorizedPrivateRuntimeRoot: runtimeRoot, ownerLivenessObserver: () => ownerState
+      }), 'supervisor_lease_unavailable')
+      assert.deepEqual(fs.readFileSync(leasePath), bytes)
+    })
+  }
+  withRuntimeRoot((runtimeRoot) => {
+    const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+    store.releaseSupervisorLease(started.supervisorLease, authority)
+    const leasePath = path.join(runtimeRoot, store.STORE_DIRECTORY, store.SUPERVISOR_LEASE_FILE)
+    fs.writeFileSync(leasePath, 'malformed-private-lease', { mode: 0o600 })
+    expectCode(() => store.acquireSupervisorLease({
+      operationId: OPERATION_ID, supervisorGeneration: started.operation.supervisor_generation,
+      authority, authorizedPrivateRuntimeRoot: runtimeRoot, ownerLivenessObserver: () => 'absent'
+    }), 'supervisor_lease_unavailable')
+  })
+  withRuntimeRoot((runtimeRoot) => {
+    const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+    store.releaseSupervisorLease(started.supervisorLease, authority)
+    expectCode(() => store.acquireSupervisorLease({
+      operationId: OPERATION_ID, supervisorGeneration: started.operation.supervisor_generation + 1,
+      authority, authorizedPrivateRuntimeRoot: runtimeRoot
+    }), 'supervisor_lease_operation_mismatch')
+  })
+})
+
+test('confirmed absent lease takeover succeeds and replacement race preserves replacement bytes', () => {
+  withRuntimeRoot((runtimeRoot) => {
+    const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+    store.releaseSupervisorLease(started.supervisorLease, authority)
+    const leasePath = path.join(runtimeRoot, store.STORE_DIRECTORY, store.SUPERVISOR_LEASE_FILE)
+    fs.writeFileSync(leasePath, `${JSON.stringify(abandonedSupervisorLeaseRecord(424242))}\n`, { mode: 0o600 })
+    const lease = store.acquireSupervisorLease({
+      operationId: OPERATION_ID, supervisorGeneration: started.operation.supervisor_generation,
+      authority, authorizedPrivateRuntimeRoot: runtimeRoot, ownerLivenessObserver: () => 'absent'
+    })
+    assert.match(store.getSupervisorLeaseBinding(lease, authority).authority_lease_proof, /^lp_[a-f0-9]{64}$/u)
+    store.releaseSupervisorLease(lease, authority)
+  })
+  withRuntimeRoot((runtimeRoot) => {
+    const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+    store.releaseSupervisorLease(started.supervisorLease, authority)
+    const child = path.join(runtimeRoot, store.STORE_DIRECTORY)
+    const leasePath = path.join(child, store.SUPERVISOR_LEASE_FILE)
+    const discardPath = path.join(child, store.SUPERVISOR_LEASE_DISCARD_FILE)
+    fs.writeFileSync(leasePath, `${JSON.stringify(abandonedSupervisorLeaseRecord(424243))}\n`, { mode: 0o600 })
+    const replacement = Buffer.from(`${JSON.stringify(abandonedSupervisorLeaseRecord(424244, 1, `sl_${'1'.repeat(64)}`))}\n`)
+    const originalRename = fs.renameSync
+    fs.renameSync = (source, destination) => {
+      originalRename(source, destination)
+      if (path.resolve(source) === path.resolve(leasePath) && path.resolve(destination) === path.resolve(discardPath)) {
+        fs.writeFileSync(leasePath, replacement, { mode: 0o600 })
+      }
+    }
+    try {
+      expectCode(() => store.acquireSupervisorLease({
+        operationId: OPERATION_ID, supervisorGeneration: started.operation.supervisor_generation,
+        authority, authorizedPrivateRuntimeRoot: runtimeRoot, ownerLivenessObserver: () => 'absent'
+      }), 'supervisor_lease_unavailable')
+    } finally { fs.renameSync = originalRename }
+    assert.deepEqual(fs.readFileSync(leasePath), replacement)
+  })
 })
 
 test('external probe timeout becomes a bounded failure without fake external readiness', () => {
   let operation = startLifecycle()
   const externalSpec = authority.graph.services.find((service) => service.service_id === 'voicevox')
+  operation = reducer.reduce(operation, event('probe_requested', 'voicevox'), authority)
   const request = workerRequest(operation, 'voicevox', 'probe', 'external_probe_only', externalSpec.ready_deadline_ms)
   const result = {
-    schema_version: 'launcher_worker.v1', message_type: 'result', operation_id: OPERATION_ID,
+    schema_version: 'launcher_worker.v2', message_type: 'result', operation_id: OPERATION_ID,
+    supervisor_generation: request.supervisor_generation, authority_lease_proof: request.authority_lease_proof,
+    dispatch_id: request.dispatch_id,
     service_id: 'voicevox', action: 'probe', expected_revision: operation.revision,
     worker_nonce: request.worker_nonce, result_class: 'readiness_timeout', ownership_class: 'not_applicable',
     listener_class: 'not_applicable', descendant_class: 'not_applicable'
   }
   const timeoutEvent = reducer.workerResultToEvent(result, operation, request, authority)
-  assert.deepEqual(timeoutEvent, { event_type: 'readiness_timeout', operation_id: OPERATION_ID, service_id: 'voicevox' })
+  assert.deepEqual(timeoutEvent, { event_type: 'readiness_timeout', operation_id: OPERATION_ID, service_id: 'voicevox', dispatch_id: request.dispatch_id })
   operation = reducer.reduce(operation, timeoutEvent, authority)
   assert.equal(operation.phase, 'rolling_back')
   assert.equal(operation.reason, 'readiness_timeout')
@@ -240,7 +596,7 @@ test('all immutable reducer vectors execute and preserve valid snapshots', () =>
     assert.deepEqual(operation.residue_service_ids, vector.expected.residue_service_ids, vector.vector_id)
     vector.coverage.forEach((item) => coverage.add(item))
   }
-  for (const required of ['planned', 'preflight', 'prepared', 'dependency', 'ownership', 'pid_reuse', 'listener', 'deadline', 'rollback', 'recovery', 'stop', 'residue', 'optional_camera', 'external_voicevox', 'stale_no_write']) {
+  for (const required of ['primary_result', 'cleanup_result', 'dispatch', 'operation_identity', 'replay', 'residue']) {
     assert.ok(coverage.has(required), required)
   }
 })
@@ -250,6 +606,7 @@ test('full graph reaches Ready and repeats ten Start/Stop cycles', () => {
     let operation = fullReady()
     operation = reducer.reduce(operation, event('stop_requested'), authority)
     for (const service of authority.graph.services.filter((item) => item.ownership === 'owned' && item.requirement !== 'optional')) {
+      operation = reducer.reduce(operation, event('stop_dispatch_requested', service.service_id), authority)
       operation = reducer.reduce(operation, event('service_stopped', service.service_id), authority)
     }
     assert.equal(operation.phase, 'stopped')
@@ -287,33 +644,38 @@ test('foreign operation event is a pure no-op before store access', () => {
   assert.equal(fs.existsSync(nonexistent), false)
 })
 
-test('store persists planned before preflight, joins duplicate Start, and preserves parent', () => withRuntimeRoot((runtimeRoot) => {
+test('store persists planned before preflight, joins after predecessor release, and preserves parent', () => withRuntimeRoot((runtimeRoot) => {
   const first = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
   assert.equal(first.operation.phase, 'planned')
   assert.equal(first.operation.revision, 0)
   assert.equal(first.joined_existing, false)
+  store.releaseSupervisorLease(first.supervisorLease, authority)
   const second = store.startAndPersist('lop_node0002', authority, runtimeRoot)
   assert.equal(second.joined_existing, true)
   assert.equal(second.operation.operation_id, OPERATION_ID)
   assert.equal(second.operation.revision, 1)
   assert.equal(fs.readFileSync(path.join(runtimeRoot, 'parent-sentinel.txt'), 'utf8'), 'parent-unchanged')
   const child = path.join(runtimeRoot, store.STORE_DIRECTORY)
-  assert.deepEqual(fs.readdirSync(child).sort(), [store.RECORD_FILE])
+  assert.deepEqual(fs.readdirSync(child).sort(), [store.RECORD_FILE, store.SUPERVISOR_LEASE_FILE].sort())
   assert.equal(fs.readdirSync(child).some((name) => name.endsWith('.tmp')), false)
+  store.releaseSupervisorLease(second.supervisorLease, authority)
 }))
 
 test('store revision CAS rejects stale input without rewriting the record', () => withRuntimeRoot((runtimeRoot) => {
-  let current = store.startAndPersist(OPERATION_ID, authority, runtimeRoot).operation
+  const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  let current = started.operation
   current = store.reduceAndPersist(current, event('preflight_started'), authority, runtimeRoot)
   const recordPath = path.join(runtimeRoot, store.STORE_DIRECTORY, store.RECORD_FILE)
   const before = fs.readFileSync(recordPath)
   const stale = { ...current, revision: current.revision - 1 }
   expectCode(() => store.reduceAndPersist(stale, event('preflight_passed'), authority, runtimeRoot), 'operation_store_revision_conflict')
   assert.deepEqual(fs.readFileSync(recordPath), before)
+  store.releaseSupervisorLease(started.supervisorLease, authority)
 }))
 
 test('store recovers an exact stale owned lock and complete crash temp deterministically', () => withRuntimeRoot((runtimeRoot) => {
-  let current = store.startAndPersist(OPERATION_ID, authority, runtimeRoot).operation
+  const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  let current = started.operation
   const child = path.join(runtimeRoot, store.STORE_DIRECTORY)
   const lockPath = path.join(child, store.LOCK_FILE)
   const tempPath = path.join(child, store.TEMP_FILE)
@@ -325,10 +687,11 @@ test('store recovers an exact stale owned lock and complete crash temp determini
   assert.equal(current.phase, pending.phase)
   assert.equal(fs.existsSync(lockPath), false)
   assert.equal(fs.existsSync(tempPath), false)
+  store.releaseSupervisorLease(started.supervisorLease, authority)
 }))
 
 test('stale lock held by the current live owner is never renamed or stolen', () => withRuntimeRoot((runtimeRoot) => {
-  store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
   const lockPath = path.join(runtimeRoot, store.STORE_DIRECTORY, store.LOCK_FILE)
   const bytes = Buffer.from(`${JSON.stringify(staleLockRecord(process.pid))}\n`, 'utf8')
   const descriptor = fs.openSync(lockPath, 'wx')
@@ -341,10 +704,11 @@ test('stale lock held by the current live owner is never renamed or stolen', () 
     fs.closeSync(descriptor)
     fs.unlinkSync(lockPath)
   }
+  store.releaseSupervisorLease(started.supervisorLease, authority)
 }))
 
 test('stale recovery fails closed for alive, PID reuse, unknown, denied, malformed, and observer errors', () => withRuntimeRoot((runtimeRoot) => {
-  store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
   const lockPath = path.join(runtimeRoot, store.STORE_DIRECTORY, store.LOCK_FILE)
   const bytes = Buffer.from(`${JSON.stringify(staleLockRecord(424243))}\n`, 'utf8')
   for (const observer of [
@@ -356,10 +720,11 @@ test('stale recovery fails closed for alive, PID reuse, unknown, denied, malform
     assert.deepEqual(fs.readFileSync(lockPath), bytes)
     fs.unlinkSync(lockPath)
   }
+  store.releaseSupervisorLease(started.supervisorLease, authority)
 }))
 
 test('concurrent stale-lock replacement is restored unchanged and never reclaimed', () => withRuntimeRoot((runtimeRoot) => {
-  store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
   const child = path.join(runtimeRoot, store.STORE_DIRECTORY)
   const lockPath = path.join(child, store.LOCK_FILE)
   const recoveryPath = path.join(child, store.LOCK_RECOVERY_FILE)
@@ -380,10 +745,11 @@ test('concurrent stale-lock replacement is restored unchanged and never reclaime
   assert.deepEqual(fs.readFileSync(lockPath), replacement)
   assert.equal(fs.existsSync(recoveryPath), false)
   fs.unlinkSync(lockPath)
+  store.releaseSupervisorLease(started.supervisorLease, authority)
 }))
 
 test('recovery-file owner replacement during observation is preserved and never inferred from the old owner', () => withRuntimeRoot((runtimeRoot) => {
-  store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
   const child = path.join(runtimeRoot, store.STORE_DIRECTORY)
   const recoveryPath = path.join(child, store.LOCK_RECOVERY_FILE)
   const discardPath = path.join(child, store.LOCK_DISCARD_FILE)
@@ -402,15 +768,18 @@ test('recovery-file owner replacement during observation is preserved and never 
   assert.deepEqual(fs.readFileSync(recoveryPath), ownerBBytes)
   assert.equal(fs.existsSync(discardPath), false)
   fs.unlinkSync(recoveryPath)
+  store.releaseSupervisorLease(started.supervisorLease, authority)
 }))
 
 test('store removes only a validated stale owned temp and preserves invalid recovery bytes', () => withRuntimeRoot((runtimeRoot) => {
-  const current = store.startAndPersist(OPERATION_ID, authority, runtimeRoot).operation
+  const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  const current = started.operation
   const child = path.join(runtimeRoot, store.STORE_DIRECTORY)
   const tempPath = path.join(child, store.TEMP_FILE)
   fs.writeFileSync(tempPath, `${JSON.stringify(current)}\n`)
   assert.equal(store.readOperation(authority, runtimeRoot).revision, current.revision)
   assert.equal(fs.existsSync(tempPath), false)
+  store.releaseSupervisorLease(started.supervisorLease, authority)
   fs.writeFileSync(tempPath, 'foreign-incomplete')
   expectCode(() => store.readOperation(authority, runtimeRoot), 'operation_store_recovery_invalid')
   assert.equal(fs.readFileSync(tempPath, 'utf8'), 'foreign-incomplete')
@@ -442,7 +811,8 @@ test('action failure remains authoritative when unlock also fails', () => withRu
 }))
 
 test('operation record read and write enforce the public byte ceiling', () => withRuntimeRoot((runtimeRoot) => {
-  store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  store.releaseSupervisorLease(started.supervisorLease, authority)
   const recordPath = path.join(runtimeRoot, store.STORE_DIRECTORY, store.RECORD_FILE)
   fs.writeFileSync(recordPath, Buffer.alloc(store.MAX_OPERATION_RECORD_BYTES + 1, 0x20))
   expectCode(() => store.readOperation(authority, runtimeRoot), 'operation_store_record_oversized')
@@ -450,7 +820,8 @@ test('operation record read and write enforce the public byte ceiling', () => wi
 }))
 
 test('store rejects lock collision and foreign content without touching it', () => withRuntimeRoot((runtimeRoot) => {
-  store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  store.releaseSupervisorLease(started.supervisorLease, authority)
   const child = path.join(runtimeRoot, store.STORE_DIRECTORY)
   fs.writeFileSync(path.join(child, store.LOCK_FILE), 'foreign-lock')
   expectCode(() => store.readOperation(authority, runtimeRoot), 'operation_store_lock_unavailable')
@@ -482,7 +853,7 @@ test('invalid authority and identity fail before any operation store I/O', () =>
 })
 
 test('operation record contains only bounded public state', () => withRuntimeRoot((runtimeRoot) => {
-  store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
   const record = fs.readFileSync(path.join(runtimeRoot, store.STORE_DIRECTORY, store.RECORD_FILE), 'utf8')
   const prohibited = new Set(['stdout', 'stderr', 'exception', 'command', 'args', 'env', 'token', 'secret', 'path', 'url', 'pid', 'process'])
   const visit = (value) => {
@@ -496,6 +867,7 @@ test('operation record contains only bounded public state', () => withRuntimeRoo
   }
   visit(JSON.parse(record))
   assert.equal(record.includes('PRIVATE_SENTINEL'), false)
+  store.releaseSupervisorLease(started.supervisorLease, authority)
 }))
 
 test('N0 modules contain no process execution authority', () => {

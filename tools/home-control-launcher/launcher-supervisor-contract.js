@@ -4,11 +4,13 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 
-const AUTHORITY_TOKEN = Symbol('launcher_authority_v1')
+const AUTHORITY_TOKEN = Symbol('launcher_authority_v2')
 const ID = /^[a-z][a-z0-9_-]{0,63}$/u
 const OPERATION_ID = /^lop_[a-z0-9]{8,64}$/u
 const SHA256 = /^[a-f0-9]{64}$/u
 const WORKER_NONCE = /^lw_[a-z0-9]{16,64}$/u
+const DISPATCH_ID = /^ld_[a-z0-9]{16,64}$/u
+const AUTHORITY_LEASE_PROOF = /^lp_[a-f0-9]{64}$/u
 const SERVICE_ID_PATTERN = '^[a-z][a-z0-9_]{0,63}$'
 const MAX_CONTRACT_BYTES = 1024 * 1024
 const MAX_LEGACY_SOURCE_BYTES = 4 * 1024 * 1024
@@ -308,13 +310,14 @@ const validateStrictSchemaEnvelope = (schema, idSuffix, code) => {
 
 const validateSchemaAuthority = (graphSchema, operationSchema, workerSchema) => {
   const serviceIdPattern = serviceIdPatternFromOperationSchema(operationSchema)
-  const serviceRef = 'launcher-operation.v1.schema.json#/$defs/service_id'
+  const graphServiceRef = 'launcher-operation.v1.schema.json#/$defs/service_id'
+  const workerServiceRef = 'launcher-operation.v2.schema.json#/$defs/service_id'
   const graphService = graphSchema?.$defs?.service?.properties
   const workerRequest = workerSchema?.$defs?.request?.properties
   const workerResult = workerSchema?.$defs?.result?.properties
-  if (graphService?.service_id?.$ref !== serviceRef || graphService?.dependencies?.items?.$ref !== serviceRef ||
-      graphService?.start?.properties?.legacy_spec_ids?.items?.$ref !== serviceRef ||
-      workerRequest?.service_id?.$ref !== serviceRef || workerResult?.service_id?.$ref !== serviceRef) {
+  if (graphService?.service_id?.$ref !== graphServiceRef || graphService?.dependencies?.items?.$ref !== graphServiceRef ||
+      graphService?.start?.properties?.legacy_spec_ids?.items?.$ref !== graphServiceRef ||
+      workerRequest?.service_id?.$ref !== workerServiceRef || workerResult?.service_id?.$ref !== workerServiceRef) {
     fail('service_id_schema_authority_drift')
   }
   const maximum = Number.MAX_SAFE_INTEGER
@@ -334,7 +337,7 @@ const validateBinding = (document, identities, graph) => {
     'operation_schema_sha256', 'worker_schema_sha256', 'reducer_vectors_sha256', 'service_order',
     'public_readiness_ids', 'required_service_ids', 'optional_service_ids', 'external_service_ids'
   ], 'binding_body_shape_invalid')
-  if (binding.binding_version !== 'launcher_service_graph.binding.v1' || binding.text_hash_mode !== 'utf8_lf_v1' || binding.profile_id !== graph.profile_id) fail('binding_identity_invalid')
+  if (binding.binding_version !== 'launcher_service_graph.binding.v2' || binding.text_hash_mode !== 'utf8_lf_v1' || binding.profile_id !== graph.profile_id) fail('binding_identity_invalid')
   for (const field of ['graph_sha256', 'graph_schema_sha256', 'operation_schema_sha256', 'worker_schema_sha256', 'reducer_vectors_sha256']) requireSha(binding[field], 'binding_source_sha256_invalid')
   if (binding.graph_sha256 !== identities.graphSha256 || binding.graph_schema_sha256 !== identities.graphSchemaSha256 ||
       binding.operation_schema_sha256 !== identities.operationSchemaSha256 || binding.worker_schema_sha256 !== identities.workerSchemaSha256 ||
@@ -359,11 +362,14 @@ const validateWorkerMessage = (message, authority) => {
   if (!isPlainObject(message)) fail('worker_message_invalid')
   if (message.message_type === 'request') {
     exactKeys(message, [
-      'schema_version', 'message_type', 'operation_id', 'graph_sha256', 'binding_sha256',
+      'schema_version', 'message_type', 'operation_id', 'supervisor_generation', 'authority_lease_proof', 'dispatch_id', 'graph_sha256', 'binding_sha256',
       'service_id', 'action', 'adapter_class', 'expected_revision', 'deadline_ms', 'worker_nonce'
     ], 'worker_request_shape_invalid')
-    if (message.schema_version !== 'launcher_worker.v1') fail('worker_schema_version_invalid')
+    if (message.schema_version !== 'launcher_worker.v2') fail('worker_schema_version_invalid')
     requireOperationId(message.operation_id, 'worker_operation_id_invalid')
+    requireInteger(message.supervisor_generation, 1, Number.MAX_SAFE_INTEGER, 'worker_generation_invalid')
+    if (typeof message.authority_lease_proof !== 'string' || !AUTHORITY_LEASE_PROOF.test(message.authority_lease_proof)) fail('worker_authority_lease_invalid')
+    if (typeof message.dispatch_id !== 'string' || !DISPATCH_ID.test(message.dispatch_id)) fail('worker_dispatch_id_invalid')
     requireSha(message.graph_sha256, 'worker_graph_sha256_invalid')
     requireSha(message.binding_sha256, 'worker_binding_sha256_invalid')
     requireServiceId(message.service_id, serviceIdPattern, 'worker_service_id_invalid')
@@ -382,11 +388,14 @@ const validateWorkerMessage = (message, authority) => {
   }
   if (message.message_type === 'result') {
     exactKeys(message, [
-      'schema_version', 'message_type', 'operation_id', 'service_id', 'action', 'expected_revision',
+      'schema_version', 'message_type', 'operation_id', 'supervisor_generation', 'authority_lease_proof', 'dispatch_id', 'service_id', 'action', 'expected_revision',
       'worker_nonce', 'result_class', 'ownership_class', 'listener_class', 'descendant_class'
     ], 'worker_result_shape_invalid')
-    if (message.schema_version !== 'launcher_worker.v1') fail('worker_schema_version_invalid')
+    if (message.schema_version !== 'launcher_worker.v2') fail('worker_schema_version_invalid')
     requireOperationId(message.operation_id, 'worker_operation_id_invalid')
+    requireInteger(message.supervisor_generation, 1, Number.MAX_SAFE_INTEGER, 'worker_generation_invalid')
+    if (typeof message.authority_lease_proof !== 'string' || !AUTHORITY_LEASE_PROOF.test(message.authority_lease_proof)) fail('worker_authority_lease_invalid')
+    if (typeof message.dispatch_id !== 'string' || !DISPATCH_ID.test(message.dispatch_id)) fail('worker_dispatch_id_invalid')
     requireServiceId(message.service_id, serviceIdPattern, 'worker_service_id_invalid')
     requireEnum(message.action, ['start', 'probe', 'stop'], 'worker_action_invalid')
     requireInteger(message.expected_revision, 0, Number.MAX_SAFE_INTEGER, 'worker_revision_invalid')
@@ -423,13 +432,13 @@ const validateWorkerRequestAgainstAuthority = (request, authority) => {
 const validateReducerVectors = (document, serviceIdPattern) => {
   if (serviceIdPattern !== SERVICE_ID_PATTERN) fail('operation_service_id_pattern_invalid')
   exactKeys(document, ['schema_version', 'vectors'], 'reducer_vectors_shape_invalid')
-  if (document.schema_version !== 'launcher_reducer_vectors.v1' || !Array.isArray(document.vectors) ||
+  if (document.schema_version !== 'launcher_reducer_vectors.v2' || !Array.isArray(document.vectors) ||
       document.vectors.length === 0 || document.vectors.length > MAX_REDUCER_VECTORS) fail('reducer_vectors_invalid')
   const ids = new Set()
   const phases = ['planned', 'preflight', 'prepared', 'starting', 'waiting_ready', 'ready', 'rolling_back', 'failed', 'stopping', 'stopped', 'recovering', 'residue']
   const reasons = ['none', 'preflight_failed', 'spawn_failed', 'early_exit', 'listener_mismatch', 'readiness_timeout', 'rollback_failed', 'stop_failed', 'supervisor_crash', 'residue_present', 'invalid_event']
   const cleanups = ['not_started', 'in_progress', 'clear', 'residue', 'unknown']
-  const events = new Set(['preflight_started', 'preflight_passed', 'preflight_failed', 'start_requested', 'spawn_requested', 'spawn_succeeded', 'spawn_failed', 'early_exit', 'listener_mismatch', 'readiness_timeout', 'service_ready', 'optional_absent', 'external_ready', 'rollback_started', 'rollback_completed', 'rollback_failed', 'stop_requested', 'service_stopped', 'stop_failed', 'supervisor_crashed', 'recovery_started', 'recovery_completed', 'residue_observed', 'residue_cleared'])
+  const events = new Set(['preflight_started', 'preflight_passed', 'preflight_failed', 'start_requested', 'spawn_requested', 'probe_requested', 'stop_dispatch_requested', 'spawn_succeeded', 'spawn_failed', 'early_exit', 'listener_mismatch', 'readiness_timeout', 'service_ready', 'optional_absent', 'external_ready', 'rollback_started', 'rollback_completed', 'rollback_failed', 'stop_requested', 'service_stopped', 'stop_failed', 'supervisor_crashed', 'recovery_started', 'recovery_completed', 'residue_observed', 'residue_cleared'])
   for (const vector of document.vectors) {
     const hasEventOperation = isPlainObject(vector) && Object.hasOwn(vector, 'event_operation_id')
     const keys = ['vector_id', 'events', 'expected', 'coverage', ...(hasEventOperation ? ['event_operation_id'] : [])]
@@ -441,9 +450,13 @@ const validateReducerVectors = (document, serviceIdPattern) => {
     if (!Array.isArray(vector.events) || vector.events.length === 0 || vector.events.length > MAX_VECTOR_EVENTS) fail('reducer_vector_events_invalid')
     for (const event of vector.events) {
       const hasService = isPlainObject(event) && Object.hasOwn(event, 'service_id')
-      exactKeys(event, ['event_type', ...(hasService ? ['service_id'] : [])], 'reducer_vector_event_shape_invalid')
+      const hasDispatch = Object.hasOwn(event, 'dispatch_id')
+      const hasAction = Object.hasOwn(event, 'action')
+      exactKeys(event, ['event_type', ...(hasService ? ['service_id'] : []), ...(hasDispatch ? ['dispatch_id'] : []), ...(hasAction ? ['action'] : [])], 'reducer_vector_event_shape_invalid')
       if (!events.has(event.event_type)) fail('reducer_vector_event_type_invalid')
       if (hasService) requireServiceId(event.service_id, serviceIdPattern, 'reducer_vector_service_id_invalid')
+      if (hasDispatch && (typeof event.dispatch_id !== 'string' || !DISPATCH_ID.test(event.dispatch_id))) fail('reducer_vector_dispatch_id_invalid')
+      if (hasAction) requireEnum(event.action, ['start', 'probe', 'stop'], 'reducer_vector_action_invalid')
     }
     exactKeys(vector.expected, ['phase', 'reason', 'cleanup', 'residue_service_ids'], 'reducer_vector_expected_shape_invalid')
     requireEnum(vector.expected.phase, phases, 'reducer_vector_phase_invalid')
@@ -458,7 +471,7 @@ const validateReducerVectors = (document, serviceIdPattern) => {
 
 const renderBindingDocument = ({ graph, identities }) => {
   const binding = {
-    binding_version: 'launcher_service_graph.binding.v1',
+    binding_version: 'launcher_service_graph.binding.v2',
     text_hash_mode: 'utf8_lf_v1',
     profile_id: graph.profile_id,
     graph_sha256: identities.graphSha256,
@@ -529,15 +542,15 @@ const validateLegacyDrift = (repositoryRoot, graph) => {
 const loadAuthority = (repositoryRoot) => {
   if (typeof repositoryRoot !== 'string' || !path.isAbsolute(repositoryRoot)) fail('authority_root_invalid')
   const graphSchemaSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-service-graph.v1.schema.json'), 'graph_schema_read_failed')
-  const operationSchemaSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-operation.v1.schema.json'), 'operation_schema_read_failed')
-  const workerSchemaSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-worker.v1.schema.json'), 'worker_schema_read_failed')
-  const vectorsSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-reducer-vectors.v1.json'), 'reducer_vectors_read_failed')
+  const operationSchemaSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-operation.v2.schema.json'), 'operation_schema_read_failed')
+  const workerSchemaSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-worker.v2.schema.json'), 'worker_schema_read_failed')
+  const vectorsSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-reducer-vectors.v2.json'), 'reducer_vectors_read_failed')
   const graphSource = readContract(path.join(repositoryRoot, 'ops', 'manifests', 'launcher-service-graph.standard.v1.json'), 'graph_read_failed')
-  const bindingSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'generated', 'launcher-service-graph.standard.v1.binding.json'), 'binding_read_failed')
+  const bindingSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'generated', 'launcher-service-graph.standard.v2.binding.json'), 'binding_read_failed')
 
   validateStrictSchemaEnvelope(graphSchemaSource.value, 'launcher-service-graph.v1.schema.json', 'graph_schema_invalid')
-  validateStrictSchemaEnvelope(operationSchemaSource.value, 'launcher-operation.v1.schema.json', 'operation_schema_invalid')
-  validateStrictSchemaEnvelope(workerSchemaSource.value, 'launcher-worker.v1.schema.json', 'worker_schema_invalid')
+  validateStrictSchemaEnvelope(operationSchemaSource.value, 'launcher-operation.v2.schema.json', 'operation_schema_invalid')
+  validateStrictSchemaEnvelope(workerSchemaSource.value, 'launcher-worker.v2.schema.json', 'worker_schema_invalid')
   const serviceIdPattern = validateSchemaAuthority(graphSchemaSource.value, operationSchemaSource.value, workerSchemaSource.value)
   validateReducerVectors(vectorsSource.value, serviceIdPattern)
   const graph = validateGraph(graphSource.value, serviceIdPattern)
