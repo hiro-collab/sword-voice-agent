@@ -65,9 +65,9 @@ const resolver = (secret = null) => async (target) => ({
   headers: target.auth_class === 'private_secret_ref' ? { Authorization: `Bearer ${secret}` } : {}
 })
 
-const makeExecutor = ({ fetchImpl, observers = {}, now = BASE_MS + 200, secret = 'PRIVATE_HEADER_SENTINEL' }) => new LauncherProbeExecutor({
+const makeExecutor = ({ fetchImpl, observers = {}, now = BASE_MS + 200, secret = 'PRIVATE_HEADER_SENTINEL', environmentReadyIdentity = ENVIRONMENT_READY_IDENTITY }) => new LauncherProbeExecutor({
   probeAuthority,
-  environmentReadyIdentity: ENVIRONMENT_READY_IDENTITY,
+  environmentReadyIdentity,
   privateTargetResolver: resolver(secret),
   fetchImpl,
   observers,
@@ -144,7 +144,7 @@ test('composite HTTP probe applies descriptor checks without a service switch', 
       observed_at: '2026-07-29T12:00:00.100000+00:00',
       capabilities: {},
       actions: [],
-      sources: { home: { configured: true, available: true, stale: false, private_detail: sentinel } }
+      sources: { home_assistant: { available: true, stale: false, private_detail: sentinel } }
     }
   }
   const executor = makeExecutor({
@@ -162,7 +162,7 @@ test('composite HTTP probe applies descriptor checks without a service switch', 
   assert.deepEqual(requests, ['/health', '/ready', '/environment/current'])
   assert.equal(JSON.stringify(result).includes(sentinel), false)
   assert.equal(bodies['/ready'].camera_requirement.result, 'camera_excluded_by_profile')
-  assert.equal(bodies['/environment/current'].sources.home.stale, false)
+  assert.equal(bodies['/environment/current'].sources.home_assistant.stale, false)
   assert.equal(bodies['/environment/current'].stale, false)
   assert.equal(bodies['/environment/current'].observed_at, '2026-07-29T12:00:00.100000+00:00')
 })
@@ -189,7 +189,11 @@ test('Environment current normalizes canonical timestamps and enforces its dedic
     ['oversize', '2026-07-29T12:00:00.100000+00:00PRIVATE_OVERSIZE_SENTINEL'],
     ['private_sentinel', 'PRIVATE_TIMESTAMP_SENTINEL']
   ]
-  const execute = async (observedAt, sources = { home: { configured: true, available: true, stale: false } }) => {
+  const execute = async (
+    observedAt,
+    sources = { home_assistant: { available: true, stale: false } },
+    environmentReadyIdentity = ENVIRONMENT_READY_IDENTITY
+  ) => {
     const requests = []
     const bodies = {
       '/health': { ok: true, status: 'ok' },
@@ -199,11 +203,11 @@ test('Environment current normalizes canonical timestamps and enforces its dedic
         status: 'ready',
         camera_requirement: {
           requirement_id: 'camera_hub',
-          profile_id: ENVIRONMENT_READY_IDENTITY.profile_id,
-          effective_config_sha256: ENVIRONMENT_READY_IDENTITY.effective_config_sha256,
-          policy: ENVIRONMENT_READY_IDENTITY.camera_policy,
-          requirement: 'not_required',
-          result: 'camera_excluded_by_profile'
+          profile_id: environmentReadyIdentity.profile_id,
+          effective_config_sha256: environmentReadyIdentity.effective_config_sha256,
+          policy: environmentReadyIdentity.camera_policy,
+          requirement: environmentReadyIdentity.camera_policy === 'required' ? 'required' : 'not_required',
+          result: environmentReadyIdentity.camera_policy === 'required' ? 'ready' : 'camera_excluded_by_profile'
         }
       },
       '/environment/current': {
@@ -214,6 +218,7 @@ test('Environment current normalizes canonical timestamps and enforces its dedic
       }
     }
     const result = await makeExecutor({
+      environmentReadyIdentity,
       fetchImpl: async (url) => {
         requests.push(new URL(url).pathname)
         return jsonResponse(bodies[new URL(url).pathname])
@@ -242,11 +247,80 @@ test('Environment current normalizes canonical timestamps and enforces its dedic
 
   const configuredUnready = await execute(
     '2026-07-29T12:00:00.100000+00:00',
-    { home: { configured: true, available: false, stale: true } }
+    { home_assistant: { available: false, stale: true } }
   )
   assert.equal(configuredUnready.result.ready, false)
   assert.equal(configuredUnready.result.reason_class, 'configured_source_unready')
   assert.deepEqual(configuredUnready.requests, ['/health', '/ready', '/environment/current'])
+
+  const malformedSources = [
+    ['empty', {}],
+    ['missing_expected', { camera_hub: { available: true, stale: false } }],
+    ['null_entry', { home_assistant: null }],
+    ['primitive_entry', { home_assistant: 1 }],
+    ['array_entry', { home_assistant: [] }],
+    ['missing_available', { home_assistant: { stale: false } }],
+    ['missing_stale', { home_assistant: { available: true } }],
+    ['coerced_available', { home_assistant: { available: 'true', stale: false } }],
+    ['coerced_stale', { home_assistant: { available: true, stale: 0 } }],
+    ['coerced_configured', { home_assistant: { configured: 'true', available: false, stale: true } }],
+    ['explicitly_unconfigured', { home_assistant: { configured: false, available: true, stale: false } }],
+    ['forbidden_dunder_proto_id', JSON.parse('{"__proto__":{"available":true,"stale":false},"home_assistant":{"available":true,"stale":false}}')],
+    ['forbidden_constructor_id', JSON.parse('{"constructor":{"available":true,"stale":false},"home_assistant":{"available":true,"stale":false}}')],
+    ['forbidden_prototype_id', JSON.parse('{"prototype":{"available":true,"stale":false},"home_assistant":{"available":true,"stale":false}}')]
+  ]
+  for (const [label, sources] of malformedSources) {
+    const invalid = await execute('2026-07-29T12:00:00.100000+00:00', sources)
+    assert.equal(invalid.result.ready, false, label)
+    assert.equal(invalid.result.reason_class, 'environment_current_invalid', label)
+    assert.deepEqual(invalid.requests, ['/health', '/ready', '/environment/current'], label)
+    assert.equal(JSON.stringify(invalid.result).includes('PRIVATE_'), false, label)
+  }
+
+  const requiredCameraIdentity = Object.freeze({
+    ...ENVIRONMENT_READY_IDENTITY,
+    effective_config_sha256: 'f'.repeat(64),
+    camera_policy: 'required'
+  })
+  const missingRequiredCamera = await execute(
+    '2026-07-29T12:00:00.100000+00:00',
+    { home_assistant: { available: true, stale: false } },
+    requiredCameraIdentity
+  )
+  assert.equal(missingRequiredCamera.result.ready, false)
+  assert.equal(missingRequiredCamera.result.reason_class, 'environment_current_invalid')
+
+  const configuredExtraUnready = await execute(
+    '2026-07-29T12:00:00.100000+00:00',
+    {
+      home_assistant: { available: true, stale: false },
+      vision_snapshot_processor: { configured: true, available: false, stale: true }
+    }
+  )
+  assert.equal(configuredExtraUnready.result.ready, false)
+  assert.equal(configuredExtraUnready.result.reason_class, 'configured_source_unready')
+
+  const requiredCameraUnready = await execute(
+    '2026-07-29T12:00:00.100000+00:00',
+    {
+      home_assistant: { available: true, stale: false },
+      camera_hub: { available: false, stale: true }
+    },
+    requiredCameraIdentity
+  )
+  assert.equal(requiredCameraUnready.result.ready, false)
+  assert.equal(requiredCameraUnready.result.reason_class, 'configured_source_unready')
+
+  const requiredCameraReady = await execute(
+    '2026-07-29T12:00:00.100000+00:00',
+    {
+      home_assistant: { available: true, stale: false },
+      camera_hub: { available: true, stale: false }
+    },
+    requiredCameraIdentity
+  )
+  assert.equal(requiredCameraReady.result.ready, true)
+  assert.equal(requiredCameraReady.result.reason_class, 'none')
 
   const stale = await execute('2026-07-29T11:59:30.199000+00:00')
   assert.equal(stale.result.ready, false)
@@ -296,7 +370,7 @@ test('Environment current accepts exactly integer schema version 1 and rejects e
       observed_at: new Date(BASE_MS + 100).toISOString(),
       capabilities: {},
       actions: [],
-      sources: { home: { configured: true, available: true, stale: false, private_detail: sentinel } }
+      sources: { home_assistant: { available: true, stale: false, private_detail: sentinel } }
     }
     if (schemaVersion === undefined) delete current.schema_version
     const bodies = {
@@ -331,7 +405,7 @@ test('Environment current accepts exactly integer schema version 1 and rejects e
     assert.equal(new Set(requests).size, 3, label)
     assert.equal(JSON.stringify(result).includes(sentinel), false, label)
     assert.equal(JSON.stringify(result).includes('environment_state.v1'), false, label)
-    assert.equal(current.sources.home.stale, false, label)
+    assert.equal(current.sources.home_assistant.stale, false, label)
     assert.equal(current.stale, false, label)
     assert.equal(current.observed_at, new Date(BASE_MS + 100).toISOString(), label)
     assert.equal(bodies['/ready'].camera_requirement.result, 'camera_excluded_by_profile', label)
@@ -344,7 +418,7 @@ test('Environment readiness fails closed when the operation identity is absent o
     schema_version: 1,
     stale: false,
     observed_at: new Date(BASE_MS + 100).toISOString(),
-    sources: { home: { configured: true, available: true, stale: false } }
+    sources: { home_assistant: { available: true, stale: false } }
   }
   const cases = [
     ['missing', undefined],

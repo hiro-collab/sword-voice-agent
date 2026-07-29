@@ -32,6 +32,35 @@ const fail = (code) => {
 }
 
 const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+const isStrictJsonObject = (value) => isPlainObject(value) && Object.getPrototypeOf(value) === Object.prototype
+const SOURCE_ID = /^[a-z][a-z0-9_-]{0,63}$/u
+const FORBIDDEN_SOURCE_IDS = new Set(['constructor', 'prototype'])
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key)
+
+const expectedConfiguredEnvironmentSources = (identity) => new Set([
+  'home_assistant',
+  ...(identity.camera_policy === 'required' ? ['camera_hub'] : [])
+])
+
+const classifyConfiguredEnvironmentSources = (sources, identity) => {
+  if (!isStrictJsonObject(sources)) return 'invalid'
+  const expected = expectedConfiguredEnvironmentSources(identity)
+  const observed = new Set()
+  for (const [sourceId, entry] of Object.entries(sources)) {
+    if (!SOURCE_ID.test(sourceId) || FORBIDDEN_SOURCE_IDS.has(sourceId) || !isStrictJsonObject(entry) ||
+        !hasOwn(entry, 'available') || typeof entry.available !== 'boolean' ||
+        !hasOwn(entry, 'stale') || typeof entry.stale !== 'boolean' ||
+        (hasOwn(entry, 'configured') && typeof entry.configured !== 'boolean')) {
+      return 'invalid'
+    }
+    observed.add(sourceId)
+    const requiredByConfiguration = expected.has(sourceId)
+    if (requiredByConfiguration && entry.configured === false) return 'invalid'
+    if ((requiredByConfiguration || entry.configured === true) &&
+        (entry.available !== true || entry.stale !== false)) return 'unready'
+  }
+  return [...expected].every((sourceId) => observed.has(sourceId)) ? 'ready' : 'invalid'
+}
 
 const clockMillis = (clock) => {
   let value
@@ -339,14 +368,15 @@ const classifyHttp = (descriptor, outcomes, expected, nowMs, options) => {
     const current = outcomes.find((item) => item.target.target_id === 'current')?.outcome.value
     const sourceObservedAtNormalized = normalizeEnvironmentSourceTimestamp(current?.observed_at)
     if (!isPlainObject(current) || current.schema_version !== 1 ||
-        !isPlainObject(current.sources) || typeof current.stale !== 'boolean' ||
+        !isStrictJsonObject(current.sources) || typeof current.stale !== 'boolean' ||
         sourceObservedAtNormalized === null) {
       return failure('environment_current_invalid')
     }
     sourceObservedAt = sourceObservedAtNormalized
-    if (descriptor.checks.includes('configured_source_policy') && Object.values(current.sources).some((item) =>
-      isPlainObject(item) && item.configured === true && (item.available !== true || item.stale !== false))) {
-      return failure('configured_source_unready')
+    if (descriptor.checks.includes('configured_source_policy')) {
+      const configuredSourceState = classifyConfiguredEnvironmentSources(current.sources, options.environmentReadyIdentity)
+      if (configuredSourceState === 'invalid') return failure('environment_current_invalid')
+      if (configuredSourceState === 'unready') return failure('configured_source_unready')
     }
   }
   return success(descriptor, sourceObservedAt || iso(nowMs))

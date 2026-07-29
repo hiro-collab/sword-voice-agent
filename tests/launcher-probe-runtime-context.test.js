@@ -174,7 +174,9 @@ test('runtime context derives loopback endpoints and injects only declared priva
       schema_version: 1,
       stale: false,
       observed_at: '2026-07-29T14:00:00.000000+00:00',
-      sources: {}
+      sources: {
+        home_assistant: { available: true, stale: false }
+      }
     }
   }
   const context = makeContext({
