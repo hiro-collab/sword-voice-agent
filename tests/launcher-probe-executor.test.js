@@ -118,6 +118,8 @@ test('generic HTTP JSON and text probes bind reachable results', async () => {
 
 test('composite HTTP probe applies descriptor checks without a service switch', async () => {
   const expected = expectedFor('environment_state_server')
+  const sentinel = 'PRIVATE_ENVIRONMENT_CURRENT_SENTINEL'
+  const requests = []
   const bodies = {
     '/health': { ok: true, status: 'ok' },
     '/ready': {
@@ -134,25 +136,106 @@ test('composite HTTP probe applies descriptor checks without a service switch', 
       }
     },
     '/environment/current': {
-      schema_version: 'environment_state.v1',
+      schema_version: 1,
+      snapshot_id: 'environment-snapshot-0001',
+      sequence: 17,
       stale: false,
+      age_ms: 100,
       observed_at: new Date(BASE_MS + 100).toISOString(),
-      sources: { home: { configured: true, available: true, stale: false } }
+      capabilities: {},
+      actions: [],
+      sources: { home: { configured: true, available: true, stale: false, private_detail: sentinel } }
     }
   }
   const executor = makeExecutor({
-    fetchImpl: async (url) => jsonResponse(bodies[new URL(url).pathname])
+    fetchImpl: async (url) => {
+      requests.push(new URL(url).pathname)
+      return jsonResponse(bodies[new URL(url).pathname])
+    }
   })
   const result = await executor.execute(expected)
   assertBoundResult(result, expected, 'ready')
   assert.equal(result.ready, true)
+  assert.equal(result.reason_class, 'none')
+  assert.equal(result.freshness_class, 'fresh')
   assert.equal(result.source_observed_at, new Date(BASE_MS + 100).toISOString())
+  assert.deepEqual(requests, ['/health', '/ready', '/environment/current'])
+  assert.equal(JSON.stringify(result).includes(sentinel), false)
+  assert.equal(bodies['/ready'].camera_requirement.result, 'camera_excluded_by_profile')
+  assert.equal(bodies['/environment/current'].sources.home.stale, false)
+  assert.equal(bodies['/environment/current'].stale, false)
+  assert.equal(bodies['/environment/current'].observed_at, new Date(BASE_MS + 100).toISOString())
+})
+
+test('Environment current accepts exactly integer schema version 1 and rejects every alternate shape without retry or disclosure', async () => {
+  const expected = expectedFor('environment_state_server')
+  const sentinel = 'PRIVATE_INVALID_ENVIRONMENT_SCHEMA_SENTINEL'
+  const cases = [
+    ['string', 'environment_state.v1'],
+    ['integer_zero', 0],
+    ['integer_two', 2],
+    ['missing', undefined],
+    ['null', null],
+    ['object', { version: 1 }],
+    ['boolean', true]
+  ]
+  for (const [label, schemaVersion] of cases) {
+    const requests = []
+    const current = {
+      schema_version: schemaVersion,
+      snapshot_id: 'environment-snapshot-invalid',
+      sequence: 18,
+      stale: false,
+      age_ms: 100,
+      observed_at: new Date(BASE_MS + 100).toISOString(),
+      capabilities: {},
+      actions: [],
+      sources: { home: { configured: true, available: true, stale: false, private_detail: sentinel } }
+    }
+    if (schemaVersion === undefined) delete current.schema_version
+    const bodies = {
+      '/health': { ok: true, status: 'ok' },
+      '/ready': {
+        ok: true,
+        ready: true,
+        status: 'ready',
+        camera_requirement: {
+          requirement_id: 'camera_hub',
+          profile_id: ENVIRONMENT_READY_IDENTITY.profile_id,
+          effective_config_sha256: ENVIRONMENT_READY_IDENTITY.effective_config_sha256,
+          policy: ENVIRONMENT_READY_IDENTITY.camera_policy,
+          requirement: 'not_required',
+          result: 'camera_excluded_by_profile'
+        }
+      },
+      '/environment/current': current
+    }
+    const result = await makeExecutor({
+      secret: sentinel,
+      fetchImpl: async (url) => {
+        requests.push(new URL(url).pathname)
+        return jsonResponse(bodies[new URL(url).pathname])
+      }
+    }).execute(expected)
+    assertBoundResult(result, expected, 'not_ready')
+    assert.equal(result.ready, false, label)
+    assert.equal(result.reason_class, 'environment_current_invalid', label)
+    assert.equal(result.freshness_class, 'fresh', label)
+    assert.deepEqual(requests, ['/health', '/ready', '/environment/current'], label)
+    assert.equal(new Set(requests).size, 3, label)
+    assert.equal(JSON.stringify(result).includes(sentinel), false, label)
+    assert.equal(JSON.stringify(result).includes('environment_state.v1'), false, label)
+    assert.equal(current.sources.home.stale, false, label)
+    assert.equal(current.stale, false, label)
+    assert.equal(current.observed_at, new Date(BASE_MS + 100).toISOString(), label)
+    assert.equal(bodies['/ready'].camera_requirement.result, 'camera_excluded_by_profile', label)
+  }
 })
 
 test('Environment readiness fails closed when the operation identity is absent or mismatched', async () => {
   const expected = expectedFor('environment_state_server')
   const current = {
-    schema_version: 'environment_state.v1',
+    schema_version: 1,
     stale: false,
     observed_at: new Date(BASE_MS + 100).toISOString(),
     sources: { home: { configured: true, available: true, stale: false } }
@@ -348,7 +431,7 @@ test('raw response, URL, headers and private observer values never escape the bo
     '/health': { ok: true, status: 'ok', raw: sentinel },
     '/ready': { ok: true, ready: true, status: 'ready', reason: sentinel },
     '/environment/current': {
-      schema_version: 'environment_state.v1',
+      schema_version: 1,
       stale: false,
       observed_at: new Date(BASE_MS + 100).toISOString(),
       sources: {},

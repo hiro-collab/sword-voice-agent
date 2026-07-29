@@ -171,7 +171,7 @@ test('runtime context derives loopback endpoints and injects only declared priva
       }
     },
     '/environment/current': {
-      schema_version: 'environment_state.v1',
+      schema_version: 1,
       stale: false,
       observed_at: new Date(BASE_MS).toISOString(),
       sources: {}

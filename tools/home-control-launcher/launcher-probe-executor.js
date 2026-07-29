@@ -317,7 +317,7 @@ const classifyHttp = (descriptor, outcomes, expected, nowMs, options) => {
   }
   if (descriptor.checks.includes('environment_current_schema')) {
     const current = outcomes.find((item) => item.target.target_id === 'current')?.outcome.value
-    if (!isPlainObject(current) || typeof current.schema_version !== 'string' ||
+    if (!isPlainObject(current) || current.schema_version !== 1 ||
         !isPlainObject(current.sources) || typeof current.stale !== 'boolean' ||
         strictTimestampMillis(current.observed_at) === null) {
       return failure('environment_current_invalid')
