@@ -354,13 +354,19 @@ const compilePrivateServicePlan = ({
   const homeEnvironment = {
     ...baseline,
     HOME_CONTROL_CONFIG: configPath,
+    HOME_CONTROL_API_TOKEN: homeToken,
     ...(options.EnableHomeControlFaultInjection ? { HOME_CONTROL_FAULT_MODE: '1' } : {})
+  }
+  const environmentStateEnvironment = {
+    ...baseline,
+    HOME_CONTROL_API_TOKEN: homeToken,
+    ENVIRONMENT_API_TOKEN: environmentToken
   }
   const plans = [
     ownedPlan({
       serviceId: 'home_assistant_bridge',
       filePath: uv,
-      args: ['run', '--env-file', '.env', 'python', '-m', 'uvicorn', 'home_control_bridge.main:app', '--host', options.HomeAssistantBridgeHost, '--port', options.HomeAssistantBridgePort],
+      args: ['run', 'python', '-m', 'uvicorn', 'home_control_bridge.main:app', '--host', options.HomeAssistantBridgeHost, '--port', options.HomeAssistantBridgePort],
       cwd: roots.home,
       environment: homeEnvironment,
       listenerPort: options.HomeAssistantBridgePort
@@ -369,7 +375,7 @@ const compilePrivateServicePlan = ({
       serviceId: 'environment_state_server',
       filePath: uv,
       args: [
-        'run', '--env-file', homeEnvPath, 'python', '-m', 'environment_state_server.main',
+        'run', 'python', '-m', 'environment_state_server.main',
         '--host', '127.0.0.1', '--port', options.EnvironmentStatePort,
         '--ha-events-path', path.join(roots.home, '.cache', 'home_control', 'events.jsonl'),
         '--state-query-feedback-path', path.join(privateRuntimeRoot, 'feedback', 'state-query.jsonl'),
@@ -381,7 +387,7 @@ const compilePrivateServicePlan = ({
         ...((!options.SkipVisionSnapshotProcessor && !options.SkipMediapipe) ? ['--vision-topic-url', `ws://127.0.0.1:${options.VisionSnapshotProcessorPort}`] : [])
       ],
       cwd: roots.environment,
-      environment: baseline,
+      environment: environmentStateEnvironment,
       listenerPort: options.EnvironmentStatePort
     }),
     ownedPlan({

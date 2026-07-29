@@ -964,15 +964,38 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
         PATH: executableRoot,
         SYSTEMROOT: 'C:\\Windows',
         TEMP: workspace,
-        TMP: workspace,
-        HOME_CONTROL_API_TOKEN: '0123456789abcdef',
-        ENVIRONMENT_API_TOKEN: 'fedcba9876543210'
+         TMP: workspace,
+         HOME_CONTROL_API_TOKEN: '0123456789abcdef',
+        ENVIRONMENT_API_TOKEN: 'fedcba9876543210',
+        PRIVATE_SENTINEL: 'must-not-be-inherited',
+        SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE: 'must-not-be-inherited'
       },
       resolveExecutable: (name) => executables[name],
       nonceFactory: () => '00112233445566778899aabbccddeeff'
     })
     assert.equal(compiled.document.services.some((service) => service.service_id === 'voicevox'), false)
     const aituberPlan = compiled.document.services.find((service) => service.service_id === 'aituber_kit')
+    const homePlan = compiled.document.services.find((service) => service.service_id === 'home_assistant_bridge')
+    const environmentPlan = compiled.document.services.find((service) => service.service_id === 'environment_state_server')
+    for (const plan of [homePlan, environmentPlan]) {
+      assert.equal(plan.arguments.includes('--env-file'), false)
+      assert.equal(plan.clear_inherited_environment, true)
+      assert.deepEqual(plan.remove_environment, [])
+      assert.equal(plan.environment.HOME_CONTROL_API_TOKEN, '0123456789abcdef')
+      assert.equal(Object.hasOwn(plan.environment, 'PRIVATE_SENTINEL'), false)
+      assert.equal(Object.hasOwn(plan.environment, 'SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE'), false)
+    }
+    assert.equal(Object.hasOwn(homePlan.environment, 'ENVIRONMENT_API_TOKEN'), false)
+    assert.equal(environmentPlan.environment.ENVIRONMENT_API_TOKEN, 'fedcba9876543210')
+    assert.equal(homePlan.environment.HOME_CONTROL_CONFIG, liveConfig)
+    assert.equal(Object.hasOwn(environmentPlan.environment, 'HOME_CONTROL_CONFIG'), false)
+    assert.equal(Object.hasOwn(environmentPlan.environment, 'HOME_CONTROL_FAULT_MODE'), false)
+    assert.deepEqual(homePlan.arguments.slice(0, 5), [
+      'run', 'python', '-m', 'uvicorn', 'home_control_bridge.main:app'
+    ])
+    assert.deepEqual(environmentPlan.arguments.slice(0, 4), [
+      'run', 'python', '-m', 'environment_state_server.main'
+    ])
     assert.equal(path.basename(aituberPlan.file_path), 'node.exe')
     assert.equal(aituberPlan.arguments[0], nextEntrypoint)
     assert.deepEqual(aituberPlan.arguments.slice(1), [
@@ -996,6 +1019,27 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
           TEMP: workspace,
           TMP: workspace,
           HOME_CONTROL_API_TOKEN: '0123456789abcdef',
+          ENVIRONMENT_API_TOKEN: 'fedcba9876543210'
+        },
+        resolveExecutable: (name) => executables[name],
+        nonceFactory: () => '00112233445566778899aabbccddeeff'
+      }),
+      (error) => error?.code === 'private_plan_config_invalid'
+    )
+    assert.throws(
+      () => compilePrivateServicePlan({
+        repositoryRoot: ROOT,
+        workspaceRoot: workspace,
+        privateRuntimeRoot: path.join(workspace, 'state'),
+        profileId: 'thought-core-v0',
+        options: { ...canonicalOptions, HomeControlConfigPath: liveConfig },
+        authority,
+        processEnvironment: {
+          PATH: executableRoot,
+          SYSTEMROOT: 'C:\\Windows',
+          TEMP: workspace,
+          TMP: workspace,
+          HOME_CONTROL_API_TOKEN: '0123456789abcdef\u0000',
           ENVIRONMENT_API_TOKEN: 'fedcba9876543210'
         },
         resolveExecutable: (name) => executables[name],
