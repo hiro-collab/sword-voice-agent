@@ -36,6 +36,7 @@ const PLAN_IDENTITY = Object.freeze({
   worker_executable_class: 'powershell_7_program_files',
   worker_executable_sha256: '2'.repeat(64)
 })
+const PROBE_CONFIG_SHA256 = '0'.repeat(64)
 const simulatedWindowsReparseIo = ({ filePath, reparseName, onWorkerRead }) => {
   const target = path.win32.normalize(filePath)
   const parsed = path.win32.parse(target)
@@ -73,14 +74,14 @@ const simulatedWindowsReparseIo = ({ filePath, reparseName, onWorkerRead }) => {
 const reducer = {
   ...rawReducer,
   createOperation: (operationId, suppliedAuthority, generation = 1) =>
-    rawReducer.createOperation(operationId, suppliedAuthority, CONFIG_IDENTITY, PLAN_IDENTITY, generation),
+    rawReducer.createOperation(operationId, suppliedAuthority, CONFIG_IDENTITY, PLAN_IDENTITY, PROBE_CONFIG_SHA256, generation),
   startOperation: (active, operationId, suppliedAuthority, generation = 1) =>
-    rawReducer.startOperation(active, operationId, suppliedAuthority, CONFIG_IDENTITY, PLAN_IDENTITY, generation)
+    rawReducer.startOperation(active, operationId, suppliedAuthority, CONFIG_IDENTITY, PLAN_IDENTITY, PROBE_CONFIG_SHA256, generation)
 }
 const store = {
   ...rawStore,
   startAndPersist: (operationId, suppliedAuthority, root, observer) =>
-    rawStore.startAndPersist(operationId, CONFIG_IDENTITY, PLAN_IDENTITY, suppliedAuthority, root, observer)
+    rawStore.startAndPersist(operationId, CONFIG_IDENTITY, PLAN_IDENTITY, PROBE_CONFIG_SHA256, suppliedAuthority, root, observer)
 }
 const OPERATION_ID = 'lop_n1synthetic01'
 const PRIVATE_RUNTIME_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'sword-launcher-worker-lease-'))

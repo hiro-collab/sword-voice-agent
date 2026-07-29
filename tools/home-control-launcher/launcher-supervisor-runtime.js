@@ -774,6 +774,7 @@ class LauncherSupervisorRuntime {
         this.operationIdFactory(),
         validatedConfigIdentity,
         compiledPlanIdentity,
+        this.probeExecutor.configSha256,
         this.authority,
         this.privateRuntimeRoot
       )
@@ -817,10 +818,12 @@ class LauncherSupervisorRuntime {
             profileId
           })
         }
+        this.ensureProbeExecutor(compiled)
         decision = this.store.startAndPersist(
           this.operationIdFactory(),
           validatedConfigIdentity,
           compiledPlanIdentity,
+          this.probeExecutor.configSha256,
           this.authority,
           this.privateRuntimeRoot
         )
@@ -834,7 +837,6 @@ class LauncherSupervisorRuntime {
             profileId
           })
         }
-        this.ensureProbeExecutor(compiled)
       }
 
       this.apply('preflight_started')

@@ -7,7 +7,7 @@
   "required": [
     "schema_version", "graph_sha256", "binding_sha256", "profile_id",
     "effective_config_sha256", "camera_policy", "private_plan_sha256",
-    "worker_executable_class", "worker_executable_sha256", "operation_id",
+    "worker_executable_class", "worker_executable_sha256", "probe_config_sha256", "operation_id",
     "supervisor_generation", "intent", "phase", "reason", "cleanup",
     "primary_result", "cleanup_result", "revision", "joined_existing", "rollback_required",
     "recovery_required", "services", "residue_service_ids"
@@ -22,6 +22,7 @@
     "private_plan_sha256": { "$ref": "#/$defs/sha256" },
     "worker_executable_class": { "enum": ["powershell_7_program_files", "windows_powershell_system32"] },
     "worker_executable_sha256": { "$ref": "#/$defs/sha256" },
+    "probe_config_sha256": { "$ref": "#/$defs/sha256" },
     "operation_id": { "type": "string", "pattern": "^lop_[a-z0-9]{8,64}$" },
     "supervisor_generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
     "intent": { "enum": ["start", "stop"] },

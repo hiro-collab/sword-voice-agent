@@ -506,9 +506,13 @@ const recoverOwnedTemporary = (paths, authority) => {
   const current = readResolved(paths.recordPath, authority)
   if (pending.operation_id !== current.operation_id || pending.supervisor_generation !== current.supervisor_generation ||
       pending.graph_sha256 !== current.graph_sha256 || pending.binding_sha256 !== current.binding_sha256 ||
+      pending.profile_id !== current.profile_id ||
+      pending.effective_config_sha256 !== current.effective_config_sha256 ||
+      pending.camera_policy !== current.camera_policy ||
       pending.private_plan_sha256 !== current.private_plan_sha256 ||
       pending.worker_executable_class !== current.worker_executable_class ||
-      pending.worker_executable_sha256 !== current.worker_executable_sha256) {
+      pending.worker_executable_sha256 !== current.worker_executable_sha256 ||
+      pending.probe_config_sha256 !== current.probe_config_sha256) {
     fail('operation_store_recovery_invalid')
   }
   if (pending.revision === current.revision + 1) {
@@ -579,7 +583,8 @@ const retryStartCleanup = (started, authority) => {
 }
 
 const startAndPersist = (
-  operationId, configIdentity, planIdentity, authority, authorizedPrivateRuntimeRoot, ownerLivenessObserver = defaultObserveOwnerLiveness
+  operationId, configIdentity, planIdentity, probeConfigSha256, authority, authorizedPrivateRuntimeRoot,
+  ownerLivenessObserver = defaultObserveOwnerLiveness
 ) => {
   assertAuthority(authority)
   validateIdentityInputs(operationId, authority.identities.graphSha256, authority.identities.bindingSha256)
@@ -589,7 +594,7 @@ const startAndPersist = (
     const active = fs.existsSync(paths.recordPath) ? readResolved(paths.recordPath, authority) : null
     const generation = active === null ? 1 : active.supervisor_generation + 1
     if (!Number.isSafeInteger(generation) || generation > Number.MAX_SAFE_INTEGER) fail('operation_store_generation_exhausted')
-    const decision = startOperation(active, operationId, authority, configIdentity, planIdentity, generation)
+    const decision = startOperation(active, operationId, authority, configIdentity, planIdentity, probeConfigSha256, generation)
     const supervisorLease = createSupervisorLeaseFile({
       paths, operationId: decision.operation.operation_id,
       supervisorGeneration: decision.operation.supervisor_generation, authority

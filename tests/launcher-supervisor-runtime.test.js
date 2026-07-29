@@ -42,6 +42,7 @@ const PLAN_IDENTITY = Object.freeze({
   worker_executable_class: 'powershell_7_program_files',
   worker_executable_sha256: '2'.repeat(64)
 })
+const PROBE_CONFIG_SHA256 = '0'.repeat(64)
 const simulatedWindowsReparseIo = ({ filePath, reparseName, onWorkerRead }) => {
   const target = path.win32.normalize(filePath)
   const parsed = path.win32.parse(target)
@@ -695,6 +696,44 @@ test('probe executor factory binds the single compiled plan before store side ef
   }
 })
 
+test('fresh Start rebinds a factory probe executor after recovery before replacement publish', async () => {
+  const calls = []
+  const harness = makeHarness({
+    operationPrefix: 'probefactoryrecovery',
+    probeExecutorFactory: ({ compiled, authority: validatedAuthority }) => {
+      calls.push({ compiled, validatedAuthority })
+      return {
+        configSha256: '1'.repeat(64),
+        async execute (expected) {
+          assert.equal(expected.config_sha256, '1'.repeat(64))
+          return successfulSemanticProbeResult(expected)
+        }
+      }
+    }
+  })
+  try {
+    const first = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(first.result_class, 'ready')
+    assert.equal(harness.runtime.releaseSupervisorLease(), true)
+
+    const replacement = harness.createRuntime()
+    const restarted = await replacement.start({
+      profileId: 'thought-core-v0',
+      options: canonicalOptions,
+      configIdentity: CONFIG_IDENTITY
+    })
+    assert.equal(restarted.result_class, 'ready')
+    assert.equal(restarted.operation.reason, 'none')
+    assert.equal(calls.length, 3)
+    assert.ok(calls.every(({ validatedAuthority }) => validatedAuthority === authority))
+    assert.equal(replacement.probeExecutor.configSha256, '1'.repeat(64))
+    assert.equal(replacement.current.probe_config_sha256, '1'.repeat(64))
+    assert.equal(harness.workers.length, 3)
+  } finally {
+    harness.cleanup()
+  }
+})
+
 test('an in-flight duplicate joins without a second worker exchange', async () => {
   let releaseFirst
   let firstSeen
@@ -1103,7 +1142,7 @@ test('unknown supervisor crash attribution remains launcher_supervisor', () => {
   const operationId = 'lop_crashresponsible'
   const operation = reducer.reduce(
     reducer.reduce(
-      reducer.startOperation(null, operationId, authority, CONFIG_IDENTITY, PLAN_IDENTITY).operation,
+      reducer.startOperation(null, operationId, authority, CONFIG_IDENTITY, PLAN_IDENTITY, PROBE_CONFIG_SHA256).operation,
       { event_type: 'preflight_started', operation_id: operationId },
       authority
     ),
@@ -1392,6 +1431,7 @@ test('public projection exposes only bounded reducer fields', () => {
   assert.equal(Object.hasOwn(projected, 'private_plan_sha256'), false)
   assert.equal(Object.hasOwn(projected, 'worker_executable_class'), false)
   assert.equal(Object.hasOwn(projected, 'worker_executable_sha256'), false)
+  assert.equal(Object.hasOwn(projected, 'probe_config_sha256'), false)
 })
 
 const reducerFixture = () => ({
@@ -1399,6 +1439,7 @@ const reducerFixture = () => ({
   effective_config_sha256: CONFIG_IDENTITY.effective_config_sha256,
   camera_policy: CONFIG_IDENTITY.camera_policy,
   ...PLAN_IDENTITY,
+  probe_config_sha256: PROBE_CONFIG_SHA256,
   operation_id: 'lop_publicfixture01',
   intent: 'start',
   phase: 'ready',

@@ -22,17 +22,18 @@ const PLAN_IDENTITY = Object.freeze({
   worker_executable_class: 'powershell_7_program_files',
   worker_executable_sha256: '2'.repeat(64)
 })
+const PROBE_CONFIG_SHA256 = '0'.repeat(64)
 const reducer = {
   ...rawReducer,
   createOperation: (operationId, suppliedAuthority, generation = 1) =>
-    rawReducer.createOperation(operationId, suppliedAuthority, CONFIG_IDENTITY, PLAN_IDENTITY, generation),
+    rawReducer.createOperation(operationId, suppliedAuthority, CONFIG_IDENTITY, PLAN_IDENTITY, PROBE_CONFIG_SHA256, generation),
   startOperation: (active, operationId, suppliedAuthority, generation = 1) =>
-    rawReducer.startOperation(active, operationId, suppliedAuthority, CONFIG_IDENTITY, PLAN_IDENTITY, generation)
+    rawReducer.startOperation(active, operationId, suppliedAuthority, CONFIG_IDENTITY, PLAN_IDENTITY, PROBE_CONFIG_SHA256, generation)
 }
 const store = {
   ...rawStore,
   startAndPersist: (operationId, suppliedAuthority, root, observer) =>
-    rawStore.startAndPersist(operationId, CONFIG_IDENTITY, PLAN_IDENTITY, suppliedAuthority, root, observer)
+    rawStore.startAndPersist(operationId, CONFIG_IDENTITY, PLAN_IDENTITY, PROBE_CONFIG_SHA256, suppliedAuthority, root, observer)
 }
 const OPERATION_ID = 'lop_node0001'
 const LEASE_PROOF = `lp_${'a'.repeat(64)}`
@@ -89,6 +90,7 @@ test('operation identity is immutable, persisted before mutation, and rejects dr
     OPERATION_ID,
     CONFIG_IDENTITY,
     PLAN_IDENTITY,
+    PROBE_CONFIG_SHA256,
     authority,
     runtimeRoot
   )
@@ -101,6 +103,7 @@ test('operation identity is immutable, persisted before mutation, and rejects dr
   assert.equal(started.operation.private_plan_sha256, PLAN_IDENTITY.private_plan_sha256)
   assert.equal(started.operation.worker_executable_class, PLAN_IDENTITY.worker_executable_class)
   assert.equal(started.operation.worker_executable_sha256, PLAN_IDENTITY.worker_executable_sha256)
+  assert.equal(started.operation.probe_config_sha256, PROBE_CONFIG_SHA256)
   const joinedWithNewPlan = rawReducer.startOperation(
     started.operation,
     'lop_planrefresh01',
@@ -111,6 +114,7 @@ test('operation identity is immutable, persisted before mutation, and rejects dr
       worker_executable_class: 'windows_powershell_system32',
       worker_executable_sha256: '4'.repeat(64)
     },
+    PROBE_CONFIG_SHA256,
     started.operation.supervisor_generation + 1
   )
   assert.equal(joinedWithNewPlan.joined_existing, true)
@@ -131,6 +135,19 @@ test('operation identity is immutable, persisted before mutation, and rejects dr
       authority,
       { ...CONFIG_IDENTITY, effective_config_sha256: 'f'.repeat(64) },
       PLAN_IDENTITY,
+      PROBE_CONFIG_SHA256,
+      started.operation.supervisor_generation
+    ),
+    'operation_active_identity_mismatch'
+  )
+  expectCode(
+    () => rawReducer.startOperation(
+      started.operation,
+      'lop_probeconfigdrift01',
+      authority,
+      CONFIG_IDENTITY,
+      PLAN_IDENTITY,
+      'f'.repeat(64),
       started.operation.supervisor_generation
     ),
     'operation_active_identity_mismatch'
@@ -142,6 +159,7 @@ test('operation identity is immutable, persisted before mutation, and rejects dr
       authority,
       { ...CONFIG_IDENTITY, camera_policy: 'required' },
       PLAN_IDENTITY,
+      PROBE_CONFIG_SHA256,
       started.operation.supervisor_generation
     ),
     'operation_active_identity_mismatch'
@@ -175,7 +193,7 @@ const boundProbeResult = (operation, serviceId, ready = true) => {
     graph_sha256: authority.identities.graphSha256,
     binding_sha256: authority.identities.bindingSha256,
     descriptor_sha256: contract.canonicalJsonSha256(descriptor),
-    config_sha256: '0'.repeat(64),
+    config_sha256: PROBE_CONFIG_SHA256,
     requested_at: '2026-07-29T00:00:00.000Z',
     source_observed_at: '2026-07-29T00:00:00.100Z',
     observed_at: '2026-07-29T00:00:00.200Z',
@@ -393,11 +411,20 @@ test('semantic probe result is required, fully correlated, and retained before R
   assert.deepEqual(readyService.last_probe_result, accepted)
   reducer.validateSnapshot(completed, authority)
 
+  const forgedPersisted = {
+    ...completed,
+    services: completed.services.map((service) => service.service_id === 'home_assistant_bridge'
+      ? { ...service, last_probe_result: { ...service.last_probe_result, config_sha256: 'f'.repeat(64) } }
+      : { ...service })
+  }
+  expectCode(() => reducer.validateSnapshot(forgedPersisted, authority), 'operation_store_record_invalid')
+
   for (const mutation of [
     { dispatch_id: 'ld_ffffffffffffffff' },
     { supervisor_generation: accepted.supervisor_generation + 1 },
     { expected_revision: accepted.expected_revision + 1 },
-    { descriptor_sha256: 'f'.repeat(64) }
+    { descriptor_sha256: 'f'.repeat(64) },
+    { config_sha256: 'f'.repeat(64) }
   ]) {
     const invalid = reducer.reduce(prepare(), {
       ...event('semantic_probe_completed', 'home_assistant_bridge'),
@@ -632,6 +659,7 @@ test('clear terminal failure stops without owned dispatch and permits a fresh ch
     authority,
     replacementConfig,
     replacementPlan,
+    '5'.repeat(64),
     failed.supervisor_generation + 1
   )
   assert.equal(replacement.joined_existing, false)
@@ -639,6 +667,7 @@ test('clear terminal failure stops without owned dispatch and permits a fresh ch
   assert.equal(replacement.operation.supervisor_generation, failed.supervisor_generation + 1)
   assert.equal(replacement.operation.effective_config_sha256, replacementConfig.effective_config_sha256)
   assert.equal(replacement.operation.private_plan_sha256, replacementPlan.private_plan_sha256)
+  assert.equal(replacement.operation.probe_config_sha256, '5'.repeat(64))
 
   const ownedServiceIndex = failed.services.findIndex((service) => service.service_id === 'home_assistant_bridge')
   const forgedCases = [
@@ -1103,6 +1132,31 @@ test('store recovers an exact stale owned lock and complete crash temp determini
   assert.equal(current.phase, pending.phase)
   assert.equal(fs.existsSync(lockPath), false)
   assert.equal(fs.existsSync(tempPath), false)
+  store.releaseSupervisorLease(started.supervisorLease, authority)
+}))
+
+test('store rejects every coupled config drift in a complete crash temp without changing either record', () => withRuntimeRoot((runtimeRoot) => {
+  const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  const current = started.operation
+  const pending = reducer.reduce(current, event('preflight_started'), authority)
+  const child = path.join(runtimeRoot, store.STORE_DIRECTORY)
+  const recordPath = path.join(child, store.RECORD_FILE)
+  const tempPath = path.join(child, store.TEMP_FILE)
+  const currentBytes = fs.readFileSync(recordPath)
+  const mutations = [
+    ['profile_id', 'other-profile'],
+    ['effective_config_sha256', 'f'.repeat(64)],
+    ['camera_policy', current.camera_policy === 'required' ? 'camera_excluded_by_profile' : 'required'],
+    ['probe_config_sha256', 'f'.repeat(64)]
+  ]
+  for (const [field, value] of mutations) {
+    const pendingBytes = Buffer.from(`${JSON.stringify({ ...pending, [field]: value })}\n`, 'utf8')
+    fs.writeFileSync(tempPath, pendingBytes)
+    expectCode(() => store.readOperation(authority, runtimeRoot), 'operation_store_recovery_invalid')
+    assert.deepEqual(fs.readFileSync(recordPath), currentBytes, field)
+    assert.deepEqual(fs.readFileSync(tempPath), pendingBytes, field)
+    fs.unlinkSync(tempPath)
+  }
   store.releaseSupervisorLease(started.supervisorLease, authority)
 }))
 
