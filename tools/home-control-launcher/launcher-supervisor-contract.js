@@ -334,14 +334,20 @@ const validateBinding = (document, identities, graph) => {
   const binding = document.binding
   exactKeys(binding, [
     'binding_version', 'text_hash_mode', 'profile_id', 'graph_sha256', 'graph_schema_sha256',
-    'operation_schema_sha256', 'worker_schema_sha256', 'reducer_vectors_sha256', 'service_order',
+    'operation_schema_sha256', 'worker_schema_sha256', 'reducer_vectors_sha256',
+    'probe_schema_sha256', 'probe_document_sha256', 'service_order',
     'public_readiness_ids', 'required_service_ids', 'optional_service_ids', 'external_service_ids'
   ], 'binding_body_shape_invalid')
   if (binding.binding_version !== 'launcher_service_graph.binding.v2' || binding.text_hash_mode !== 'utf8_lf_v1' || binding.profile_id !== graph.profile_id) fail('binding_identity_invalid')
-  for (const field of ['graph_sha256', 'graph_schema_sha256', 'operation_schema_sha256', 'worker_schema_sha256', 'reducer_vectors_sha256']) requireSha(binding[field], 'binding_source_sha256_invalid')
+  for (const field of [
+    'graph_sha256', 'graph_schema_sha256', 'operation_schema_sha256', 'worker_schema_sha256',
+    'reducer_vectors_sha256', 'probe_schema_sha256', 'probe_document_sha256'
+  ]) requireSha(binding[field], 'binding_source_sha256_invalid')
   if (binding.graph_sha256 !== identities.graphSha256 || binding.graph_schema_sha256 !== identities.graphSchemaSha256 ||
       binding.operation_schema_sha256 !== identities.operationSchemaSha256 || binding.worker_schema_sha256 !== identities.workerSchemaSha256 ||
-      binding.reducer_vectors_sha256 !== identities.reducerVectorsSha256) fail('binding_source_drift')
+      binding.reducer_vectors_sha256 !== identities.reducerVectorsSha256 ||
+      binding.probe_schema_sha256 !== identities.probeSchemaSha256 ||
+      binding.probe_document_sha256 !== identities.probeDocumentSha256) fail('binding_source_drift')
   const expected = {
     service_order: topologicalOrder(graph.services),
     public_readiness_ids: graph.services.filter((service) => service.public_readiness_id !== null).map((service) => service.public_readiness_id).sort(),
@@ -479,6 +485,8 @@ const renderBindingDocument = ({ graph, identities }) => {
     operation_schema_sha256: identities.operationSchemaSha256,
     worker_schema_sha256: identities.workerSchemaSha256,
     reducer_vectors_sha256: identities.reducerVectorsSha256,
+    probe_schema_sha256: identities.probeSchemaSha256,
+    probe_document_sha256: identities.probeDocumentSha256,
     service_order: topologicalOrder(graph.services),
     public_readiness_ids: graph.services.filter((service) => service.public_readiness_id !== null).map((service) => service.public_readiness_id).sort(),
     required_service_ids: graph.services.filter((service) => service.requirement === 'required').map((service) => service.service_id).sort(),
@@ -545,6 +553,8 @@ const loadAuthority = (repositoryRoot) => {
   const operationSchemaSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-operation.v2.schema.json'), 'operation_schema_read_failed')
   const workerSchemaSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-worker.v2.schema.json'), 'worker_schema_read_failed')
   const vectorsSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-reducer-vectors.v2.json'), 'reducer_vectors_read_failed')
+  const probeSchemaSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-probe-descriptor.v1.schema.json'), 'probe_schema_read_failed')
+  const probeDocumentSource = readContract(path.join(repositoryRoot, 'ops', 'manifests', 'launcher-probe-descriptors.standard.v1.json'), 'probe_document_read_failed')
   const graphSource = readContract(path.join(repositoryRoot, 'ops', 'manifests', 'launcher-service-graph.standard.v1.json'), 'graph_read_failed')
   const bindingSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'generated', 'launcher-service-graph.standard.v2.binding.json'), 'binding_read_failed')
 
@@ -559,7 +569,9 @@ const loadAuthority = (repositoryRoot) => {
     graphSchemaSha256: graphSchemaSource.sha256,
     operationSchemaSha256: operationSchemaSource.sha256,
     workerSchemaSha256: workerSchemaSource.sha256,
-    reducerVectorsSha256: vectorsSource.sha256
+    reducerVectorsSha256: vectorsSource.sha256,
+    probeSchemaSha256: probeSchemaSource.sha256,
+    probeDocumentSha256: probeDocumentSource.sha256
   }
   const bindingDocument = validateBinding(bindingSource.value, identities, graph)
   validateLegacyDrift(repositoryRoot, graph)
@@ -571,6 +583,8 @@ const loadAuthority = (repositoryRoot) => {
     operationSchema: copyJson(operationSchemaSource.value),
     workerSchema: copyJson(workerSchemaSource.value),
     reducerVectors: copyJson(vectorsSource.value),
+    probeSchema: copyJson(probeSchemaSource.value),
+    probeDocument: copyJson(probeDocumentSource.value),
     bindingDocument: copyJson(bindingDocument),
     identities: { ...identities, bindingSha256: bindingDocument.binding_sha256 }
   }

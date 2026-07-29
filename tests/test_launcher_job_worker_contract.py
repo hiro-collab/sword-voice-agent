@@ -22,7 +22,7 @@ FROZEN_N0 = {
     "contracts/launcher/launcher-reducer-vectors.v1.json": "379fc9998a943b98a56857bc494f5840c2662cfdce7ab5bfb270b678d78ccf1c",
     "contracts/launcher/generated/launcher-service-graph.standard.v1.binding.json": "3a74d2c620f55c8203b6a1e9cc66c631c1867d131d69362743fe73e300bd9229",
     "ops/manifests/launcher-service-graph.standard.v1.json": "dc548b8ddd9528af3a6d10325f868af200fe3d85d1e88182cdcf32407506ea77",
-    "tools/home-control-launcher/launcher-supervisor-contract.js": "d55254a6d620319be6421d5aa239a00691b5c36bde69ccd51bd195167b69f6a5",
+    "tools/home-control-launcher/launcher-supervisor-contract.js": "1f94b6b6644970f1e64ec4f6f1be4669696c5c9aa10f5ecb66c2aa9d6e23e596",
     "tools/home-control-launcher/launcher-supervisor-reducer.js": "d2ae81341474537d21572da61cbae544423d0236ea19d825317655779403d40a",
     "tools/home-control-launcher/launcher-operation-store.js": "e238960f92b1df664c6ab2c03144b8c5a4c0487222ccbc8f5efedba76b494c4e",
     "tools/home-control-launcher/server.js": "99bdc202bd5b8cafa0e3463801df961728ad4612d3f00a4f9f09b77c8b581606",

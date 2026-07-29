@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sword.local/contracts/launcher/launcher-probe-descriptor.v1.schema.json",
+  "title": "Sword Launcher Probe Descriptor And Result Binding v1",
+  "oneOf": [
+    { "$ref": "#/$defs/document" },
+    { "$ref": "#/$defs/observation" },
+    { "$ref": "#/$defs/result" }
+  ],
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$" },
+    "operation_id": { "type": "string", "pattern": "^lop_[a-z0-9]{8,64}$" },
+    "dispatch_id": { "type": "string", "pattern": "^ld_[a-z0-9]{16,64}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "timestamp": { "type": "string", "format": "date-time", "maxLength": 32 },
+    "semantic_class": {
+      "enum": ["ready", "reachable", "external_ready", "degraded_operational", "not_ready"]
+    },
+    "reason_class": {
+      "enum": [
+        "none", "health_unavailable", "response_invalid", "service_identity_invalid",
+        "environment_not_ready", "environment_current_invalid", "configured_source_unready",
+        "module_status_missing", "module_status_invalid", "source_stale", "ownership_invalid",
+        "registry_invalid", "lineage_invalid", "listener_unavailable", "websocket_unavailable",
+        "camera_not_operational", "version_unavailable", "version_invalid", "optional_degraded",
+        "deadline", "internal_failure"
+      ]
+    },
+    "check": {
+      "enum": [
+        "http_2xx", "bounded_json", "bounded_text", "service_identity",
+        "environment_ready_contract", "environment_current_schema", "configured_source_policy",
+        "worker_owned_identity", "module_status_shape", "module_status_current_operation",
+        "module_status_freshness", "registry_identity", "manifest_shape", "manifest_lineage",
+        "listener_lineage", "websocket_handshake", "camera_operational_class",
+        "no_touch_external", "world_freshness_advisory"
+      ]
+    },
+    "proof_ceiling": {
+      "enum": [
+        "home_bridge_reachability_only", "environment_semantic_readiness_no_world_truth",
+        "broker_reachability_only", "thought_core_reachability_only",
+        "camera_operational_no_media", "vision_input_reachability_no_world_truth",
+        "aituber_http_reachability_only", "watcher_current_operation_liveness_only",
+        "display_gui_reachability_only", "voicevox_version_reachability_only"
+      ]
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_id", "transport", "method", "endpoint_ref", "path", "auth_class", "response_class"
+      ],
+      "properties": {
+        "target_id": { "$ref": "#/$defs/id" },
+        "transport": { "enum": ["http", "websocket", "module_status", "private_status"] },
+        "method": { "enum": ["GET", "CONNECT", "NONE"] },
+        "endpoint_ref": {
+          "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }]
+        },
+        "path": {
+          "oneOf": [
+            { "type": "string", "pattern": "^(?!//)/[^\\u0000\\r\\n]{0,255}$" },
+            { "type": "null" }
+          ]
+        },
+        "auth_class": { "enum": ["none", "private_secret_ref", "not_applicable"] },
+        "response_class": { "enum": ["bounded_json", "bounded_text", "websocket_handshake"] }
+      }
+    },
+    "descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "service_id", "probe_id", "probe_class", "targets", "checks",
+        "success_semantic_classes", "freshness_source", "freshness_max_age_ms",
+        "observation_timeout_ms", "degraded_allowed", "no_touch",
+        "world_freshness_startup_authoritative", "proof_ceiling"
+      ],
+      "properties": {
+        "service_id": { "$ref": "launcher-operation.v2.schema.json#/$defs/service_id" },
+        "probe_id": { "$ref": "#/$defs/id" },
+        "probe_class": {
+          "enum": ["http_json", "http_text", "composite_http_json", "module_status", "camera_composite", "websocket"]
+        },
+        "targets": {
+          "type": "array", "minItems": 1, "maxItems": 4, "items": { "$ref": "#/$defs/target" }
+        },
+        "checks": {
+          "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true,
+          "items": { "$ref": "#/$defs/check" }
+        },
+        "success_semantic_classes": {
+          "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true,
+          "items": { "enum": ["ready", "reachable", "external_ready", "degraded_operational"] }
+        },
+        "freshness_source": {
+          "enum": ["probe_observed_at", "environment_current_observed_at", "module_status_timestamp", "camera_manifest_updated_at"]
+        },
+        "freshness_max_age_ms": { "type": "integer", "minimum": 1, "maximum": 300000 },
+        "observation_timeout_ms": { "type": "integer", "minimum": 1, "maximum": 300000 },
+        "degraded_allowed": { "type": "boolean" },
+        "no_touch": { "type": "boolean" },
+        "world_freshness_startup_authoritative": { "type": "boolean" },
+        "proof_ceiling": { "$ref": "#/$defs/proof_ceiling" }
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "profile_id", "graph_sha256", "descriptors"],
+      "properties": {
+        "schema_version": { "const": "launcher_probe_descriptors.v1" },
+        "profile_id": { "$ref": "#/$defs/id" },
+        "graph_sha256": { "$ref": "#/$defs/sha256" },
+        "descriptors": {
+          "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/descriptor" }
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "required": [
+        "operation_id", "supervisor_generation", "dispatch_id", "expected_revision",
+        "service_id", "probe_id", "graph_sha256", "binding_sha256", "descriptor_sha256",
+        "config_sha256", "requested_at"
+      ],
+      "properties": {
+        "operation_id": { "$ref": "#/$defs/operation_id" },
+        "supervisor_generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "dispatch_id": { "$ref": "#/$defs/dispatch_id" },
+        "expected_revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "service_id": { "$ref": "launcher-operation.v2.schema.json#/$defs/service_id" },
+        "probe_id": { "$ref": "#/$defs/id" },
+        "graph_sha256": { "$ref": "#/$defs/sha256" },
+        "binding_sha256": { "$ref": "#/$defs/sha256" },
+        "descriptor_sha256": { "$ref": "#/$defs/sha256" },
+        "config_sha256": { "$ref": "#/$defs/sha256" },
+        "requested_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "observation": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/identity" },
+        {
+          "type": "object",
+          "required": [
+            "schema_version", "message_type", "observed_at", "source_observed_at",
+            "semantic_class", "reason_class"
+          ],
+          "properties": {
+            "schema_version": { "const": "launcher_probe_observation.v1" },
+            "message_type": { "const": "observation" },
+            "observed_at": { "$ref": "#/$defs/timestamp" },
+            "source_observed_at": { "$ref": "#/$defs/timestamp" },
+            "semantic_class": { "$ref": "#/$defs/semantic_class" },
+            "reason_class": { "$ref": "#/$defs/reason_class" }
+          }
+        }
+      ]
+    },
+    "result": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/identity" },
+        {
+          "type": "object",
+          "required": [
+            "schema_version", "message_type", "observed_at", "source_observed_at",
+            "freshness_class", "semantic_class", "reason_class", "ready", "proof_ceiling"
+          ],
+          "properties": {
+            "schema_version": { "const": "launcher_probe_result.v1" },
+            "message_type": { "const": "result" },
+            "observed_at": { "$ref": "#/$defs/timestamp" },
+            "source_observed_at": { "$ref": "#/$defs/timestamp" },
+            "freshness_class": { "const": "fresh" },
+            "semantic_class": { "$ref": "#/$defs/semantic_class" },
+            "reason_class": { "$ref": "#/$defs/reason_class" },
+            "ready": { "type": "boolean" },
+            "proof_ceiling": { "$ref": "#/$defs/proof_ceiling" }
+          }
+        }
+      ]
+    }
+  }
+}

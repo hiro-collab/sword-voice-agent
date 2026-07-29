@@ -1,0 +1,180 @@
+{
+  "schema_version": "launcher_probe_descriptors.v1",
+  "profile_id": "thought-core-v0",
+  "graph_sha256": "d5514bcbdd1e1499ac7fc025ea985d39cef83d3dff75552fc93296d7d3172b23",
+  "descriptors": [
+    {
+      "service_id": "home_assistant_bridge",
+      "probe_id": "home_assistant_health",
+      "probe_class": "http_json",
+      "targets": [
+        { "target_id": "health", "transport": "http", "method": "GET", "endpoint_ref": "home_assistant_bridge_http", "path": "/health", "auth_class": "none", "response_class": "bounded_json" }
+      ],
+      "checks": ["http_2xx", "bounded_json", "service_identity"],
+      "success_semantic_classes": ["reachable"],
+      "freshness_source": "probe_observed_at",
+      "freshness_max_age_ms": 15000,
+      "observation_timeout_ms": 10000,
+      "degraded_allowed": false,
+      "no_touch": false,
+      "world_freshness_startup_authoritative": false,
+      "proof_ceiling": "home_bridge_reachability_only"
+    },
+    {
+      "service_id": "environment_state_server",
+      "probe_id": "environment_state_health",
+      "probe_class": "composite_http_json",
+      "targets": [
+        { "target_id": "health", "transport": "http", "method": "GET", "endpoint_ref": "environment_state_http", "path": "/health", "auth_class": "none", "response_class": "bounded_json" },
+        { "target_id": "ready", "transport": "http", "method": "GET", "endpoint_ref": "environment_state_http", "path": "/ready", "auth_class": "none", "response_class": "bounded_json" },
+        { "target_id": "current", "transport": "http", "method": "GET", "endpoint_ref": "environment_state_http", "path": "/environment/current", "auth_class": "private_secret_ref", "response_class": "bounded_json" }
+      ],
+      "checks": ["http_2xx", "bounded_json", "service_identity", "environment_ready_contract", "environment_current_schema", "configured_source_policy", "world_freshness_advisory"],
+      "success_semantic_classes": ["ready"],
+      "freshness_source": "environment_current_observed_at",
+      "freshness_max_age_ms": 30000,
+      "observation_timeout_ms": 15000,
+      "degraded_allowed": false,
+      "no_touch": false,
+      "world_freshness_startup_authoritative": false,
+      "proof_ceiling": "environment_semantic_readiness_no_world_truth"
+    },
+    {
+      "service_id": "openai_provider_broker",
+      "probe_id": "provider_broker_health",
+      "probe_class": "http_json",
+      "targets": [
+        { "target_id": "health", "transport": "http", "method": "GET", "endpoint_ref": "provider_broker_http", "path": "/health", "auth_class": "none", "response_class": "bounded_json" }
+      ],
+      "checks": ["http_2xx", "bounded_json", "service_identity"],
+      "success_semantic_classes": ["reachable"],
+      "freshness_source": "probe_observed_at",
+      "freshness_max_age_ms": 15000,
+      "observation_timeout_ms": 10000,
+      "degraded_allowed": false,
+      "no_touch": false,
+      "world_freshness_startup_authoritative": false,
+      "proof_ceiling": "broker_reachability_only"
+    },
+    {
+      "service_id": "thought_core_api",
+      "probe_id": "thought_core_health",
+      "probe_class": "http_json",
+      "targets": [
+        { "target_id": "health", "transport": "http", "method": "GET", "endpoint_ref": "thought_core_http", "path": "/health", "auth_class": "none", "response_class": "bounded_json" }
+      ],
+      "checks": ["http_2xx", "bounded_json", "service_identity"],
+      "success_semantic_classes": ["reachable"],
+      "freshness_source": "probe_observed_at",
+      "freshness_max_age_ms": 15000,
+      "observation_timeout_ms": 10000,
+      "degraded_allowed": false,
+      "no_touch": false,
+      "world_freshness_startup_authoritative": false,
+      "proof_ceiling": "thought_core_reachability_only"
+    },
+    {
+      "service_id": "mediapipe_camera_hub_stack",
+      "probe_id": "mediapipe_websocket",
+      "probe_class": "camera_composite",
+      "targets": [
+        { "target_id": "private_status", "transport": "private_status", "method": "NONE", "endpoint_ref": null, "path": null, "auth_class": "not_applicable", "response_class": "bounded_json" },
+        { "target_id": "websocket", "transport": "websocket", "method": "CONNECT", "endpoint_ref": "mediapipe_websocket", "path": "/", "auth_class": "none", "response_class": "websocket_handshake" }
+      ],
+      "checks": ["worker_owned_identity", "registry_identity", "manifest_shape", "manifest_lineage", "listener_lineage", "websocket_handshake", "camera_operational_class"],
+      "success_semantic_classes": ["ready", "degraded_operational"],
+      "freshness_source": "camera_manifest_updated_at",
+      "freshness_max_age_ms": 30000,
+      "observation_timeout_ms": 15000,
+      "degraded_allowed": true,
+      "no_touch": false,
+      "world_freshness_startup_authoritative": false,
+      "proof_ceiling": "camera_operational_no_media"
+    },
+    {
+      "service_id": "vision_snapshot_processor",
+      "probe_id": "vision_snapshot_websocket",
+      "probe_class": "websocket",
+      "targets": [
+        { "target_id": "websocket", "transport": "websocket", "method": "CONNECT", "endpoint_ref": "vision_snapshot_websocket", "path": "/", "auth_class": "none", "response_class": "websocket_handshake" }
+      ],
+      "checks": ["worker_owned_identity", "listener_lineage", "websocket_handshake"],
+      "success_semantic_classes": ["reachable", "degraded_operational"],
+      "freshness_source": "probe_observed_at",
+      "freshness_max_age_ms": 15000,
+      "observation_timeout_ms": 10000,
+      "degraded_allowed": true,
+      "no_touch": false,
+      "world_freshness_startup_authoritative": false,
+      "proof_ceiling": "vision_input_reachability_no_world_truth"
+    },
+    {
+      "service_id": "aituber_kit",
+      "probe_id": "aituber_health",
+      "probe_class": "http_text",
+      "targets": [
+        { "target_id": "root", "transport": "http", "method": "GET", "endpoint_ref": "aituber_http", "path": "/", "auth_class": "none", "response_class": "bounded_text" }
+      ],
+      "checks": ["http_2xx", "bounded_text"],
+      "success_semantic_classes": ["reachable"],
+      "freshness_source": "probe_observed_at",
+      "freshness_max_age_ms": 15000,
+      "observation_timeout_ms": 10000,
+      "degraded_allowed": false,
+      "no_touch": false,
+      "world_freshness_startup_authoritative": false,
+      "proof_ceiling": "aituber_http_reachability_only"
+    },
+    {
+      "service_id": "thought_core_watcher",
+      "probe_id": "thought_core_watcher_status",
+      "probe_class": "module_status",
+      "targets": [
+        { "target_id": "module_status", "transport": "module_status", "method": "NONE", "endpoint_ref": null, "path": null, "auth_class": "not_applicable", "response_class": "bounded_json" }
+      ],
+      "checks": ["worker_owned_identity", "module_status_shape", "module_status_current_operation", "module_status_freshness"],
+      "success_semantic_classes": ["ready"],
+      "freshness_source": "module_status_timestamp",
+      "freshness_max_age_ms": 15000,
+      "observation_timeout_ms": 10000,
+      "degraded_allowed": false,
+      "no_touch": false,
+      "world_freshness_startup_authoritative": false,
+      "proof_ceiling": "watcher_current_operation_liveness_only"
+    },
+    {
+      "service_id": "touchdesigner_control_gui",
+      "probe_id": "touchdesigner_gui_health",
+      "probe_class": "http_text",
+      "targets": [
+        { "target_id": "root", "transport": "http", "method": "GET", "endpoint_ref": "touchdesigner_gui_http", "path": "/", "auth_class": "none", "response_class": "bounded_text" }
+      ],
+      "checks": ["http_2xx", "bounded_text"],
+      "success_semantic_classes": ["reachable"],
+      "freshness_source": "probe_observed_at",
+      "freshness_max_age_ms": 15000,
+      "observation_timeout_ms": 10000,
+      "degraded_allowed": false,
+      "no_touch": false,
+      "world_freshness_startup_authoritative": false,
+      "proof_ceiling": "display_gui_reachability_only"
+    },
+    {
+      "service_id": "voicevox",
+      "probe_id": "voicevox_health",
+      "probe_class": "http_text",
+      "targets": [
+        { "target_id": "version", "transport": "http", "method": "GET", "endpoint_ref": "voicevox_http", "path": "/version", "auth_class": "none", "response_class": "bounded_text" }
+      ],
+      "checks": ["http_2xx", "bounded_text", "no_touch_external"],
+      "success_semantic_classes": ["external_ready"],
+      "freshness_source": "probe_observed_at",
+      "freshness_max_age_ms": 15000,
+      "observation_timeout_ms": 10000,
+      "degraded_allowed": false,
+      "no_touch": true,
+      "world_freshness_startup_authoritative": false,
+      "proof_ceiling": "voicevox_version_reachability_only"
+    }
+  ]
+}
