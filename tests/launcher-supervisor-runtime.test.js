@@ -497,6 +497,174 @@ test('fresh-runtime Stop releases its new lease and makes no cleanup mutation wh
   }
 })
 
+test('fresh-runtime Stop terminalizes clear failure without a plan worker or owned action', async () => {
+  const harness = makeHarness({
+    operationPrefix: 'clearfailure',
+    workerBuilders: [
+      ({ events }) => new FakeWorker({
+        events,
+        responses: {
+          'thought_core_watcher:start': {
+            result_class: 'listener_mismatch',
+            ownership_class: 'mismatch',
+            listener_class: 'mismatch',
+            descendant_class: 'foreign'
+          }
+        }
+      }),
+      ({ events }) => new FakeWorker({ events })
+    ]
+  })
+  try {
+    const failed = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(failed.result_class, 'failed')
+    assert.equal(failed.operation.cleanup, 'clear')
+    assert.deepEqual(failed.operation.residue_service_ids, [])
+    assert.equal(harness.runtime.supervisorLease, null)
+    const failedStored = realStore.readOperation(authority, harness.root)
+    assert.equal(failedStored.services.some((service) =>
+      service.pending_action === null && service.probe_status === 'ready' && service.last_probe_result !== null), true)
+    const eventCount = harness.events.length
+    const workerCount = harness.workers.length
+    const requestCount = harness.workers.reduce((count, worker) => count + worker.requests.length, 0)
+
+    const replacement = harness.createRuntime()
+    const stopped = await replacement.stop({ profileId: 'thought-core-v0' })
+    assert.equal(stopped.ok, true)
+    assert.equal(stopped.result_class, 'stopped')
+    assert.equal(stopped.operation.cleanup, 'clear')
+    assert.equal(stopped.operation.operation_id, failed.operation.operation_id)
+    assert.equal(Object.hasOwn(stopped.operation, 'supervisor_generation'), false)
+    assert.equal(harness.events.slice(eventCount).includes('plan:read'), false)
+    assert.equal(harness.events.slice(eventCount).includes('worker:create'), false)
+    assert.equal(harness.workers.length, workerCount)
+    assert.equal(harness.workers.reduce((count, worker) => count + worker.requests.length, 0), requestCount)
+    assert.equal(replacement.supervisorLease, null)
+    const stoppedStored = realStore.readOperation(authority, harness.root)
+    assert.equal(stoppedStored.phase, 'stopped')
+    assert.equal(stoppedStored.cleanup, 'clear')
+    assert.equal(stoppedStored.supervisor_generation, failedStored.supervisor_generation)
+    assert.equal(
+      stopped.operation.services.find((service) => service.service_id === 'voicevox').state,
+      failed.operation.services.find((service) => service.service_id === 'voicevox').state
+    )
+
+    const changedOptions = {
+      ...canonicalOptions,
+      SkipMediapipe: true,
+      SkipVisionSnapshotProcessor: true
+    }
+    const changedIdentity = configIdentityFor(changedOptions)
+    const planCompileCount = harness.events.filter((event) => event === 'plan:compile').length
+    const planWriteCount = harness.events.filter((event) => event === 'plan:write').length
+    const restarted = await replacement.start({
+      profileId: 'thought-core-v0',
+      options: changedOptions,
+      configIdentity: changedIdentity
+    })
+    assert.equal(restarted.result_class, 'ready')
+    assert.equal(restarted.operation.joined_existing, false)
+    assert.notEqual(restarted.operation.operation_id, stopped.operation.operation_id)
+    assert.equal(harness.events.filter((event) => event === 'plan:compile').length, planCompileCount + 1)
+    assert.equal(harness.events.filter((event) => event === 'plan:write').length, planWriteCount + 1)
+    const restartedStored = realStore.readOperation(authority, harness.root)
+    assert.equal(restartedStored.supervisor_generation, stoppedStored.supervisor_generation + 1)
+    assert.equal(restarted.operation.effective_config_sha256, changedIdentity.effective_config_sha256)
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('fresh-runtime Stop rejects forged clear failure with correlated probe work before any action', async () => {
+  const harness = makeHarness({
+    operationPrefix: 'forgedclear',
+    responses: {
+      'home_assistant_bridge:start': {
+        result_class: 'listener_mismatch',
+        ownership_class: 'mismatch',
+        listener_class: 'mismatch',
+        descendant_class: 'foreign'
+      }
+    }
+  })
+  try {
+    const failed = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(failed.operation.phase, 'failed')
+    assert.equal(failed.operation.cleanup, 'clear')
+    const stored = realStore.readOperation(authority, harness.root)
+    const forged = {
+      ...stored,
+      services: stored.services.map((service) => service.service_id === 'home_assistant_bridge'
+        ? {
+            ...service,
+            pending_action: 'probe',
+            pending_dispatch_id: `ld_${'f'.repeat(16)}`,
+            probe_status: 'pending',
+            probe_expected_revision: stored.revision
+          }
+        : { ...service })
+    }
+    assert.doesNotThrow(() => reducer.validateSnapshot(forged, authority))
+    assert.equal(reducer.isClearTerminalFailure(forged, authority), false)
+    const recordPath = path.join(harness.root, realStore.STORE_DIRECTORY, realStore.RECORD_FILE)
+    fs.writeFileSync(recordPath, `${JSON.stringify(forged)}\n`, 'utf8')
+    const requestCount = harness.workers.reduce((count, worker) => count + worker.requests.length, 0)
+    const workerCount = harness.workers.length
+    const replacement = harness.createRuntime()
+
+    const stopped = await replacement.stop({ profileId: 'thought-core-v0' })
+    assert.equal(stopped.ok, false)
+    assert.equal(stopped.result_class, 'preflight_failed')
+    assert.equal(stopped.error_class, 'private_plan_invalid')
+    assert.equal(stopped.operation.phase, 'failed')
+    assert.equal(stopped.operation.revision, forged.revision)
+    assert.equal(harness.workers.length, workerCount)
+    assert.equal(harness.workers.reduce((count, worker) => count + worker.requests.length, 0), requestCount)
+    assert.equal(replacement.supervisorLease, null)
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('fresh-runtime Stop keeps residue fail-closed when its private plan is missing', async () => {
+  let planRemoveCalls = 0
+  const harness = makeHarness({
+    operationPrefix: 'residuemissing',
+    workerBuilders: [
+      ({ events }) => new FakeWorker({
+        events,
+        responses: {
+          'aituber_kit:start': new LauncherJobWorkerError('worker_transport_failed')
+        }
+      })
+    ],
+    planRemover: () => {
+      planRemoveCalls += 1
+      if (planRemoveCalls === 2) throw new Error('private_plan_remove_failed')
+    }
+  })
+  try {
+    const residue = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(residue.operation.phase, 'residue')
+    assert.notEqual(residue.operation.cleanup, 'clear')
+    harness.runtime.planRemover(harness.root)
+    const replacement = harness.createRuntime()
+    const revision = residue.operation.revision
+    const workerCount = harness.workers.length
+
+    const stopped = await replacement.stop({ profileId: 'thought-core-v0' })
+    assert.equal(stopped.ok, false)
+    assert.equal(stopped.result_class, 'preflight_failed')
+    assert.equal(stopped.error_class, 'private_plan_invalid')
+    assert.equal(stopped.operation.phase, 'residue')
+    assert.equal(stopped.operation.revision, revision)
+    assert.equal(harness.workers.length, workerCount)
+    assert.equal(replacement.supervisorLease, null)
+  } finally {
+    harness.cleanup()
+  }
+})
+
 test('probe executor factory binds the single compiled plan before store side effects', async () => {
   const calls = []
   const harness = makeHarness({

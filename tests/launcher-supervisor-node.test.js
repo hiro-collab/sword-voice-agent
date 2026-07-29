@@ -534,6 +534,76 @@ test('operation store generations increase only when a terminal operation is rep
   store.releaseSupervisorLease(replacement.supervisorLease, authority)
 }))
 
+test('clear terminal failure stops without owned dispatch and permits a fresh changed-config generation', () => {
+  let failed = reducer.createOperation(OPERATION_ID, authority)
+  failed = reducer.reduce(failed, event('preflight_started'), authority)
+  failed = reducer.reduce(failed, event('preflight_failed'), authority)
+  const failedServices = failed.services.map((service) => ({ ...service }))
+
+  assert.equal(rawReducer.isClearTerminalFailure(failed, authority), true)
+  const stopped = reducer.reduce(failed, event('stop_requested'), authority)
+  assert.equal(stopped.phase, 'stopped')
+  assert.equal(stopped.cleanup, 'clear')
+  assert.equal(stopped.intent, 'stop')
+  assert.equal(stopped.revision, failed.revision + 1)
+  assert.deepEqual(stopped.services, failedServices)
+  assert.equal(stopped.services.some((service) => service.pending_action === 'stop'), false)
+  rawReducer.validateSnapshot(stopped, authority)
+
+  const replacementConfig = Object.freeze({
+    ...CONFIG_IDENTITY,
+    effective_config_sha256: 'f'.repeat(64)
+  })
+  const replacementPlan = Object.freeze({
+    private_plan_sha256: '3'.repeat(64),
+    worker_executable_class: 'windows_powershell_system32',
+    worker_executable_sha256: '4'.repeat(64)
+  })
+  const replacement = rawReducer.startOperation(
+    failed,
+    'lop_clearreplace01',
+    authority,
+    replacementConfig,
+    replacementPlan,
+    failed.supervisor_generation + 1
+  )
+  assert.equal(replacement.joined_existing, false)
+  assert.equal(replacement.operation.operation_id, 'lop_clearreplace01')
+  assert.equal(replacement.operation.supervisor_generation, failed.supervisor_generation + 1)
+  assert.equal(replacement.operation.effective_config_sha256, replacementConfig.effective_config_sha256)
+  assert.equal(replacement.operation.private_plan_sha256, replacementPlan.private_plan_sha256)
+
+  const ownedServiceIndex = failed.services.findIndex((service) => service.service_id === 'home_assistant_bridge')
+  const forgedCases = [
+    {
+      name: 'start_dispatch',
+      changes: {
+        pending_action: 'start',
+        pending_dispatch_id: dispatchId('home_assistant_bridge', 'start', 91)
+      }
+    },
+    {
+      name: 'probe_dispatch',
+      changes: {
+        pending_action: 'probe',
+        pending_dispatch_id: dispatchId('home_assistant_bridge', 'probe', 92),
+        probe_status: 'pending',
+        probe_expected_revision: failed.revision
+      }
+    }
+  ]
+  for (const forgedCase of forgedCases) {
+    const forged = {
+      ...failed,
+      services: failed.services.map((service, index) => index === ownedServiceIndex
+        ? { ...service, ...forgedCase.changes }
+        : { ...service })
+    }
+    assert.doesNotThrow(() => rawReducer.validateSnapshot(forged, authority), forgedCase.name)
+    assert.equal(rawReducer.isClearTerminalFailure(forged, authority), false, forgedCase.name)
+  }
+})
+
 test('private supervisor lifetime lease rejects a competing nonterminal Start without record mutation', () => withRuntimeRoot((runtimeRoot) => {
   const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
   const binding = store.getSupervisorLeaseBinding(started.supervisorLease, authority)

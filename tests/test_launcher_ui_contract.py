@@ -944,6 +944,7 @@ $cases = @(
             env = os.environ.copy()
             env["NODE_ENV"] = "test"
             env["HOME_CONTROL_LAUNCHER_TEST_FAKE_SUPERVISOR"] = "deterministic_v1"
+            env["HOME_CONTROL_LAUNCHER_TEST_FAKE_FAILURE"] = "clear_terminal_once"
             launcher = subprocess.Popen(
                 [
                     "node",
@@ -1027,16 +1028,75 @@ $cases = @(
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
-                with urllib.request.urlopen(start_request, timeout=8) as response:
+                with self.assertRaises(HTTPError) as failed_error:
+                    urllib.request.urlopen(start_request, timeout=8)
+                self.assertEqual(failed_error.exception.code, 409)
+                failed = json.loads(failed_error.exception.read().decode("utf-8"))
+                self.assertEqual(failed["result_class"], "failed", failed)
+                self.assertEqual(failed["operation"]["phase"], "failed")
+                self.assertEqual(failed["operation"]["cleanup"], "clear")
+                self.assertEqual(failed["operation"]["residue_service_ids"], [])
+                failed_operation_id = failed["operation"]["operation_id"]
+                self.assertNotIn("supervisor_generation", failed["operation"])
+                operation_record_path = (
+                    state_dir
+                    / "launcher-operation.v2"
+                    / "launcher-operation.v2.json"
+                )
+                failed_record = json.loads(operation_record_path.read_text(encoding="utf-8"))
+                failed_generation = failed_record["supervisor_generation"]
+
+                save_after_failure_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/save-config",
+                    data=json.dumps(
+                        {
+                            "profileId": "thought-core-v0",
+                            "options": {**options, "MediapipeCameraFps": 25},
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(save_after_failure_request, timeout=5) as response:
+                    saved_after_failure = json.loads(response.read().decode("utf-8"))
+                self.assertTrue(saved_after_failure["ok"])
+
+                restart_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/start",
+                    data=json.dumps(
+                        {
+                            "profileId": "thought-core-v0",
+                            "expectedConfigSha256": saved_after_failure["configIdentity"][
+                                "effective_config_sha256"
+                            ],
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(restart_request, timeout=8) as response:
                     started = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(started["result_class"], "ready")
+                self.assertNotEqual(started["operation"]["operation_id"], failed_operation_id)
+                self.assertNotIn("supervisor_generation", started["operation"])
+                restarted_record = json.loads(
+                    operation_record_path.read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    restarted_record["supervisor_generation"],
+                    failed_generation + 1,
+                )
+                self.assertEqual(
+                    started["operation"]["effective_config_sha256"],
+                    saved_after_failure["configIdentity"]["effective_config_sha256"],
+                )
 
                 locked_request = urllib.request.Request(
                     f"http://127.0.0.1:{launcher_port}/api/save-config",
                     data=json.dumps(
                         {
                             "profileId": "thought-core-v0",
-                            "options": {**options, "MediapipeCameraFps": 25},
+                            "options": {**options, "MediapipeCameraFps": 30},
                         }
                     ).encode("utf-8"),
                     headers={"Content-Type": "application/json"},

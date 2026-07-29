@@ -118,6 +118,9 @@ const TEST_FAKE_SUPERVISOR =
   !ALLOW_REMOTE &&
   isTemporaryTestPath(WORKSPACE_ROOT) &&
   isTemporaryTestPath(STATE_DIR)
+let deterministicTestClearFailurePending =
+  TEST_FAKE_SUPERVISOR &&
+  process.env.HOME_CONTROL_LAUNCHER_TEST_FAKE_FAILURE === 'clear_terminal_once'
 
 const deterministicTestWorker = () => ({
   async execute (request) {
@@ -134,6 +137,16 @@ const deterministicTestWorker = () => ({
       worker_nonce: request.worker_nonce
     }
     if (request.action === 'start') {
+      if (deterministicTestClearFailurePending) {
+        deterministicTestClearFailurePending = false
+        return {
+          ...common,
+          result_class: 'listener_mismatch',
+          ownership_class: 'mismatch',
+          listener_class: 'mismatch',
+          descendant_class: 'foreign'
+        }
+      }
       return {
         ...common,
         result_class: 'accepted',
@@ -206,6 +219,9 @@ if (TEST_FAKE_SUPERVISOR) {
         services: []
       },
       powershell_path: process.execPath,
+      private_plan_sha256: '1'.repeat(64),
+      worker_executable_class: 'windows_powershell_system32',
+      worker_executable_sha256: '2'.repeat(64),
       included_service_ids: authority.graph.services
         .filter((service) => service.ownership === 'owned')
         .map((service) => service.service_id)
@@ -1555,7 +1571,7 @@ const operationState = () => launcherRuntime.publicState()
 
 const activeOperationConfigLock = () => {
   const operation = operationState()
-  return ['idle', 'stopped'].includes(operation.phase)
+  return ['idle', 'stopped'].includes(operation.phase) || launcherRuntime.isClearTerminalFailure()
     ? null
     : {
         ok: false,

@@ -116,10 +116,10 @@ const startOperation = (active, operationId, authority, configIdentity, planIden
   validatePlanIdentity(planIdentity)
   if (active !== null && active !== undefined) {
     validateSnapshot(active, authority)
-    if (active.graph_sha256 !== authority.identities.graphSha256 || active.binding_sha256 !== authority.identities.bindingSha256 ||
-        active.profile_id !== configIdentity.profile_id || active.effective_config_sha256 !== configIdentity.effective_config_sha256 ||
-        active.camera_policy !== configIdentity.camera_policy) fail('operation_active_identity_mismatch')
     if (![PHASE.STOPPED, PHASE.FAILED].includes(active.phase)) {
+      if (active.graph_sha256 !== authority.identities.graphSha256 || active.binding_sha256 !== authority.identities.bindingSha256 ||
+          active.profile_id !== configIdentity.profile_id || active.effective_config_sha256 !== configIdentity.effective_config_sha256 ||
+          active.camera_policy !== configIdentity.camera_policy) fail('operation_active_identity_mismatch')
       return { operation: next(active, { joined_existing: true }), joined_existing: true }
     }
   }
@@ -373,8 +373,29 @@ const residue = (operation, serviceId, reason, authority) => {
   })
 }
 
+const hasClearTerminalFailure = (operation, authority) => {
+  if (!operation || operation.phase !== PHASE.FAILED || operation.cleanup !== CLEANUP.CLEAR ||
+      operation.residue_service_ids.length !== 0 || operation.rollback_required || operation.recovery_required) return false
+  const outstandingWork = operation.services.some((service) =>
+    service.pending_action !== null || service.pending_dispatch_id !== null ||
+    service.probe_expected_revision !== null || ['pending', 'transport_ready'].includes(service.probe_status))
+  if (outstandingWork) return false
+  const owned = new Set(authority.graph.services
+    .filter((service) => service.ownership === 'owned')
+    .map((service) => service.service_id))
+  return operation.services
+    .filter((service) => owned.has(service.service_id))
+    .every((service) => [SERVICE.STOPPED, SERVICE.OPTIONAL_ABSENT].includes(service.state))
+}
+
 const stop = (operation, authority) => {
   if (operation.phase === PHASE.STOPPED) return operation
+  if (hasClearTerminalFailure(operation, authority)) {
+    return next(operation, {
+      intent: 'stop', phase: PHASE.STOPPED, cleanup: CLEANUP.CLEAR,
+      cleanup_result: cleanupResult(CLEANUP.CLEAR), rollback_required: false, recovery_required: false
+    })
+  }
   const external = new Set(authority.graph.services.filter((service) => service.ownership === 'external').map((service) => service.service_id))
   const services = operation.services.map((service) => external.has(service.service_id) || service.state === SERVICE.OPTIONAL_ABSENT ? { ...service } : { ...service, state: SERVICE.STOP_REQUESTED })
   return next(operation, {
@@ -612,6 +633,12 @@ const validateSnapshot = (operation, authority) => {
   return operation
 }
 
+const isClearTerminalFailure = (operation, authority) => {
+  if (!operation) return false
+  validateSnapshot(operation, authority)
+  return hasClearTerminalFailure(operation, authority)
+}
+
 const workerResultToEvent = (result, current, expectedRequest, authority) => {
   assertAuthority(authority)
   validateSnapshot(current, authority)
@@ -680,6 +707,6 @@ const workerResultToEvent = (result, current, expectedRequest, authority) => {
 }
 
 module.exports = {
-  CLEANUP, PHASE, REASON, SERVICE, createOperation, reduce, startOperation,
+  CLEANUP, PHASE, REASON, SERVICE, createOperation, isClearTerminalFailure, reduce, startOperation,
   validateConfigIdentity, validateIdentityInputs, validatePersistedProbeResult, validatePlanIdentity, validateSnapshot, workerResultToEvent
 }

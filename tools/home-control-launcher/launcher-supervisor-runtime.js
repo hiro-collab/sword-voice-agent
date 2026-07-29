@@ -313,6 +313,14 @@ class LauncherSupervisorRuntime {
     }
   }
 
+  isClearTerminalFailure () {
+    try {
+      return reducer.isClearTerminalFailure(this.current, this.authority)
+    } catch {
+      return false
+    }
+  }
+
   status () {
     const operation = this.readCurrent()
     return publicResult({
@@ -953,6 +961,19 @@ class LauncherSupervisorRuntime {
           ok: true,
           resultClass: 'already_stopped',
           operation: current,
+          profileId
+        })
+      }
+      if (reducer.isClearTerminalFailure(current, this.authority)) {
+        if (!this.supervisorLease) this.acquireExistingSupervisorLease()
+        this.apply('stop_requested')
+        const released = this.current.phase === reducer.PHASE.STOPPED
+          ? this.releaseSupervisorLease()
+          : false
+        return publicResult({
+          ok: released && this.current.phase === reducer.PHASE.STOPPED,
+          resultClass: resultClassFor(this.current),
+          operation: this.current,
           profileId
         })
       }
