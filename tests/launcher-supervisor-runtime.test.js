@@ -947,7 +947,7 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
       'organs/speech-input/ai-talk-core',
       'local/env'
     ]) makeDirectory(relative)
-    makeFile('organs/action/home-assistant-server/.env', 'HOME_CONTROL_API_TOKEN=0123456789abcdef\nENVIRONMENT_API_TOKEN=fedcba9876543210\n')
+    makeFile('organs/action/home-assistant-server/.env', 'HOME_ASSISTANT_TOKEN=home-assistant-secret\nHOME_CONTROL_API_TOKEN=0123456789abcdef\nENVIRONMENT_API_TOKEN=fedcba9876543210\n')
     const liveConfig = makeFile('local/env/home-control.live.yaml', 'profile: local\n')
     makeFile('organs/environment/vision-snapshot-processor/src/vision_snapshot_processor/main.py')
     const nextEntrypoint = makeFile('organs/expression/aituber-kit/node_modules/next/dist/bin/next')
@@ -964,8 +964,8 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
         PATH: executableRoot,
         SYSTEMROOT: 'C:\\Windows',
         TEMP: workspace,
-         TMP: workspace,
-         HOME_CONTROL_API_TOKEN: '0123456789abcdef',
+        TMP: workspace,
+        HOME_CONTROL_API_TOKEN: '0123456789abcdef',
         ENVIRONMENT_API_TOKEN: 'fedcba9876543210',
         PRIVATE_SENTINEL: 'must-not-be-inherited',
         SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE: 'must-not-be-inherited'
@@ -986,7 +986,9 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
       assert.equal(Object.hasOwn(plan.environment, 'SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE'), false)
     }
     assert.equal(Object.hasOwn(homePlan.environment, 'ENVIRONMENT_API_TOKEN'), false)
+    assert.equal(homePlan.environment.HOME_ASSISTANT_TOKEN, 'home-assistant-secret')
     assert.equal(environmentPlan.environment.ENVIRONMENT_API_TOKEN, 'fedcba9876543210')
+    assert.equal(Object.hasOwn(environmentPlan.environment, 'HOME_ASSISTANT_TOKEN'), false)
     assert.equal(homePlan.environment.HOME_CONTROL_CONFIG, liveConfig)
     assert.equal(Object.hasOwn(environmentPlan.environment, 'HOME_CONTROL_CONFIG'), false)
     assert.equal(Object.hasOwn(environmentPlan.environment, 'HOME_CONTROL_FAULT_MODE'), false)
@@ -1026,6 +1028,7 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
       }),
       (error) => error?.code === 'private_plan_config_invalid'
     )
+    makeFile('organs/action/home-assistant-server/.env', 'HOME_CONTROL_API_TOKEN=0123456789abcdef\nENVIRONMENT_API_TOKEN=fedcba9876543210\n')
     assert.throws(
       () => compilePrivateServicePlan({
         repositoryRoot: ROOT,
@@ -1039,6 +1042,28 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
           SYSTEMROOT: 'C:\\Windows',
           TEMP: workspace,
           TMP: workspace,
+          HOME_CONTROL_API_TOKEN: '0123456789abcdef',
+          ENVIRONMENT_API_TOKEN: 'fedcba9876543210'
+        },
+        resolveExecutable: (name) => executables[name],
+        nonceFactory: () => '00112233445566778899aabbccddeeff'
+      }),
+      (error) => error?.code === 'private_plan_config_invalid'
+    )
+    assert.throws(
+      () => compilePrivateServicePlan({
+        repositoryRoot: ROOT,
+        workspaceRoot: workspace,
+        privateRuntimeRoot: path.join(workspace, 'state'),
+        profileId: 'thought-core-v0',
+        options: { ...canonicalOptions, HomeControlConfigPath: liveConfig },
+        authority,
+        processEnvironment: {
+          PATH: executableRoot,
+          SYSTEMROOT: 'C:\\Windows',
+          TEMP: workspace,
+          TMP: workspace,
+          HOME_ASSISTANT_TOKEN: 'home-assistant-secret',
           HOME_CONTROL_API_TOKEN: '0123456789abcdef\u0000',
           ENVIRONMENT_API_TOKEN: 'fedcba9876543210'
         },

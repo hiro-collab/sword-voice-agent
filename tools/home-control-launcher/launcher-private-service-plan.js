@@ -30,6 +30,9 @@ const PROVIDER_ENVIRONMENT_NAMES = [
   'THOUGHT_CORE_LLM_BASE_URL',
   'THOUGHT_CORE_LLM_MODEL'
 ]
+const HOME_BRIDGE_ENVIRONMENT_NAMES = [
+  'HOME_ASSISTANT_TOKEN'
+]
 const THOUGHT_CORE_ENVIRONMENT_NAMES = [
   'CODEX_CLI_PATH',
   'OPENAI_BASE_URL',
@@ -324,7 +327,11 @@ const compilePrivateServicePlan = ({
   const thoughtDotEnv = readDotEnv(path.join(repo, '.env'), readFileSync)
   const homeToken = processEnvironment.HOME_CONTROL_API_TOKEN || homeDotEnv.HOME_CONTROL_API_TOKEN || ''
   const environmentToken = processEnvironment.ENVIRONMENT_API_TOKEN || homeDotEnv.ENVIRONMENT_API_TOKEN || homeToken
-  if (homeToken.length < 16 || environmentToken.length < 16) fail('private_plan_config_invalid')
+  const homeBridgeSecrets = selectedEnvironment(HOME_BRIDGE_ENVIRONMENT_NAMES, processEnvironment, homeDotEnv)
+  if (homeToken.length < 16 || environmentToken.length < 16 ||
+      typeof homeBridgeSecrets.HOME_ASSISTANT_TOKEN !== 'string' || homeBridgeSecrets.HOME_ASSISTANT_TOKEN.length < 16) {
+    fail('private_plan_config_invalid')
+  }
 
   const homeHost = loopbackHost(options.HomeAssistantBridgeHost)
   const aituberHost = loopbackHost(options.AituberHost)
@@ -353,6 +360,7 @@ const compilePrivateServicePlan = ({
   }
   const homeEnvironment = {
     ...baseline,
+    ...homeBridgeSecrets,
     HOME_CONTROL_CONFIG: configPath,
     HOME_CONTROL_API_TOKEN: homeToken,
     ...(options.EnableHomeControlFaultInjection ? { HOME_CONTROL_FAULT_MODE: '1' } : {})
