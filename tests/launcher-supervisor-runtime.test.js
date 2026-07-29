@@ -713,8 +713,9 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
     makeFile('organs/action/home-assistant-server/.env', 'HOME_CONTROL_API_TOKEN=0123456789abcdef\nENVIRONMENT_API_TOKEN=fedcba9876543210\n')
     const liveConfig = makeFile('local/env/home-control.live.yaml', 'profile: local\n')
     makeFile('organs/environment/vision-snapshot-processor/src/vision_snapshot_processor/main.py')
+    const nextEntrypoint = makeFile('organs/expression/aituber-kit/node_modules/next/dist/bin/next')
     fs.mkdirSync(executableRoot, { recursive: true })
-    const executables = Object.fromEntries(['uv', 'npm', 'npm.cmd', 'cmd', 'node', 'pwsh'].map((name) => [name, makeFile(`bin/${name}.exe`)]))
+    const executables = Object.fromEntries(['uv', 'node', 'pwsh'].map((name) => [name, makeFile(`bin/${name}.exe`)]))
     const compiled = compilePrivateServicePlan({
       repositoryRoot: ROOT,
       workspaceRoot: workspace,
@@ -735,10 +736,11 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
     })
     assert.equal(compiled.document.services.some((service) => service.service_id === 'voicevox'), false)
     const aituberPlan = compiled.document.services.find((service) => service.service_id === 'aituber_kit')
-    if (process.platform === 'win32') {
-      assert.equal(path.basename(aituberPlan.file_path), 'cmd.exe')
-      assert.equal(path.basename(aituberPlan.arguments[3]), 'npm.cmd.exe')
-    }
+    assert.equal(path.basename(aituberPlan.file_path), 'node.exe')
+    assert.equal(aituberPlan.arguments[0], nextEntrypoint)
+    assert.deepEqual(aituberPlan.arguments.slice(1), [
+      'dev', '--hostname', canonicalOptions.AituberHost, '--port', String(canonicalOptions.AituberPort)
+    ])
     assert.deepEqual(
       compiled.included_service_ids,
       [...compiled.included_service_ids].sort()

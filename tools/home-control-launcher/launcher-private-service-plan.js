@@ -312,12 +312,12 @@ const compilePrivateServicePlan = ({
   }
 
   const uv = validatedExecutable('uv', resolveExecutable, effectiveIo)
-  const npm = validatedExecutable(process.platform === 'win32' ? 'npm.cmd' : 'npm', resolveExecutable, effectiveIo)
-  const commandShell = process.platform === 'win32'
-    ? validatedExecutable('cmd', resolveExecutable, effectiveIo)
-    : npm
   const node = validatedExecutable('node', resolveExecutable, effectiveIo)
   const powershell = validatedExecutable('pwsh', resolveExecutable, effectiveIo)
+  const nextEntrypoint = exactAbsoluteFile(
+    path.join(roots.aituber, 'node_modules', 'next', 'dist', 'bin', 'next'),
+    effectiveIo
+  )
   const baseline = inheritedRuntimeEnvironment(processEnvironment)
   const homeEnvPath = exactAbsoluteFile(path.join(roots.home, '.env'), effectiveIo)
   const homeDotEnv = readDotEnv(homeEnvPath, readFileSync)
@@ -409,10 +409,11 @@ const compilePrivateServicePlan = ({
     }),
     ownedPlan({
       serviceId: 'aituber_kit',
-      filePath: commandShell,
-      args: process.platform === 'win32'
-        ? ['/d', '/s', '/c', npm, 'run', 'dev', '--', '--hostname', options.AituberHost, '--port', options.AituberPort]
-        : ['run', 'dev', '--', '--hostname', options.AituberHost, '--port', options.AituberPort],
+      filePath: node,
+      args: [
+        nextEntrypoint, 'dev', '--hostname', options.AituberHost,
+        '--port', options.AituberPort
+      ],
       cwd: roots.aituber,
       environment: {
         ...baseline,
