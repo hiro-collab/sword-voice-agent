@@ -167,9 +167,10 @@ test('composite HTTP probe applies descriptor checks without a service switch', 
   assert.equal(bodies['/environment/current'].observed_at, '2026-07-29T12:00:00.100000+00:00')
 })
 
-test('Environment current normalizes only canonical Python UTC timestamps and keeps global timestamp strictness', async () => {
+test('Environment current normalizes canonical timestamps and enforces its dedicated freshness window', async () => {
   const expected = expectedFor('environment_state_server')
   const validCases = [
+    ['pre_request_fresh', '2026-07-29T11:59:59.900000+00:00', '2026-07-29T11:59:59.900Z'],
     ['js_millis', '2026-07-29T12:00:00.100Z', '2026-07-29T12:00:00.100Z'],
     ['python_seconds', '2026-07-29T12:00:00+00:00', '2026-07-29T12:00:00.000Z'],
     ['python_fraction_1', '2026-07-29T12:00:00.1+00:00', '2026-07-29T12:00:00.100Z'],
@@ -247,10 +248,15 @@ test('Environment current normalizes only canonical Python UTC timestamps and ke
   assert.equal(configuredUnready.result.reason_class, 'configured_source_unready')
   assert.deepEqual(configuredUnready.requests, ['/health', '/ready', '/environment/current'])
 
-  const stale = await execute('2026-07-29T11:59:59.999999+00:00')
+  const stale = await execute('2026-07-29T11:59:30.199000+00:00')
   assert.equal(stale.result.ready, false)
   assert.equal(stale.result.reason_class, 'source_stale')
   assert.deepEqual(stale.requests, ['/health', '/ready', '/environment/current'])
+
+  const future = await execute('2026-07-29T12:00:00.201000+00:00')
+  assert.equal(future.result.ready, false)
+  assert.equal(future.result.reason_class, 'source_stale')
+  assert.deepEqual(future.requests, ['/health', '/ready', '/environment/current'])
 
   let strictFetchCalls = 0
   await assert.rejects(
@@ -488,6 +494,28 @@ test('injected WebSocket, module status and private status observers bind safe r
   const camera = await cameraExecutor.execute(cameraExpected)
   assertBoundResult(camera, cameraExpected, 'degraded_operational')
   assert.equal(camera.reason_class, 'optional_degraded')
+})
+
+test('non-Environment freshness sources still reject pre-request observations without retry', async () => {
+  const expected = expectedFor('vision_snapshot_processor')
+  let observerCalls = 0
+  const executor = makeExecutor({
+    fetchImpl: async () => { throw new Error('unused') },
+    observers: {
+      websocket: async () => {
+        observerCalls += 1
+        return {
+          ok: true,
+          source_observed_at: new Date(BASE_MS - 1).toISOString()
+        }
+      }
+    }
+  })
+  const result = await executor.execute(expected)
+  assertBoundResult(result, expected, 'not_ready')
+  assert.equal(result.ready, false)
+  assert.equal(result.reason_class, 'source_stale')
+  assert.equal(observerCalls, 1)
 })
 
 test('missing or malformed injected observer fails with a fixed executor class', async () => {

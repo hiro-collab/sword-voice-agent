@@ -195,6 +195,40 @@ test('time ordering, request deadline, and source freshness fail closed', () => 
   }), { now: '2026-07-29T00:00:00.300Z' }), 'probe_observed_at_invalid')
 })
 
+test('Environment observed snapshots may predate the request only within their dedicated freshness contract', () => {
+  const expected = expectedFor('environment_state_server')
+  const fresh = probes.bindProbeResult(probeAuthority, expected, observationFor(expected, {
+    semantic_class: 'ready',
+    source_observed_at: '2026-07-28T23:59:59.900Z'
+  }), { now: '2026-07-29T00:00:00.200Z' })
+  assert.equal(fresh.ready, true)
+  assert.equal(fresh.freshness_class, 'fresh')
+  assert.equal(fresh.source_observed_at, '2026-07-28T23:59:59.900Z')
+
+  expectCode(() => probes.bindProbeResult(probeAuthority, expected, observationFor(expected, {
+    semantic_class: 'ready',
+    source_observed_at: '2026-07-28T23:59:30.199Z'
+  }), { now: '2026-07-29T00:00:00.200Z' }), 'probe_observation_stale')
+  expectCode(() => probes.bindProbeResult(probeAuthority, expected, observationFor(expected, {
+    semantic_class: 'ready',
+    source_observed_at: '2026-07-29T00:00:00.201Z'
+  }), { now: '2026-07-29T00:00:00.200Z' }), 'probe_observation_time_order_invalid')
+  expectCode(() => probes.bindProbeResult(probeAuthority, expected, observationFor(expected, {
+    semantic_class: 'ready',
+    source_observed_at: '2026-07-28T23:59:59Z'
+  }), { now: '2026-07-29T00:00:00.200Z' }), 'probe_source_observed_at_invalid')
+
+  const ordinaryExpected = expectedFor('home_assistant_bridge')
+  expectCode(() => probes.bindProbeResult(
+    probeAuthority,
+    ordinaryExpected,
+    observationFor(ordinaryExpected, {
+      source_observed_at: '2026-07-28T23:59:59.999Z'
+    }),
+    { now: '2026-07-29T00:00:00.200Z' }
+  ), 'probe_observation_time_order_invalid')
+})
+
 test('unsafe raw, private, command, camera, and lease fields are rejected instead of copied', () => {
   const expected = expectedFor()
   for (const field of [

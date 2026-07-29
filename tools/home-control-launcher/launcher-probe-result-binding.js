@@ -372,7 +372,10 @@ const bindProbeResult = (probeAuthority, expected, observation, options = {}) =>
   else if (typeof options.now === 'string') now = parseStrictTimestamp(options.now, 'probe_now_invalid')
   else if (Number.isSafeInteger(options.now)) now = options.now
   else fail('probe_now_invalid')
-  if (!Number.isFinite(now) || requestedAt > sourceObservedAt || sourceObservedAt > observedAt ||
+  const allowsPreRequestSource =
+    descriptor.freshness_source === 'environment_current_observed_at'
+  if (!Number.isFinite(now) || (!allowsPreRequestSource && requestedAt > sourceObservedAt) ||
+      sourceObservedAt > observedAt ||
       observedAt > now + CLOCK_SKEW_MS || requestedAt > now + CLOCK_SKEW_MS) fail('probe_observation_time_order_invalid')
   if (observedAt - requestedAt > descriptor.observation_timeout_ms) fail('probe_observation_deadline_exceeded')
   if (now - sourceObservedAt > descriptor.freshness_max_age_ms) fail('probe_observation_stale')

@@ -491,7 +491,10 @@ class LauncherProbeExecutor {
     }
     let sourceObservedAt = classification.source_observed_at
     const sourceMs = strictTimestampMillis(sourceObservedAt)
-    if (sourceMs === null || sourceMs < requestedMs || sourceMs > observedMs ||
+    const allowsPreRequestSource =
+      descriptor.freshness_source === 'environment_current_observed_at'
+    if (sourceMs === null || (!allowsPreRequestSource && sourceMs < requestedMs) ||
+        sourceMs > observedMs ||
         observedMs - sourceMs > descriptor.freshness_max_age_ms) {
       if (classification.semantic_class !== 'not_ready') classification = failure('source_stale')
       sourceObservedAt = iso(observedMs)
