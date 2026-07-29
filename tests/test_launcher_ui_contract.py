@@ -1000,6 +1000,28 @@ $cases = @(
                 )
                 self.assertEqual(unsupported["supportedProfileIds"], ["thought-core-v0"])
 
+                inconsistent_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/save-config",
+                    data=json.dumps(
+                        {
+                            "profileId": "thought-core-v0",
+                            "options": {
+                                "SkipMediapipe": True,
+                                "SkipVisionSnapshotProcessor": False,
+                            },
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as inconsistent_error:
+                    urllib.request.urlopen(inconsistent_request, timeout=5)
+                self.assertEqual(inconsistent_error.exception.code, 500)
+                inconsistent = json.loads(
+                    inconsistent_error.exception.read().decode("utf-8")
+                )
+                self.assertEqual(inconsistent["error"], "private_plan_config_invalid")
+
                 options = {
                     "SkipMediapipe": True,
                     "SkipVisionSnapshotProcessor": True,
@@ -2174,6 +2196,69 @@ $cases = @(
         self.assertIn("Require VOICEVOX readiness check", app)
         self.assertNotIn("Disable expression UI", app)
         self.assertNotIn("Disable action bridge", app)
+
+    def test_launcher_camera_exclusion_cascades_vision_before_preview_and_save(self) -> None:
+        app = read_public("app.js")
+        current_options = extract_between(
+            app,
+            "const currentOptions",
+            "const applyPreviewOptions",
+        )
+        set_switch_value = extract_between(
+            app,
+            "const setSwitchValue",
+            "const renderSwitchGroup",
+        )
+        node_program = r"""
+const assert = require('assert')
+const state = {
+  options: {
+    SkipMediapipe: false,
+    SkipVisionSnapshotProcessor: false
+  }
+}
+const positiveDisplayFields = new Set()
+__CURRENT_OPTIONS__
+const previewSnapshots = []
+const setOption = (key, value) => {
+  state.options[key] = value
+  previewSnapshots.push(currentOptions())
+}
+__SET_SWITCH_VALUE__
+
+setSwitchValue('SkipMediapipe', false)
+assert.deepStrictEqual(previewSnapshots[0], {
+  SkipMediapipe: true,
+  SkipVisionSnapshotProcessor: true
+})
+
+setSwitchValue('SkipVisionSnapshotProcessor', true)
+assert.deepStrictEqual(previewSnapshots[1], {
+  SkipMediapipe: true,
+  SkipVisionSnapshotProcessor: true
+})
+const serializedSave = JSON.stringify({ options: currentOptions() })
+assert.deepStrictEqual(JSON.parse(serializedSave).options, {
+  SkipMediapipe: true,
+  SkipVisionSnapshotProcessor: true
+})
+
+setSwitchValue('SkipMediapipe', true)
+assert.deepStrictEqual(previewSnapshots[2], {
+  SkipMediapipe: false,
+  SkipVisionSnapshotProcessor: true
+})
+""".replace("__CURRENT_OPTIONS__", current_options).replace(
+            "__SET_SWITCH_VALUE__", set_switch_value
+        )
+        subprocess.run(
+            [r"C:\Program Files\nodejs\node.exe", "-e", node_program],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
 
     def test_launcher_review_ui_has_no_legacy_compatibility_controls(self) -> None:
         html = read_public("index.html")

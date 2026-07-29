@@ -1402,7 +1402,14 @@ const setSwitchValue = (field, checked) => {
     setOption(field, !checked)
     return
   }
-  setOption(field, field.startsWith('Skip') ? !checked : checked)
+  let value = field.startsWith('Skip') ? !checked : checked
+  if (field === 'SkipMediapipe' && value) {
+    state.options.SkipVisionSnapshotProcessor = true
+  }
+  if (field === 'SkipVisionSnapshotProcessor' && state.options.SkipMediapipe) {
+    value = true
+  }
+  setOption(field, value)
 }
 
 const renderSwitchGroup = (elementId, fields) => {
