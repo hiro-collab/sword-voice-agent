@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -200,7 +201,7 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
         self.assertIn('"stop_failed" "unknown" "unknown" "unknown"', stop)
         self.assertNotIn('"stop_failed" "matched" "mismatch" "foreign"', stop)
 
-    def test_private_plan_rejects_the_reserved_worker_capability(self) -> None:
+    def test_private_plan_accepts_current_aituber_and_rejects_foreign_capabilities(self) -> None:
         powershell = shutil.which("pwsh")
         if powershell is None:
             self.fail("pwsh_not_found")
@@ -209,7 +210,7 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
             "environment_state_server": "uv.exe",
             "openai_provider_broker": "uv.exe",
             "thought_core_api": "pwsh.exe",
-            "aituber_kit": "cmd.exe",
+            "aituber_kit": "node.exe",
             "thought_core_watcher": "pwsh.exe",
             "touchdesigner_control_gui": "node.exe",
         }
@@ -235,51 +236,82 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
             "services": services,
         }
         with tempfile.TemporaryDirectory(prefix="launcher-n1-plan-") as directory:
-            plan_path = Path(directory) / "private-plan.json"
-            plan_path.write_text(json.dumps(document), encoding="utf-8")
-            valid_command = "Import-Module $args[0] -Force; Read-LauncherPrivateServicePlans -Path $args[1] | Out-Null"
-            valid = subprocess.run(
-                [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-CommandWithArgs", valid_command, str(PLAN), str(plan_path)],
-                cwd=ROOT,
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=30,
+            directory_path = Path(directory).resolve()
+            executable_root = directory_path / "bin"
+            executable_root.mkdir()
+            node_path = executable_root / "node.exe"
+            node_path.write_bytes(b"")
+            aituber_root = directory_path / "aituber-kit"
+            next_entrypoint = aituber_root / "node_modules" / "next" / "dist" / "bin" / "next"
+            next_entrypoint.parent.mkdir(parents=True)
+            next_entrypoint.write_bytes(b"")
+            aituber_plan = next(
+                service for service in services
+                if service["service_id"] == "aituber_kit"
             )
-            self.assertEqual(valid.returncode, 0)
-            command = (
+            aituber_plan["file_path"] = str(node_path)
+            aituber_plan["working_directory"] = str(aituber_root)
+            aituber_plan["arguments"] = [
+                str(next_entrypoint), "dev", "--hostname", "127.0.0.1",
+                "--port", str(aituber_plan["listener_port"]),
+            ]
+            test_environment = os.environ.copy()
+            test_environment["PATH"] = os.pathsep.join((str(executable_root), test_environment.get("PATH", "")))
+            plan_path = directory_path / "private-plan.json"
+            valid_command = "Import-Module $args[0] -Force; Read-LauncherPrivateServicePlans -Path $args[1] | Out-Null"
+            reject_command = (
                 "Import-Module $args[0] -Force;"
                 "try { Read-LauncherPrivateServicePlans -Path $args[1] | Out-Null; exit 2 } "
                 "catch { if($_.Exception.Message -cne 'launcher_private_plan_invalid'){exit 3}; exit 0 }"
             )
+
+            def run_reader(command: str) -> subprocess.CompletedProcess[str]:
+                plan_path.write_text(json.dumps(document), encoding="utf-8")
+                return subprocess.run(
+                    [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-CommandWithArgs", command, str(PLAN), str(plan_path)],
+                    cwd=ROOT,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    env=test_environment,
+                    timeout=30,
+                )
+
+            self.assertEqual(run_reader(valid_command).returncode, 0)
+
             document["services"][0]["clear_inherited_environment"] = False
-            plan_path.write_text(json.dumps(document), encoding="utf-8")
-            inherited = subprocess.run(
-                [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-CommandWithArgs", command, str(PLAN), str(plan_path)],
-                cwd=ROOT,
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=30,
-            )
-            self.assertEqual(inherited.returncode, 0)
+            self.assertEqual(run_reader(reject_command).returncode, 0)
             document["services"][0]["clear_inherited_environment"] = True
-            document["services"][0]["environment"] = {
-                "SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE": "PRIVATE_SENTINEL"
-            }
-            plan_path.write_text(json.dumps(document), encoding="utf-8")
-            completed = subprocess.run(
-                [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-CommandWithArgs", command, str(PLAN), str(plan_path)],
-                cwd=ROOT,
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=30,
-            )
-            self.assertEqual(completed.returncode, 0)
+
+            for reserved_name in (
+                "SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE",
+                "SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF",
+            ):
+                document["services"][0]["environment"] = {
+                    reserved_name: "PRIVATE_SENTINEL"
+                }
+                self.assertEqual(run_reader(reject_command).returncode, 0)
+            document["services"][0]["environment"] = {}
+
+            aituber_plan["file_path"] = r"C:\N1\cmd.exe"
+            self.assertEqual(run_reader(reject_command).returncode, 0)
+
+            aituber_plan["file_path"] = str(node_path)
+            aituber_plan["arguments"][1] = "start"
+            self.assertEqual(run_reader(reject_command).returncode, 0)
+
+            aituber_plan["arguments"][1] = "dev"
+            aituber_plan["arguments"][3] = "0.0.0.0"
+            self.assertEqual(run_reader(reject_command).returncode, 0)
+
+            foreign_root = directory_path / "foreign-bin"
+            foreign_root.mkdir()
+            foreign_node = foreign_root / "node.exe"
+            foreign_node.write_bytes(b"")
+            aituber_plan["file_path"] = str(foreign_node)
+            aituber_plan["arguments"][3] = "127.0.0.1"
+            self.assertEqual(run_reader(reject_command).returncode, 0)
 
 
 if __name__ == "__main__":

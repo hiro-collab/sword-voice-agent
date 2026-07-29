@@ -4,7 +4,7 @@ $ErrorActionPreference = "Stop"
 $script:MaximumPlanBytes = 262144
 $script:Sha256Pattern = "^[a-f0-9]{64}$"
 $script:EnvironmentNamePattern = "^[A-Z][A-Z0-9_]{0,127}$"
-$script:ReservedEnvironmentNames = @("SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE")
+$script:ReservedEnvironmentNames = @("SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE", "SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF")
 $script:Descriptors = [ordered]@{
     home_assistant_bridge = [pscustomobject]@{
         ServiceId = "home_assistant_bridge"; Requirement = "required"; Ownership = "owned"
@@ -32,7 +32,7 @@ $script:Descriptors = [ordered]@{
     }
     aituber_kit = [pscustomobject]@{
         ServiceId = "aituber_kit"; Requirement = "required"; Ownership = "owned"
-        ExecutableNames = @("npm", "npm.cmd", "cmd"); DefaultListenerPort = 3000
+        ExecutableNames = @("node"); DefaultListenerPort = 3000
     }
     thought_core_watcher = [pscustomobject]@{
         ServiceId = "thought_core_watcher"; Requirement = "required"; Ownership = "owned"
@@ -129,6 +129,44 @@ function ConvertTo-LauncherStringArray {
     return $result
 }
 
+function Assert-LauncherAituberPlan {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][int]$ListenerPort
+    )
+    try {
+        $nodeItem = Get-Item -LiteralPath $FilePath -Force -ErrorAction Stop
+        $workingItem = Get-Item -LiteralPath $WorkingDirectory -Force -ErrorAction Stop
+        $nodeCommands = @(Get-Command node -CommandType Application -ErrorAction Stop)
+        $expectedEntrypoint = [IO.Path]::GetFullPath((Join-Path $WorkingDirectory "node_modules\next\dist\bin\next"))
+        $entrypointItem = Get-Item -LiteralPath $expectedEntrypoint -Force -ErrorAction Stop
+    }
+    catch {
+        throw "launcher_private_plan_invalid"
+    }
+    if (
+        $nodeCommands.Count -lt 1 -or
+        $nodeItem.PSIsContainer -or
+        ($nodeItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        -not $workingItem.PSIsContainer -or
+        ($workingItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $entrypointItem.PSIsContainer -or
+        ($entrypointItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        -not [StringComparer]::OrdinalIgnoreCase.Equals($nodeItem.FullName, [string]$nodeCommands[0].Source) -or
+        $Arguments.Count -ne 6 -or
+        -not [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($Arguments[0]), $entrypointItem.FullName) -or
+        $Arguments[1] -cne "dev" -or
+        $Arguments[2] -cne "--hostname" -or
+        @("127.0.0.1", "localhost") -cnotcontains $Arguments[3].ToLowerInvariant() -or
+        $Arguments[4] -cne "--port" -or
+        $Arguments[5] -cne [string]$ListenerPort
+    ) {
+        throw "launcher_private_plan_invalid"
+    }
+}
+
 function ConvertTo-LauncherOwnedPlan {
     param(
         [Parameter(Mandatory = $true)][object]$Value,
@@ -164,6 +202,13 @@ function ConvertTo-LauncherOwnedPlan {
     $listenerPort = Get-LauncherProperty $Value "listener_port"
     if ($listenerPort -isnot [int] -and $listenerPort -isnot [long]) { throw "launcher_private_plan_invalid" }
     if ([int64]$listenerPort -ne [int64]$Descriptor.DefaultListenerPort) { throw "launcher_private_plan_invalid" }
+    if ($serviceId -ceq "aituber_kit") {
+        Assert-LauncherAituberPlan `
+            -FilePath $filePath `
+            -Arguments $arguments `
+            -WorkingDirectory $workingDirectory `
+            -ListenerPort ([int]$listenerPort)
+    }
     return [pscustomobject]@{
         ServiceId = $serviceId
         Requirement = [string]$Descriptor.Requirement
