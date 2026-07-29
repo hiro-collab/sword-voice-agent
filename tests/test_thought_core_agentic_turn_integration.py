@@ -1123,9 +1123,27 @@ class AgenticTurnIntegrationTest(TestCase):
             for event in execute_events
             if event["type"] == "assistant.message"
         ]
+        execute_event_types = [event["type"] for event in execute_events]
+        execute_started_index = next(
+            index
+            for index, event in enumerate(execute_events)
+            if event["type"] == "tool.started"
+            and event["data"]["tool"] == "home.execute"
+        )
+        success_receipt_index = next(
+            index
+            for index, event in enumerate(execute_events)
+            if event["type"] == "agentic.receipt_response"
+            and event["data"]["phase"] == "success"
+            and event["data"]["status"] == "accepted"
+        )
+        assistant_message_index = execute_event_types.index("assistant.message")
         self.assertEqual(execute_events[-1]["data"]["status"], "success")
         self.assertEqual(len(tools.execute_calls), 1)
-        self.assertTrue(execute_messages)
+        self.assertEqual(execute_messages, [success_response["speech"]])
+        self.assertLess(execute_event_types.index("action.confirmed"), execute_started_index)
+        self.assertLess(execute_started_index, success_receipt_index)
+        self.assertLess(success_receipt_index, assistant_message_index)
         self.assertNotIn(private_sentinel, json.dumps(execute_events, ensure_ascii=False))
         self.assertNotIn(
             private_sentinel,
@@ -1149,6 +1167,58 @@ class AgenticTurnIntegrationTest(TestCase):
                 if event["type"] == "action.reviewed"
             ],
         )
+
+    def test_confirmed_failure_emits_only_terminal_receipt_message(self) -> None:
+        confirmation_response = {"speech": "閉める前に確認します。", "display": "確認が必要です。"}
+        failure_response = {"speech": "結果を確認できなかったため保留します。", "display": "確認待ちです。"}
+        tools = _FailingDirectTools()
+        loop = ThoughtLoop(
+            tools=tools,
+            agentic_turn_provider=StaticAgenticTurnProvider(
+                self._capability("door_close"),
+                receipt_responses={
+                    "confirmation": confirmation_response,
+                    "failure": failure_response,
+                },
+            ),
+        )
+
+        preview_events = loop.run_dicts(
+            self._turn("通路を安全にしたい。", turn_id="door_failure_preview")
+        )
+        self.assertEqual(preview_events[-1]["data"]["status"], "confirmation_required")
+        self.assertEqual(tools.execute_calls, [])
+
+        execute_events = loop.run_dicts(
+            self._turn("お願い", turn_id="door_failure_confirm")
+        )
+        execute_event_types = [event["type"] for event in execute_events]
+        execute_messages = [
+            event["data"]["speech"]
+            for event in execute_events
+            if event["type"] == "assistant.message"
+        ]
+        execute_started_index = next(
+            index
+            for index, event in enumerate(execute_events)
+            if event["type"] == "tool.started"
+            and event["data"]["tool"] == "home.execute"
+        )
+        failure_receipt_index = next(
+            index
+            for index, event in enumerate(execute_events)
+            if event["type"] == "agentic.receipt_response"
+            and event["data"]["phase"] == "failure"
+            and event["data"]["status"] == "accepted"
+        )
+        assistant_message_index = execute_event_types.index("assistant.message")
+
+        self.assertEqual(execute_events[-1]["data"]["status"], "needs_feedback")
+        self.assertEqual(len(tools.execute_calls), 1)
+        self.assertEqual(execute_messages, [failure_response["speech"]])
+        self.assertLess(execute_event_types.index("action.confirmed"), execute_started_index)
+        self.assertLess(execute_started_index, failure_receipt_index)
+        self.assertLess(failure_receipt_index, assistant_message_index)
 
     def test_receipt_response_reaches_user_for_noop_and_failure_only_after_phase(self) -> None:
         noop_response = {"speech": "今の状態に合わせて見送ります。", "display": "見送ります。"}

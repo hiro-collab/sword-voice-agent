@@ -3362,15 +3362,6 @@ class ThoughtLoop:
                 },
             )
         )
-        self._emit_message(
-            events,
-            factory,
-            speech="OK、続きやるね。",
-            display="確認しました",
-            emotion="confident",
-            motion="nod",
-            priority="immediate",
-        )
         execute_result = self._call_tool(
             events,
             factory,
@@ -3446,16 +3437,6 @@ class ThoughtLoop:
                     confirmed=True,
                 )
                 return True
-            speech = self._action_recheck_cue_speech(action)
-            self._emit_message(
-                events,
-                factory,
-                speech=speech,
-                display=speech,
-                emotion="focused",
-                motion="small_nod",
-                priority="immediate",
-            )
         self._emit_stage_update(
             events,
             factory,
