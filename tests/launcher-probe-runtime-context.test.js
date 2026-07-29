@@ -119,10 +119,10 @@ const makeContext = ({ compiled = compiledPlan(), privateRuntimeRoot, fetchImpl,
 })
 
 const statusPathFor = (root) => path.join(root, 'thought-core-watcher', 'modules', 'thought_core_watcher.json')
-const statusPayload = (timestampSeconds) => ({
+const statusPayload = (timestampSeconds, state = 'running') => ({
   name: 'thought_core_watcher',
   label: 'PRIVATE_LABEL_SENTINEL',
-  state: 'running',
+  state,
   detail: 'PRIVATE_DETAIL_SENTINEL',
   timestamp: timestampSeconds
 })
@@ -354,7 +354,29 @@ test('default module observer waits past prior bytes and binds only a post-reque
   })
 })
 
-test('default module observer rejects reparse, oversized and malformed status files', async () => {
+test('default module observer treats fresh starting as transitional and binds the following running status', async () => {
+  await withTempRoot(async (root) => {
+    writeStatus(root, statusPayload((BASE_MS + 100) / 1000, 'starting'))
+    const observer = createDefaultModuleStatusObserver(root)
+    const controller = new AbortController()
+    const pending = observer(moduleObserverInput(controller.signal))
+    const timer = setTimeout(() => writeStatus(root, statusPayload((BASE_MS + 200) / 1000)), 30)
+    try {
+      const value = await pending
+      assert.deepEqual(value, {
+        ok: true,
+        state: 'running',
+        operation_id: 'lop_runtimecontext01',
+        timestamp: new Date(BASE_MS + 200).toISOString()
+      })
+      assert.equal(JSON.stringify(value).includes('PRIVATE_'), false)
+    } finally {
+      clearTimeout(timer)
+    }
+  })
+})
+
+test('default module observer rejects reparse, oversized, malformed, and invalid status files', async () => {
   await withTempRoot(async (root) => {
     const external = path.join(root, 'external-watcher')
     writeStatus(external, statusPayload(BASE_MS / 1000))
@@ -387,16 +409,36 @@ test('default module observer rejects reparse, oversized and malformed status fi
       (error) => error instanceof LauncherProbeRuntimeContextError && error.code === 'probe_runtime_observer_invalid'
     )
   })
+
+  await withTempRoot(async (root) => {
+    writeStatus(root, statusPayload(BASE_MS / 1000, 'stopped'))
+    const observer = createDefaultModuleStatusObserver(root)
+    await assert.rejects(
+      observer(moduleObserverInput(new AbortController().signal)),
+      (error) => error instanceof LauncherProbeRuntimeContextError && error.code === 'probe_runtime_observer_invalid'
+    )
+  })
 })
 
-test('default module observer aborts a missing or prior status poll without leaking a path', async () => {
-  await withTempRoot(async (root) => {
-    const observer = createDefaultModuleStatusObserver(root)
-    const controller = new AbortController()
-    const pending = observer(moduleObserverInput(controller.signal))
-    setTimeout(() => controller.abort(), 30)
-    await assert.rejects(pending, (error) => error.name === 'AbortError' && !String(error).includes(root))
-  })
+test('default module observer aborts missing, prior, or transitional status polls without leaking a path', async () => {
+  for (const payload of [
+    null,
+    statusPayload((BASE_MS - 1000) / 1000),
+    statusPayload((BASE_MS + 100) / 1000, 'starting')
+  ]) {
+    await withTempRoot(async (root) => {
+      if (payload !== null) writeStatus(root, payload)
+      const observer = createDefaultModuleStatusObserver(root)
+      const controller = new AbortController()
+      const pending = observer(moduleObserverInput(controller.signal))
+      const timer = setTimeout(() => controller.abort(), 30)
+      try {
+        await assert.rejects(pending, (error) => error.name === 'AbortError' && !String(error).includes(root))
+      } finally {
+        clearTimeout(timer)
+      }
+    })
+  }
 })
 
 test('injected module observer is shape validated and current-operation correlation remains authoritative', async () => {

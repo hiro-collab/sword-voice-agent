@@ -297,7 +297,7 @@ const parseModuleStatus = (bytes) => {
   let value
   try { value = JSON.parse(text) } catch { fail('probe_runtime_observer_invalid') }
   exactKeys(value, MODULE_STATUS_KEYS, 'probe_runtime_observer_invalid')
-  if (value.name !== 'thought_core_watcher' || !['running', 'ready'].includes(value.state) ||
+  if (value.name !== 'thought_core_watcher' || !['starting', 'running', 'ready'].includes(value.state) ||
       typeof value.label !== 'string' || Buffer.byteLength(value.label, 'utf8') > 256 ||
       typeof value.detail !== 'string' || Buffer.byteLength(value.detail, 'utf8') > 2048 ||
       !Number.isFinite(value.timestamp) || value.timestamp < 0) fail('probe_runtime_observer_invalid')
@@ -327,7 +327,7 @@ const createDefaultModuleStatusObserver = (privateRuntimeRoot) => {
       const inspected = await inspectModuleStatusPath(fixedRoot)
       if (inspected !== null) {
         const status = parseModuleStatus(await readBoundedFile(inspected.filePath, inspected.fileStat))
-        if (status.observedMillis >= requestedMillis) {
+        if (status.observedMillis >= requestedMillis && ['running', 'ready'].includes(status.state)) {
           return Object.freeze({
             ok: true,
             state: status.state,
