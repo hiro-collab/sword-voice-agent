@@ -800,11 +800,20 @@ class AgenticTurnRuntimeProviderTest(TestCase):
         )
         provider.respond_to_receipt(
             AgenticActionReceipt(
+                decision_ref="evt_receipt_token_cap",
+                receipt_ref="evt_receipt_token_cap:success",
                 action_id="light_on",
-                phase="completed",
+                capability_id="light_on",
+                semantic_purpose="部屋の明かりをつける",
+                target_ref="light",
+                expected_state="on",
+                phase="success",
                 status="success",
                 confirmed=True,
                 executed=True,
+                execution_certainty="executed",
+                review_status="succeeded",
+                review_checkpoint_class="matched",
             )
         )
         self.assertEqual(
@@ -913,11 +922,21 @@ class AgenticTurnRuntimeProviderTest(TestCase):
             for call in structured_completion.call_args_list[1:]
         ]
         expected_receipt_fields = {
+            "context_version",
+            "decision_ref",
+            "receipt_ref",
             "action_id",
+            "capability_id",
+            "semantic_purpose",
+            "target_ref",
+            "expected_state",
             "phase",
             "status",
             "confirmed",
             "executed",
+            "execution_certainty",
+            "review_status",
+            "review_checkpoint_class",
         }
         self.assertEqual(len(receipt_payloads), 2)
         for receipt_payload in receipt_payloads:
@@ -1334,7 +1353,7 @@ class AgenticTurnRuntimeProviderTest(TestCase):
                 self.assertIsNone(observed)
                 self.assertEqual(completion.calls, [])
 
-    def test_receipt_prompt_contains_only_receipt_facts(self) -> None:
+    def test_receipt_prompt_contains_only_bounded_action_response_context(self) -> None:
         private_wish = "PRIVATE_WISH_SENTINEL"
         private_ref = "PRIVATE_REF_SENTINEL"
         preexecution_response = "PREEXECUTION_RESPONSE_SENTINEL"
@@ -1359,11 +1378,20 @@ class AgenticTurnRuntimeProviderTest(TestCase):
 
         observed = provider.respond_to_receipt(
             AgenticActionReceipt(
+                decision_ref="evt_receipt_context",
+                receipt_ref="evt_receipt_context:success",
                 action_id="light_on",
+                capability_id="light_on",
+                semantic_purpose="部屋の明かりをつける",
+                target_ref="light",
+                expected_state="on",
                 phase="success",
-                status="succeeded",
+                status="success",
                 confirmed=True,
                 executed=True,
+                execution_certainty="executed",
+                review_status="succeeded",
+                review_checkpoint_class="matched",
             )
         )
 
@@ -1372,11 +1400,21 @@ class AgenticTurnRuntimeProviderTest(TestCase):
         self.assertEqual(
             receipt_call["input_payload"],
             {
+                "context_version": "agentic_action_response_context.v1",
+                "decision_ref": "evt_receipt_context",
+                "receipt_ref": "evt_receipt_context:success",
                 "action_id": "light_on",
+                "capability_id": "light_on",
+                "semantic_purpose": "部屋の明かりをつける",
+                "target_ref": "light",
+                "expected_state": "on",
                 "phase": "success",
-                "status": "succeeded",
+                "status": "success",
                 "confirmed": True,
                 "executed": True,
+                "execution_certainty": "executed",
+                "review_status": "succeeded",
+                "review_checkpoint_class": "matched",
             },
         )
         serialized = json.dumps(receipt_call, ensure_ascii=False)
@@ -1393,6 +1431,49 @@ class AgenticTurnRuntimeProviderTest(TestCase):
             decision_format["json_schema"]["strict"]  # type: ignore[index]
         )
         self.assertIsNone(receipt_call["response_format"])
+
+    def test_receipt_context_rejects_private_or_mismatched_fields_before_provider(self) -> None:
+        completion = _CapturingCompletion({"speech": "unused", "display": "unused"})
+        provider = OpenAICompatibleAgenticTurnProvider(completion)
+        cases = (
+            AgenticActionReceipt(
+                decision_ref="evt_private_context",
+                receipt_ref="evt_private_context:success",
+                action_id="door_close",
+                capability_id="door_close",
+                semantic_purpose="C:\\PRIVATE_PATH_SENTINEL",
+                target_ref="door",
+                expected_state="closed",
+                phase="success",
+                status="success",
+                confirmed=True,
+                executed=True,
+                execution_certainty="executed",
+                review_status="succeeded",
+                review_checkpoint_class="matched",
+            ),
+            AgenticActionReceipt(
+                decision_ref="evt_mismatch_context",
+                receipt_ref="evt_other:success",
+                action_id="door_close",
+                capability_id="door_close",
+                semantic_purpose="中扉を閉める",
+                target_ref="door",
+                expected_state="closed",
+                phase="success",
+                status="success",
+                confirmed=True,
+                executed=False,
+                execution_certainty="executed",
+                review_status="succeeded",
+                review_checkpoint_class="matched",
+            ),
+        )
+
+        for receipt in cases:
+            with self.subTest(receipt=receipt.receipt_ref):
+                self.assertIsNone(provider.respond_to_receipt(receipt))
+        self.assertEqual(completion.calls, [])
 
     def test_provider_wire_fire_decision_normalizes_nullable_arguments_once(self) -> None:
         completion = _CapturingCompletion(

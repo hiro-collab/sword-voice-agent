@@ -126,13 +126,22 @@ class AgenticPredecisionContext:
 
 @dataclass(frozen=True)
 class AgenticActionReceipt:
-    """Bounded deterministic lifecycle facts available after a real phase."""
+    """Bounded immutable context for one post-decision lifecycle response."""
 
+    decision_ref: str
+    receipt_ref: str
     action_id: str
+    capability_id: str
+    semantic_purpose: str
+    target_ref: str
+    expected_state: str
     phase: str
     status: str
     confirmed: bool
     executed: bool
+    execution_certainty: str
+    review_status: str
+    review_checkpoint_class: str
 
 
 @dataclass(frozen=True)

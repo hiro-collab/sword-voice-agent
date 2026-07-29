@@ -118,12 +118,14 @@ class _ReceiptExceptionProvider:
         self.candidate = candidate
         self.exception = exception
         self.receipt_phases: list[str] = []
+        self.receipts: list[object] = []
 
     def decide(self, request: AgenticTurnProviderRequest) -> object:
         del request
         return self.candidate
 
     def respond_to_receipt(self, receipt):  # type: ignore[no-untyped-def]
+        self.receipts.append(receipt)
         self.receipt_phases.append(receipt.phase)
         if receipt.phase == "confirmation":
             return {
@@ -1282,6 +1284,60 @@ class AgenticTurnIntegrationTest(TestCase):
 
         self.assertEqual(provider.receipt_phases, ["confirmation", "success"])
         self.assertEqual(len(tools.execute_calls), 1)
+
+    def test_confirmed_success_freezes_context_and_never_uses_canned_success_when_provider_fails(
+        self,
+    ) -> None:
+        private_sentinel = "PRIVATE_PREEXECUTION_RESPONSE_SENTINEL"
+        provider = _ReceiptExceptionProvider(
+            self._capability(
+                "door_close",
+                speech=private_sentinel,
+                display=private_sentinel,
+            ),
+            RuntimeError("PRIVATE_PROVIDER_ERROR_SENTINEL"),
+        )
+        tools = _DirectOnlyTools()
+        loop = ThoughtLoop(tools=tools, agentic_turn_provider=provider)
+
+        preview_events = loop.run_dicts(
+            self._turn("通路を安全にしたい。", turn_id="context_preview")
+        )
+        self.assertEqual(preview_events[-1]["data"]["status"], "confirmation_required")
+        execute_events = loop.run_dicts(
+            self._turn("お願い", turn_id="context_confirm")
+        )
+
+        self.assertEqual(len(tools.execute_calls), 1)
+        self.assertEqual(provider.receipt_phases, ["confirmation", "success"])
+        self.assertEqual(
+            [event for event in execute_events if event["type"] == "assistant.message"],
+            [],
+        )
+        self.assertEqual(execute_events[-1]["data"]["status"], "success")
+        terminal_receipt = provider.receipts[-1]
+        self.assertEqual(terminal_receipt.capability_id, "door_close")
+        self.assertEqual(terminal_receipt.target_ref, "door")
+        self.assertEqual(terminal_receipt.expected_state, "closed")
+        self.assertEqual(terminal_receipt.execution_certainty, "executed")
+        self.assertEqual(terminal_receipt.review_status, "succeeded")
+        self.assertEqual(terminal_receipt.review_checkpoint_class, "matched")
+        self.assertTrue(terminal_receipt.decision_ref.startswith("evt_"))
+        self.assertEqual(
+            terminal_receipt.receipt_ref,
+            f"{terminal_receipt.decision_ref}:success",
+        )
+        serialized = json.dumps(terminal_receipt.__dict__, ensure_ascii=False)
+        self.assertNotIn(private_sentinel, serialized)
+        self.assertNotIn("PRIVATE_PROVIDER_ERROR_SENTINEL", json.dumps(execute_events))
+        unavailable = [
+            event
+            for event in execute_events
+            if event["type"] == "agentic.receipt_response"
+            and event["data"]["status"] == "unavailable"
+        ]
+        self.assertEqual(len(unavailable), 1)
+        self.assertEqual(unavailable[0]["data"]["receipt_ref"], terminal_receipt.receipt_ref)
 
     def test_non_deadline_receipt_error_remains_bounded_and_unavailable(self) -> None:
         private_sentinel = "PRIVATE_RECEIPT_ERROR_SENTINEL"

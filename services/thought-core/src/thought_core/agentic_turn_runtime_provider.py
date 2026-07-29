@@ -30,6 +30,7 @@ from .capability_catalog import (
     MAX_CAPABILITY_DESCRIPTION_CHARS,
     MAX_CAPABILITY_ID_CHARS,
 )
+from .ordinary_route_contract import review_checkpoint_payload
 from .responders import (
     OpenAICompatibleStructuredCompletion,
     StructuredCompletion,
@@ -141,6 +142,26 @@ _BLOCKED_PREDECISION_KEYS = frozenset(
         "uri",
     }
 )
+_RECEIPT_PHASES = frozenset(
+    {"confirmation", "failure", "noop", "preview", "submitted", "success"}
+)
+_RECEIPT_STATUSES = frozenset(
+    {
+        "confirmation_required",
+        "needs_feedback",
+        "noop",
+        "preview_failed",
+        "previewed",
+        "submitted_external_observation_required",
+        "success",
+    }
+)
+_RECEIPT_EXECUTION_CERTAINTIES = frozenset(
+    {"executed", "not_executed", "unknown"}
+)
+_RECEIPT_REVIEW_STATUSES = frozenset(
+    {"execute_failed", "mismatch", "not_reviewed", "pending", "succeeded"}
+)
 _DECISION_SYSTEM_PROMPT = (
     "Return exactly one JSON object for AgenticTurnDecision V1. Use schemaVersion 1; "
     "kind must be conversation, clarification, hold, or capability; response must "
@@ -158,9 +179,11 @@ _DECISION_SYSTEM_PROMPT = (
 )
 _RECEIPT_SYSTEM_PROMPT = (
     "Return exactly one JSON object with non-empty speech and display strings. Render "
-    "only the supplied completed action-receipt facts. Do not claim any action, state, "
-    "confirmation, execution, or observation beyond those facts. Do not return markdown "
-    "or explanatory text."
+    "only the supplied bounded action-response context and lifecycle facts. Use the "
+    "approved semantic purpose, capability, target, expected state, execution certainty, "
+    "and review checkpoint to explain what was requested and what was actually verified. "
+    "Do not claim any action, state, confirmation, execution, or observation beyond those "
+    "facts. Do not return markdown or explanatory text."
 )
 
 
@@ -502,25 +525,71 @@ def _bounded_capability_view(
 
 def _receipt_input_payload(receipt: AgenticActionReceipt) -> dict[str, object]:
     if (
-        type(receipt.action_id) is not str
+        type(receipt.decision_ref) is not str
+        or not receipt.decision_ref.startswith("evt_")
+        or len(receipt.decision_ref) > MAX_CONTEXT_REF_STRING_CHARS
+        or type(receipt.receipt_ref) is not str
+        or receipt.receipt_ref != f"{receipt.decision_ref}:{receipt.phase}"
+        or len(receipt.receipt_ref) > MAX_CONTEXT_REF_STRING_CHARS
+        or type(receipt.action_id) is not str
         or not receipt.action_id
         or len(receipt.action_id) > MAX_CAPABILITY_ID_CHARS
+        or type(receipt.capability_id) is not str
+        or not receipt.capability_id
+        or len(receipt.capability_id) > MAX_CAPABILITY_ID_CHARS
+        or type(receipt.semantic_purpose) is not str
+        or type(receipt.target_ref) is not str
+        or type(receipt.expected_state) is not str
         or type(receipt.phase) is not str
-        or not receipt.phase
-        or len(receipt.phase) > MAX_CONTEXT_REF_KEY_CHARS
+        or receipt.phase not in _RECEIPT_PHASES
         or type(receipt.status) is not str
-        or not receipt.status
-        or len(receipt.status) > MAX_CONTEXT_REF_KEY_CHARS
+        or receipt.status not in _RECEIPT_STATUSES
         or type(receipt.confirmed) is not bool
         or type(receipt.executed) is not bool
+        or receipt.execution_certainty not in _RECEIPT_EXECUTION_CERTAINTIES
+        or receipt.review_status not in _RECEIPT_REVIEW_STATUSES
+        or review_checkpoint_payload(receipt.review_checkpoint_class)[
+            "review_checkpoint_class"
+        ]
+        != receipt.review_checkpoint_class
+        or (receipt.executed and receipt.execution_certainty != "executed")
+        or (
+            not receipt.executed
+            and receipt.execution_certainty not in {"not_executed", "unknown"}
+        )
     ):
         raise ValueError("agentic_receipt_invalid")
+    try:
+        semantic_purpose = _bounded_scalar(
+            receipt.semantic_purpose,
+            max_string=MAX_CONTEXT_REF_STRING_CHARS,
+        )
+        target_ref = _bounded_scalar(
+            receipt.target_ref,
+            max_string=MAX_CONTEXT_REF_STRING_CHARS,
+        )
+        expected_state = _bounded_scalar(
+            receipt.expected_state,
+            max_string=MAX_CONTEXT_REF_STRING_CHARS,
+        )
+    except ValueError:
+        raise ValueError("agentic_receipt_invalid") from None
     return {
+        "context_version": "agentic_action_response_context.v1",
+        "decision_ref": receipt.decision_ref,
+        "receipt_ref": receipt.receipt_ref,
         "action_id": receipt.action_id,
+        "capability_id": receipt.capability_id,
+        "semantic_purpose": semantic_purpose,
+        "target_ref": target_ref,
+        "expected_state": expected_state,
         "phase": receipt.phase,
         "status": receipt.status,
         "confirmed": receipt.confirmed,
         "executed": receipt.executed,
+        "execution_certainty": receipt.execution_certainty,
+        "review_status": receipt.review_status,
+        "review_checkpoint_class": receipt.review_checkpoint_class,
     }
 
 

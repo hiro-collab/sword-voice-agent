@@ -1353,7 +1353,7 @@ class ThoughtLoop:
                         action,
                         after_observation,
                     )
-                    response = self._canonical_action_result_response(
+                    deterministic_response = self._canonical_action_result_response(
                         execute_result,
                         messages,
                         post_action_feedback,
@@ -1366,18 +1366,27 @@ class ThoughtLoop:
                         status="success",
                         confirmed=False,
                         executed=True,
+                        execution_certainty="executed",
+                        review_status=str(review.get("status") or "pending"),
+                        review_checkpoint_class=str(
+                            review.get("review_checkpoint_class") or "not_checked"
+                        ),
                     )
-                    if receipt_response is not None:
-                        response = receipt_response
-                    self._emit_message(
-                        events,
-                        factory,
-                        speech=response["speech"],
-                        display=response["display"],
-                        emotion="satisfied",
-                        motion="small_nod",
-                        priority="normal",
+                    response = (
+                        receipt_response
+                        if action.get("semantic_authority") == "agentic_provider"
+                        else deterministic_response
                     )
+                    if response is not None:
+                        self._emit_message(
+                            events,
+                            factory,
+                            speech=response["speech"],
+                            display=response["display"],
+                            emotion="satisfied",
+                            motion="small_nod",
+                            priority="normal",
+                        )
                     pending = post_action_feedback["pending"]
                     if pending:
                         self._remember_state_query_pending(turn_input, pending)
@@ -1475,6 +1484,17 @@ class ThoughtLoop:
                     status="needs_feedback",
                     confirmed=False,
                     executed=bool(execute_result.get("executed")),
+                    execution_certainty=(
+                        "executed"
+                        if execute_result.get("executed") is True
+                        else "not_executed"
+                        if execute_result.get("executed") is False
+                        else "unknown"
+                    ),
+                    review_status=str(review.get("status") or "pending"),
+                    review_checkpoint_class=str(
+                        review.get("review_checkpoint_class") or "not_checked"
+                    ),
                 )
                 if receipt_response is not None:
                     self._emit_message(
@@ -2059,17 +2079,16 @@ class ThoughtLoop:
             return True, None
 
         decision = result.decision
-        events.append(
-            factory.emit(
-                "agentic.decision",
-                {
-                    "status": "accepted",
-                    "kind": decision.kind,
-                    "capability_present": decision.capability is not None,
-                    "semantic_authority": "agentic_provider",
-                },
-            )
+        decision_event = factory.emit(
+            "agentic.decision",
+            {
+                "status": "accepted",
+                "kind": decision.kind,
+                "capability_present": decision.capability is not None,
+                "semantic_authority": "agentic_provider",
+            },
         )
+        events.append(decision_event)
         if decision.kind != "capability" or decision.capability is None:
             self._emit_message(
                 events,
@@ -2107,6 +2126,7 @@ class ThoughtLoop:
         # Preserve only bounded, text-free provenance on action-bearing paths.
         # Provider wording is supplied solely through the receipt-response boundary.
         action["semantic_authority"] = "agentic_provider"
+        action["agentic_decision_ref"] = decision_event.event_id
         return True, _AgenticCapabilityRoute(
             route_kind=str(action.get("route_kind") or "home"),
             action=action,
@@ -2208,6 +2228,9 @@ class ThoughtLoop:
         status: str,
         confirmed: bool,
         executed: bool,
+        execution_certainty: str | None = None,
+        review_status: str = "not_reviewed",
+        review_checkpoint_class: str = "not_checked",
     ) -> dict[str, str] | None:
         """Return AI wording only after deterministic lifecycle facts exist."""
 
@@ -2215,12 +2238,69 @@ class ThoughtLoop:
         responder = getattr(provider, "respond_to_receipt", None)
         if action.get("semantic_authority") != "agentic_provider" or not callable(responder):
             return None
+        decision_ref = self._agentic_safe_scalar(
+            action.get("agentic_decision_ref"),
+            max_chars=180,
+        )
+        action_id = self._agentic_safe_scalar(action.get("action_id"), max_chars=96)
+        capability_id = self._agentic_safe_scalar(
+            action.get("agentic_capability_id"),
+            max_chars=96,
+        )
+        semantic_purpose = self._agentic_safe_scalar(
+            action.get("pre_action_phrase")
+            or action.get("target_name")
+            or action.get("action_id"),
+            max_chars=180,
+        )
+        target_ref = self._agentic_safe_scalar(
+            action.get("target") or action.get("effect_id") or action.get("action_id"),
+            max_chars=180,
+        )
+        expected_state = self._agentic_safe_scalar(
+            action.get("expected_state"),
+            max_chars=180,
+        )
+        if (
+            not isinstance(decision_ref, str)
+            or not decision_ref.startswith("evt_")
+            or not isinstance(action_id, str)
+            or not isinstance(capability_id, str)
+            or not isinstance(semantic_purpose, str)
+            or not isinstance(target_ref, str)
+            or not isinstance(expected_state, str)
+        ):
+            events.append(
+                factory.emit(
+                    "agentic.receipt_response",
+                    {
+                        "status": "unavailable",
+                        "phase": phase,
+                        "receipt_status": status,
+                        "result_class": "context_invalid",
+                    },
+                )
+            )
+            return None
+        receipt_ref = f"{decision_ref}:{phase}"
+        certainty = execution_certainty or (
+            "executed" if executed else "not_executed"
+        )
         receipt = AgenticActionReceipt(
-            action_id=str(action.get("action_id") or ""),
+            decision_ref=decision_ref,
+            receipt_ref=receipt_ref,
+            action_id=action_id,
+            capability_id=capability_id,
+            semantic_purpose=semantic_purpose,
+            target_ref=target_ref,
+            expected_state=expected_state,
             phase=phase,
             status=status,
             confirmed=confirmed,
             executed=executed,
+            execution_certainty=certainty,
+            review_status=review_status,
+            review_checkpoint_class=review_checkpoint_class,
         )
         try:
             response = validate_agentic_receipt_response(responder(receipt))
@@ -2236,6 +2316,10 @@ class ThoughtLoop:
                         "status": "unavailable",
                         "phase": phase,
                         "receipt_status": status,
+                        "decision_ref": decision_ref,
+                        "receipt_ref": receipt_ref,
+                        "action_id": action_id,
+                        "review_checkpoint_class": review_checkpoint_class,
                     },
                 )
             )
@@ -2248,6 +2332,10 @@ class ThoughtLoop:
                     "phase": phase,
                     "receipt_status": status,
                     "provenance": "agentic_provider",
+                    "decision_ref": decision_ref,
+                    "receipt_ref": receipt_ref,
+                    "action_id": action_id,
+                    "review_checkpoint_class": review_checkpoint_class,
                 },
             )
         )
@@ -3497,7 +3585,7 @@ class ThoughtLoop:
                 action,
                 after_observation,
             )
-            response = self._canonical_action_result_response(
+            deterministic_response = self._canonical_action_result_response(
                 execute_result,
                 messages,
                 post_action_feedback,
@@ -3510,18 +3598,27 @@ class ThoughtLoop:
                 status="success",
                 confirmed=True,
                 executed=True,
+                execution_certainty="executed",
+                review_status=str(review.get("status") or "pending"),
+                review_checkpoint_class=str(
+                    review.get("review_checkpoint_class") or "not_checked"
+                ),
             )
-            if receipt_response is not None:
-                response = receipt_response
-            self._emit_message(
-                events,
-                factory,
-                speech=response["speech"],
-                display=response["display"],
-                emotion="satisfied",
-                motion="small_nod",
-                priority="normal",
+            response = (
+                receipt_response
+                if action.get("semantic_authority") == "agentic_provider"
+                else deterministic_response
             )
+            if response is not None:
+                self._emit_message(
+                    events,
+                    factory,
+                    speech=response["speech"],
+                    display=response["display"],
+                    emotion="satisfied",
+                    motion="small_nod",
+                    priority="normal",
+                )
             pending_feedback = post_action_feedback["pending"]
             if pending_feedback:
                 self._remember_state_query_pending(turn_input, pending_feedback)
@@ -3597,6 +3694,17 @@ class ThoughtLoop:
             status="needs_feedback",
             confirmed=True,
             executed=bool(execute_result.get("executed")),
+            execution_certainty=(
+                "executed"
+                if execute_result.get("executed") is True
+                else "not_executed"
+                if execute_result.get("executed") is False
+                else "unknown"
+            ),
+            review_status=str(review.get("status") or "pending"),
+            review_checkpoint_class=str(
+                review.get("review_checkpoint_class") or "not_checked"
+            ),
         )
         events.append(
             factory.emit(
