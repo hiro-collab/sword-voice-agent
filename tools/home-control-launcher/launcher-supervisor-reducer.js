@@ -106,9 +106,11 @@ const CRASH_RESPONSIBLE_IDS = new Set([
   'semantic_probe_executor',
   'semantic_probe_result'
 ])
-const crashResponsibleId = (event) => CRASH_RESPONSIBLE_IDS.has(event?.responsible_id)
-  ? event.responsible_id
-  : 'launcher_supervisor'
+const crashResponsibleId = (event, operation) =>
+  CRASH_RESPONSIBLE_IDS.has(event?.responsible_id) ||
+  operation.services.some((service) => service.service_id === event?.responsible_id)
+    ? event.responsible_id
+    : 'launcher_supervisor'
 const invalid = (operation) => next(operation, {
   reason: firstFailure(operation, REASON.INVALID_EVENT),
   primary_result: primaryResult(operation, REASON.INVALID_EVENT, 'launcher_supervisor', 'not_attempted')
@@ -442,7 +444,7 @@ const reduce = (operation, event, authority) => {
     case 'supervisor_crashed': return inPhase(operation, [PHASE.PLANNED, PHASE.PREFLIGHT, PHASE.PREPARED, PHASE.STARTING, PHASE.WAITING_READY, PHASE.READY, PHASE.ROLLING_BACK, PHASE.STOPPING])
       ? next(clearInterruptedPending(operation), {
         phase: PHASE.RECOVERING, reason: firstFailure(operation, REASON.SUPERVISOR_CRASH), cleanup: CLEANUP.UNKNOWN,
-        primary_result: primaryResult(operation, REASON.SUPERVISOR_CRASH, crashResponsibleId(event)),
+        primary_result: primaryResult(operation, REASON.SUPERVISOR_CRASH, crashResponsibleId(event, operation)),
         cleanup_result: cleanupResult(CLEANUP.UNKNOWN, 'launcher_supervisor'), rollback_required: false, recovery_required: true
       })
       : invalid(operation)

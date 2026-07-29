@@ -20,10 +20,10 @@ const { LauncherProbeExecutorError } = require('./launcher-probe-executor')
 const { LauncherProbeContractError } = require('./launcher-probe-result-binding')
 const { LauncherProbeRuntimeContextError } = require('./launcher-probe-runtime-context')
 
-class LauncherSemanticProbePersistenceError extends Error {
+class LauncherOperationStorePersistenceError extends Error {
   constructor () {
-    super('semantic_probe_persistence_failed')
-    this.name = 'LauncherSemanticProbePersistenceError'
+    super('operation_store_persistence_failed')
+    this.name = 'LauncherOperationStorePersistenceError'
   }
 }
 
@@ -42,6 +42,13 @@ class LauncherSemanticProbeStageError extends Error {
       : 'launcher_supervisor'
   }
 }
+
+const serviceLoopFailureResponsibleId = (error, serviceId) =>
+  error instanceof LauncherOperationStorePersistenceError
+    ? 'operation_store'
+    : error instanceof LauncherSemanticProbeStageError
+      ? error.responsibleId
+      : serviceId
 
 const ACTIVE_PHASES = new Set([
   reducer.PHASE.PLANNED,
@@ -282,13 +289,17 @@ class LauncherSupervisorRuntime {
     return this.current
   }
 
-  applySemanticProbeEvent (eventType, serviceId, fields = {}) {
+  applyPersistedEvent (eventType, serviceId, fields = {}) {
     try {
       return this.apply(eventType, serviceId, fields)
     } catch (error) {
-      if (error instanceof LauncherContractError) throw new LauncherSemanticProbePersistenceError()
+      if (error instanceof LauncherContractError) throw new LauncherOperationStorePersistenceError()
       throw error
     }
+  }
+
+  applySemanticProbeEvent (eventType, serviceId, fields = {}) {
+    return this.applyPersistedEvent(eventType, serviceId, fields)
   }
 
   bindSupervisorLease (supervisorLease) {
@@ -335,7 +346,7 @@ class LauncherSupervisorRuntime {
     if (!this.client) throw new LauncherJobWorkerError('worker_transport_closed')
     const requestEvent = action === 'start' ? 'spawn_requested' : action === 'stop' ? 'stop_dispatch_requested' : 'probe_requested'
     const dispatchId = this.dispatchIdFactory()
-    this.apply(requestEvent, serviceId, { dispatch_id: dispatchId, action })
+    this.applyPersistedEvent(requestEvent, serviceId, { dispatch_id: dispatchId, action })
     const request = this.requestFor(serviceId, action, dispatchId)
     const result = await this.client.execute(request)
     return reducer.workerResultToEvent(result, this.current, request, this.authority)
@@ -453,7 +464,7 @@ class LauncherSupervisorRuntime {
         probe_result: probeResult
       })
     } catch (error) {
-      if (error instanceof LauncherSemanticProbePersistenceError) throw error
+      if (error instanceof LauncherOperationStorePersistenceError) throw error
       throw new LauncherSemanticProbeStageError('semantic_probe_result')
     }
     const service = this.current.services.find((candidate) => candidate.service_id === serviceId)
@@ -679,7 +690,7 @@ class LauncherSupervisorRuntime {
         if (spec.ownership === 'external') {
           try {
             const workerEvent = await this.exchange(serviceId, 'probe')
-            this.apply(workerEvent.event_type, serviceId, { dispatch_id: workerEvent.dispatch_id })
+            this.applyPersistedEvent(workerEvent.event_type, serviceId, { dispatch_id: workerEvent.dispatch_id })
             if (workerEvent.event_type === 'probe_transport_ready') {
               await this.completeSemanticProbe(serviceId, workerEvent.dispatch_id)
             }
@@ -688,11 +699,7 @@ class LauncherSupervisorRuntime {
               const dispatchId = this.pendingDispatchId(serviceId, 'probe')
               this.apply('readiness_timeout', serviceId, dispatchId ? { dispatch_id: dispatchId } : {})
             } else this.apply('supervisor_crashed', null, {
-              responsible_id: error instanceof LauncherSemanticProbePersistenceError
-                ? 'operation_store'
-                : error instanceof LauncherSemanticProbeStageError
-                  ? error.responsibleId
-                : 'launcher_supervisor'
+              responsible_id: serviceLoopFailureResponsibleId(error, serviceId)
             })
           }
         } else if (spec.requirement === 'optional' && !included.has(serviceId)) {
@@ -702,10 +709,10 @@ class LauncherSupervisorRuntime {
         } else {
           try {
             const startEvent = await this.exchange(serviceId, 'start')
-            this.apply(startEvent.event_type, serviceId, { dispatch_id: startEvent.dispatch_id })
+            this.applyPersistedEvent(startEvent.event_type, serviceId, { dispatch_id: startEvent.dispatch_id })
             if (this.current.phase === reducer.PHASE.ROLLING_BACK) break
             const probeEvent = await this.exchange(serviceId, 'probe')
-            this.apply(probeEvent.event_type, serviceId, { dispatch_id: probeEvent.dispatch_id })
+            this.applyPersistedEvent(probeEvent.event_type, serviceId, { dispatch_id: probeEvent.dispatch_id })
             if (probeEvent.event_type === 'probe_transport_ready') {
               await this.completeSemanticProbe(serviceId, probeEvent.dispatch_id)
             }
@@ -714,11 +721,7 @@ class LauncherSupervisorRuntime {
               const dispatchId = this.pendingDispatchId(serviceId, 'probe')
               this.apply('readiness_timeout', serviceId, dispatchId ? { dispatch_id: dispatchId } : {})
             } else this.apply('supervisor_crashed', null, {
-              responsible_id: error instanceof LauncherSemanticProbePersistenceError
-                ? 'operation_store'
-                : error instanceof LauncherSemanticProbeStageError
-                  ? error.responsibleId
-                : 'launcher_supervisor'
+              responsible_id: serviceLoopFailureResponsibleId(error, serviceId)
             })
           }
         }

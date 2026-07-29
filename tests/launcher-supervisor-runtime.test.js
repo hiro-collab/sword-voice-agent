@@ -530,6 +530,37 @@ test('semantic probe persistence failure retains operation_store as the safe fir
   }
 })
 
+test('service-loop persistence failure retains operation_store without raw detail', async () => {
+  let failedOnce = false
+  const privateSentinel = 'PRIVATE_SERVICE_STORE_FAILURE_SENTINEL'
+  const harness = makeHarness({
+    storeOverrides: {
+      reduceAndPersist (current, event, ...args) {
+        harness.events.push(`store:${event.event_type}${event.service_id ? `:${event.service_id}` : ''}`)
+        if (!failedOnce && event.event_type === 'spawn_succeeded' && event.service_id === 'aituber_kit') {
+          failedOnce = true
+          throw new LauncherContractError(privateSentinel)
+        }
+        return realStore.reduceAndPersist(current, event, ...args)
+      }
+    }
+  })
+  try {
+    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(result.ok, false)
+    assert.equal(result.operation.reason, 'supervisor_crash')
+    assert.equal(result.operation.cleanup, 'clear')
+    assert.equal(harness.runtime.current.primary_result.responsible_id, 'operation_store')
+    assert.equal(JSON.stringify(result).includes(privateSentinel), false)
+    assert.equal(result.operation.services.some((service) => service.state === 'ready'), false)
+    assert.ok(harness.events.includes('store:spawn_succeeded:aituber_kit'))
+    assert.ok(harness.events.includes('store:supervisor_crashed'))
+    assert.equal(harness.runtime.supervisorLease, null)
+  } finally {
+    harness.cleanup()
+  }
+})
+
 test('typed semantic probe failure with store failure retains operation_store without private detail', async () => {
   let failedOnce = false
   const harness = makeHarness({
@@ -658,12 +689,41 @@ test('worker crash enters recovery and a fresh cleanup worker leaves a bounded f
     assert.equal(result.result_class, 'failed')
     assert.equal(result.operation.reason, 'supervisor_crash')
     assert.equal(result.operation.cleanup, 'clear')
+    assert.equal(harness.runtime.current.primary_result.responsible_id, 'touchdesigner_control_gui')
     assert.equal(harness.workers.length, 2)
     assert.ok(harness.events.includes('store:recovery_started'))
     assert.ok(harness.events.includes('store:recovery_completed'))
     assert.equal(harness.runtime.supervisorLease, null)
     assert.ok(harness.events.includes('store:lease:release'))
     assert.equal(realStore.readOperation(authority, harness.root).phase, 'failed')
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('worker result contract failure retains the responsible service without raw detail', async () => {
+  const harness = makeHarness({
+    workerBuilders: [
+      ({ events }) => new FakeWorker({
+        events,
+        responses: {
+          'aituber_kit:start': { worker_nonce: 'lw_privatewrongworker0001' }
+        }
+      }),
+      ({ events }) => new FakeWorker({ events })
+    ]
+  })
+  try {
+    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(result.ok, false)
+    assert.equal(result.result_class, 'failed')
+    assert.equal(result.operation.reason, 'supervisor_crash')
+    assert.equal(result.operation.cleanup, 'clear')
+    assert.equal(harness.runtime.current.primary_result.responsible_id, 'aituber_kit')
+    assert.equal(JSON.stringify(result).includes('lw_privatewrongworker0001'), false)
+    assert.equal(harness.events.includes('store:semantic_probe_completed:aituber_kit'), false)
+    assert.equal(harness.events.includes('store:probe_failed:aituber_kit'), false)
+    assert.equal(harness.runtime.supervisorLease, null)
   } finally {
     harness.cleanup()
   }
