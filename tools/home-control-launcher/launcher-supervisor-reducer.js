@@ -100,8 +100,14 @@ const primaryResult = (operation, proposed, responsibleId, actionCertainty = 'ma
     ? { class: proposed, responsible_id: responsibleId, action_certainty: actionCertainty }
     : operation.primary_result
 const cleanupResult = (klass, responsibleId = null) => ({ class: klass, responsible_id: responsibleId })
-const crashResponsibleId = (event) => event?.responsible_id === 'operation_store'
-  ? 'operation_store'
+const CRASH_RESPONSIBLE_IDS = new Set([
+  'operation_store',
+  'semantic_probe_expectation',
+  'semantic_probe_executor',
+  'semantic_probe_result'
+])
+const crashResponsibleId = (event) => CRASH_RESPONSIBLE_IDS.has(event?.responsible_id)
+  ? event.responsible_id
   : 'launcher_supervisor'
 const invalid = (operation) => next(operation, {
   reason: firstFailure(operation, REASON.INVALID_EVENT),

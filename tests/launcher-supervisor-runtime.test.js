@@ -11,6 +11,7 @@ const {
   loadAuthority
 } = require('../tools/home-control-launcher/launcher-supervisor-contract')
 const realStore = require('../tools/home-control-launcher/launcher-operation-store')
+const reducer = require('../tools/home-control-launcher/launcher-supervisor-reducer')
 const { LauncherJobWorkerError } = require('../tools/home-control-launcher/launcher-job-worker-client')
 const {
   compilePrivateServicePlan
@@ -473,6 +474,34 @@ test('bounded semantic probe executor failure rolls back without misclassifying 
   }
 })
 
+test('missing semantic probe executor after transport readiness retains the executor substage', async () => {
+  let harness
+  harness = makeHarness({
+    workerBuilders: [({ events }) => new FakeWorker({
+      events,
+      onExecute (request) {
+        if (request.service_id === 'aituber_kit' && request.action === 'probe') {
+          harness.runtime.probeExecutor = null
+        }
+      }
+    })]
+  })
+  try {
+    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(result.ok, false)
+    assert.equal(result.result_class, 'failed')
+    assert.equal(result.operation.reason, 'supervisor_crash')
+    assert.equal(result.operation.cleanup, 'clear')
+    assert.equal(harness.runtime.current.primary_result.responsible_id, 'semantic_probe_executor')
+    assert.equal(result.operation.services.some((service) => service.state === 'ready'), false)
+    assert.ok(harness.events.includes('store:probe_transport_ready:aituber_kit'))
+    assert.ok(harness.events.includes('store:supervisor_crashed'))
+    assert.equal(harness.runtime.supervisorLease, null)
+  } finally {
+    harness.cleanup()
+  }
+})
+
 test('semantic probe persistence failure retains operation_store as the safe first boundary', async () => {
   let failedOnce = false
   const harness = makeHarness({
@@ -499,6 +528,99 @@ test('semantic probe persistence failure retains operation_store as the safe fir
   } finally {
     harness.cleanup()
   }
+})
+
+test('typed semantic probe failure with store failure retains operation_store without private detail', async () => {
+  let failedOnce = false
+  const harness = makeHarness({
+    probeExecutor: {
+      configSha256: '0'.repeat(64),
+      async execute () {
+        throw new LauncherProbeExecutorError('PRIVATE_PROBE_FAILURE_SENTINEL')
+      }
+    },
+    storeOverrides: {
+      reduceAndPersist (current, event, ...args) {
+        harness.events.push(`store:${event.event_type}${event.service_id ? `:${event.service_id}` : ''}`)
+        if (!failedOnce && event.event_type === 'probe_failed') {
+          failedOnce = true
+          throw new LauncherContractError('PRIVATE_STORE_FAILURE_SENTINEL')
+        }
+        return realStore.reduceAndPersist(current, event, ...args)
+      }
+    }
+  })
+  try {
+    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: {} })
+    assert.equal(result.ok, false)
+    assert.equal(result.operation.reason, 'supervisor_crash')
+    assert.equal(harness.runtime.current.primary_result.responsible_id, 'operation_store')
+    assert.equal(harness.runtime.current.services.find((service) => service.service_id === 'aituber_kit').last_probe_result, null)
+    assert.equal(result.operation.services.some((service) => service.state === 'ready'), false)
+    assert.ok(harness.events.includes('store:probe_failed:aituber_kit'))
+    assert.ok(harness.events.includes('store:supervisor_crashed'))
+    assert.ok(harness.events.indexOf('store:probe_failed:aituber_kit') < harness.events.indexOf('store:supervisor_crashed'))
+    assert.equal(JSON.stringify(result).includes('PRIVATE_PROBE_FAILURE_SENTINEL'), false)
+    assert.equal(JSON.stringify(result).includes('PRIVATE_STORE_FAILURE_SENTINEL'), false)
+    assert.equal(harness.runtime.supervisorLease, null)
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('untyped semantic probe failures retain only their fixed first substage', async () => {
+  for (const responsibleId of [
+    'semantic_probe_expectation',
+    'semantic_probe_executor',
+    'semantic_probe_result'
+  ]) {
+    const harness = makeHarness({
+      ...(responsibleId === 'semantic_probe_executor'
+        ? {
+            probeExecutor: {
+              configSha256: '0'.repeat(64),
+              async execute () { throw new Error('PRIVATE_EXECUTOR_SENTINEL') }
+            }
+          }
+        : {})
+    })
+    try {
+      if (responsibleId === 'semantic_probe_expectation') {
+        harness.runtime.probeExpectationFor = () => { throw new Error('PRIVATE_EXPECTATION_SENTINEL') }
+      }
+      if (responsibleId === 'semantic_probe_result') {
+        const apply = harness.runtime.apply.bind(harness.runtime)
+        harness.runtime.apply = (eventType, ...args) => {
+          if (eventType === 'semantic_probe_completed') throw new Error('PRIVATE_RESULT_SENTINEL')
+          return apply(eventType, ...args)
+        }
+      }
+      const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: {} })
+      assert.equal(result.ok, false, responsibleId)
+      assert.equal(result.operation.reason, 'supervisor_crash', responsibleId)
+      assert.equal(harness.runtime.current.primary_result.responsible_id, responsibleId)
+      assert.equal(harness.runtime.current.services.find((service) => service.service_id === 'aituber_kit').last_probe_result, null)
+      const serialized = JSON.stringify(result)
+      assert.equal(serialized.includes('PRIVATE_'), false)
+    } finally {
+      harness.cleanup()
+    }
+  }
+})
+
+test('unknown supervisor crash attribution remains launcher_supervisor', () => {
+  const operationId = 'lop_crashresponsible'
+  const operation = reducer.reduce(
+    reducer.reduce(
+      reducer.startOperation(null, operationId, authority).operation,
+      { event_type: 'preflight_started', operation_id: operationId },
+      authority
+    ),
+    { event_type: 'supervisor_crashed', operation_id: operationId, responsible_id: 'PRIVATE_UNKNOWN_SENTINEL' },
+    authority
+  )
+  assert.equal(operation.primary_result.responsible_id, 'launcher_supervisor')
+  assert.equal(JSON.stringify(operation).includes('PRIVATE_UNKNOWN_SENTINEL'), false)
 })
 
 test('optional camera plans may be absent without worker exchange', async () => {

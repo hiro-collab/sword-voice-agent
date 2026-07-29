@@ -27,6 +27,22 @@ class LauncherSemanticProbePersistenceError extends Error {
   }
 }
 
+const SEMANTIC_PROBE_STAGE_IDS = new Set([
+  'semantic_probe_expectation',
+  'semantic_probe_executor',
+  'semantic_probe_result'
+])
+
+class LauncherSemanticProbeStageError extends Error {
+  constructor (responsibleId) {
+    super('semantic_probe_stage_failed')
+    this.name = 'LauncherSemanticProbeStageError'
+    this.responsibleId = SEMANTIC_PROBE_STAGE_IDS.has(responsibleId)
+      ? responsibleId
+      : 'launcher_supervisor'
+  }
+}
+
 const ACTIVE_PHASES = new Set([
   reducer.PHASE.PLANNED,
   reducer.PHASE.PREFLIGHT,
@@ -266,6 +282,15 @@ class LauncherSupervisorRuntime {
     return this.current
   }
 
+  applySemanticProbeEvent (eventType, serviceId, fields = {}) {
+    try {
+      return this.apply(eventType, serviceId, fields)
+    } catch (error) {
+      if (error instanceof LauncherContractError) throw new LauncherSemanticProbePersistenceError()
+      throw error
+    }
+  }
+
   bindSupervisorLease (supervisorLease) {
     const binding = this.store.getSupervisorLeaseBinding(supervisorLease, this.authority)
     if (!this.current || binding.operation_id !== this.current.operation_id ||
@@ -404,30 +429,36 @@ class LauncherSupervisorRuntime {
   }
 
   async completeSemanticProbe (serviceId, dispatchId) {
-    if (!this.probeExecutor) throw new Error('supervisor_runtime_probe_executor_missing')
+    if (!this.probeExecutor) throw new LauncherSemanticProbeStageError('semantic_probe_executor')
+    let expectation
+    try {
+      expectation = this.probeExpectationFor(serviceId, dispatchId)
+    } catch {
+      throw new LauncherSemanticProbeStageError('semantic_probe_expectation')
+    }
     let probeResult
     try {
-      probeResult = await this.probeExecutor.execute(this.probeExpectationFor(serviceId, dispatchId))
+      probeResult = await this.probeExecutor.execute(expectation)
     } catch (error) {
       if (error instanceof LauncherProbeExecutorError || error instanceof LauncherProbeContractError ||
           error instanceof LauncherProbeRuntimeContextError) {
-        this.apply('probe_failed', serviceId, { dispatch_id: dispatchId })
+        this.applySemanticProbeEvent('probe_failed', serviceId, { dispatch_id: dispatchId })
         return
       }
-      throw error
+      throw new LauncherSemanticProbeStageError('semantic_probe_executor')
     }
     try {
-      this.apply('semantic_probe_completed', serviceId, {
+      this.applySemanticProbeEvent('semantic_probe_completed', serviceId, {
         dispatch_id: dispatchId,
         probe_result: probeResult
       })
     } catch (error) {
-      if (error instanceof LauncherContractError) throw new LauncherSemanticProbePersistenceError()
-      throw error
+      if (error instanceof LauncherSemanticProbePersistenceError) throw error
+      throw new LauncherSemanticProbeStageError('semantic_probe_result')
     }
     const service = this.current.services.find((candidate) => candidate.service_id === serviceId)
     if (service?.pending_dispatch_id === dispatchId || service?.pending_action === 'probe') {
-      throw new Error('supervisor_runtime_probe_result_invalid')
+      throw new LauncherSemanticProbeStageError('semantic_probe_result')
     }
   }
 
@@ -659,6 +690,8 @@ class LauncherSupervisorRuntime {
             } else this.apply('supervisor_crashed', null, {
               responsible_id: error instanceof LauncherSemanticProbePersistenceError
                 ? 'operation_store'
+                : error instanceof LauncherSemanticProbeStageError
+                  ? error.responsibleId
                 : 'launcher_supervisor'
             })
           }
@@ -683,6 +716,8 @@ class LauncherSupervisorRuntime {
             } else this.apply('supervisor_crashed', null, {
               responsible_id: error instanceof LauncherSemanticProbePersistenceError
                 ? 'operation_store'
+                : error instanceof LauncherSemanticProbeStageError
+                  ? error.responsibleId
                 : 'launcher_supervisor'
             })
           }
