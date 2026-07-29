@@ -416,6 +416,73 @@ test('semantic probe result is required, fully correlated, and retained before R
   assert.equal(JSON.stringify(privateExtra).includes('private-sentinel'), false)
 })
 
+test('persisted results allow only fresh pre-request Environment snapshots', () => {
+  const prepareOwnedProbe = (serviceId, operation = startLifecycle()) => {
+    let prepared = operation
+    prepared = reducer.reduce(prepared, event('spawn_requested', serviceId), authority)
+    prepared = reducer.reduce(prepared, event('spawn_succeeded', serviceId), authority)
+    prepared = reducer.reduce(prepared, event('probe_requested', serviceId), authority)
+    return reducer.reduce(prepared, event('probe_transport_ready', serviceId), authority)
+  }
+  const prepareEnvironmentProbe = () => {
+    let operation = prepareOwnedProbe('home_assistant_bridge')
+    operation = reducer.reduce(operation, {
+      ...event('semantic_probe_completed', 'home_assistant_bridge'),
+      probe_result: boundProbeResult(operation, 'home_assistant_bridge')
+    }, authority)
+    return prepareOwnedProbe('environment_state_server', operation)
+  }
+  const environmentResult = (operation, overrides = {}) => ({
+    ...boundProbeResult(operation, 'environment_state_server'),
+    requested_at: '2026-07-29T00:00:10.000Z',
+    source_observed_at: '2026-07-29T00:00:05.000Z',
+    observed_at: '2026-07-29T00:00:10.100Z',
+    ...overrides
+  })
+  const complete = (operation, result) => reducer.reduce(operation, {
+    ...event('semantic_probe_completed', result.service_id),
+    probe_result: result
+  }, authority)
+
+  const pending = prepareEnvironmentProbe()
+  const accepted = environmentResult(pending)
+  const ready = complete(pending, accepted)
+  const service = ready.services.find((candidate) => candidate.service_id === 'environment_state_server')
+  assert.equal(ready.reason, 'none')
+  assert.equal(service.state, 'ready')
+  assert.deepEqual(service.last_probe_result, accepted)
+  reducer.validateSnapshot(ready, authority)
+
+  for (const invalidTimes of [
+    { source_observed_at: '2026-07-28T23:59:40.099Z' },
+    { source_observed_at: '2026-07-29T00:00:10.101Z' },
+    { requested_at: '2026-07-29T00:00:10.101Z' },
+    { observed_at: '2026-07-29T00:00:25.001Z' },
+    { requested_at: 0, source_observed_at: 0, observed_at: 0 },
+    { requested_at: {} },
+    { source_observed_at: '2026-07-29T00:00:05+00:00' },
+    { observed_at: '2026-07-29T00:00:10Z' }
+  ]) {
+    const candidate = prepareEnvironmentProbe()
+    const rejected = complete(candidate, environmentResult(candidate, invalidTimes))
+    assert.equal(rejected.reason, 'invalid_event')
+    assert.equal(rejected.services.find((candidate) => candidate.service_id === 'environment_state_server').last_probe_result, null)
+    reducer.validateSnapshot(rejected, authority)
+  }
+
+  const homePending = prepareOwnedProbe('home_assistant_bridge')
+  const homePreRequest = {
+    ...boundProbeResult(homePending, 'home_assistant_bridge'),
+    requested_at: '2026-07-29T00:00:10.000Z',
+    source_observed_at: '2026-07-29T00:00:09.999Z',
+    observed_at: '2026-07-29T00:00:10.100Z'
+  }
+  const rejectedHome = complete(homePending, homePreRequest)
+  assert.equal(rejectedHome.reason, 'invalid_event')
+  assert.equal(rejectedHome.services.find((candidate) => candidate.service_id === 'home_assistant_bridge').last_probe_result, null)
+  reducer.validateSnapshot(rejectedHome, authority)
+})
+
 test('semantic not-ready result fails closed with its bounded result retained', () => {
   let operation = startLifecycle()
   operation = reducer.reduce(operation, event('spawn_requested', 'home_assistant_bridge'), authority)

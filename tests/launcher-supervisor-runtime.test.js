@@ -900,6 +900,40 @@ test('bounded semantic probe executor failure rolls back without misclassifying 
   }
 })
 
+test('runtime retains a fresh pre-request Environment snapshot without invalid_event', async () => {
+  const probeExecutor = {
+    configSha256: '0'.repeat(64),
+    async execute (expected) {
+      const result = successfulSemanticProbeResult(expected)
+      if (expected.service_id !== 'environment_state_server') return result
+      const requestedAt = Date.parse(expected.requested_at)
+      return {
+        ...result,
+        source_observed_at: new Date(requestedAt - 5000).toISOString(),
+        observed_at: new Date(requestedAt + 100).toISOString()
+      }
+    }
+  }
+  const harness = makeHarness({ probeExecutor, operationPrefix: 'environmentpre' })
+  try {
+    const started = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(started.ok, true)
+    assert.equal(started.result_class, 'ready')
+    assert.equal(started.operation.reason, 'none')
+    const environment = harness.runtime.current.services.find((service) => service.service_id === 'environment_state_server')
+    assert.equal(environment.probe_status, 'ready')
+    assert.ok(Date.parse(environment.last_probe_result.source_observed_at) < Date.parse(environment.last_probe_result.requested_at))
+    assert.equal(harness.events.includes('store:supervisor_crashed'), false)
+
+    const stopped = await harness.runtime.stop({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(stopped.ok, true)
+    assert.equal(stopped.operation.cleanup, 'clear')
+    assert.equal(harness.runtime.supervisorLease, null)
+  } finally {
+    harness.cleanup()
+  }
+})
+
 test('missing semantic probe executor after transport readiness retains the executor substage', async () => {
   let harness
   harness = makeHarness({

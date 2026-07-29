@@ -35,6 +35,12 @@ const PROBE_RESULT_KEYS = [
   'freshness_class', 'semantic_class', 'reason_class', 'ready', 'proof_ceiling'
 ].sort()
 const fail = (code) => { throw new LauncherContractError(code) }
+const parseStrictTimestamp = (value) => {
+  if (typeof value !== 'string' || value.length > 32) fail('probe_result_invalid')
+  const time = Date.parse(value)
+  if (!Number.isFinite(time) || new Date(time).toISOString() !== value) fail('probe_result_invalid')
+  return time
+}
 const copyServices = (services) => services.map((service) => ({ ...service }))
 const cloneOperation = (operation, changes = {}) => ({
   ...operation,
@@ -231,11 +237,14 @@ const validatePersistedProbeResult = (result, authority) => {
       !Array.isArray(reasonClasses) || !reasonClasses.includes(result.reason_class) ||
       descriptor.proof_ceiling !== result.proof_ceiling ||
       descriptor.success_semantic_classes.includes(result.semantic_class) !== result.ready) fail('probe_result_invalid')
-  const requestedAt = Date.parse(result.requested_at)
-  const sourceObservedAt = Date.parse(result.source_observed_at)
-  const observedAt = Date.parse(result.observed_at)
+  const requestedAt = parseStrictTimestamp(result.requested_at)
+  const sourceObservedAt = parseStrictTimestamp(result.source_observed_at)
+  const observedAt = parseStrictTimestamp(result.observed_at)
+  const allowsPreRequestSource = descriptor.freshness_source === 'environment_current_observed_at'
   if (![requestedAt, sourceObservedAt, observedAt].every(Number.isFinite) ||
-      requestedAt > sourceObservedAt || sourceObservedAt > observedAt) fail('probe_result_invalid')
+      requestedAt > observedAt || (!allowsPreRequestSource && requestedAt > sourceObservedAt) ||
+      sourceObservedAt > observedAt || observedAt - requestedAt > descriptor.observation_timeout_ms ||
+      observedAt - sourceObservedAt > descriptor.freshness_max_age_ms) fail('probe_result_invalid')
   return result
 }
 
