@@ -65,6 +65,26 @@ const strictTimestampMillis = (value) => {
 
 const iso = (millis) => new Date(millis).toISOString()
 
+const PYTHON_UTC_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?\+00:00$/u
+const normalizeEnvironmentSourceTimestamp = (value) => {
+  const strictMillis = strictTimestampMillis(value)
+  if (strictMillis !== null) return iso(strictMillis)
+  if (typeof value !== 'string' || value.length > 32) return null
+  const match = PYTHON_UTC_TIMESTAMP.exec(value)
+  if (!match) return null
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number)
+  const milliseconds = Number((match[7] || '').padEnd(3, '0').slice(0, 3))
+  if (year < 1 || month < 1 || month > 12 || day < 1 || day > 31 ||
+      hour > 23 || minute > 59 || second > 59) return null
+  const parsed = new Date(0)
+  parsed.setUTCFullYear(year, month - 1, day)
+  parsed.setUTCHours(hour, minute, second, milliseconds)
+  if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day ||
+      parsed.getUTCHours() !== hour || parsed.getUTCMinutes() !== minute || parsed.getUTCSeconds() !== second ||
+      parsed.getUTCMilliseconds() !== milliseconds) return null
+  return parsed.toISOString()
+}
+
 const validateHeaders = (headers, authClass) => {
   if (headers === undefined) headers = {}
   if (!isPlainObject(headers) || Object.keys(headers).length > MAX_HEADERS) {
@@ -317,12 +337,13 @@ const classifyHttp = (descriptor, outcomes, expected, nowMs, options) => {
   }
   if (descriptor.checks.includes('environment_current_schema')) {
     const current = outcomes.find((item) => item.target.target_id === 'current')?.outcome.value
+    const sourceObservedAtNormalized = normalizeEnvironmentSourceTimestamp(current?.observed_at)
     if (!isPlainObject(current) || current.schema_version !== 1 ||
         !isPlainObject(current.sources) || typeof current.stale !== 'boolean' ||
-        strictTimestampMillis(current.observed_at) === null) {
+        sourceObservedAtNormalized === null) {
       return failure('environment_current_invalid')
     }
-    sourceObservedAt = current.observed_at
+    sourceObservedAt = sourceObservedAtNormalized
     if (descriptor.checks.includes('configured_source_policy') && Object.values(current.sources).some((item) =>
       isPlainObject(item) && item.configured === true && (item.available !== true || item.stale !== false))) {
       return failure('configured_source_unready')

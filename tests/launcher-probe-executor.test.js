@@ -141,7 +141,7 @@ test('composite HTTP probe applies descriptor checks without a service switch', 
       sequence: 17,
       stale: false,
       age_ms: 100,
-      observed_at: new Date(BASE_MS + 100).toISOString(),
+      observed_at: '2026-07-29T12:00:00.100000+00:00',
       capabilities: {},
       actions: [],
       sources: { home: { configured: true, available: true, stale: false, private_detail: sentinel } }
@@ -164,7 +164,107 @@ test('composite HTTP probe applies descriptor checks without a service switch', 
   assert.equal(bodies['/ready'].camera_requirement.result, 'camera_excluded_by_profile')
   assert.equal(bodies['/environment/current'].sources.home.stale, false)
   assert.equal(bodies['/environment/current'].stale, false)
-  assert.equal(bodies['/environment/current'].observed_at, new Date(BASE_MS + 100).toISOString())
+  assert.equal(bodies['/environment/current'].observed_at, '2026-07-29T12:00:00.100000+00:00')
+})
+
+test('Environment current normalizes only canonical Python UTC timestamps and keeps global timestamp strictness', async () => {
+  const expected = expectedFor('environment_state_server')
+  const validCases = [
+    ['js_millis', '2026-07-29T12:00:00.100Z', '2026-07-29T12:00:00.100Z'],
+    ['python_seconds', '2026-07-29T12:00:00+00:00', '2026-07-29T12:00:00.000Z'],
+    ['python_fraction_1', '2026-07-29T12:00:00.1+00:00', '2026-07-29T12:00:00.100Z'],
+    ['python_fraction_2', '2026-07-29T12:00:00.12+00:00', '2026-07-29T12:00:00.120Z'],
+    ['python_fraction_3', '2026-07-29T12:00:00.123+00:00', '2026-07-29T12:00:00.123Z'],
+    ['python_fraction_4', '2026-07-29T12:00:00.1234+00:00', '2026-07-29T12:00:00.123Z'],
+    ['python_fraction_5', '2026-07-29T12:00:00.12345+00:00', '2026-07-29T12:00:00.123Z'],
+    ['python_fraction_6', '2026-07-29T12:00:00.123456+00:00', '2026-07-29T12:00:00.123Z']
+  ]
+  const invalidCases = [
+    ['nonzero_offset', '2026-07-29T12:00:00.100000+00:01'],
+    ['negative_zero_offset', '2026-07-29T12:00:00.100000-00:00'],
+    ['missing_timezone', '2026-07-29T12:00:00.100000'],
+    ['invalid_calendar', '2026-02-30T12:00:00.100000+00:00'],
+    ['fraction_7', '2026-07-29T12:00:00.1234567+00:00'],
+    ['oversize', '2026-07-29T12:00:00.100000+00:00PRIVATE_OVERSIZE_SENTINEL'],
+    ['private_sentinel', 'PRIVATE_TIMESTAMP_SENTINEL']
+  ]
+  const execute = async (observedAt, sources = { home: { configured: true, available: true, stale: false } }) => {
+    const requests = []
+    const bodies = {
+      '/health': { ok: true, status: 'ok' },
+      '/ready': {
+        ok: true,
+        ready: true,
+        status: 'ready',
+        camera_requirement: {
+          requirement_id: 'camera_hub',
+          profile_id: ENVIRONMENT_READY_IDENTITY.profile_id,
+          effective_config_sha256: ENVIRONMENT_READY_IDENTITY.effective_config_sha256,
+          policy: ENVIRONMENT_READY_IDENTITY.camera_policy,
+          requirement: 'not_required',
+          result: 'camera_excluded_by_profile'
+        }
+      },
+      '/environment/current': {
+        schema_version: 1,
+        stale: false,
+        observed_at: observedAt,
+        sources
+      }
+    }
+    const result = await makeExecutor({
+      fetchImpl: async (url) => {
+        requests.push(new URL(url).pathname)
+        return jsonResponse(bodies[new URL(url).pathname])
+      }
+    }).execute(expected)
+    return { result, requests, current: bodies['/environment/current'] }
+  }
+
+  for (const [label, input, normalized] of validCases) {
+    const { result, requests, current } = await execute(input)
+    assert.equal(result.ready, true, label)
+    assert.equal(result.reason_class, 'none', label)
+    assert.equal(result.source_observed_at, normalized, label)
+    assert.deepEqual(requests, ['/health', '/ready', '/environment/current'], label)
+    assert.equal(current.observed_at, input, label)
+  }
+  for (const [label, input] of invalidCases) {
+    const { result, requests, current } = await execute(input)
+    assert.equal(result.ready, false, label)
+    assert.equal(result.reason_class, 'environment_current_invalid', label)
+    assert.deepEqual(requests, ['/health', '/ready', '/environment/current'], label)
+    assert.equal(new Set(requests).size, 3, label)
+    assert.equal(current.observed_at, input, label)
+    assert.equal(JSON.stringify(result).includes('PRIVATE_'), false, label)
+  }
+
+  const configuredUnready = await execute(
+    '2026-07-29T12:00:00.100000+00:00',
+    { home: { configured: true, available: false, stale: true } }
+  )
+  assert.equal(configuredUnready.result.ready, false)
+  assert.equal(configuredUnready.result.reason_class, 'configured_source_unready')
+  assert.deepEqual(configuredUnready.requests, ['/health', '/ready', '/environment/current'])
+
+  const stale = await execute('2026-07-29T11:59:59.999999+00:00')
+  assert.equal(stale.result.ready, false)
+  assert.equal(stale.result.reason_class, 'source_stale')
+  assert.deepEqual(stale.requests, ['/health', '/ready', '/environment/current'])
+
+  let strictFetchCalls = 0
+  await assert.rejects(
+    makeExecutor({
+      fetchImpl: async () => {
+        strictFetchCalls += 1
+        throw new Error('unexpected_fetch')
+      }
+    }).execute(expectedFor('environment_state_server', {
+      requested_at: '2026-07-29T12:00:00.000000+00:00'
+    })),
+    (error) => error instanceof LauncherProbeContractError && error.code === 'probe_expected_identity_invalid'
+  )
+  assert.equal(strictFetchCalls, 0)
 })
 
 test('Environment current accepts exactly integer schema version 1 and rejects every alternate shape without retry or disclosure', async () => {

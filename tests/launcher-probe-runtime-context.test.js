@@ -173,7 +173,7 @@ test('runtime context derives loopback endpoints and injects only declared priva
     '/environment/current': {
       schema_version: 1,
       stale: false,
-      observed_at: new Date(BASE_MS).toISOString(),
+      observed_at: '2026-07-29T14:00:00.000000+00:00',
       sources: {}
     }
   }
@@ -199,6 +199,7 @@ test('runtime context derives loopback endpoints and injects only declared priva
   assert.deepEqual(requests[2].options.headers, { Authorization: 'Bearer PRIVATE_ENVIRONMENT_TOKEN_A' })
   assert.equal(result.ready, true)
   assert.equal(result.semantic_class, 'ready')
+  assert.equal(result.source_observed_at, new Date(BASE_MS).toISOString())
 })
 
 test('external VOICEVOX is read-only, loopback-only and receives no private header', async () => {
