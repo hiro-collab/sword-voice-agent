@@ -276,7 +276,7 @@ const firstTransportFailure = (descriptor, outcomes) => {
   return failure(descriptor.no_touch ? 'version_unavailable' : 'health_unavailable')
 }
 
-const classifyHttp = (descriptor, outcomes, expected, nowMs) => {
+const classifyHttp = (descriptor, outcomes, expected, nowMs, options) => {
   const transportFailure = firstTransportFailure(descriptor, outcomes)
   if (transportFailure) return transportFailure
   const non2xx = outcomes.find((item) => !item.outcome.status_ok)
@@ -299,6 +299,19 @@ const classifyHttp = (descriptor, outcomes, expected, nowMs) => {
   if (descriptor.checks.includes('environment_ready_contract')) {
     const ready = outcomes.find((item) => item.target.target_id === 'ready')?.outcome.value
     if (!isPlainObject(ready) || ready.ok !== true || ready.ready !== true || ready.status !== 'ready') {
+      return failure('environment_not_ready')
+    }
+    const identity = options.environmentReadyIdentity
+    const returned = ready.camera_requirement
+    if (!isPlainObject(identity) || !isPlainObject(returned) ||
+        returned.requirement_id !== 'camera_hub' ||
+        returned.profile_id !== identity.profile_id ||
+        returned.effective_config_sha256 !== identity.effective_config_sha256 ||
+        returned.policy !== identity.camera_policy ||
+        (identity.camera_policy === 'camera_excluded_by_profile' &&
+          (returned.requirement !== 'not_required' || returned.result !== 'camera_excluded_by_profile')) ||
+        (identity.camera_policy === 'required' &&
+          (returned.requirement !== 'required' || returned.result !== 'ready'))) {
       return failure('environment_not_ready')
     }
   }
@@ -376,14 +389,20 @@ const CLASSIFIERS = Object.freeze({
 })
 
 class LauncherProbeExecutor {
-  constructor ({ probeAuthority, privateTargetResolver, fetchImpl = globalThis.fetch, observers = {}, clock = Date.now, monotonicClock = () => performance.now() }) {
+  constructor ({ probeAuthority, environmentReadyIdentity, privateTargetResolver, fetchImpl = globalThis.fetch, observers = {}, clock = Date.now, monotonicClock = () => performance.now() }) {
     if (!probeAuthority || typeof fetchImpl !== 'function' || typeof clock !== 'function' ||
-        typeof monotonicClock !== 'function' || !isPlainObject(observers)) {
+        typeof monotonicClock !== 'function' || !isPlainObject(observers) ||
+        !isPlainObject(environmentReadyIdentity) ||
+        typeof environmentReadyIdentity.profile_id !== 'string' ||
+        typeof environmentReadyIdentity.effective_config_sha256 !== 'string' ||
+        !/^[a-f0-9]{64}$/u.test(environmentReadyIdentity.effective_config_sha256) ||
+        !['required', 'camera_excluded_by_profile'].includes(environmentReadyIdentity.camera_policy)) {
       fail('probe_executor_options_invalid')
     }
     this.probeAuthority = probeAuthority
     this.options = Object.freeze({
       privateTargetResolver,
+      environmentReadyIdentity: Object.freeze({ ...environmentReadyIdentity }),
       fetchImpl,
       observers: Object.freeze({
         websocket: observers.websocket,
@@ -439,7 +458,7 @@ class LauncherProbeExecutor {
     if (typeof classifier !== 'function') fail('probe_executor_internal_failure')
     let classification
     try {
-      classification = classifier(descriptor, outcomes, expected, nowMs)
+      classification = classifier(descriptor, outcomes, expected, nowMs, this.options)
     } catch (error) {
       if (error instanceof LauncherProbeExecutorError) throw error
       fail('probe_executor_observer_result_invalid')

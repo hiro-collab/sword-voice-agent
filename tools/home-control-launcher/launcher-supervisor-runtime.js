@@ -13,6 +13,7 @@ const {
 const {
   LauncherPrivatePlanError,
   compilePrivateServicePlan,
+  deriveEffectiveConfigIdentity,
   removePrivateServicePlan,
   writePrivateServicePlan
 } = require('./launcher-private-service-plan')
@@ -82,6 +83,12 @@ const SHA256 = /^[a-f0-9]{64}$/u
 
 const safeResultClass = (value) => PUBLIC_RESULT_CLASSES.has(value) ? value : 'failed'
 const safeErrorClass = (value) => PUBLIC_ERROR_CLASSES.has(value) ? value : 'supervisor_runtime_failed'
+const sameConfigIdentity = (left, right) => Boolean(left) && Boolean(right) &&
+  left.profile_id === right.profile_id &&
+  left.effective_config_sha256 === right.effective_config_sha256 &&
+  left.camera_policy === right.camera_policy
+const sameStoredOperation = (left, right) => Boolean(left) && Boolean(right) &&
+  canonicalJsonSha256(left) === canonicalJsonSha256(right)
 const eventFor = (operation, eventType, serviceId = null, fields = {}) => ({
   event_type: eventType,
   operation_id: operation.operation_id,
@@ -95,6 +102,8 @@ const publicOperation = (operation, profileId = 'thought-core-v0') => {
       schema_version: 'launcher_supervisor_public.v1',
       authority_class: 'node_supervisor',
       profile_id: profileId,
+      effective_config_sha256: null,
+      camera_policy: null,
       operation_id: null,
       intent: 'none',
       phase: 'idle',
@@ -112,7 +121,9 @@ const publicOperation = (operation, profileId = 'thought-core-v0') => {
   return {
     schema_version: 'launcher_supervisor_public.v1',
     authority_class: 'node_supervisor',
-    profile_id: profileId,
+    profile_id: operation.profile_id,
+    effective_config_sha256: operation.effective_config_sha256,
+    camera_policy: operation.camera_policy,
     operation_id: operation.operation_id,
     intent: operation.intent,
     phase: operation.phase,
@@ -135,6 +146,8 @@ const publicOperationStoreFailure = (profileId = 'thought-core-v0') => ({
   schema_version: 'launcher_supervisor_public.v1',
   authority_class: 'node_supervisor',
   profile_id: profileId,
+  effective_config_sha256: null,
+  camera_policy: null,
   operation_id: null,
   intent: 'none',
   phase: 'failed',
@@ -246,17 +259,29 @@ class LauncherSupervisorRuntime {
     this.profileId = 'thought-core-v0'
   }
 
-  readCurrent () {
+  readStoredOperation () {
     try {
-      this.current = this.store.readOperation(this.authority, this.privateRuntimeRoot)
-      return this.current
+      return this.store.readOperation(this.authority, this.privateRuntimeRoot)
     } catch (error) {
       if (error instanceof LauncherContractError && error.code === 'operation_store_record_missing') {
-        this.current = null
         return null
       }
       throw error
     }
+  }
+
+  readCurrent () {
+    this.current = this.readStoredOperation()
+    return this.current
+  }
+
+  readAuthoritativeJoinOperation (cachedOperation, validatedConfigIdentity) {
+    const storedOperation = this.readStoredOperation()
+    if (!sameStoredOperation(cachedOperation, storedOperation) ||
+        !sameConfigIdentity(storedOperation, validatedConfigIdentity)) {
+      throw new LauncherPrivatePlanError('private_plan_config_invalid')
+    }
+    return storedOperation
   }
 
   publicState () {
@@ -352,13 +377,14 @@ class LauncherSupervisorRuntime {
     return reducer.workerResultToEvent(result, this.current, request, this.authority)
   }
 
-  compile (profileId, options) {
+  compile (profileId, options, configIdentity) {
     return this.planCompiler({
       repositoryRoot: this.repositoryRoot,
       workspaceRoot: this.workspaceRoot,
       privateRuntimeRoot: this.privateRuntimeRoot,
       profileId,
       options,
+      configIdentity,
       authority: this.authority
     })
   }
@@ -599,11 +625,40 @@ class LauncherSupervisorRuntime {
     return clear
   }
 
-  async start ({ profileId, options }) {
+  async start ({ profileId, options, configIdentity }) {
+    let validatedConfigIdentity
+    try {
+      reducer.validateConfigIdentity(configIdentity, this.authority)
+      validatedConfigIdentity = deriveEffectiveConfigIdentity({
+        profileId,
+        options,
+        authority: this.authority
+      })
+      if (!sameConfigIdentity(configIdentity, validatedConfigIdentity)) {
+        throw new LauncherPrivatePlanError('private_plan_config_invalid')
+      }
+    } catch (error) {
+      return publicResult({
+        ok: false,
+        resultClass: 'preflight_failed',
+        operation: null,
+        profileId,
+        errorClass: error instanceof LauncherPrivatePlanError ? 'private_plan_invalid' : 'supervisor_runtime_failed'
+      })
+    }
     if (this.inflight) {
-      const current = this.current || (() => {
-        try { return this.readCurrent() } catch { return null }
-      })()
+      let current
+      try {
+        current = this.readAuthoritativeJoinOperation(this.current, validatedConfigIdentity)
+      } catch (error) {
+        return publicResult({
+          ok: false,
+          resultClass: 'preflight_failed',
+          operation: null,
+          profileId,
+          errorClass: error instanceof LauncherPrivatePlanError ? 'private_plan_invalid' : 'supervisor_runtime_failed'
+        })
+      }
       return publicResult({
         ok: this.inflight === 'start',
         resultClass: this.inflight === 'start' ? 'joined_existing' : 'operation_in_progress',
@@ -615,11 +670,23 @@ class LauncherSupervisorRuntime {
     this.profileId = profileId
     try {
       if (this.client && this.supervisorLease && this.current?.phase === reducer.PHASE.READY) {
-        return publicResult({ ok: true, resultClass: 'joined_existing', operation: this.current, profileId })
+        let current
+        try {
+          current = this.readAuthoritativeJoinOperation(this.current, validatedConfigIdentity)
+        } catch (error) {
+          return publicResult({
+            ok: false,
+            resultClass: 'preflight_failed',
+            operation: null,
+            profileId,
+            errorClass: error instanceof LauncherPrivatePlanError ? 'private_plan_invalid' : 'supervisor_runtime_failed'
+          })
+        }
+        return publicResult({ ok: true, resultClass: 'joined_existing', operation: current, profileId })
       }
       let compiled
       try {
-        compiled = this.compile(profileId, options)
+        compiled = this.compile(profileId, options, validatedConfigIdentity)
         this.ensureProbeExecutor(compiled)
       } catch (error) {
         if (this.generatedProbeExecutor) {
@@ -637,6 +704,7 @@ class LauncherSupervisorRuntime {
 
       let decision = this.store.startAndPersist(
         this.operationIdFactory(),
+        validatedConfigIdentity,
         this.authority,
         this.privateRuntimeRoot
       )
@@ -654,6 +722,7 @@ class LauncherSupervisorRuntime {
         await this.recover(compiled)
         decision = this.store.startAndPersist(
           this.operationIdFactory(),
+          validatedConfigIdentity,
           this.authority,
           this.privateRuntimeRoot
         )
@@ -777,6 +846,15 @@ class LauncherSupervisorRuntime {
           profileId
         })
       }
+      if (profileId !== current.profile_id) {
+        return publicResult({
+          ok: false,
+          resultClass: 'preflight_failed',
+          operation: current,
+          profileId,
+          errorClass: 'private_plan_invalid'
+        })
+      }
       if (current.phase === reducer.PHASE.STOPPED) {
         const closed = await this.closeClientAndPlan()
         if (closed) this.releaseSupervisorLease()
@@ -790,7 +868,13 @@ class LauncherSupervisorRuntime {
       if (!this.supervisorLease) this.acquireExistingSupervisorLease()
       let compiled = this.compiled
       if (!compiled) {
-        try { compiled = this.compile(profileId, options) } catch (error) {
+        try {
+          compiled = this.compile(profileId, options, {
+            profile_id: this.current.profile_id,
+            effective_config_sha256: this.current.effective_config_sha256,
+            camera_policy: this.current.camera_policy
+          })
+        } catch (error) {
           return publicResult({
             ok: false,
             resultClass: 'preflight_failed',

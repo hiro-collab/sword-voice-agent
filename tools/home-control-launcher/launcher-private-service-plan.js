@@ -5,13 +5,15 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 
-const { assertAuthority, deepFreeze } = require('./launcher-supervisor-contract')
+const { assertAuthority, canonicalJsonSha256, deepFreeze } = require('./launcher-supervisor-contract')
 
 const PLAN_DIRECTORY = 'launcher-private-plan.v1'
 const PLAN_FILE = 'launcher-private-service-plan.v1.json'
 const PLAN_TEMP_FILE = 'launcher-private-service-plan.v1.json.tmp'
 const MAX_PLAN_BYTES = 256 * 1024
 const PROFILE_ID = 'thought-core-v0'
+const EFFECTIVE_CONFIG_SCHEMA = 'launcher_effective_config.v1'
+const CAMERA_POLICIES = new Set(['required', 'camera_excluded_by_profile'])
 const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]{0,127}$/u
 const SAFE_CODE = new Set([
   'private_plan_authority_invalid',
@@ -258,12 +260,50 @@ const ownedPlan = ({ serviceId, filePath, args, cwd, environment, listenerPort, 
   listener_port: listenerPort
 })
 
+const deriveEffectiveConfigIdentity = ({ profileId, options, authority }) => {
+  try { assertAuthority(authority) } catch { fail('private_plan_authority_invalid') }
+  if (profileId !== PROFILE_ID || authority.graph.profile_id !== PROFILE_ID) fail('private_plan_profile_invalid')
+  requireCanonicalOptions(options, authority)
+  if (options.SkipMediapipe === true && options.SkipVisionSnapshotProcessor !== true) {
+    fail('private_plan_config_invalid')
+  }
+  const cameraPolicy = options.SkipMediapipe === true
+    ? 'camera_excluded_by_profile'
+    : 'required'
+  const identityOptions = { ...options }
+  if (identityOptions.MediapipeCameraSelectionKey !== '') {
+    identityOptions.MediapipeCameraName = ''
+  }
+  const configDocument = {
+    schema_version: EFFECTIVE_CONFIG_SCHEMA,
+    profile_id: profileId,
+    options: identityOptions
+  }
+  return deepFreeze({
+    profile_id: profileId,
+    effective_config_sha256: canonicalJsonSha256(configDocument),
+    camera_policy: cameraPolicy
+  })
+}
+
+const requireEffectiveConfigIdentity = (candidate, derived) => {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate) ||
+      Object.keys(candidate).sort().join(',') !== 'camera_policy,effective_config_sha256,profile_id' ||
+      candidate.profile_id !== derived.profile_id ||
+      candidate.effective_config_sha256 !== derived.effective_config_sha256 ||
+      !CAMERA_POLICIES.has(candidate.camera_policy) ||
+      candidate.camera_policy !== derived.camera_policy) {
+    fail('private_plan_config_invalid')
+  }
+}
+
 const compilePrivateServicePlan = ({
   repositoryRoot,
   workspaceRoot,
   privateRuntimeRoot,
   profileId,
   options,
+  configIdentity,
   authority,
   processEnvironment = process.env,
   resolveExecutable = defaultResolveExecutable,
@@ -283,6 +323,8 @@ const compilePrivateServicePlan = ({
   }
   if (profileId !== PROFILE_ID || authority.graph.profile_id !== PROFILE_ID) fail('private_plan_profile_invalid')
   requireCanonicalOptions(options, authority)
+  const derivedConfigIdentity = deriveEffectiveConfigIdentity({ profileId, options, authority })
+  requireEffectiveConfigIdentity(configIdentity, derivedConfigIdentity)
 
   const roots = {
     home: path.join(workspace, 'organs', 'action', 'home-assistant-server'),
@@ -391,6 +433,9 @@ const compilePrivateServicePlan = ({
         '--home-assistant-health-url', `http://${homeHost}:${options.HomeAssistantBridgePort}/operator`,
         '--aituber-url', `http://${aituberHost}:${options.AituberPort}`,
         '--voicevox-health-url', 'http://127.0.0.1:50021/version',
+        '--profile-id', derivedConfigIdentity.profile_id,
+        '--effective-config-sha256', derivedConfigIdentity.effective_config_sha256,
+        '--camera-policy', derivedConfigIdentity.camera_policy,
         ...((options.SkipMediapipe) ? ['--disable-camera-hub'] : []),
         ...((!options.SkipVisionSnapshotProcessor && !options.SkipMediapipe) ? ['--vision-topic-url', `ws://127.0.0.1:${options.VisionSnapshotProcessorPort}`] : [])
       ],
@@ -543,6 +588,9 @@ const compilePrivateServicePlan = ({
     schema_version: 'launcher_private_service_plans.v1',
     graph_sha256: authority.identities.graphSha256,
     binding_sha256: authority.identities.bindingSha256,
+    profile_id: derivedConfigIdentity.profile_id,
+    effective_config_sha256: derivedConfigIdentity.effective_config_sha256,
+    camera_policy: derivedConfigIdentity.camera_policy,
     services: plans
   }
   const serialized = JSON.stringify(document)
@@ -607,6 +655,7 @@ module.exports = {
   PLAN_FILE,
   PROFILE_ID,
   compilePrivateServicePlan,
+  deriveEffectiveConfigIdentity,
   removePrivateServicePlan,
   resolvePlanPaths,
   writePrivateServicePlan

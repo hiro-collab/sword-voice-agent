@@ -35,7 +35,8 @@ const MODULE_STATUS_RELATIVE_SEGMENTS = Object.freeze([
 ])
 const MODULE_STATUS_KEYS = Object.freeze(['name', 'label', 'state', 'detail', 'timestamp'])
 const OPERATION_KEYS = Object.freeze([
-  'schema_version', 'graph_sha256', 'binding_sha256', 'operation_id',
+  'schema_version', 'graph_sha256', 'binding_sha256', 'profile_id',
+  'effective_config_sha256', 'camera_policy', 'operation_id',
   'supervisor_generation', 'intent', 'phase', 'reason', 'cleanup',
   'primary_result', 'cleanup_result', 'revision', 'joined_existing',
   'rollback_required', 'recovery_required', 'services', 'residue_service_ids'
@@ -105,6 +106,9 @@ const validateCompiledPlan = (compiled, authority) => {
       compiled.document.schema_version !== 'launcher_private_service_plans.v1' ||
       compiled.document.graph_sha256 !== authority.identities.graphSha256 ||
       compiled.document.binding_sha256 !== authority.identities.bindingSha256 ||
+      compiled.document.profile_id !== authority.graph.profile_id ||
+      typeof compiled.document.effective_config_sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(compiled.document.effective_config_sha256) ||
+      !['required', 'camera_excluded_by_profile'].includes(compiled.document.camera_policy) ||
       !Array.isArray(compiled.document.services)) fail('probe_runtime_plan_invalid')
 
   const graphById = new Map(authority.graph.services.map((service) => [service.service_id, service]))
@@ -134,14 +138,24 @@ const validateCompiledPlan = (compiled, authority) => {
       fail('probe_runtime_plan_invalid')
     }
   }
-  return Object.freeze({ services: Object.freeze(services), included: Object.freeze(included) })
+  return Object.freeze({
+    services: Object.freeze(services),
+    included: Object.freeze(included),
+    configIdentity: Object.freeze({
+      profile_id: compiled.document.profile_id,
+      effective_config_sha256: compiled.document.effective_config_sha256,
+      camera_policy: compiled.document.camera_policy
+    })
+  })
 }
 
 const safeConfigDocument = (validatedPlan, authority) => Object.freeze({
   schema_version: 'launcher_probe_runtime_config.v1',
-  profile_id: authority.graph.profile_id,
   graph_sha256: authority.identities.graphSha256,
   binding_sha256: authority.identities.bindingSha256,
+  profile_id: validatedPlan.configIdentity.profile_id,
+  effective_config_sha256: validatedPlan.configIdentity.effective_config_sha256,
+  camera_policy: validatedPlan.configIdentity.camera_policy,
   included_service_ids: validatedPlan.included,
   services: Object.freeze(validatedPlan.services.map((plan) => Object.freeze({
     service_id: plan.service_id,
@@ -369,6 +383,9 @@ const validatePendingProbe = (operation, serviceId, authority) => {
   if (operation.schema_version !== 'launcher_operation.v2' ||
       operation.graph_sha256 !== authority.identities.graphSha256 ||
       operation.binding_sha256 !== authority.identities.bindingSha256 ||
+      operation.profile_id !== authority.graph.profile_id ||
+      typeof operation.effective_config_sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(operation.effective_config_sha256) ||
+      !['required', 'camera_excluded_by_profile'].includes(operation.camera_policy) ||
       !OPERATION_ID.test(operation.operation_id) ||
       !Number.isSafeInteger(operation.supervisor_generation) || operation.supervisor_generation < 1 ||
       !Number.isSafeInteger(operation.revision) || operation.revision < 0 ||
@@ -410,6 +427,7 @@ class LauncherProbeRuntimeContext {
     this.configSha256 = canonicalJsonSha256(configDocument)
     const executor = new LauncherProbeExecutor({
       probeAuthority,
+      environmentReadyIdentity: validatedPlan.configIdentity,
       privateTargetResolver: createTargetResolver(endpoints, validatedPlan),
       fetchImpl,
       observers: validatedObservers(observers, {
@@ -424,7 +442,8 @@ class LauncherProbeRuntimeContext {
       authority: launcherAuthority,
       probeAuthority,
       clock,
-      executor
+      executor,
+      configIdentity: validatedPlan.configIdentity
     }))
     Object.freeze(this)
   }
@@ -439,6 +458,9 @@ class LauncherProbeRuntimeContext {
   async executePendingProbe ({ operation, serviceId }) {
     const context = PRIVATE_CONTEXT.get(this)
     const { spec } = validatePendingProbe(operation, serviceId, context.authority)
+    if (operation.profile_id !== context.configIdentity.profile_id ||
+        operation.effective_config_sha256 !== context.configIdentity.effective_config_sha256 ||
+        operation.camera_policy !== context.configIdentity.camera_policy) fail('probe_runtime_config_drift')
     const descriptor = context.probeAuthority.byPair[`${serviceId}:${spec.readiness.probe_id}`]
     if (!descriptor) fail('probe_runtime_authority_invalid')
     const service = operation.services.find((candidate) => candidate.service_id === serviceId)

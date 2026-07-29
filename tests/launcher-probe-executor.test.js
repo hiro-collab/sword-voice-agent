@@ -18,6 +18,11 @@ const launcherAuthority = loadAuthority(ROOT)
 const probeAuthority = loadProbeAuthority(ROOT, launcherAuthority)
 const BASE_MS = Date.parse('2026-07-29T12:00:00.000Z')
 const CONFIG_SHA256 = 'c'.repeat(64)
+const ENVIRONMENT_READY_IDENTITY = Object.freeze({
+  profile_id: 'thought-core-v0',
+  effective_config_sha256: 'e'.repeat(64),
+  camera_policy: 'camera_excluded_by_profile'
+})
 const descriptorFor = (serviceId) => probeAuthority.descriptors.find((item) => item.service_id === serviceId)
 const expectedFor = (serviceId = 'home_assistant_bridge', values = {}) => {
   const descriptor = descriptorFor(serviceId)
@@ -62,6 +67,7 @@ const resolver = (secret = null) => async (target) => ({
 
 const makeExecutor = ({ fetchImpl, observers = {}, now = BASE_MS + 200, secret = 'PRIVATE_HEADER_SENTINEL' }) => new LauncherProbeExecutor({
   probeAuthority,
+  environmentReadyIdentity: ENVIRONMENT_READY_IDENTITY,
   privateTargetResolver: resolver(secret),
   fetchImpl,
   observers,
@@ -114,7 +120,19 @@ test('composite HTTP probe applies descriptor checks without a service switch', 
   const expected = expectedFor('environment_state_server')
   const bodies = {
     '/health': { ok: true, status: 'ok' },
-    '/ready': { ok: true, ready: true, status: 'ready' },
+    '/ready': {
+      ok: true,
+      ready: true,
+      status: 'ready',
+      camera_requirement: {
+        requirement_id: 'camera_hub',
+        profile_id: ENVIRONMENT_READY_IDENTITY.profile_id,
+        effective_config_sha256: ENVIRONMENT_READY_IDENTITY.effective_config_sha256,
+        policy: ENVIRONMENT_READY_IDENTITY.camera_policy,
+        requirement: 'not_required',
+        result: 'camera_excluded_by_profile'
+      }
+    },
     '/environment/current': {
       schema_version: 'environment_state.v1',
       stale: false,
@@ -129,6 +147,61 @@ test('composite HTTP probe applies descriptor checks without a service switch', 
   assertBoundResult(result, expected, 'ready')
   assert.equal(result.ready, true)
   assert.equal(result.source_observed_at, new Date(BASE_MS + 100).toISOString())
+})
+
+test('Environment readiness fails closed when the operation identity is absent or mismatched', async () => {
+  const expected = expectedFor('environment_state_server')
+  const current = {
+    schema_version: 'environment_state.v1',
+    stale: false,
+    observed_at: new Date(BASE_MS + 100).toISOString(),
+    sources: { home: { configured: true, available: true, stale: false } }
+  }
+  const cases = [
+    ['missing', undefined],
+    ['profile', {
+      requirement_id: 'camera_hub',
+      profile_id: 'other-profile',
+      effective_config_sha256: ENVIRONMENT_READY_IDENTITY.effective_config_sha256,
+      policy: ENVIRONMENT_READY_IDENTITY.camera_policy,
+      requirement: 'not_required',
+      result: 'camera_excluded_by_profile'
+    }],
+    ['hash', {
+      requirement_id: 'camera_hub',
+      profile_id: ENVIRONMENT_READY_IDENTITY.profile_id,
+      effective_config_sha256: 'f'.repeat(64),
+      policy: ENVIRONMENT_READY_IDENTITY.camera_policy,
+      requirement: 'not_required',
+      result: 'camera_excluded_by_profile'
+    }],
+    ['policy', {
+      requirement_id: 'camera_hub',
+      profile_id: ENVIRONMENT_READY_IDENTITY.profile_id,
+      effective_config_sha256: ENVIRONMENT_READY_IDENTITY.effective_config_sha256,
+      policy: 'required',
+      requirement: 'required',
+      result: 'ready'
+    }]
+  ]
+  for (const [label, cameraRequirement] of cases) {
+    const bodies = {
+      '/health': { ok: true, status: 'ok' },
+      '/ready': {
+        ok: true,
+        ready: true,
+        status: 'ready',
+        ...(cameraRequirement ? { camera_requirement: cameraRequirement } : {})
+      },
+      '/environment/current': current
+    }
+    const result = await makeExecutor({
+      fetchImpl: async (url) => jsonResponse(bodies[new URL(url).pathname])
+    }).execute(expected)
+    assertBoundResult(result, expected, 'not_ready')
+    assert.equal(result.ready, false, label)
+    assert.equal(result.reason_class, 'environment_not_ready', label)
+  }
 })
 
 test('HTTP timeout, non-2xx, malformed, oversized and stale outcomes fail closed', async () => {
@@ -167,6 +240,7 @@ test('external probe is read-only and rejects private headers before fetch', asy
   let fetchCalls = 0
   const executor = new LauncherProbeExecutor({
     probeAuthority,
+    environmentReadyIdentity: ENVIRONMENT_READY_IDENTITY,
     privateTargetResolver: async (target) => ({
       url: `http://127.0.0.1:50021${target.path}`,
       headers: { Authorization: 'PRIVATE_SENTINEL' }
@@ -252,6 +326,7 @@ test('identity drift is rejected before resolving a target', async () => {
   const expected = expectedFor('home_assistant_bridge', { dispatch_id: 'ld_executor0000000002' })
   const executor = new LauncherProbeExecutor({
     probeAuthority,
+    environmentReadyIdentity: ENVIRONMENT_READY_IDENTITY,
     privateTargetResolver: async () => {
       resolverCalls += 1
       return { url: 'http://127.0.0.1:8787/health', headers: {} }

@@ -5,7 +5,8 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version", "graph_sha256", "binding_sha256", "operation_id",
+    "schema_version", "graph_sha256", "binding_sha256", "profile_id",
+    "effective_config_sha256", "camera_policy", "operation_id",
     "supervisor_generation", "intent", "phase", "reason", "cleanup",
     "primary_result", "cleanup_result", "revision", "joined_existing", "rollback_required",
     "recovery_required", "services", "residue_service_ids"
@@ -14,6 +15,9 @@
     "schema_version": { "const": "launcher_operation.v2" },
     "graph_sha256": { "$ref": "#/$defs/sha256" },
     "binding_sha256": { "$ref": "#/$defs/sha256" },
+    "profile_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$" },
+    "effective_config_sha256": { "$ref": "#/$defs/sha256" },
+    "camera_policy": { "enum": ["required", "camera_excluded_by_profile"] },
     "operation_id": { "type": "string", "pattern": "^lop_[a-z0-9]{8,64}$" },
     "supervisor_generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
     "intent": { "enum": ["start", "stop"] },

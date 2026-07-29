@@ -14,7 +14,8 @@ const realStore = require('../tools/home-control-launcher/launcher-operation-sto
 const reducer = require('../tools/home-control-launcher/launcher-supervisor-reducer')
 const { LauncherJobWorkerError } = require('../tools/home-control-launcher/launcher-job-worker-client')
 const {
-  compilePrivateServicePlan
+  compilePrivateServicePlan,
+  deriveEffectiveConfigIdentity
 } = require('../tools/home-control-launcher/launcher-private-service-plan')
 const { LauncherProbeExecutorError } = require('../tools/home-control-launcher/launcher-probe-executor')
 const {
@@ -140,6 +141,9 @@ const makeHarness = ({
       schema_version: 'launcher_private_service_plans.v1',
       graph_sha256: authority.identities.graphSha256,
       binding_sha256: authority.identities.bindingSha256,
+      profile_id: CONFIG_IDENTITY.profile_id,
+      effective_config_sha256: CONFIG_IDENTITY.effective_config_sha256,
+      camera_policy: CONFIG_IDENTITY.camera_policy,
       services: []
     },
     powershell_path: process.execPath,
@@ -212,6 +216,11 @@ const makeHarness = ({
       return `ld_${String(dispatchSequence).padStart(16, '0')}`
     }
   })
+  const startWithIdentity = runtime.start.bind(runtime)
+  runtime.start = (request) => startWithIdentity({
+    ...request,
+    configIdentity: request?.configIdentity || CONFIG_IDENTITY
+  })
   return {
     root,
     runtime,
@@ -250,6 +259,12 @@ const canonicalOptions = {
   SkipVoicevoxCheck: false,
   MediapipeMode: 'mediamtx'
 }
+const configIdentityFor = (options) => deriveEffectiveConfigIdentity({
+  profileId: authority.graph.profile_id,
+  options,
+  authority
+})
+const CONFIG_IDENTITY = configIdentityFor(canonicalOptions)
 
 test('preflight is persisted before exchange; Node orders, finalizes, and keeps public state private', async () => {
   let harness
@@ -303,6 +318,25 @@ test('preflight is persisted before exchange; Node orders, finalizes, and keeps 
   }
 })
 
+test('Stop rejects a different profile before cleanup mutation', async () => {
+  const harness = makeHarness()
+  try {
+    const started = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(started.result_class, 'ready')
+    const requestCount = harness.workers[0].requests.length
+    const mismatched = await harness.runtime.stop({ profileId: 'camera-debug', options: canonicalOptions })
+    assert.equal(mismatched.ok, false)
+    assert.equal(mismatched.result_class, 'preflight_failed')
+    assert.equal(mismatched.error_class, 'private_plan_invalid')
+    assert.equal(harness.workers[0].requests.length, requestCount)
+    const stopped = await harness.runtime.stop({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(stopped.ok, true)
+    assert.equal(stopped.result_class, 'stopped')
+  } finally {
+    harness.cleanup()
+  }
+})
+
 test('probe executor factory binds the single compiled plan before store side effects', async () => {
   const calls = []
   const harness = makeHarness({
@@ -318,14 +352,14 @@ test('probe executor factory binds the single compiled plan before store side ef
     }
   })
   try {
-    const started = await harness.runtime.start({ profileId: 'thought-core-v0', options: {} })
+    const started = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
     assert.equal(started.result_class, 'ready')
     assert.equal(calls.length, 1)
     assert.equal(calls[0].validatedAuthority, authority)
     assert.equal(calls[0].compiled.document.schema_version, 'launcher_private_service_plans.v1')
     assert.ok(harness.events.indexOf('plan:compile') < harness.events.indexOf('store:start'))
     assert.ok(harness.runtime.probeExecutor)
-    const stopped = await harness.runtime.stop({ profileId: 'thought-core-v0', options: {} })
+    const stopped = await harness.runtime.stop({ profileId: 'thought-core-v0', options: canonicalOptions })
     assert.equal(stopped.result_class, 'stopped')
     assert.equal(harness.runtime.probeExecutor, null)
   } finally {
@@ -336,10 +370,18 @@ test('probe executor factory binds the single compiled plan before store side ef
 test('an in-flight duplicate joins without a second worker exchange', async () => {
   let releaseFirst
   let firstSeen
+  let readMode = 'normal'
   const firstGate = new Promise((resolve) => { firstSeen = resolve })
   const releaseGate = new Promise((resolve) => { releaseFirst = resolve })
   let gated = false
   const harness = makeHarness({
+    storeOverrides: {
+      readOperation: (...args) => {
+        if (readMode === 'failed') throw new Error('private_store_failure_sentinel')
+        const operation = realStore.readOperation(...args)
+        return readMode === 'drifted' ? { ...operation, revision: operation.revision + 1 } : operation
+      }
+    },
     workerBuilders: [({ events }) => new FakeWorker({
       events,
       onExecute: async () => {
@@ -353,12 +395,68 @@ test('an in-flight duplicate joins without a second worker exchange', async () =
   try {
     const first = harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
     await firstGate
+    const mismatched = await harness.runtime.start({
+      profileId: 'thought-core-v0',
+      options: canonicalOptions,
+      configIdentity: { ...CONFIG_IDENTITY, effective_config_sha256: 'f'.repeat(64) }
+    })
+    assert.equal(mismatched.ok, false)
+    assert.equal(mismatched.result_class, 'preflight_failed')
+    assert.equal(mismatched.error_class, 'private_plan_invalid')
+    assert.equal(harness.workers[0].requests.length, 1)
+    readMode = 'failed'
+    const unreadableDuplicate = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(unreadableDuplicate.ok, false)
+    assert.equal(unreadableDuplicate.result_class, 'preflight_failed')
+    assert.equal(unreadableDuplicate.error_class, 'supervisor_runtime_failed')
+    assert.equal(unreadableDuplicate.operation.phase, 'idle')
+    assert.equal(unreadableDuplicate.operation.operation_id, null)
+    assert.equal(harness.workers[0].requests.length, 1)
+    readMode = 'normal'
     const duplicate = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
     assert.equal(duplicate.result_class, 'joined_existing')
     assert.equal(harness.workers.length, 1)
     assert.equal(harness.workers[0].requests.length, 1)
     releaseFirst()
     assert.equal((await first).result_class, 'ready')
+    readMode = 'failed'
+    const unreadableReady = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(unreadableReady.ok, false)
+    assert.equal(unreadableReady.result_class, 'preflight_failed')
+    assert.equal(unreadableReady.error_class, 'supervisor_runtime_failed')
+    assert.equal(unreadableReady.operation.phase, 'idle')
+    assert.equal(unreadableReady.operation.operation_id, null)
+    assert.equal(harness.workers.length, 1)
+    readMode = 'drifted'
+    const driftedReady = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(driftedReady.ok, false)
+    assert.equal(driftedReady.result_class, 'preflight_failed')
+    assert.equal(driftedReady.error_class, 'private_plan_invalid')
+    assert.equal(driftedReady.operation.phase, 'idle')
+    assert.equal(driftedReady.operation.operation_id, null)
+    assert.equal(harness.workers.length, 1)
+    readMode = 'normal'
+    const readyDuplicate = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(readyDuplicate.ok, true)
+    assert.equal(readyDuplicate.result_class, 'joined_existing')
+    assert.equal(harness.workers.length, 1)
+    const readyMismatch = await harness.runtime.start({
+      profileId: 'thought-core-v0',
+      options: { ...canonicalOptions, SkipMediapipe: true, SkipVisionSnapshotProcessor: true },
+      configIdentity: {
+        ...CONFIG_IDENTITY,
+        effective_config_sha256: configIdentityFor({
+          ...canonicalOptions,
+          SkipMediapipe: true,
+          SkipVisionSnapshotProcessor: true
+        }).effective_config_sha256,
+        camera_policy: 'camera_excluded_by_profile'
+      }
+    })
+    assert.equal(readyMismatch.ok, false)
+    assert.equal(readyMismatch.result_class, 'preflight_failed')
+    assert.equal(readyMismatch.error_class, 'private_plan_invalid')
+    assert.equal(harness.workers.length, 1)
   } finally {
     releaseFirst()
     harness.cleanup()
@@ -517,7 +615,7 @@ test('semantic probe persistence failure retains operation_store as the safe fir
     }
   })
   try {
-    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: {} })
+    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
     assert.equal(result.ok, false)
     assert.equal(result.operation.reason, 'supervisor_crash')
     assert.equal(harness.runtime.current.primary_result.responsible_id, 'operation_store')
@@ -582,7 +680,7 @@ test('typed semantic probe failure with store failure retains operation_store wi
     }
   })
   try {
-    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: {} })
+    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
     assert.equal(result.ok, false)
     assert.equal(result.operation.reason, 'supervisor_crash')
     assert.equal(harness.runtime.current.primary_result.responsible_id, 'operation_store')
@@ -626,7 +724,7 @@ test('untyped semantic probe failures retain only their fixed first substage', a
           return apply(eventType, ...args)
         }
       }
-      const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: {} })
+      const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
       assert.equal(result.ok, false, responsibleId)
       assert.equal(result.operation.reason, 'supervisor_crash', responsibleId)
       assert.equal(harness.runtime.current.primary_result.responsible_id, responsibleId)
@@ -643,7 +741,7 @@ test('unknown supervisor crash attribution remains launcher_supervisor', () => {
   const operationId = 'lop_crashresponsible'
   const operation = reducer.reduce(
     reducer.reduce(
-      reducer.startOperation(null, operationId, authority).operation,
+      reducer.startOperation(null, operationId, authority, CONFIG_IDENTITY).operation,
       { event_type: 'preflight_started', operation_id: operationId },
       authority
     ),
@@ -867,7 +965,9 @@ test('public projection exposes only bounded reducer fields', () => {
   const projected = publicOperation(operation)
   assert.deepEqual(Object.keys(projected).sort(), [
     'authority_class',
+    'camera_policy',
     'cleanup',
+    'effective_config_sha256',
     'intent',
     'joined_existing',
     'operation_id',
@@ -886,6 +986,9 @@ test('public projection exposes only bounded reducer fields', () => {
 })
 
 const reducerFixture = () => ({
+  profile_id: CONFIG_IDENTITY.profile_id,
+  effective_config_sha256: CONFIG_IDENTITY.effective_config_sha256,
+  camera_policy: CONFIG_IDENTITY.camera_policy,
   operation_id: 'lop_publicfixture01',
   intent: 'start',
   phase: 'ready',
@@ -953,12 +1056,14 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
     const nextEntrypoint = makeFile('organs/expression/aituber-kit/node_modules/next/dist/bin/next')
     fs.mkdirSync(executableRoot, { recursive: true })
     const executables = Object.fromEntries(['uv', 'node', 'pwsh'].map((name) => [name, makeFile(`bin/${name}.exe`)]))
+    const effectiveOptions = { ...canonicalOptions, HomeControlConfigPath: liveConfig }
     const compiled = compilePrivateServicePlan({
       repositoryRoot: ROOT,
       workspaceRoot: workspace,
       privateRuntimeRoot: path.join(workspace, 'state'),
       profileId: 'thought-core-v0',
-      options: { ...canonicalOptions, HomeControlConfigPath: liveConfig },
+      options: effectiveOptions,
+      configIdentity: configIdentityFor(effectiveOptions),
       authority,
       processEnvironment: {
         PATH: executableRoot,
@@ -998,6 +1103,76 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
     assert.deepEqual(environmentPlan.arguments.slice(0, 4), [
       'run', 'python', '-m', 'environment_state_server.main'
     ])
+    assert.deepEqual(
+      environmentPlan.arguments.slice(
+        environmentPlan.arguments.indexOf('--profile-id'),
+        environmentPlan.arguments.indexOf('--profile-id') + 6
+      ),
+      [
+        '--profile-id', configIdentityFor(effectiveOptions).profile_id,
+        '--effective-config-sha256', configIdentityFor(effectiveOptions).effective_config_sha256,
+        '--camera-policy', configIdentityFor(effectiveOptions).camera_policy
+      ]
+    )
+    assert.equal(environmentPlan.arguments.includes('--startup-config-sha256'), false)
+    assert.equal(compiled.document.profile_id, configIdentityFor(effectiveOptions).profile_id)
+    assert.equal(
+      compiled.document.effective_config_sha256,
+      configIdentityFor(effectiveOptions).effective_config_sha256
+    )
+    assert.equal(compiled.document.camera_policy, configIdentityFor(effectiveOptions).camera_policy)
+    const directNameOptions = {
+      ...effectiveOptions,
+      MediapipeCameraName: 'direct-camera-name',
+      MediapipeCameraSelectionKey: ''
+    }
+    assert.notEqual(
+      configIdentityFor({ ...directNameOptions, MediapipeCameraName: 'different-camera' }).effective_config_sha256,
+      configIdentityFor(directNameOptions).effective_config_sha256
+    )
+    const savedSelectionOptions = {
+      ...effectiveOptions,
+      MediapipeCameraName: 'operator-facing-label',
+      MediapipeCameraSelectionKey: 'camera_selection_0001'
+    }
+    const executionSelectionOptions = {
+      ...savedSelectionOptions,
+      MediapipeCameraName: '@device_pnp_private_runtime_name'
+    }
+    assert.equal(
+      configIdentityFor(executionSelectionOptions).effective_config_sha256,
+      configIdentityFor(savedSelectionOptions).effective_config_sha256
+    )
+    assert.notEqual(
+      configIdentityFor({
+        ...savedSelectionOptions,
+        MediapipeCameraSelectionKey: 'camera_selection_0002'
+      }).effective_config_sha256,
+      configIdentityFor(savedSelectionOptions).effective_config_sha256
+    )
+    const selectedCompiled = compilePrivateServicePlan({
+      repositoryRoot: ROOT,
+      workspaceRoot: workspace,
+      privateRuntimeRoot: path.join(workspace, 'state-selected'),
+      profileId: 'thought-core-v0',
+      options: executionSelectionOptions,
+      configIdentity: configIdentityFor(savedSelectionOptions),
+      authority,
+      processEnvironment: {
+        PATH: executableRoot,
+        SYSTEMROOT: 'C:\\Windows',
+        TEMP: workspace,
+        TMP: workspace,
+        HOME_CONTROL_API_TOKEN: '0123456789abcdef',
+        ENVIRONMENT_API_TOKEN: 'fedcba9876543210'
+      },
+      resolveExecutable: (name) => executables[name],
+      nonceFactory: () => 'ffeeddccbbaa99887766554433221100'
+    })
+    assert.equal(
+      selectedCompiled.document.effective_config_sha256,
+      configIdentityFor(savedSelectionOptions).effective_config_sha256
+    )
     assert.equal(path.basename(aituberPlan.file_path), 'node.exe')
     assert.equal(aituberPlan.arguments[0], nextEntrypoint)
     assert.deepEqual(aituberPlan.arguments.slice(1), [
@@ -1014,6 +1189,7 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
         privateRuntimeRoot: path.join(workspace, 'state'),
         profileId: 'thought-core-v0',
         options: { ...canonicalOptions, HomeControlConfigPath: liveConfig, VoicevoxReadyTimeoutSeconds: 46 },
+        configIdentity: CONFIG_IDENTITY,
         authority,
         processEnvironment: {
           PATH: executableRoot,
@@ -1035,7 +1211,8 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
         workspaceRoot: workspace,
         privateRuntimeRoot: path.join(workspace, 'state'),
         profileId: 'thought-core-v0',
-        options: { ...canonicalOptions, HomeControlConfigPath: liveConfig },
+        options: effectiveOptions,
+        configIdentity: configIdentityFor(effectiveOptions),
         authority,
         processEnvironment: {
           PATH: executableRoot,
@@ -1056,7 +1233,8 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
         workspaceRoot: workspace,
         privateRuntimeRoot: path.join(workspace, 'state'),
         profileId: 'thought-core-v0',
-        options: { ...canonicalOptions, HomeControlConfigPath: liveConfig },
+        options: effectiveOptions,
+        configIdentity: configIdentityFor(effectiveOptions),
         authority,
         processEnvironment: {
           PATH: executableRoot,

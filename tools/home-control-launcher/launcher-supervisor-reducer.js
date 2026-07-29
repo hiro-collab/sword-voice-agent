@@ -25,6 +25,8 @@ const OPERATION_ID = /^lop_[a-z0-9]{8,64}$/u
 const DISPATCH_ID = /^ld_[a-z0-9]{16,64}$/u
 const SHA256 = /^[a-f0-9]{64}$/u
 const PROBE_ID = /^[a-z][a-z0-9_-]{0,63}$/u
+const PROFILE_ID = /^[a-z][a-z0-9_-]{0,63}$/u
+const CAMERA_POLICIES = new Set(['required', 'camera_excluded_by_profile'])
 const PROBE_RESULT_KEYS = [
   'schema_version', 'message_type', 'operation_id', 'supervisor_generation', 'dispatch_id',
   'expected_revision', 'service_id', 'probe_id', 'graph_sha256', 'binding_sha256',
@@ -48,14 +50,28 @@ const validateIdentityInputs = (operationId, graphSha256, bindingSha256) => {
   if (typeof bindingSha256 !== 'string' || !SHA256.test(bindingSha256)) fail('operation_binding_sha256_invalid')
 }
 
-const createOperation = (operationId, authority, supervisorGeneration = 1) => {
+const validateConfigIdentity = (identity, authority) => {
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity) ||
+      Object.keys(identity).sort().join(',') !== 'camera_policy,effective_config_sha256,profile_id' ||
+      typeof identity.profile_id !== 'string' || !PROFILE_ID.test(identity.profile_id) ||
+      identity.profile_id !== authority.graph.profile_id ||
+      typeof identity.effective_config_sha256 !== 'string' || !SHA256.test(identity.effective_config_sha256) ||
+      !CAMERA_POLICIES.has(identity.camera_policy)) fail('operation_config_identity_invalid')
+  return identity
+}
+
+const createOperation = (operationId, authority, configIdentity, supervisorGeneration = 1) => {
   assertAuthority(authority)
   validateIdentityInputs(operationId, authority.identities.graphSha256, authority.identities.bindingSha256)
+  validateConfigIdentity(configIdentity, authority)
   if (!Number.isSafeInteger(supervisorGeneration) || supervisorGeneration < 1) fail('supervisor_generation_invalid')
   return {
     schema_version: 'launcher_operation.v2',
     graph_sha256: authority.identities.graphSha256,
     binding_sha256: authority.identities.bindingSha256,
+    profile_id: configIdentity.profile_id,
+    effective_config_sha256: configIdentity.effective_config_sha256,
+    camera_policy: configIdentity.camera_policy,
     operation_id: operationId,
     supervisor_generation: supervisorGeneration,
     intent: 'start',
@@ -77,17 +93,20 @@ const createOperation = (operationId, authority, supervisorGeneration = 1) => {
   }
 }
 
-const startOperation = (active, operationId, authority, supervisorGeneration = 1) => {
+const startOperation = (active, operationId, authority, configIdentity, supervisorGeneration = 1) => {
   assertAuthority(authority)
   validateIdentityInputs(operationId, authority.identities.graphSha256, authority.identities.bindingSha256)
+  validateConfigIdentity(configIdentity, authority)
   if (active !== null && active !== undefined) {
     validateSnapshot(active, authority)
-    if (active.graph_sha256 !== authority.identities.graphSha256 || active.binding_sha256 !== authority.identities.bindingSha256) fail('operation_active_identity_mismatch')
+    if (active.graph_sha256 !== authority.identities.graphSha256 || active.binding_sha256 !== authority.identities.bindingSha256 ||
+        active.profile_id !== configIdentity.profile_id || active.effective_config_sha256 !== configIdentity.effective_config_sha256 ||
+        active.camera_policy !== configIdentity.camera_policy) fail('operation_active_identity_mismatch')
     if (![PHASE.STOPPED, PHASE.FAILED].includes(active.phase)) {
       return { operation: next(active, { joined_existing: true }), joined_existing: true }
     }
   }
-  return { operation: createOperation(operationId, authority, supervisorGeneration), joined_existing: false }
+  return { operation: createOperation(operationId, authority, configIdentity, supervisorGeneration), joined_existing: false }
 }
 
 const next = (operation, changes = {}) => {
@@ -496,8 +515,9 @@ const validateSnapshot = (operation, authority) => {
   validateIdentityInputs(operation?.operation_id, operation?.graph_sha256, operation?.binding_sha256)
   if (operation.schema_version !== 'launcher_operation.v2' || operation.graph_sha256 !== authority.identities.graphSha256 ||
       operation.binding_sha256 !== authority.identities.bindingSha256) fail('operation_store_identity_mismatch')
-  const exact = ['schema_version', 'graph_sha256', 'binding_sha256', 'operation_id', 'supervisor_generation', 'intent', 'phase', 'reason', 'cleanup', 'primary_result', 'cleanup_result', 'revision', 'joined_existing', 'rollback_required', 'recovery_required', 'services', 'residue_service_ids'].sort()
+  const exact = ['schema_version', 'graph_sha256', 'binding_sha256', 'profile_id', 'effective_config_sha256', 'camera_policy', 'operation_id', 'supervisor_generation', 'intent', 'phase', 'reason', 'cleanup', 'primary_result', 'cleanup_result', 'revision', 'joined_existing', 'rollback_required', 'recovery_required', 'services', 'residue_service_ids'].sort()
   if (!operation || Object.keys(operation).sort().some((key, index) => key !== exact[index]) || Object.keys(operation).length !== exact.length) fail('operation_store_record_invalid')
+  validateConfigIdentity({ profile_id: operation.profile_id, effective_config_sha256: operation.effective_config_sha256, camera_policy: operation.camera_policy }, authority)
   if (!Number.isSafeInteger(operation.supervisor_generation) || operation.supervisor_generation < 1 || operation.supervisor_generation > Number.MAX_SAFE_INTEGER ||
       !operation.primary_result || Object.keys(operation.primary_result).sort().join(',') !== 'action_certainty,class,responsible_id' ||
       !allowed.reason.has(operation.primary_result.class) || !['not_attempted', 'not_submitted', 'may_have_occurred', 'observed'].includes(operation.primary_result.action_certainty) ||
@@ -643,5 +663,5 @@ const workerResultToEvent = (result, current, expectedRequest, authority) => {
 
 module.exports = {
   CLEANUP, PHASE, REASON, SERVICE, createOperation, reduce, startOperation,
-  validateIdentityInputs, validatePersistedProbeResult, validateSnapshot, workerResultToEvent
+  validateConfigIdentity, validateIdentityInputs, validatePersistedProbeResult, validateSnapshot, workerResultToEvent
 }

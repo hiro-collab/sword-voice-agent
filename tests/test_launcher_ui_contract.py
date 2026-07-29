@@ -928,6 +928,138 @@ $cases = @(
         self.assertIn("@device_(?:pnp|cm)_", server)
         self.assertIn("redactCameraSelectionInCommandText", server)
 
+    def test_new_launcher_exposes_only_its_graph_profile_and_locks_active_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_root:
+            state_dir = Path(temporary_root) / "state"
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            probe.bind(("127.0.0.1", 0))
+            launcher_port = probe.getsockname()[1]
+            probe.close()
+            env = os.environ.copy()
+            env["NODE_ENV"] = "test"
+            env["HOME_CONTROL_LAUNCHER_TEST_FAKE_SUPERVISOR"] = "deterministic_v1"
+            launcher = subprocess.Popen(
+                [
+                    "node",
+                    str(LAUNCHER_SERVER),
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(launcher_port),
+                    "--workspace",
+                    str(temporary_root),
+                    "--state-dir",
+                    str(state_dir),
+                ],
+                cwd=ROOT,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                state_url = f"http://127.0.0.1:{launcher_port}/api/state"
+                state = None
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    try:
+                        with urllib.request.urlopen(state_url, timeout=2) as response:
+                            state = json.loads(response.read().decode("utf-8"))
+                        break
+                    except Exception:
+                        time.sleep(0.05)
+                self.assertIsNotNone(state)
+                self.assertEqual(
+                    [profile["id"] for profile in state["profiles"]],
+                    ["thought-core-v0"],
+                )
+                self.assertEqual(
+                    state["config"]["profileState"]["resultClass"],
+                    "supported_supervisor_profile",
+                )
+
+                unsupported_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/save-config",
+                    data=json.dumps({"profileId": "camera-debug", "options": {}}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as unsupported_error:
+                    urllib.request.urlopen(unsupported_request, timeout=5)
+                self.assertEqual(unsupported_error.exception.code, 400)
+                unsupported = json.loads(unsupported_error.exception.read().decode("utf-8"))
+                self.assertEqual(
+                    unsupported["resultClass"],
+                    "blocked_unsupported_supervisor_profile",
+                )
+                self.assertEqual(unsupported["supportedProfileIds"], ["thought-core-v0"])
+
+                options = {
+                    "SkipMediapipe": True,
+                    "SkipVisionSnapshotProcessor": True,
+                }
+                save_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/save-config",
+                    data=json.dumps(
+                        {"profileId": "thought-core-v0", "options": options}
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(save_request, timeout=5) as response:
+                    saved = json.loads(response.read().decode("utf-8"))
+
+                start_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/start",
+                    data=json.dumps(
+                        {
+                            "profileId": "thought-core-v0",
+                            "expectedConfigSha256": saved["configIdentity"][
+                                "effective_config_sha256"
+                            ],
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(start_request, timeout=8) as response:
+                    started = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(started["result_class"], "ready")
+
+                locked_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/save-config",
+                    data=json.dumps(
+                        {
+                            "profileId": "thought-core-v0",
+                            "options": {**options, "MediapipeCameraFps": 25},
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as locked_error:
+                    urllib.request.urlopen(locked_request, timeout=5)
+                self.assertEqual(locked_error.exception.code, 409)
+                locked = json.loads(locked_error.exception.read().decode("utf-8"))
+                self.assertEqual(locked["resultClass"], "blocked_operation_config_locked")
+                self.assertEqual(locked["operation"]["phase"], "ready")
+
+                stop_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/stop",
+                    data=json.dumps({"profileId": "thought-core-v0"}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(stop_request, timeout=8) as response:
+                    stopped = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(stopped["result_class"], "stopped")
+
+                with urllib.request.urlopen(locked_request, timeout=5) as response:
+                    saved_after_stop = json.loads(response.read().decode("utf-8"))
+                self.assertTrue(saved_after_stop["ok"])
+            finally:
+                launcher.terminate()
+                launcher.wait(timeout=5)
+
     def test_launcher_camera_enumeration_endpoint_has_no_device_side_effects(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_root:
             state_dir = Path(temporary_root) / "state"
@@ -1166,14 +1298,14 @@ $cases = @(
                             },
                         }
                     ).encode("utf-8")
-                    invalid_request = urllib.request.Request(
-                        f"http://127.0.0.1:{launcher_port}/api/start",
+                    invalid_save_request = urllib.request.Request(
+                        f"http://127.0.0.1:{launcher_port}/api/save-config",
                         data=invalid_body,
                         headers={"Content-Type": "application/json"},
                         method="POST",
                     )
                     with self.assertRaises(HTTPError) as invalid_error:
-                        urllib.request.urlopen(invalid_request, timeout=5)
+                        urllib.request.urlopen(invalid_save_request, timeout=5)
                     self.assertEqual(invalid_error.exception.code, 500)
                     invalid_boundary = json.loads(
                         invalid_error.exception.read().decode("utf-8")
@@ -1311,6 +1443,63 @@ $cases = @(
                 self.assertTrue(boundary["review_command_redacted"])
                 self.assertNotIn("@device_pnp_", json.dumps(boundary))
 
+                for expected_hash in (None, "f" * 64):
+                    identity_body = {"profileId": "thought-core-v0"}
+                    if expected_hash is not None:
+                        identity_body["expectedConfigSha256"] = expected_hash
+                    identity_request = urllib.request.Request(
+                        f"http://127.0.0.1:{launcher_port}/api/start",
+                        data=json.dumps(identity_body).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with self.assertRaises(HTTPError) as identity_error:
+                        urllib.request.urlopen(identity_request, timeout=5)
+                    self.assertEqual(identity_error.exception.code, 409)
+                    identity_payload = json.loads(
+                        identity_error.exception.read().decode("utf-8")
+                    )
+                    self.assertEqual(
+                        identity_payload["error_class"],
+                        "saved_config_identity_invalid",
+                    )
+                    self.assertFalse((state_dir / "pids.json").exists())
+                    self.assertFalse((state_dir / "launcher-state.json").exists())
+
+                config_path = state_dir / "launcher-config.json"
+                persisted_config = json.loads(config_path.read_text(encoding="utf-8"))
+                drifted_config = dict(persisted_config)
+                drifted_config["options"] = {
+                    **persisted_config["options"],
+                    "MediapipeCameraWidth": (
+                        persisted_config["options"]["MediapipeCameraWidth"] + 1
+                    ),
+                }
+                config_path.write_text(json.dumps(drifted_config), encoding="utf-8")
+                drift_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/start",
+                    data=json.dumps(
+                        {
+                            "profileId": "thought-core-v0",
+                            "expectedConfigSha256": saved["configIdentity"][
+                                "effective_config_sha256"
+                            ],
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as drift_error:
+                    urllib.request.urlopen(drift_request, timeout=5)
+                self.assertEqual(drift_error.exception.code, 409)
+                drift_payload = json.loads(
+                    drift_error.exception.read().decode("utf-8")
+                )
+                self.assertEqual(
+                    drift_payload["error_class"], "saved_config_identity_mismatch"
+                )
+                config_path.write_text(json.dumps(persisted_config), encoding="utf-8")
+
                 write_fixture(first_alternative, first_alternative)
                 with urllib.request.urlopen(devices_url, timeout=5) as response:
                     ambiguous = json.loads(response.read().decode("utf-8"))
@@ -1320,7 +1509,9 @@ $cases = @(
                     data=json.dumps(
                         {
                             "profileId": "thought-core-v0",
-                            "options": saved["options"],
+                            "expectedConfigSha256": saved["configIdentity"][
+                                "effective_config_sha256"
+                            ],
                         }
                     ).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
@@ -1343,6 +1534,30 @@ $cases = @(
                     missing = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(missing["selection_class"], "selected_unresolvable")
                 self.assertFalse(missing["selected_match"])
+                missing_request = urllib.request.Request(
+                    f"http://127.0.0.1:{launcher_port}/api/start",
+                    data=json.dumps(
+                        {
+                            "profileId": "thought-core-v0",
+                            "expectedConfigSha256": saved["configIdentity"][
+                                "effective_config_sha256"
+                            ],
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as missing_error:
+                    urllib.request.urlopen(missing_request, timeout=5)
+                self.assertEqual(missing_error.exception.code, 409)
+                missing_payload = json.loads(
+                    missing_error.exception.read().decode("utf-8")
+                )
+                self.assertEqual(
+                    missing_payload["error"], "selected_camera_unresolvable"
+                )
+                self.assertEqual(missing_payload["device_start_count"], 0)
+                self.assertEqual(missing_payload["capture_count"], 0)
 
                 write_fixture(first_alternative, second_alternative)
                 with urllib.request.urlopen(devices_url, timeout=5) as response:

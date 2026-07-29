@@ -20,6 +20,8 @@ const authority = loadAuthority(ROOT)
 const probeAuthority = loadProbeAuthority(ROOT, authority)
 const BASE_MS = Date.parse('2026-07-29T14:00:00.000Z')
 const PRIVATE_PATH = 'C:\\private\\runtime\\PRIVATE_PATH_SENTINEL'
+const EFFECTIVE_CONFIG_SHA256 = 'e'.repeat(64)
+const CAMERA_POLICY = 'camera_excluded_by_profile'
 
 const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value), {
   status,
@@ -51,6 +53,9 @@ const compiledPlan = ({ environmentSecret = 'PRIVATE_ENVIRONMENT_TOKEN_A', pathS
       schema_version: 'launcher_private_service_plans.v1',
       graph_sha256: authority.identities.graphSha256,
       binding_sha256: authority.identities.bindingSha256,
+      profile_id: authority.graph.profile_id,
+      effective_config_sha256: EFFECTIVE_CONFIG_SHA256,
+      camera_policy: CAMERA_POLICY,
       services
     },
     powershell_path: `${PRIVATE_PATH}\\pwsh.exe`,
@@ -62,6 +67,9 @@ const operationFor = (serviceId, values = {}) => ({
   schema_version: 'launcher_operation.v2',
   graph_sha256: authority.identities.graphSha256,
   binding_sha256: authority.identities.bindingSha256,
+  profile_id: authority.graph.profile_id,
+  effective_config_sha256: EFFECTIVE_CONFIG_SHA256,
+  camera_policy: CAMERA_POLICY,
   operation_id: 'lop_runtimecontext01',
   supervisor_generation: 19,
   intent: 'start',
@@ -149,7 +157,19 @@ test('runtime context derives loopback endpoints and injects only declared priva
   const requests = []
   const bodies = {
     '/health': { ok: true, status: 'ok' },
-    '/ready': { ok: true, ready: true, status: 'ready' },
+    '/ready': {
+      ok: true,
+      ready: true,
+      status: 'ready',
+      camera_requirement: {
+        requirement_id: 'camera_hub',
+        profile_id: authority.graph.profile_id,
+        effective_config_sha256: EFFECTIVE_CONFIG_SHA256,
+        policy: CAMERA_POLICY,
+        requirement: 'not_required',
+        result: 'camera_excluded_by_profile'
+      }
+    },
     '/environment/current': {
       schema_version: 'environment_state.v1',
       stale: false,

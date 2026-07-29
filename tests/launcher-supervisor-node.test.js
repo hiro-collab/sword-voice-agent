@@ -8,10 +8,27 @@ const test = require('node:test')
 
 const ROOT = path.resolve(__dirname, '..')
 const contract = require('../tools/home-control-launcher/launcher-supervisor-contract')
-const reducer = require('../tools/home-control-launcher/launcher-supervisor-reducer')
-const store = require('../tools/home-control-launcher/launcher-operation-store')
+const rawReducer = require('../tools/home-control-launcher/launcher-supervisor-reducer')
+const rawStore = require('../tools/home-control-launcher/launcher-operation-store')
 
 const authority = contract.loadAuthority(ROOT)
+const CONFIG_IDENTITY = Object.freeze({
+  profile_id: authority.graph.profile_id,
+  effective_config_sha256: 'e'.repeat(64),
+  camera_policy: 'camera_excluded_by_profile'
+})
+const reducer = {
+  ...rawReducer,
+  createOperation: (operationId, suppliedAuthority, generation = 1) =>
+    rawReducer.createOperation(operationId, suppliedAuthority, CONFIG_IDENTITY, generation),
+  startOperation: (active, operationId, suppliedAuthority, generation = 1) =>
+    rawReducer.startOperation(active, operationId, suppliedAuthority, CONFIG_IDENTITY, generation)
+}
+const store = {
+  ...rawStore,
+  startAndPersist: (operationId, suppliedAuthority, root, observer) =>
+    rawStore.startAndPersist(operationId, CONFIG_IDENTITY, suppliedAuthority, root, observer)
+}
 const OPERATION_ID = 'lop_node0001'
 const LEASE_PROOF = `lp_${'a'.repeat(64)}`
 const dispatchId = (serviceId, action, sequence = 1) => `ld_${Buffer.from(`${serviceId}:${action}:${sequence}`).toString('hex').slice(0, 32).padEnd(32, '0')}`
@@ -57,6 +74,49 @@ const withRuntimeRoot = (action) => {
   fs.writeFileSync(path.join(runtimeRoot, 'parent-sentinel.txt'), 'parent-unchanged', { mode: 0o600 })
   try { return action(runtimeRoot) } finally { fs.rmSync(runtimeRoot, { recursive: true, force: true }) }
 }
+
+test('operation identity is immutable, persisted before mutation, and rejects drift', () => withRuntimeRoot((runtimeRoot) => {
+  expectCode(
+    () => rawReducer.createOperation(OPERATION_ID, authority, null),
+    'operation_config_identity_invalid'
+  )
+  const started = rawStore.startAndPersist(
+    OPERATION_ID,
+    CONFIG_IDENTITY,
+    authority,
+    runtimeRoot
+  )
+  assert.equal(started.operation.profile_id, CONFIG_IDENTITY.profile_id)
+  assert.equal(
+    started.operation.effective_config_sha256,
+    CONFIG_IDENTITY.effective_config_sha256
+  )
+  assert.equal(started.operation.camera_policy, CONFIG_IDENTITY.camera_policy)
+  const serialized = JSON.stringify(started.operation)
+  assert.equal(serialized.includes('MediapipeCameraName'), false)
+  assert.equal(serialized.includes('MediapipeCameraSelectionKey'), false)
+  expectCode(
+    () => rawReducer.startOperation(
+      started.operation,
+      'lop_configdrift01',
+      authority,
+      { ...CONFIG_IDENTITY, effective_config_sha256: 'f'.repeat(64) },
+      started.operation.supervisor_generation
+    ),
+    'operation_active_identity_mismatch'
+  )
+  expectCode(
+    () => rawReducer.startOperation(
+      started.operation,
+      'lop_configdrift02',
+      authority,
+      { ...CONFIG_IDENTITY, camera_policy: 'required' },
+      started.operation.supervisor_generation
+    ),
+    'operation_active_identity_mismatch'
+  )
+  rawStore.releaseSupervisorLease(started.supervisorLease, authority)
+}))
 
 const startLifecycle = () => {
   let operation = reducer.createOperation(OPERATION_ID, authority)

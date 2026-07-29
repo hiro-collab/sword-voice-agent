@@ -26,15 +26,21 @@ def between(source: str, start: str, end: str) -> str:
 class LauncherSupervisorRuntimeContractTest(TestCase):
     def test_preflight_is_persisted_before_first_worker_exchange(self) -> None:
         runtime = read(RUNTIME)
-        start = between(runtime, "  async start ({ profileId, options })", "  async stop ({ profileId, options })")
+        start = between(runtime, "  async start ({ profileId, options, configIdentity })", "  async stop ({ profileId, options })")
 
-        compile_index = start.index("compiled = this.compile(profileId, options)")
+        identity_index = start.index("validatedConfigIdentity = deriveEffectiveConfigIdentity({")
+        inflight_index = start.index("if (this.inflight)")
+        compile_index = start.index(
+            "compiled = this.compile(profileId, options, validatedConfigIdentity)"
+        )
         store_index = start.index("this.store.startAndPersist(")
         preflight_started_index = start.index("this.apply('preflight_started')")
         preflight_passed_index = start.index("this.apply('preflight_passed')")
         client_index = start.index("this.ensureClient(compiled)")
         exchange_index = start.index("await this.exchange(")
 
+        self.assertLess(identity_index, inflight_index)
+        self.assertLess(inflight_index, compile_index)
         self.assertLess(compile_index, store_index)
         self.assertLess(store_index, preflight_started_index)
         self.assertLess(preflight_started_index, preflight_passed_index)
@@ -43,7 +49,7 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
 
     def test_node_owns_external_probe_rollback_and_finalization(self) -> None:
         runtime = read(RUNTIME)
-        start = between(runtime, "  async start ({ profileId, options })", "  async stop ({ profileId, options })")
+        start = between(runtime, "  async start ({ profileId, options, configIdentity })", "  async stop ({ profileId, options })")
         external = between(
             start,
             "if (spec.ownership === 'external')",

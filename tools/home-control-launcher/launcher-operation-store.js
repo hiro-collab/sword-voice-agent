@@ -576,7 +576,7 @@ const retryStartCleanup = (started, authority) => {
 }
 
 const startAndPersist = (
-  operationId, authority, authorizedPrivateRuntimeRoot, ownerLivenessObserver = defaultObserveOwnerLiveness
+  operationId, configIdentity, authority, authorizedPrivateRuntimeRoot, ownerLivenessObserver = defaultObserveOwnerLiveness
 ) => {
   assertAuthority(authority)
   validateIdentityInputs(operationId, authority.identities.graphSha256, authority.identities.bindingSha256)
@@ -586,7 +586,7 @@ const startAndPersist = (
     const active = fs.existsSync(paths.recordPath) ? readResolved(paths.recordPath, authority) : null
     const generation = active === null ? 1 : active.supervisor_generation + 1
     if (!Number.isSafeInteger(generation) || generation > Number.MAX_SAFE_INTEGER) fail('operation_store_generation_exhausted')
-    const decision = startOperation(active, operationId, authority, generation)
+    const decision = startOperation(active, operationId, authority, configIdentity, generation)
     const supervisorLease = createSupervisorLeaseFile({
       paths, operationId: decision.operation.operation_id,
       supervisorGeneration: decision.operation.supervisor_generation, authority

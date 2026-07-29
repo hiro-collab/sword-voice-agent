@@ -17,6 +17,7 @@ const state = {
   language: readInitialLanguage(),
   profiles: [],
   selectedProfileId: 'thought-core-v0',
+  configIdentity: null,
   options: {},
   busy: false,
   operation: 'idle',
@@ -2258,6 +2259,7 @@ const refreshState = async () => {
   const payload = await api('/api/state')
   state.profiles = payload.profiles || []
   state.selectedProfileId = payload.config?.selectedProfileId || 'thought-core-v0'
+  state.configIdentity = payload.config?.configIdentity || null
   state.options = payload.config?.options || {}
   $('workspace-root').textContent = payload.portMode
     ? `${payload.workspaceRoot} · ${payload.portMode}`
@@ -2309,11 +2311,20 @@ const startStack = async () => {
   setOperation('starting', t('action.startSending'))
   setBusy(true, t('saveState.starting'))
   try {
+    const saved = await api('/api/save-config', {
+      method: 'POST',
+      body: JSON.stringify({
+        profileId: state.selectedProfileId,
+        options: currentOptions(),
+        demoSettings: currentDemoSafeSettings()
+      })
+    })
+    state.configIdentity = saved.configIdentity
     await api('/api/start', {
       method: 'POST',
       body: JSON.stringify({
         profileId: state.selectedProfileId,
-        options: currentOptions()
+        expectedConfigSha256: saved.configIdentity?.effective_config_sha256
       })
     })
     setOperation('starting', t('action.startAcceptedWatching'))

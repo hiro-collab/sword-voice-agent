@@ -12,8 +12,8 @@ const test = require('node:test')
 
 const contract = require('../tools/home-control-launcher/launcher-supervisor-contract')
 const { loadAuthority } = contract
-const reducer = require('../tools/home-control-launcher/launcher-supervisor-reducer')
-const store = require('../tools/home-control-launcher/launcher-operation-store')
+const rawReducer = require('../tools/home-control-launcher/launcher-supervisor-reducer')
+const rawStore = require('../tools/home-control-launcher/launcher-operation-store')
 const {
   LauncherJobWorkerClient: RawLauncherJobWorkerClient,
   LauncherJobWorkerError,
@@ -24,6 +24,23 @@ const {
 
 const ROOT = path.resolve(__dirname, '..')
 const authority = loadAuthority(ROOT)
+const CONFIG_IDENTITY = Object.freeze({
+  profile_id: authority.graph.profile_id,
+  effective_config_sha256: 'e'.repeat(64),
+  camera_policy: 'camera_excluded_by_profile'
+})
+const reducer = {
+  ...rawReducer,
+  createOperation: (operationId, suppliedAuthority, generation = 1) =>
+    rawReducer.createOperation(operationId, suppliedAuthority, CONFIG_IDENTITY, generation),
+  startOperation: (active, operationId, suppliedAuthority, generation = 1) =>
+    rawReducer.startOperation(active, operationId, suppliedAuthority, CONFIG_IDENTITY, generation)
+}
+const store = {
+  ...rawStore,
+  startAndPersist: (operationId, suppliedAuthority, root, observer) =>
+    rawStore.startAndPersist(operationId, CONFIG_IDENTITY, suppliedAuthority, root, observer)
+}
 const OPERATION_ID = 'lop_n1synthetic01'
 const PRIVATE_RUNTIME_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'sword-launcher-worker-lease-'))
 const SEED_START = store.startAndPersist('lop_n1seed0001', authority, PRIVATE_RUNTIME_ROOT)

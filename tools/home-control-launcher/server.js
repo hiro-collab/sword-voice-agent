@@ -17,6 +17,9 @@ const {
 const {
   LauncherProbeRuntimeContext
 } = require('./launcher-probe-runtime-context')
+const {
+  deriveEffectiveConfigIdentity
+} = require('./launcher-private-service-plan')
 
 const args = process.argv.slice(2)
 
@@ -192,11 +195,14 @@ const launcherRuntimeOptions = {
 }
 if (TEST_FAKE_SUPERVISOR) {
   Object.assign(launcherRuntimeOptions, {
-    planCompiler: ({ authority }) => ({
+    planCompiler: ({ authority, configIdentity }) => ({
       document: {
         schema_version: 'launcher_private_service_plans.v1',
         graph_sha256: authority.identities.graphSha256,
         binding_sha256: authority.identities.bindingSha256,
+        profile_id: configIdentity.profile_id,
+        effective_config_sha256: configIdentity.effective_config_sha256,
+        camera_policy: configIdentity.camera_policy,
         services: []
       },
       powershell_path: process.execPath,
@@ -516,6 +522,25 @@ const requireKnownProfile = (profileId) => {
   const requested = String(profileId || '').trim()
   if (!requested || !profileIds().includes(requested)) {
     return unknownProfilePayload(profileId)
+  }
+  return null
+}
+
+const supervisorProfileIds = () => [launcherRuntime.authority.graph.profile_id]
+
+const unsupportedSupervisorProfilePayload = (profileId) => ({
+  ok: false,
+  error: 'unsupported_supervisor_profile',
+  resultClass: 'blocked_unsupported_supervisor_profile',
+  requestedProfileClass: compactProfileId(profileId),
+  supportedProfileIds: supervisorProfileIds(),
+  raw_private_publication_flags: false
+})
+
+const requireSupervisorProfile = (profileId) => {
+  const requested = String(profileId || '').trim()
+  if (!requested || !supervisorProfileIds().includes(requested)) {
+    return unsupportedSupervisorProfilePayload(profileId)
   }
   return null
 }
@@ -1456,7 +1481,7 @@ const previewCommand = (
   optionOverrides = {},
   { resolvedCameraName = '' } = {}
 ) => {
-  const profileError = requireKnownProfile(profileId)
+  const profileError = requireSupervisorProfile(profileId)
   if (profileError) {
     return profileError
   }
@@ -1481,14 +1506,65 @@ const previewCommand = (
 
 const saveConfig = (profileId, options) => {
   const { OpenAIBrokerPort, ...persistedOptions } = options || {}
-  writeJsonFile(LAUNCHER_CONFIG_FILE, {
+  const effectiveOptions = normalizeOptions(profileId, persistedOptions)
+  const configIdentity = deriveEffectiveConfigIdentity({
+    profileId,
+    options: effectiveOptions,
+    authority: launcherRuntime.authority
+  })
+  const record = {
+    schemaVersion: 'launcher_saved_config.v1',
     selectedProfileId: profileId,
     options: persistedOptions,
+    effectiveConfigSha256: configIdentity.effective_config_sha256,
+    cameraPolicy: configIdentity.camera_policy,
     updatedAt: nowIso()
-  })
+  }
+  writeJsonFile(LAUNCHER_CONFIG_FILE, record)
+  return { record, effectiveOptions, configIdentity }
+}
+
+const resolveSavedStartConfig = (profileId, expectedConfigSha256) => {
+  const saved = readLauncherConfig()
+  if (saved.schemaVersion !== 'launcher_saved_config.v1' ||
+      saved.selectedProfileId !== profileId ||
+      typeof expectedConfigSha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(expectedConfigSha256) ||
+      saved.effectiveConfigSha256 !== expectedConfigSha256 ||
+      !['required', 'camera_excluded_by_profile'].includes(saved.cameraPolicy)) {
+    return { ok: false, error_class: 'saved_config_identity_invalid' }
+  }
+  const effectiveOptions = normalizeOptions(profileId, saved.options || {})
+  let configIdentity
+  try {
+    configIdentity = deriveEffectiveConfigIdentity({
+      profileId,
+      options: effectiveOptions,
+      authority: launcherRuntime.authority
+    })
+  } catch {
+    return { ok: false, error_class: 'saved_config_identity_invalid' }
+  }
+  if (configIdentity.effective_config_sha256 !== saved.effectiveConfigSha256 ||
+      configIdentity.camera_policy !== saved.cameraPolicy) {
+    return { ok: false, error_class: 'saved_config_identity_mismatch' }
+  }
+  return { ok: true, effectiveOptions, configIdentity }
 }
 
 const operationState = () => launcherRuntime.publicState()
+
+const activeOperationConfigLock = () => {
+  const operation = operationState()
+  return ['idle', 'stopped'].includes(operation.phase)
+    ? null
+    : {
+        ok: false,
+        error: 'operation_config_locked',
+        resultClass: 'blocked_operation_config_locked',
+        operation,
+        raw_private_publication_flags: false
+      }
+}
 
 const runExclusiveStackOperation = async (type, action) => {
   const payload = await action()
@@ -1741,9 +1817,18 @@ const publicFixedStartDiagnostic = (launcherState) => {
   }
 }
 
-const startStack = async (profileId, optionOverrides = {}) => {
+const startStack = async (profileId, savedStartConfig) => {
   ensureRuntimeDirs()
-  const persistedOptions = normalizeOptions(profileId, optionOverrides)
+  if (!savedStartConfig?.ok) {
+    return {
+      ok: false,
+      schema_version: 'launcher_supervisor_result.v1',
+      result_class: 'preflight_failed',
+      error_class: savedStartConfig?.error_class || 'saved_config_identity_invalid',
+      raw_private_publication_flags: false
+    }
+  }
+  const persistedOptions = savedStartConfig.effectiveOptions
   const cameraSelection = resolveVideoInputSelectionForStart(persistedOptions)
   if (!cameraSelection.ok) {
     return cameraSelection
@@ -1756,9 +1841,9 @@ const startStack = async (profileId, optionOverrides = {}) => {
   }
   const result = await launcherRuntime.start({
     profileId,
-    options: preview.options
+    options: preview.options,
+    configIdentity: savedStartConfig.configIdentity
   })
-  if (result.error_class !== 'private_plan_invalid') saveConfig(profileId, persistedOptions)
   return result
 }
 
@@ -2183,10 +2268,16 @@ const reclaimManagedPortResidue = async (options) => {
 
 const stopStack = async (body) => {
   const config = readLauncherConfig()
-  const profileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
-  const profileError = requireKnownProfile(profileId)
+  const activeOperation = operationState()
+  const activeProfileId = activeOperation.operation_id ? activeOperation.profile_id : null
+  const requestedProfileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
+  const profileId = activeProfileId || requestedProfileId
+  const profileError = requireSupervisorProfile(profileId)
   if (profileError) {
     return profileError
+  }
+  if (activeProfileId && requestedProfileId !== activeProfileId) {
+    return unsupportedSupervisorProfilePayload(requestedProfileId)
   }
   const options = normalizeOptions(profileId, config.options || {})
   return launcherRuntime.stop({
@@ -3754,7 +3845,7 @@ const getEndpoints = (options) => {
 const getStatus = async () => {
   const config = readLauncherConfig()
   const selectedProfileId = config.selectedProfileId || PRIMARY_PROFILE_ID
-  const profileConfigState = requireKnownProfile(selectedProfileId) || {
+  const profileConfigState = requireSupervisorProfile(selectedProfileId) || {
     ok: true,
     resultClass: 'known_profile',
     selectedProfileId
@@ -3854,8 +3945,10 @@ const readTextTail = (filePath, maxBytes = 128 * 1024) => {
 
 const getState = async ({ includeLocalCameraSelection = true } = {}) => {
   const config = readLauncherConfig()
-  const selectedProfileId = config.selectedProfileId || PRIMARY_PROFILE_ID
-  const options = normalizeOptions(selectedProfileId, config.options || {})
+  const savedProfileId = config.selectedProfileId || PRIMARY_PROFILE_ID
+  const savedProfileState = requireSupervisorProfile(savedProfileId)
+  const selectedProfileId = savedProfileState ? PRIMARY_PROFILE_ID : savedProfileId
+  const options = normalizeOptions(selectedProfileId, savedProfileState ? {} : config.options || {})
   const status = await getStatus()
   const demoSafeSettings = effectiveDemoSafeSettings()
   return {
@@ -3864,7 +3957,7 @@ const getState = async ({ includeLocalCameraSelection = true } = {}) => {
     workspaceRoot: WORKSPACE_ROOT,
     stateDir: STATE_DIR,
     portMode: PORT_MODE,
-    profiles: readProfiles().map((profile) => ({
+    profiles: readProfiles().filter((profile) => supervisorProfileIds().includes(profile.id)).map((profile) => ({
       ...profile,
       options: includeLocalCameraSelection
         ? profile.options
@@ -3872,6 +3965,20 @@ const getState = async ({ includeLocalCameraSelection = true } = {}) => {
     })),
     config: {
       selectedProfileId,
+      profileState: savedProfileState || {
+        ok: true,
+        resultClass: 'supported_supervisor_profile',
+        requestedProfileClass: selectedProfileId,
+        supportedProfileIds: supervisorProfileIds(),
+        raw_private_publication_flags: false
+      },
+      configIdentity: !savedProfileState && config.schemaVersion === 'launcher_saved_config.v1'
+        ? {
+            profile_id: selectedProfileId,
+            effective_config_sha256: config.effectiveConfigSha256 || null,
+            camera_policy: config.cameraPolicy || null
+          }
+        : null,
       options: includeLocalCameraSelection
         ? options
         : withoutLocalCameraSelection(options)
@@ -4178,22 +4285,28 @@ const handleApi = async (request, response, requestUrl) => {
   if (request.method === 'POST' && requestUrl.pathname === '/api/save-config') {
     const body = await readBody(request)
     const profileId = body.profileId || PRIMARY_PROFILE_ID
-    const profileError = requireKnownProfile(profileId)
+    const profileError = requireSupervisorProfile(profileId)
     if (profileError) {
       sendJson(response, 400, profileError)
+      return
+    }
+    const configLock = activeOperationConfigLock()
+    if (configLock) {
+      sendJson(response, 409, configLock)
       return
     }
     const requestedOptions = includeLocalCameraSelection
       ? body.options || {}
       : withPreservedLocalCameraSelection(profileId, body.options || {})
     const options = normalizeOptions(profileId, requestedOptions)
-    saveConfig(profileId, options)
+    const saved = saveConfig(profileId, options)
     const demoSafeSettings = body.demoSettings
       ? saveDemoSafeSettings(body.demoSettings)
       : effectiveDemoSafeSettings()
     sendJson(response, 200, {
       ok: true,
       profileId,
+      configIdentity: saved.configIdentity,
       options: includeLocalCameraSelection
         ? options
         : withoutLocalCameraSelection(options),
@@ -4204,17 +4317,15 @@ const handleApi = async (request, response, requestUrl) => {
   if (request.method === 'POST' && requestUrl.pathname === '/api/start') {
     const body = await readBody(request)
     const profileId = body.profileId || PRIMARY_PROFILE_ID
-    const profileError = requireKnownProfile(profileId)
+    const profileError = requireSupervisorProfile(profileId)
     if (profileError) {
       sendJson(response, 400, profileError)
       return
     }
-    const requestedOptions = includeLocalCameraSelection
-      ? body.options || {}
-      : withPreservedLocalCameraSelection(profileId, body.options || {})
+    const savedStartConfig = resolveSavedStartConfig(profileId, body.expectedConfigSha256)
     const result = await runExclusiveStackOperation(
       'start',
-      async () => startStack(profileId, requestedOptions)
+      async () => startStack(profileId, savedStartConfig)
     )
     sendJson(
       response,
@@ -4227,7 +4338,7 @@ const handleApi = async (request, response, requestUrl) => {
     const body = await readBody(request)
     const config = readLauncherConfig()
     const profileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
-    const profileError = requireKnownProfile(profileId)
+    const profileError = requireSupervisorProfile(profileId)
     if (profileError) {
       sendJson(response, 400, profileError)
       return
@@ -4246,7 +4357,7 @@ const handleApi = async (request, response, requestUrl) => {
     const body = await readBody(request)
     const config = readLauncherConfig()
     const profileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
-    const profileError = requireKnownProfile(profileId)
+    const profileError = requireSupervisorProfile(profileId)
     if (profileError) {
       sendJson(response, 400, profileError)
       return
