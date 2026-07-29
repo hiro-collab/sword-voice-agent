@@ -308,6 +308,13 @@ const successfulIdentity = (value) => isPlainObject(value) && (
   value.ok === true || ['ok', 'ready', 'healthy', 'running'].includes(value.status)
 )
 
+const exactServiceHealthV1 = (value, expected) => isPlainObject(value) &&
+  Object.keys(value).length === 4 &&
+  value.schema_version === `${expected.probe_id}.v1` &&
+  value.ok === true &&
+  value.status === 'ready' &&
+  value.service_id === expected.service_id
+
 const failure = (reason) => ({ semantic_class: 'not_ready', reason_class: reason, source_observed_at: null })
 const success = (descriptor, sourceObservedAt = null, semanticClass = null) => ({
   semantic_class: semanticClass || descriptor.success_semantic_classes[0],
@@ -343,6 +350,10 @@ const classifyHttp = (descriptor, outcomes, expected, nowMs, options) => {
   if (descriptor.checks.includes('service_identity')) {
     const health = outcomes.find((item) => item.target.target_id === 'health') || outcomes[0]
     if (!successfulIdentity(health.outcome.value)) return failure('service_identity_invalid')
+  }
+  if (descriptor.checks.includes('exact_service_health_v1')) {
+    const health = outcomes.find((item) => item.target.target_id === 'health') || outcomes[0]
+    if (!exactServiceHealthV1(health.outcome.value, expected)) return failure('service_identity_invalid')
   }
   let sourceObservedAt = null
   if (descriptor.checks.includes('environment_ready_contract')) {

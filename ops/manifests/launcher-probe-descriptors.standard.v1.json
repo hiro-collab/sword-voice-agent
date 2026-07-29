@@ -111,11 +111,11 @@
     {
       "service_id": "aituber_kit",
       "probe_id": "aituber_health",
-      "probe_class": "http_text",
+      "probe_class": "http_json",
       "targets": [
-        { "target_id": "root", "transport": "http", "method": "GET", "endpoint_ref": "aituber_http", "path": "/", "auth_class": "none", "response_class": "bounded_text" }
+        { "target_id": "health", "transport": "http", "method": "GET", "endpoint_ref": "aituber_http", "path": "/api/health", "auth_class": "none", "response_class": "bounded_json" }
       ],
-      "checks": ["http_2xx", "bounded_text"],
+      "checks": ["http_2xx", "bounded_json", "service_identity", "exact_service_health_v1"],
       "success_semantic_classes": ["reachable"],
       "freshness_source": "probe_observed_at",
       "freshness_max_age_ms": 15000,

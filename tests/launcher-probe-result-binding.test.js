@@ -80,7 +80,9 @@ test('accepted meanings have explicit proof ceilings and complete service covera
     vision_snapshot_processor: ['reachable', 'vision_input_reachability_no_world_truth', [
       'worker_owned_identity', 'listener_lineage', 'websocket_handshake'
     ]],
-    aituber_kit: ['reachable', 'aituber_http_reachability_only', ['http_2xx', 'bounded_text']],
+    aituber_kit: ['reachable', 'aituber_http_reachability_only', [
+      'http_2xx', 'bounded_json', 'service_identity', 'exact_service_health_v1'
+    ]],
     thought_core_watcher: ['ready', 'watcher_current_operation_liveness_only', [
       'worker_owned_identity', 'module_status_shape', 'module_status_current_operation', 'module_status_freshness'
     ]],

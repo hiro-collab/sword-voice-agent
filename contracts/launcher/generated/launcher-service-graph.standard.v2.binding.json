@@ -1,5 +1,5 @@
 {
-  "binding_sha256": "d93dbdd577083ed698422e8e9ed18f9197acd482399b5cac43285d1347d272de",
+  "binding_sha256": "2ff1a01ad3a46d4dceb1ea948e774ed5aa82118f4644af6a52b49cc22daed48d",
   "binding": {
     "binding_version": "launcher_service_graph.binding.v2",
     "text_hash_mode": "utf8_lf_v1",
@@ -9,8 +9,8 @@
     "operation_schema_sha256": "b8fd7cd12a75de97611d8ad68d051b0bf1d7a824c3c70dc2523c65230d1b312b",
     "worker_schema_sha256": "801efc3bbf58b940dd2f157eba0ebab632ea0638795f268f9596463bd9ae996c",
     "reducer_vectors_sha256": "a615610293e5eb6c820e4a96d701179b27194627b9d0119afa75fbb288899602",
-    "probe_schema_sha256": "2df1303b021adfa4e7eb2a1271ec1d5b358f6864a26a8ba5d9b81cf4b0b03872",
-    "probe_document_sha256": "a94b24efe5ec72066479dcb77c434a066d665ff5b7671ec922ad39144a69ee34",
+    "probe_schema_sha256": "7c00d0857fe990af779e4809fa6f3427a10dc7b76c1df07ec4baf361d76c8a13",
+    "probe_document_sha256": "b654cb75a252515e30fd824fffcd9bd656936adb6cd53fba865d9c752a698f92",
     "service_order": ["aituber_kit", "home_assistant_bridge", "mediapipe_camera_hub_stack", "openai_provider_broker", "touchdesigner_control_gui", "voicevox", "environment_state_server", "vision_snapshot_processor", "thought_core_api", "thought_core_watcher"],
     "public_readiness_ids": ["aituber_kit", "environment_state_server", "home_assistant_bridge", "mediapipe", "thought_core_api", "thought_core_watcher", "touchdesigner_control_gui", "vision_snapshot_processor", "voicevox"],
     "required_service_ids": ["aituber_kit", "environment_state_server", "home_assistant_bridge", "openai_provider_broker", "thought_core_api", "thought_core_watcher", "touchdesigner_control_gui"],

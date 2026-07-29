@@ -95,7 +95,9 @@ const assertBoundResult = (result, expected, semanticClass) => {
 test('generic HTTP JSON and text probes bind reachable results', async () => {
   for (const [serviceId, response, semanticClass] of [
     ['home_assistant_bridge', jsonResponse({ ok: true, status: 'ok' }), 'reachable'],
-    ['aituber_kit', textResponse('<html>ready</html>'), 'reachable'],
+    ['aituber_kit', jsonResponse({
+      schema_version: 'aituber_health.v1', ok: true, status: 'ready', service_id: 'aituber_kit'
+    }), 'reachable'],
     ['voicevox', textResponse('0.25.1'), 'external_ready']
   ]) {
     const requests = []
@@ -112,7 +114,32 @@ test('generic HTTP JSON and text probes bind reachable results', async () => {
     assert.equal(requests.length, 1)
     assert.equal(requests[0].options.method, 'GET')
     assert.equal(requests[0].options.redirect, 'error')
+    if (serviceId === 'aituber_kit') assert.equal(new URL(requests[0].url).pathname, '/api/health')
     if (serviceId === 'voicevox') assert.deepEqual(requests[0].options.headers, {})
+  }
+})
+
+test('AIT health requires its exact schema and service identity', async () => {
+  const expected = expectedFor('aituber_kit')
+  const accepted = {
+    schema_version: 'aituber_health.v1', ok: true, status: 'ready', service_id: 'aituber_kit'
+  }
+  const rejected = [
+    { ok: true },
+    { ...accepted, schema_version: 'foreign_health.v1' },
+    { ...accepted, service_id: 'foreign_service' },
+    { ...accepted, ok: false },
+    { ...accepted, status: 'ok' },
+    { ...accepted, extra: 'PRIVATE_SENTINEL' }
+  ]
+  for (const body of rejected) {
+    const result = await makeExecutor({
+      fetchImpl: async () => jsonResponse(body)
+    }).execute(expected)
+    assertBoundResult(result, expected, 'not_ready')
+    assert.equal(result.ready, false)
+    assert.equal(result.reason_class, 'service_identity_invalid')
+    assert.equal(JSON.stringify(result).includes('PRIVATE_SENTINEL'), false)
   }
 })
 

@@ -31,7 +31,7 @@ const REASON_CLASSES = Object.freeze([
   'deadline', 'internal_failure'
 ])
 const CHECKS = Object.freeze([
-  'http_2xx', 'bounded_json', 'bounded_text', 'service_identity',
+  'http_2xx', 'bounded_json', 'bounded_text', 'service_identity', 'exact_service_health_v1',
   'environment_ready_contract', 'environment_current_schema', 'configured_source_policy',
   'worker_owned_identity', 'module_status_shape', 'module_status_current_operation',
   'module_status_freshness', 'registry_identity', 'manifest_shape', 'manifest_lineage',
