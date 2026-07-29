@@ -25,7 +25,7 @@ FROZEN_N0 = {
     "contracts/launcher/generated/launcher-service-graph.standard.v1.binding.json": "3a74d2c620f55c8203b6a1e9cc66c631c1867d131d69362743fe73e300bd9229",
     "ops/manifests/launcher-service-graph.standard.v1.json": "dc548b8ddd9528af3a6d10325f868af200fe3d85d1e88182cdcf32407506ea77",
     "tools/home-control-launcher/launcher-supervisor-contract.js": "eed1faaa0d3b75c068f608ac6dd83ae26ffbcf997e0395d914b3de25b36a68f8",
-    "tools/home-control-launcher/launcher-supervisor-reducer.js": "440cc6ef1411433e1585705fd51209ed5ed3c73fed993153b3f2e43b0c6def59",
+    "tools/home-control-launcher/launcher-supervisor-reducer.js": "557cc3c5650a96ac72a90ba5679f562b22ceeae84e32a70122ce6c15b0042e13",
     "tools/home-control-launcher/launcher-operation-store.js": "e238960f92b1df664c6ab2c03144b8c5a4c0487222ccbc8f5efedba76b494c4e",
     "tools/home-control-launcher/server.js": "811488b149c0919b50ae887d695fdc63e4616e0993b2647ee6143e6114c82bfe",
     "ops/scripts/home-control-stack/start-home-control-stack.ps1": "d5f1b2556e3a71520b5117eef8774326b70b05221064122dccc9c1296ac8d1ec",

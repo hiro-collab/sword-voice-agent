@@ -20,6 +20,13 @@ const { LauncherProbeExecutorError } = require('./launcher-probe-executor')
 const { LauncherProbeContractError } = require('./launcher-probe-result-binding')
 const { LauncherProbeRuntimeContextError } = require('./launcher-probe-runtime-context')
 
+class LauncherSemanticProbePersistenceError extends Error {
+  constructor () {
+    super('semantic_probe_persistence_failed')
+    this.name = 'LauncherSemanticProbePersistenceError'
+  }
+}
+
 const ACTIVE_PHASES = new Set([
   reducer.PHASE.PLANNED,
   reducer.PHASE.PREFLIGHT,
@@ -409,10 +416,15 @@ class LauncherSupervisorRuntime {
       }
       throw error
     }
-    this.apply('semantic_probe_completed', serviceId, {
-      dispatch_id: dispatchId,
-      probe_result: probeResult
-    })
+    try {
+      this.apply('semantic_probe_completed', serviceId, {
+        dispatch_id: dispatchId,
+        probe_result: probeResult
+      })
+    } catch (error) {
+      if (error instanceof LauncherContractError) throw new LauncherSemanticProbePersistenceError()
+      throw error
+    }
     const service = this.current.services.find((candidate) => candidate.service_id === serviceId)
     if (service?.pending_dispatch_id === dispatchId || service?.pending_action === 'probe') {
       throw new Error('supervisor_runtime_probe_result_invalid')
@@ -644,7 +656,11 @@ class LauncherSupervisorRuntime {
             if (error instanceof LauncherJobWorkerError && error.code === 'worker_transport_timeout') {
               const dispatchId = this.pendingDispatchId(serviceId, 'probe')
               this.apply('readiness_timeout', serviceId, dispatchId ? { dispatch_id: dispatchId } : {})
-            } else this.apply('supervisor_crashed')
+            } else this.apply('supervisor_crashed', null, {
+              responsible_id: error instanceof LauncherSemanticProbePersistenceError
+                ? 'operation_store'
+                : 'launcher_supervisor'
+            })
           }
         } else if (spec.requirement === 'optional' && !included.has(serviceId)) {
           const dispatchId = this.dispatchIdFactory()
@@ -664,7 +680,11 @@ class LauncherSupervisorRuntime {
             if (error instanceof LauncherJobWorkerError && error.code === 'worker_transport_timeout') {
               const dispatchId = this.pendingDispatchId(serviceId, 'probe')
               this.apply('readiness_timeout', serviceId, dispatchId ? { dispatch_id: dispatchId } : {})
-            } else this.apply('supervisor_crashed')
+            } else this.apply('supervisor_crashed', null, {
+              responsible_id: error instanceof LauncherSemanticProbePersistenceError
+                ? 'operation_store'
+                : 'launcher_supervisor'
+            })
           }
         }
         if ([reducer.PHASE.ROLLING_BACK, reducer.PHASE.RECOVERING, reducer.PHASE.RESIDUE, reducer.PHASE.FAILED].includes(this.current.phase)) break

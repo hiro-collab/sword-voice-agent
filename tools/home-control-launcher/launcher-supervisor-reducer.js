@@ -100,6 +100,9 @@ const primaryResult = (operation, proposed, responsibleId, actionCertainty = 'ma
     ? { class: proposed, responsible_id: responsibleId, action_certainty: actionCertainty }
     : operation.primary_result
 const cleanupResult = (klass, responsibleId = null) => ({ class: klass, responsible_id: responsibleId })
+const crashResponsibleId = (event) => event?.responsible_id === 'operation_store'
+  ? 'operation_store'
+  : 'launcher_supervisor'
 const invalid = (operation) => next(operation, {
   reason: firstFailure(operation, REASON.INVALID_EVENT),
   primary_result: primaryResult(operation, REASON.INVALID_EVENT, 'launcher_supervisor', 'not_attempted')
@@ -432,10 +435,10 @@ const reduce = (operation, event, authority) => {
       ? residue(clearPending(operation, serviceId), serviceId, REASON.STOP_FAILED, authority) : invalid(operation)
     case 'supervisor_crashed': return inPhase(operation, [PHASE.PLANNED, PHASE.PREFLIGHT, PHASE.PREPARED, PHASE.STARTING, PHASE.WAITING_READY, PHASE.READY, PHASE.ROLLING_BACK, PHASE.STOPPING])
       ? next(clearInterruptedPending(operation), {
-          phase: PHASE.RECOVERING, reason: firstFailure(operation, REASON.SUPERVISOR_CRASH), cleanup: CLEANUP.UNKNOWN,
-          primary_result: primaryResult(operation, REASON.SUPERVISOR_CRASH, 'launcher_supervisor'),
-          cleanup_result: cleanupResult(CLEANUP.UNKNOWN, 'launcher_supervisor'), rollback_required: false, recovery_required: true
-        })
+        phase: PHASE.RECOVERING, reason: firstFailure(operation, REASON.SUPERVISOR_CRASH), cleanup: CLEANUP.UNKNOWN,
+        primary_result: primaryResult(operation, REASON.SUPERVISOR_CRASH, crashResponsibleId(event)),
+        cleanup_result: cleanupResult(CLEANUP.UNKNOWN, 'launcher_supervisor'), rollback_required: false, recovery_required: true
+      })
       : invalid(operation)
     case 'recovery_started': return operation.recovery_required && operation.phase === PHASE.RECOVERING
       ? next(operation, { phase: PHASE.RECOVERING, cleanup: CLEANUP.IN_PROGRESS }) : invalid(operation)

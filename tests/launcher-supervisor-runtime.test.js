@@ -473,6 +473,34 @@ test('bounded semantic probe executor failure rolls back without misclassifying 
   }
 })
 
+test('semantic probe persistence failure retains operation_store as the safe first boundary', async () => {
+  let failedOnce = false
+  const harness = makeHarness({
+    storeOverrides: {
+      reduceAndPersist (current, event, ...args) {
+        harness.events.push(`store:${event.event_type}${event.service_id ? `:${event.service_id}` : ''}`)
+        if (!failedOnce && event.event_type === 'semantic_probe_completed') {
+          failedOnce = true
+          throw new LauncherContractError('operation_store_write_failed')
+        }
+        return realStore.reduceAndPersist(current, event, ...args)
+      }
+    }
+  })
+  try {
+    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: {} })
+    assert.equal(result.ok, false)
+    assert.equal(result.operation.reason, 'supervisor_crash')
+    assert.equal(harness.runtime.current.primary_result.responsible_id, 'operation_store')
+    assert.equal(harness.runtime.current.services.find((service) => service.service_id === 'aituber_kit').last_probe_result, null)
+    assert.ok(harness.events.includes('store:semantic_probe_completed:aituber_kit'))
+    assert.ok(harness.events.includes('store:supervisor_crashed'))
+    assert.ok(harness.events.indexOf('store:semantic_probe_completed:aituber_kit') < harness.events.indexOf('store:supervisor_crashed'))
+  } finally {
+    harness.cleanup()
+  }
+})
+
 test('optional camera plans may be absent without worker exchange', async () => {
   const harness = makeHarness({ includedServiceIds: requiredOwnedIds })
   try {
