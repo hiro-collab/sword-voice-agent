@@ -15,6 +15,7 @@ const { LauncherJobWorkerError } = require('../tools/home-control-launcher/launc
 const {
   compilePrivateServicePlan
 } = require('../tools/home-control-launcher/launcher-private-service-plan')
+const { LauncherProbeExecutorError } = require('../tools/home-control-launcher/launcher-probe-executor')
 const {
   LauncherSupervisorRuntime,
   publicOperation
@@ -443,6 +444,32 @@ test('external worker failure matrix is persisted non-Ready and rolls back witho
     } finally {
       harness.cleanup()
     }
+  }
+})
+
+test('bounded semantic probe executor failure rolls back without misclassifying the supervisor', async () => {
+  const harness = makeHarness({
+    probeExecutor: {
+      configSha256: '0'.repeat(64),
+      async execute () {
+        throw new LauncherProbeExecutorError('probe_executor_target_resolution_invalid')
+      }
+    }
+  })
+  try {
+    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(result.ok, false)
+    assert.equal(result.result_class, 'failed')
+    assert.equal(result.operation.reason, 'semantic_probe_failed')
+    assert.equal(result.operation.cleanup, 'clear')
+    assert.equal(result.operation.services.find((service) => service.service_id === 'aituber_kit').state, 'stopped')
+    assert.equal(harness.runtime.current.primary_result.responsible_id, 'aituber_kit')
+    assert.equal(harness.workers.length, 1)
+    assert.ok(harness.events.includes('store:probe_failed:aituber_kit'))
+    assert.equal(harness.events.includes('store:supervisor_crashed'), false)
+    assert.equal(harness.runtime.supervisorLease, null)
+  } finally {
+    harness.cleanup()
   }
 })
 

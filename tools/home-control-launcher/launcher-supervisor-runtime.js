@@ -16,6 +16,9 @@ const {
   removePrivateServicePlan,
   writePrivateServicePlan
 } = require('./launcher-private-service-plan')
+const { LauncherProbeExecutorError } = require('./launcher-probe-executor')
+const { LauncherProbeContractError } = require('./launcher-probe-result-binding')
+const { LauncherProbeRuntimeContextError } = require('./launcher-probe-runtime-context')
 
 const ACTIVE_PHASES = new Set([
   reducer.PHASE.PLANNED,
@@ -395,7 +398,17 @@ class LauncherSupervisorRuntime {
 
   async completeSemanticProbe (serviceId, dispatchId) {
     if (!this.probeExecutor) throw new Error('supervisor_runtime_probe_executor_missing')
-    const probeResult = await this.probeExecutor.execute(this.probeExpectationFor(serviceId, dispatchId))
+    let probeResult
+    try {
+      probeResult = await this.probeExecutor.execute(this.probeExpectationFor(serviceId, dispatchId))
+    } catch (error) {
+      if (error instanceof LauncherProbeExecutorError || error instanceof LauncherProbeContractError ||
+          error instanceof LauncherProbeRuntimeContextError) {
+        this.apply('probe_failed', serviceId, { dispatch_id: dispatchId })
+        return
+      }
+      throw error
+    }
     this.apply('semantic_probe_completed', serviceId, {
       dispatch_id: dispatchId,
       probe_result: probeResult
