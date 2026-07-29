@@ -313,12 +313,18 @@ const validateSchemaAuthority = (graphSchema, operationSchema, workerSchema) => 
   const graphServiceRef = 'launcher-operation.v1.schema.json#/$defs/service_id'
   const workerServiceRef = 'launcher-operation.v2.schema.json#/$defs/service_id'
   const graphService = graphSchema?.$defs?.service?.properties
+  const operationService = operationSchema?.properties?.services?.items
   const workerRequest = workerSchema?.$defs?.request?.properties
   const workerResult = workerSchema?.$defs?.result?.properties
   if (graphService?.service_id?.$ref !== graphServiceRef || graphService?.dependencies?.items?.$ref !== graphServiceRef ||
       graphService?.start?.properties?.legacy_spec_ids?.items?.$ref !== graphServiceRef ||
       workerRequest?.service_id?.$ref !== workerServiceRef || workerResult?.service_id?.$ref !== workerServiceRef) {
     fail('service_id_schema_authority_drift')
+  }
+  if (!Array.isArray(operationService?.required) ||
+      !['probe_status', 'probe_expected_revision', 'last_probe_result'].every((field) => operationService.required.includes(field)) ||
+      operationService?.properties?.last_probe_result?.oneOf?.[1]?.$ref !== 'launcher-probe-descriptor.v1.schema.json#/$defs/result') {
+    fail('operation_probe_result_schema_drift')
   }
   const maximum = Number.MAX_SAFE_INTEGER
   if (operationSchema?.properties?.revision?.maximum !== maximum ||
@@ -442,9 +448,9 @@ const validateReducerVectors = (document, serviceIdPattern) => {
       document.vectors.length === 0 || document.vectors.length > MAX_REDUCER_VECTORS) fail('reducer_vectors_invalid')
   const ids = new Set()
   const phases = ['planned', 'preflight', 'prepared', 'starting', 'waiting_ready', 'ready', 'rolling_back', 'failed', 'stopping', 'stopped', 'recovering', 'residue']
-  const reasons = ['none', 'preflight_failed', 'spawn_failed', 'early_exit', 'listener_mismatch', 'readiness_timeout', 'rollback_failed', 'stop_failed', 'supervisor_crash', 'residue_present', 'invalid_event']
+  const reasons = ['none', 'preflight_failed', 'spawn_failed', 'early_exit', 'listener_mismatch', 'readiness_timeout', 'semantic_probe_failed', 'rollback_failed', 'stop_failed', 'supervisor_crash', 'residue_present', 'invalid_event']
   const cleanups = ['not_started', 'in_progress', 'clear', 'residue', 'unknown']
-  const events = new Set(['preflight_started', 'preflight_passed', 'preflight_failed', 'start_requested', 'spawn_requested', 'probe_requested', 'stop_dispatch_requested', 'spawn_succeeded', 'spawn_failed', 'early_exit', 'listener_mismatch', 'readiness_timeout', 'service_ready', 'optional_absent', 'external_ready', 'rollback_started', 'rollback_completed', 'rollback_failed', 'stop_requested', 'service_stopped', 'stop_failed', 'supervisor_crashed', 'recovery_started', 'recovery_completed', 'residue_observed', 'residue_cleared'])
+  const events = new Set(['preflight_started', 'preflight_passed', 'preflight_failed', 'start_requested', 'spawn_requested', 'probe_requested', 'stop_dispatch_requested', 'spawn_succeeded', 'spawn_failed', 'early_exit', 'listener_mismatch', 'readiness_timeout', 'probe_failed', 'probe_transport_ready', 'semantic_probe_completed', 'optional_absent', 'rollback_started', 'rollback_completed', 'rollback_failed', 'stop_requested', 'service_stopped', 'stop_failed', 'supervisor_crashed', 'recovery_started', 'recovery_completed', 'residue_observed', 'residue_cleared'])
   for (const vector of document.vectors) {
     const hasEventOperation = isPlainObject(vector) && Object.hasOwn(vector, 'event_operation_id')
     const keys = ['vector_id', 'events', 'expected', 'coverage', ...(hasEventOperation ? ['event_operation_id'] : [])]

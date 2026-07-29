@@ -939,7 +939,30 @@ for ($depth = 0; $depth -lt 8 -and $cursor -gt 0; $depth++) {{
         return updated
 
 
+class LauncherManagedPortCutoverContractTest(unittest.TestCase):
+    def test_reclaim_endpoint_has_no_process_kill_authority(self) -> None:
+        server = LAUNCHER_SERVER.read_text(encoding="utf-8")
+        reclaim_start = server.index("const reclaimManagedPortsFromLauncher")
+        reclaim_end = server.index("const isProcessAlive", reclaim_start)
+        reclaim = server[reclaim_start:reclaim_end]
+        route_start = server.index("requestUrl.pathname === '/api/reclaim-managed-ports'")
+        route_end = server.index("requestUrl.pathname === '/api/status-script'", route_start)
+        route = server[route_start:route_end]
+
+        self.assertIn("result_class: 'independent_reclaim_retired'", reclaim)
+        self.assertIn("authority_class: 'node_supervisor'", reclaim)
+        self.assertIn("kill_authority: false", reclaim)
+        self.assertIn("raw_private_publication_flags: false", reclaim)
+        self.assertIn("reclaimManagedPortsFromLauncher(body)", route)
+        for source in (reclaim, route):
+            self.assertNotIn("stopProcessById", source)
+            self.assertNotIn("reclaimManagedPortResidue", source)
+            self.assertNotIn("process.kill", source)
+            self.assertNotIn("childProcess.spawn", source)
+
+
 @unittest.skipUnless(NODE and POWERSHELL, "Node and PowerShell are required for launcher port contracts")
+@unittest.skip("N2 keeps legacy reclamation tests only as unreachable reference until N3")
 class LauncherManagedPortReclaimContractTest(unittest.TestCase):
     def test_fixture_quiescence_timeout_uses_fixed_failure_and_preserves_processes(self) -> None:
         fixture = LauncherFixture()

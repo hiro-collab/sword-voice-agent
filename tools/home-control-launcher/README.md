@@ -73,13 +73,13 @@ capture/operation, and they do not publish raw screenshots, video, audio,
 transcripts, browser storage, Home Assistant payloads, tokens, or private
 paths.
 
-The launcher calls the ops facade, which then delegates to the inherited
-supervisor implementation:
-
-- `ops/scripts/system.ps1`
-- `ops/scripts/home-control-stack/start-home-control-stack.ps1`
-- `ops/scripts/home-control-stack/status-home-control-stack.ps1`
-- `ops/scripts/home-control-stack/stop-home-control-stack.ps1`
+The Launcher API is the only lifecycle entry point. `server.js` owns the
+operation store/reducer, private plan compiler, correlated worker client,
+dependency order, deadlines, rollback, finalization, and public status.
+`ops/scripts/system.ps1` is a fail-closed loopback HTTP compatibility client
+for that already-running Launcher API. It does not execute or fall back to the
+legacy start/status/stop scripts. Those scripts remain tracked as unreachable
+reference until their separately reviewed retirement.
 
 ## Launcher Supervisor Node N0
 
@@ -120,9 +120,9 @@ stale recovery requires a bounded injected observer that positively confirms
 owner absence twice. Until N1 supplies that observer, a crash lock encountered
 through the default path remains fail-closed and requires manual diagnosis.
 
-N0 is source/static preparation only. It does not start, stop, probe, or spawn
-services, does not replace the current Launcher UI/API or PowerShell lifecycle
-facade, and is not a runtime cutover. The standard graph pins the later Windows
+N0 was adopted as source/static preparation only. It did not start, stop,
+probe, or spawn services or replace the Launcher lifecycle facade. The
+standard graph pins the Windows
 worker adapter classes as `job_worker_service` and
 `job_worker_job_close`; external services remain `external_probe_only` and
 `external_noop`. Worker results expose only bounded ownership/listener/
@@ -138,10 +138,10 @@ so CRLF and LF checkouts bind to one authority. The generated binding includes
 those hashes and fails closed on stale or partial files before operation-store
 I/O.
 
-The reducer and contracts are OS-neutral. A later Windows cutover can attach a
+The reducer and contracts are OS-neutral. The N2 Windows cutover attaches the
 Job Object worker, while future Ubuntu support can attach an owned process-
 group/cgroup worker without changing graph, reducer, operation record, or UI
-contracts. Neither platform adapter is enabled in N0.
+contracts. No Ubuntu adapter is enabled by N2.
 
 ## Launcher Supervisor Node N1 Windows worker
 
@@ -174,16 +174,45 @@ The worker retains Job handles only in its private process. Closing stdin,
 worker exit, or an exception reaches `finally`; Windows also closes the handles
 on a worker crash, so `KILL_ON_JOB_CLOSE` cleans the exact owned descendants.
 Repeated Start/Stop is idempotent, external Stop is a no-op, and public JSON is
-restricted to the existing `launcher-worker.v1` enums and correlation fields.
+restricted to the existing `launcher-worker.v2` enums and correlation fields.
 
-N1 remains source/static and synthetic-only. `server.js` and the legacy
-start/status/stop scripts do not import or invoke it, and no organ is started.
-A later reviewed cutover must generate the private plan from the selected
-standard manifest, prove normal-user ACL inheritance and real listener/job
-ownership, and then retire the legacy execution authority rather than run two
-long-lived supervisors. Ubuntu remains an adapter replacement: a future
-process-group/cgroup worker can consume the same N0 request/result contract and
-private plan boundary without changing the reducer, operation record, or UI.
+N1 was reviewed and adopted at a source/static and synthetic-only proof
+ceiling. N2 binds those exact worker bytes to the Node lifecycle authority;
+normal-user ACL inheritance and real listener/job ownership remain distinct
+runtime proof gates and are not claimed by source or deterministic fake-worker
+tests.
+
+## Launcher Supervisor Node N2 atomic cutover
+
+`launcher-supervisor-runtime.js` is the single side-effect coordinator. It
+validates the frozen graph, binding, selected profile, configuration, and
+private service plan before it creates an operation or exchanges a worker
+message. It then persists `planned`, `preflight_started`, and
+`preflight_passed` before the first worker exchange. Every worker request is
+derived from the frozen authority, correlated by operation/revision/nonce, and
+reduced into the private bounded operation record.
+
+`launcher-private-service-plan.js` compiles the canonical
+`thought-core-v0` primary profile independently from the legacy start script.
+The plan is written only below the private Launcher runtime directory. Raw
+commands, arguments, environment values, working directories, executable
+paths, plan paths, and process IDs are never copied into the public operation
+projection. The plan is removed only after the worker closes, and the final
+bounded stop/rollback/recovery event is persisted after that cleanup
+completes.
+
+VOICEVOX is the only external service in this graph. The runtime sends it only
+`probe`; it never sends external `start` or `stop`, never fabricates
+`external_ready`, and reduces an honest readiness timeout/unavailable result
+through rollback to a bounded failure record. Optional camera services reduce
+to `optional_absent` when they are not selected.
+
+`POST /api/reclaim-managed-ports` is retained only as a fixed fail-closed
+compatibility response with `kill_authority: false`. It cannot signal a
+process. `POST /api/status-script` returns the Node supervisor projection and
+sets `status_script_execution: false`; it does not execute the legacy status
+supervisor. The old start/status/stop and independent PID/port reclamation
+implementations remain unreachable reference until N3 removal.
 
 Runtime state is written under `.cache/home-control-stack/` by default:
 
@@ -235,11 +264,13 @@ Start it from the workspace root:
 ```
 
 If another launcher is already running on the same port, the start shortcut
-stops that launcher first and then starts a fresh launcher in the current
-terminal. After that, `Ctrl+C` in that terminal stops the launcher server.
-This does not stop the system cell services.
+requests a bounded supervisor stop before it restarts the Launcher. The
+Launcher refuses shutdown when worker cleanup cannot reach a final clear
+record. After restart, `Ctrl+C`, `SIGTERM`, the API shutdown route, and the
+stop shortcut all run the bounded supervisor stop before the Launcher exits.
 
-Stop only the launcher server from the workspace root:
+Stop the Node-owned stack, finalize its operation record, and then stop the
+Launcher server from the workspace root:
 
 ```powershell
 .\stop-home-control-launcher.bat

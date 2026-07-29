@@ -14,7 +14,18 @@ from unittest import TestCase
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PRODUCT_ROOT = ROOT.parents[1]
+PRODUCT_ROOT_CANDIDATES = (
+    ROOT.parents[1],
+    ROOT.parent.parent / "sword-agent-os",
+)
+PRODUCT_ROOT = next(
+    (
+        candidate
+        for candidate in PRODUCT_ROOT_CANDIDATES
+        if (candidate / "manifests" / "demo-safe-settings" / "defaults.json").is_file()
+    ),
+    PRODUCT_ROOT_CANDIDATES[0],
+)
 PUBLIC = ROOT / "tools" / "home-control-launcher" / "public"
 LAUNCHER_SERVER = ROOT / "tools" / "home-control-launcher" / "server.js"
 LAUNCHER_PROFILES = ROOT / "tools" / "home-control-launcher" / "config" / "default-profiles.json"
@@ -84,6 +95,7 @@ def extract_between(text: str, start: str, end: str) -> str:
 
 class LauncherUiContractTest(TestCase):
     def test_standard_ops_profile_activates_closed_loop_feedback_for_both_services(self) -> None:
+        self.skipTest("N2 keeps legacy PowerShell supervisor assertions as unreachable N3 reference")
         system = read_system_script()
         stack = read_stack_start_script()
         watcher_start = read_thought_core_watch_start_script()
@@ -232,89 +244,38 @@ $cases = @(
             self.assertEqual(case["child_value"], "")
             self.assertEqual(case["watcher_value_after_import"], "")
 
-    def test_launcher_propagates_explicit_thought_core_selection_to_system(self) -> None:
+    def test_launcher_routes_lifecycle_only_through_node_supervisor(self) -> None:
         server = read_launcher_server()
-        helper = extract_between(
+        system = read_system_script()
+        start_stack = extract_between(server, "const startStack", "const runScriptAndCollect")
+        stop_stack = extract_between(server, "const stopStack", "const reclaimManagedPortsFromLauncher")
+        status_route = extract_between(
             server,
-            "const addThoughtCoreSelectionArgs",
-            "const buildSystemStartArgs",
-        )
-        start_builder = extract_between(
-            server,
-            "const buildSystemStartArgs",
-            "const buildSystemStatusArgs",
-        )
-        status_builder = extract_between(
-            server,
-            "const buildSystemStatusArgs",
-            "const buildPowerShellCommand",
-        )
-        expected_services = extract_between(
-            server,
-            "const expectedServicesForOptions",
-            "const startupReadyTimeoutMsForService",
+            "requestUrl.pathname === '/api/status-script'",
+            "requestUrl.pathname === '/api/shutdown'",
         )
 
-        for source in (start_builder, status_builder):
-            self.assertIn("addThoughtCoreSelectionArgs(stackArgs, options)", source)
-        self.assertIn(
-            "options.EnableThoughtCore ? 'EnableThoughtCore' : 'SkipThoughtCore'",
-            helper,
-        )
-        self.assertIn(
-            "options.EnableThoughtCoreWatch ? 'EnableThoughtCoreWatch' : 'SkipThoughtCoreWatch'",
-            helper,
-        )
-        self.assertIn(
-            "if (options.EnableThoughtCore) services.push('thought_core_api')",
-            expected_services,
-        )
-        self.assertIn(
-            "if (options.EnableThoughtCoreWatch) services.push('thought_core_watcher')",
-            expected_services,
-        )
+        self.assertIn("LauncherSupervisorRuntime", server)
+        self.assertIn("LauncherProbeRuntimeContext", server)
+        self.assertIn("probeExecutorFactory: (contextOptions) =>", server)
+        self.assertIn("schema_version: 'launcher_worker.v2'", server)
+        self.assertNotIn("launcher_worker.v1", server)
+        self.assertIn("await launcherRuntime.start", start_stack)
+        self.assertIn("launcherRuntime.stop", stop_stack)
+        self.assertNotIn("childProcess.spawn", start_stack)
+        self.assertNotIn("childProcess.spawnSync", start_stack)
+        self.assertIn("status_script_execution: false", status_route)
+        self.assertNotIn("runScriptAndCollect", status_route)
 
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("Node.js is required for launcher argument contract tests")
-        node_program = f"""
-const SYSTEM_SCRIPT = 'fixture-system.ps1'
-const addSupportedSwitch = (_script, args, name) => args.push(`-${{name}}`)
-{helper}
-const cases = [
-  {{ api: true, watch: true }},
-  {{ api: true, watch: false }},
-  {{ api: false, watch: true }},
-  {{ api: false, watch: false }}
-]
-const report = cases.map((item) => {{
-  const args = []
-  addThoughtCoreSelectionArgs(args, {{
-    EnableThoughtCore: item.api,
-    EnableThoughtCoreWatch: item.watch
-  }})
-  return args
-}})
-process.stdout.write(JSON.stringify(report))
-"""
-        completed = subprocess.run(
-            [node, "-e", node_program],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(
-            json.loads(completed.stdout),
-            [
-                ["-EnableThoughtCore", "-EnableThoughtCoreWatch"],
-                ["-EnableThoughtCore", "-SkipThoughtCoreWatch"],
-                ["-SkipThoughtCore", "-EnableThoughtCoreWatch"],
-                ["-SkipThoughtCore", "-SkipThoughtCoreWatch"],
-            ],
-        )
+        self.assertIn("Invoke-RestMethod", system)
+        self.assertIn('"http://127.0.0.1:$LauncherPort"', system)
+        self.assertIn("launcher_compatibility_recursion_rejected", system)
+        for retired_name in (
+            "start-home-control-stack.ps1",
+            "status-home-control-stack.ps1",
+            "stop-home-control-stack.ps1",
+        ):
+            self.assertNotIn(retired_name, system)
 
     def test_body_map_inspector_is_the_only_launcher_diagnostics_route(self) -> None:
         server = read_launcher_server()
@@ -333,6 +294,7 @@ process.stdout.write(JSON.stringify(report))
             self.assertNotIn("cube vault", source)
 
     def test_launcher_runtime_copies_camera_state_and_fails_closed(self) -> None:
+        self.skipTest("N2 status is reducer-owned and no longer copies legacy PID/manifest state")
         with tempfile.TemporaryDirectory() as temporary_root:
             state_dir = Path(temporary_root) / "state"
             manifest_path = (
@@ -980,6 +942,7 @@ process.stdout.write(JSON.stringify(report))
             probe.close()
             env = os.environ.copy()
             env["NODE_ENV"] = "test"
+            env["HOME_CONTROL_LAUNCHER_TEST_FAKE_SUPERVISOR"] = "deterministic_v1"
             env["HOME_CONTROL_LAUNCHER_TEST_VIDEO_INPUTS_FILE"] = str(
                 video_input_fixture
             )
@@ -992,7 +955,7 @@ process.stdout.write(JSON.stringify(report))
                     "--port",
                     str(launcher_port),
                     "--workspace",
-                    str(ROOT.parents[1]),
+                    str(temporary_root),
                     "--state-dir",
                     str(state_dir),
                 ],
@@ -1186,7 +1149,9 @@ process.stdout.write(JSON.stringify(report))
                 self.assertNotIn(adversarial_name, public_preview_json)
                 self.assertNotIn("MediapipeCameraName", public_preview["options"])
                 self.assertNotIn("command", public_preview)
-                self.assertIn("<local-camera-selection>", public_preview["commandLine"])
+                self.assertNotIn("commandLine", public_preview)
+                self.assertEqual(public_preview["command_class"], "node_supervisor")
+                self.assertEqual(public_preview["execution_authority"], "node_supervisor")
 
                 for invalid_camera_name in (
                     "camera\ncontrol",
@@ -1252,6 +1217,7 @@ process.stdout.write(JSON.stringify(report))
             probe.close()
             env = os.environ.copy()
             env["NODE_ENV"] = "test"
+            env["HOME_CONTROL_LAUNCHER_TEST_FAKE_SUPERVISOR"] = "deterministic_v1"
             env["HOME_CONTROL_LAUNCHER_TEST_VIDEO_INPUTS_FILE"] = str(
                 video_input_fixture
             )
@@ -1264,7 +1230,7 @@ process.stdout.write(JSON.stringify(report))
                     "--port",
                     str(launcher_port),
                     "--workspace",
-                    str(ROOT.parents[1]),
+                    str(temporary_root),
                     "--state-dir",
                     str(state_dir),
                 ],
@@ -1427,6 +1393,7 @@ process.stdout.write(JSON.stringify(report))
             probe.close()
             env = os.environ.copy()
             env["NODE_ENV"] = "test"
+            env["HOME_CONTROL_LAUNCHER_TEST_FAKE_SUPERVISOR"] = "deterministic_v1"
             env["HOME_CONTROL_LAUNCHER_TEST_REMOTE_ADDRESS"] = "192.0.2.10"
             env["HOME_CONTROL_LAUNCHER_TEST_VIDEO_INPUTS"] = json.dumps(
                 [local_camera]
@@ -2059,19 +2026,27 @@ process.stdout.write(JSON.stringify(report))
 
     def test_stop_stack_reports_verified_shutdown_or_residue(self) -> None:
         server = read_launcher_server()
-        html = read_public("index.html")
-        app = read_public("app.js")
+        runtime = (
+            LAUNCHER_SERVER.parent / "launcher-supervisor-runtime.js"
+        ).read_text(encoding="utf-8")
+        stop_stack = extract_between(
+            server,
+            "const stopStack",
+            "const reclaimManagedPortsFromLauncher",
+        )
+        stop_owned = extract_between(
+            runtime,
+            "  async stopOwnedServices",
+            "  async rollback",
+        )
 
-        self.assertIn("collectStackStopVerification", server)
-        self.assertIn("waitForStackStopVerification", server)
-        self.assertIn("stopVerification", server)
-        self.assertIn("managed ports still listening", server)
-        self.assertIn("recorded processes still alive", server)
-        self.assertIn("formatStopVerificationDetail", app)
-        self.assertIn("Stop verified", app)
-        self.assertIn("Stop incomplete", app)
-        self.assertIn("Stop Launcher Only", html)
-        self.assertIn("Stop Launcher Only", app)
+        self.assertIn("launcherRuntime.stop", stop_stack)
+        self.assertNotIn("waitForStackStopVerification", stop_stack)
+        self.assertIn("const cleanupClear = await this.closeClientAndPlan()", stop_owned)
+        self.assertLess(
+            stop_owned.index("const cleanupClear = await this.closeClientAndPlan()"),
+            stop_owned.index("if (held) this.apply(held.event_type, held.service_id"),
+        )
 
     def test_service_rows_mark_startup_booting_progress(self) -> None:
         app = read_public("app.js")
@@ -2215,7 +2190,10 @@ process.stdout.write(JSON.stringify(report))
         self.assertIn("cameraHubServiceState", server)
         self.assertIn("camera_state_validation_class", server)
         self.assertIn("camera_state_operational", server)
-        self.assertIn("checkTcpIf(mediapipeEnabled, options.MediapipePort)", server)
+        status_projection = extract_between(server, "const getStatus", "const getState")
+        self.assertIn("launcherRuntime.publicState()", status_projection)
+        self.assertNotIn("checkTcpIf(", status_projection)
+        self.assertNotIn("cameraHubManifestState(", status_projection)
         camera_manifest_reader = extract_between(
             server,
             "const cameraHubManifestState",
@@ -2262,7 +2240,8 @@ process.stdout.write(JSON.stringify(report))
         self.assertIn("setOption(field, !checked)", app)
         self.assertNotIn("Force Thought Core fallback-only", app)
         self.assertIn("[switch]$ThoughtCoreNoProvider", system)
-        self.assertIn("-ThoughtCoreNoProvider", system)
+        self.assertIn("ThoughtCoreNoProvider = [bool]$ThoughtCoreNoProvider", system)
+        self.assertNotIn("-ThoughtCoreNoProvider", system)
         self.assertIn("[switch]$ThoughtCoreNoProvider", stack_start)
         self.assertIn('"THOUGHT_CORE_FORCE_NO_PROVIDER"', stack_start)
         self.assertIn('$thoughtCoreEnvironment["THOUGHT_CORE_LLM_ENABLED"] = "0"', stack_start)
@@ -2360,7 +2339,7 @@ process.stdout.write(JSON.stringify(report))
             {"thought-core-v0", "demo-fast", "demo-fast-action"},
         )
 
-    def test_launcher_passes_readiness_timeouts_to_stack_scripts(self) -> None:
+    def test_launcher_passes_readiness_timeouts_to_node_plan_and_compatibility_json(self) -> None:
         server = read_launcher_server()
         app = read_public("app.js")
         system = read_system_script()
@@ -2372,14 +2351,16 @@ process.stdout.write(JSON.stringify(report))
         self.assertIn("'MediapipeReadyTimeoutSeconds'", server)
         self.assertIn("options.VoicevoxReadyTimeoutSeconds", server)
         self.assertIn("options.MediapipeReadyTimeoutSeconds", server)
-        self.assertIn("addSupportedParam", server)
+        self.assertIn("launcherRuntime.start", server)
         self.assertIn("numericOptionFields", app)
         self.assertIn("readyTimeoutOptionFields", app)
         self.assertIn("setReadyTimeoutOption", app)
         self.assertIn("[int]$VoicevoxReadyTimeoutSeconds = 45", system)
         self.assertIn("[int]$MediapipeReadyTimeoutSeconds = 90", system)
-        self.assertIn("-VoicevoxReadyTimeoutSeconds", system)
-        self.assertIn("-MediapipeReadyTimeoutSeconds", system)
+        self.assertIn("VoicevoxReadyTimeoutSeconds = $VoicevoxReadyTimeoutSeconds", system)
+        self.assertIn("MediapipeReadyTimeoutSeconds = $MediapipeReadyTimeoutSeconds", system)
+        self.assertNotIn("-VoicevoxReadyTimeoutSeconds", system)
+        self.assertNotIn("-MediapipeReadyTimeoutSeconds", system)
         self.assertIn("[int]$VoicevoxReadyTimeoutSeconds = 45", stack_start)
         self.assertIn("[int]$MediapipeReadyTimeoutSeconds = 90", stack_start)
         self.assertIn("Assert-VoicevoxReady", stack_start)
@@ -2422,6 +2403,7 @@ process.stdout.write(JSON.stringify(report))
         self.assertNotIn("'HOME_ASSISTANT_TOKEN'", server)
 
     def test_fixed_start_summary_is_anchored_bounded_and_private(self) -> None:
+        self.skipTest("N2 no longer reaches the legacy fixed-start collector")
         server = read_launcher_server()
         system = read_system_script()
         stack_start = read_stack_start_script()
@@ -2653,6 +2635,7 @@ function Test-ServiceChildEnvironment {
             self.assertTrue(case["producer_retained"])
 
     def test_fixed_start_summary_collector_handles_split_and_bounded_private_input(self) -> None:
+        self.skipTest("N2 no longer reaches the legacy fixed-start collector")
         server = read_launcher_server()
         collector = extract_between(
             server,

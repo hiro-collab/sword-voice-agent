@@ -10,7 +10,8 @@ const path = require('node:path')
 const { PassThrough, Writable } = require('node:stream')
 const test = require('node:test')
 
-const { loadAuthority } = require('../tools/home-control-launcher/launcher-supervisor-contract')
+const contract = require('../tools/home-control-launcher/launcher-supervisor-contract')
+const { loadAuthority } = contract
 const reducer = require('../tools/home-control-launcher/launcher-supervisor-reducer')
 const store = require('../tools/home-control-launcher/launcher-operation-store')
 const {
@@ -54,7 +55,7 @@ test.after(() => {
 })
 const dispatchId = (serviceId, action, sequence = 1) => `ld_${Buffer.from(`${serviceId}:${action}:${sequence}`).toString('hex').slice(0, 32).padEnd(32, '0')}`
 const actionForEvent = (eventType) => eventType.startsWith('spawn_') ? 'start' :
-  ['probe_requested', 'service_ready', 'optional_absent', 'external_ready', 'readiness_timeout'].includes(eventType) ? 'probe' :
+  ['probe_requested', 'probe_transport_ready', 'semantic_probe_completed', 'optional_absent', 'readiness_timeout'].includes(eventType) ? 'probe' :
     ['stop_dispatch_requested', 'service_stopped', 'stop_failed'].includes(eventType) ? 'stop' : null
 const event = (eventType, serviceId) => ({
   event_type: eventType,
@@ -71,6 +72,36 @@ const startLifecycle = () => {
   return operation
 }
 
+const boundProbeResult = (operation, serviceId, ready = true) => {
+  const service = operation.services.find((candidate) => candidate.service_id === serviceId)
+  const descriptor = authority.probeDocument.descriptors.find((candidate) => candidate.service_id === serviceId)
+  assert.ok(service)
+  assert.ok(descriptor)
+  assert.equal(service.pending_action, 'probe')
+  return {
+    schema_version: 'launcher_probe_result.v1',
+    message_type: 'result',
+    operation_id: operation.operation_id,
+    supervisor_generation: operation.supervisor_generation,
+    dispatch_id: service.pending_dispatch_id,
+    expected_revision: service.probe_expected_revision,
+    service_id: serviceId,
+    probe_id: descriptor.probe_id,
+    graph_sha256: authority.identities.graphSha256,
+    binding_sha256: authority.identities.bindingSha256,
+    descriptor_sha256: contract.canonicalJsonSha256(descriptor),
+    config_sha256: '0'.repeat(64),
+    requested_at: '2026-07-29T00:00:00.000Z',
+    source_observed_at: '2026-07-29T00:00:00.100Z',
+    observed_at: '2026-07-29T00:00:00.200Z',
+    freshness_class: 'fresh',
+    semantic_class: ready ? descriptor.success_semantic_classes[0] : 'not_ready',
+    reason_class: ready ? 'none' : 'health_unavailable',
+    ready,
+    proof_ceiling: descriptor.proof_ceiling
+  }
+}
+
 const stoppingLifecycle = () => {
   let operation = startLifecycle()
   const specs = new Map(authority.graph.services.map((service) => [service.service_id, service]))
@@ -78,7 +109,11 @@ const stoppingLifecycle = () => {
     const spec = specs.get(serviceId)
     if (spec.requirement === 'external') {
       operation = reducer.reduce(operation, event('probe_requested', serviceId), authority)
-      operation = reducer.reduce(operation, event('external_ready', serviceId), authority)
+      operation = reducer.reduce(operation, event('probe_transport_ready', serviceId), authority)
+      operation = reducer.reduce(operation, {
+        ...event('semantic_probe_completed', serviceId),
+        probe_result: boundProbeResult(operation, serviceId)
+      }, authority)
     } else if (spec.requirement === 'optional') {
       operation = reducer.reduce(operation, event('probe_requested', serviceId), authority)
       operation = reducer.reduce(operation, event('optional_absent', serviceId), authority)
@@ -87,7 +122,11 @@ const stoppingLifecycle = () => {
       operation = reducer.reduce(operation, event('spawn_requested', serviceId), authority)
       operation = reducer.reduce(operation, event('spawn_succeeded', serviceId), authority)
       operation = reducer.reduce(operation, event('probe_requested', serviceId), authority)
-      operation = reducer.reduce(operation, event('service_ready', serviceId), authority)
+      operation = reducer.reduce(operation, event('probe_transport_ready', serviceId), authority)
+      operation = reducer.reduce(operation, {
+        ...event('semantic_probe_completed', serviceId),
+        probe_result: boundProbeResult(operation, serviceId)
+      }, authority)
     }
   }
   return reducer.reduce(operation, event('stop_requested'), authority)
@@ -406,7 +445,7 @@ test('correlation, malformed, oversize, and private sentinel responses fail clos
   }
 })
 
-test('worker-shaped results map through the frozen N0 reducer contract', () => {
+test('worker-shaped results map only to transport readiness before a correlated semantic result', () => {
   let operation = startLifecycle()
   operation = reducer.reduce(operation, event('spawn_requested', 'home_assistant_bridge'), authority)
   const startRequest = { ...requestFor('home_assistant_bridge', 'start', operation.revision), supervisor_generation: operation.supervisor_generation, dispatch_id: operation.services.find((service) => service.service_id === 'home_assistant_bridge').pending_dispatch_id }
@@ -419,7 +458,22 @@ test('worker-shaped results map through the frozen N0 reducer contract', () => {
   operation = reducer.reduce(operation, event('probe_requested', 'home_assistant_bridge'), authority)
   const probeRequest = { ...requestFor('home_assistant_bridge', 'probe', operation.revision), supervisor_generation: operation.supervisor_generation, dispatch_id: operation.services.find((service) => service.service_id === 'home_assistant_bridge').pending_dispatch_id }
   const noPortReady = resultFor(probeRequest, { listener_class: 'matched' })
-  assert.equal(reducer.workerResultToEvent(noPortReady, operation, probeRequest, authority).event_type, 'service_ready')
+  const transportReady = reducer.workerResultToEvent(noPortReady, operation, probeRequest, authority)
+  assert.equal(transportReady.event_type, 'probe_transport_ready')
+  operation = reducer.reduce(operation, transportReady, authority)
+  let service = operation.services.find((candidate) => candidate.service_id === 'home_assistant_bridge')
+  assert.equal(service.state, 'starting')
+  assert.equal(service.probe_status, 'transport_ready')
+  assert.equal(service.last_probe_result, null)
+  const homeProbeResult = boundProbeResult(operation, 'home_assistant_bridge')
+  operation = reducer.reduce(operation, {
+    ...event('semantic_probe_completed', 'home_assistant_bridge'),
+    probe_result: homeProbeResult
+  }, authority)
+  service = operation.services.find((candidate) => candidate.service_id === 'home_assistant_bridge')
+  assert.equal(service.state, 'ready')
+  assert.equal(service.probe_status, 'ready')
+  assert.deepEqual(service.last_probe_result, homeProbeResult)
 
   const externalSpec = authority.graph.services.find((service) => service.service_id === 'voicevox')
   let externalOperation = startLifecycle()
@@ -430,7 +484,21 @@ test('worker-shaped results map through the frozen N0 reducer contract', () => {
     result_class: 'external_ready', ownership_class: 'not_applicable',
     listener_class: 'matched', descendant_class: 'not_applicable'
   })
-  assert.equal(reducer.workerResultToEvent(externalReady, externalOperation, externalRequest, authority).event_type, 'external_ready')
+  const externalTransportReady = reducer.workerResultToEvent(externalReady, externalOperation, externalRequest, authority)
+  assert.equal(externalTransportReady.event_type, 'probe_transport_ready')
+  externalOperation = reducer.reduce(externalOperation, externalTransportReady, authority)
+  let externalService = externalOperation.services.find((candidate) => candidate.service_id === 'voicevox')
+  assert.equal(externalService.state, 'pending')
+  assert.equal(externalService.probe_status, 'transport_ready')
+  const voicevoxProbeResult = boundProbeResult(externalOperation, 'voicevox')
+  externalOperation = reducer.reduce(externalOperation, {
+    ...event('semantic_probe_completed', 'voicevox'),
+    probe_result: voicevoxProbeResult
+  }, authority)
+  externalService = externalOperation.services.find((candidate) => candidate.service_id === 'voicevox')
+  assert.equal(externalService.state, 'external_ready')
+  assert.equal(externalService.probe_status, 'ready')
+  assert.deepEqual(externalService.last_probe_result, voicevoxProbeResult)
 
   let stopping = stoppingLifecycle()
   stopping = reducer.reduce(stopping, event('stop_dispatch_requested', 'home_assistant_bridge'), authority)
@@ -444,6 +512,34 @@ test('worker-shaped results map through the frozen N0 reducer contract', () => {
     listener_class: 'unknown', descendant_class: 'unknown'
   })
   assert.equal(reducer.workerResultToEvent(stopFailed, stopping, stopRequest, authority).event_type, 'stop_failed')
+})
+
+test('semantic readiness rejects mismatched generation, dispatch, revision, and private fields', () => {
+  const prepare = () => {
+    let operation = startLifecycle()
+    operation = reducer.reduce(operation, event('spawn_requested', 'home_assistant_bridge'), authority)
+    operation = reducer.reduce(operation, event('spawn_succeeded', 'home_assistant_bridge'), authority)
+    operation = reducer.reduce(operation, event('probe_requested', 'home_assistant_bridge'), authority)
+    return reducer.reduce(operation, event('probe_transport_ready', 'home_assistant_bridge'), authority)
+  }
+  const accepted = boundProbeResult(prepare(), 'home_assistant_bridge')
+  for (const mutation of [
+    { supervisor_generation: accepted.supervisor_generation + 1 },
+    { dispatch_id: 'ld_ffffffffffffffff' },
+    { expected_revision: accepted.expected_revision + 1 },
+    { raw_body: 'PRIVATE_SENTINEL' }
+  ]) {
+    const operation = reducer.reduce(prepare(), {
+      ...event('semantic_probe_completed', 'home_assistant_bridge'),
+      probe_result: { ...accepted, ...mutation }
+    }, authority)
+    assert.equal(operation.reason, 'invalid_event')
+    assert.equal(operation.phase, 'waiting_ready')
+    const service = operation.services.find((candidate) => candidate.service_id === 'home_assistant_bridge')
+    assert.equal(service.state, 'starting')
+    assert.equal(service.probe_status, 'transport_ready')
+    assert.equal(service.last_probe_result, null)
+  }
 })
 
 test('PowerShell transport uses fixed no-shell invocation, one inflight request, and bounded cleanup', async () => {

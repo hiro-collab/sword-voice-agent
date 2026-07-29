@@ -92,10 +92,12 @@ class LauncherSupervisorNodeContractTests(unittest.TestCase):
         source = (ROOT / "tools" / "home-control-launcher" / "launcher-supervisor-reducer.js").read_text(encoding="utf-8")
         self.assertIsNone(re.search(r"\bauthority_lease\s*:", source))
 
-    def test_readme_marks_n0_as_no_cutover_and_future_portable_authority(self) -> None:
+    def test_readme_keeps_n0_historical_and_marks_n2_as_the_atomic_authority(self) -> None:
         readme = (ROOT / "tools" / "home-control-launcher" / "README.md").read_text(encoding="utf-8")
         self.assertIn("Launcher Supervisor Node N0", readme)
-        self.assertIn("does not start, stop, probe, or spawn", readme)
+        self.assertIn("N0 was adopted as source/static preparation only", readme)
+        self.assertIn("Launcher Supervisor Node N2 atomic cutover", readme)
+        self.assertIn("launcher-supervisor-runtime.js` is the single side-effect coordinator", readme)
         self.assertIn("job_worker_service", readme)
         self.assertIn("Ubuntu", readme)
 

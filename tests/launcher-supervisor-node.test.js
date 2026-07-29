@@ -16,7 +16,7 @@ const OPERATION_ID = 'lop_node0001'
 const LEASE_PROOF = `lp_${'a'.repeat(64)}`
 const dispatchId = (serviceId, action, sequence = 1) => `ld_${Buffer.from(`${serviceId}:${action}:${sequence}`).toString('hex').slice(0, 32).padEnd(32, '0')}`
 const actionForEvent = (eventType) => eventType.startsWith('spawn_') ? 'start' :
-  ['probe_requested', 'service_ready', 'optional_absent', 'external_ready', 'readiness_timeout'].includes(eventType) ? 'probe' :
+  ['probe_requested', 'probe_transport_ready', 'semantic_probe_completed', 'optional_absent', 'readiness_timeout'].includes(eventType) ? 'probe' :
     ['stop_dispatch_requested', 'service_stopped', 'stop_failed'].includes(eventType) ? 'stop' : null
 const event = (eventType, serviceId = undefined, operationId = OPERATION_ID, dispatch = undefined) => ({
   event_type: eventType, operation_id: operationId, ...(serviceId ? { service_id: serviceId } : {}),
@@ -66,6 +66,36 @@ const startLifecycle = () => {
   return operation
 }
 
+const boundProbeResult = (operation, serviceId, ready = true) => {
+  const service = operation.services.find((candidate) => candidate.service_id === serviceId)
+  const descriptor = authority.probeDocument.descriptors.find((candidate) => candidate.service_id === serviceId)
+  assert.ok(service)
+  assert.ok(descriptor)
+  assert.equal(service.pending_action, 'probe')
+  return {
+    schema_version: 'launcher_probe_result.v1',
+    message_type: 'result',
+    operation_id: operation.operation_id,
+    supervisor_generation: operation.supervisor_generation,
+    dispatch_id: service.pending_dispatch_id,
+    expected_revision: service.probe_expected_revision,
+    service_id: serviceId,
+    probe_id: descriptor.probe_id,
+    graph_sha256: authority.identities.graphSha256,
+    binding_sha256: authority.identities.bindingSha256,
+    descriptor_sha256: contract.canonicalJsonSha256(descriptor),
+    config_sha256: '0'.repeat(64),
+    requested_at: '2026-07-29T00:00:00.000Z',
+    source_observed_at: '2026-07-29T00:00:00.100Z',
+    observed_at: '2026-07-29T00:00:00.200Z',
+    freshness_class: 'fresh',
+    semantic_class: ready ? descriptor.success_semantic_classes[0] : 'not_ready',
+    reason_class: ready ? 'none' : 'health_unavailable',
+    ready,
+    proof_ceiling: descriptor.proof_ceiling
+  }
+}
+
 const fullReady = () => {
   let operation = startLifecycle()
   const specs = new Map(authority.graph.services.map((service) => [service.service_id, service]))
@@ -73,7 +103,11 @@ const fullReady = () => {
     const spec = specs.get(serviceId)
     if (spec.requirement === 'external') {
       operation = reducer.reduce(operation, event('probe_requested', serviceId), authority)
-      operation = reducer.reduce(operation, event('external_ready', serviceId), authority)
+      operation = reducer.reduce(operation, event('probe_transport_ready', serviceId), authority)
+      operation = reducer.reduce(operation, {
+        ...event('semantic_probe_completed', serviceId),
+        probe_result: boundProbeResult(operation, serviceId)
+      }, authority)
     } else if (spec.requirement === 'optional') {
       operation = reducer.reduce(operation, event('probe_requested', serviceId), authority)
       operation = reducer.reduce(operation, event('optional_absent', serviceId), authority)
@@ -81,7 +115,11 @@ const fullReady = () => {
       operation = reducer.reduce(operation, event('spawn_requested', serviceId), authority)
       operation = reducer.reduce(operation, event('spawn_succeeded', serviceId), authority)
       operation = reducer.reduce(operation, event('probe_requested', serviceId), authority)
-      operation = reducer.reduce(operation, event('service_ready', serviceId), authority)
+      operation = reducer.reduce(operation, event('probe_transport_ready', serviceId), authority)
+      operation = reducer.reduce(operation, {
+        ...event('semantic_probe_completed', serviceId),
+        probe_result: boundProbeResult(operation, serviceId)
+      }, authority)
     }
     reducer.validateSnapshot(operation, authority)
   }
@@ -234,7 +272,122 @@ test('worker result correlation protects revision, nonce, ownership, PID, and li
     ...result, action: 'probe', result_class: 'ready', listener_class: 'matched',
     expected_revision: probeRequest.expected_revision, dispatch_id: probeRequest.dispatch_id
   }
-  assert.equal(reducer.workerResultToEvent(probeResult, operation, probeRequest, authority).event_type, 'service_ready')
+  assert.equal(reducer.workerResultToEvent(probeResult, operation, probeRequest, authority).event_type, 'probe_transport_ready')
+})
+
+test('semantic probe result is required, fully correlated, and retained before Ready', () => {
+  const prepare = () => {
+    let operation = startLifecycle()
+    operation = reducer.reduce(operation, event('spawn_requested', 'home_assistant_bridge'), authority)
+    operation = reducer.reduce(operation, event('spawn_succeeded', 'home_assistant_bridge'), authority)
+    operation = reducer.reduce(operation, event('probe_requested', 'home_assistant_bridge'), authority)
+    operation = reducer.reduce(operation, event('probe_transport_ready', 'home_assistant_bridge'), authority)
+    return operation
+  }
+  const pending = prepare()
+  const pendingService = pending.services.find((service) => service.service_id === 'home_assistant_bridge')
+  assert.equal(pending.phase, 'waiting_ready')
+  assert.equal(pendingService.state, 'starting')
+  assert.equal(pendingService.probe_status, 'transport_ready')
+  assert.equal(pendingService.last_probe_result, null)
+
+  const accepted = boundProbeResult(pending, 'home_assistant_bridge')
+  const completed = reducer.reduce(pending, {
+    ...event('semantic_probe_completed', 'home_assistant_bridge'),
+    probe_result: accepted
+  }, authority)
+  const readyService = completed.services.find((service) => service.service_id === 'home_assistant_bridge')
+  assert.equal(readyService.state, 'ready')
+  assert.equal(readyService.probe_status, 'ready')
+  assert.deepEqual(readyService.last_probe_result, accepted)
+  reducer.validateSnapshot(completed, authority)
+
+  for (const mutation of [
+    { dispatch_id: 'ld_ffffffffffffffff' },
+    { supervisor_generation: accepted.supervisor_generation + 1 },
+    { expected_revision: accepted.expected_revision + 1 },
+    { descriptor_sha256: 'f'.repeat(64) }
+  ]) {
+    const invalid = reducer.reduce(prepare(), {
+      ...event('semantic_probe_completed', 'home_assistant_bridge'),
+      probe_result: { ...accepted, ...mutation }
+    }, authority)
+    assert.equal(invalid.reason, 'invalid_event')
+    assert.equal(invalid.services.find((service) => service.service_id === 'home_assistant_bridge').state, 'starting')
+    reducer.validateSnapshot(invalid, authority)
+  }
+
+  const privateExtra = reducer.reduce(prepare(), {
+    ...event('semantic_probe_completed', 'home_assistant_bridge'),
+    probe_result: { ...accepted, raw_body: 'private-sentinel' }
+  }, authority)
+  assert.equal(privateExtra.reason, 'invalid_event')
+  assert.equal(JSON.stringify(privateExtra).includes('private-sentinel'), false)
+})
+
+test('semantic not-ready result fails closed with its bounded result retained', () => {
+  let operation = startLifecycle()
+  operation = reducer.reduce(operation, event('spawn_requested', 'home_assistant_bridge'), authority)
+  operation = reducer.reduce(operation, event('spawn_succeeded', 'home_assistant_bridge'), authority)
+  operation = reducer.reduce(operation, event('probe_requested', 'home_assistant_bridge'), authority)
+  operation = reducer.reduce(operation, event('probe_transport_ready', 'home_assistant_bridge'), authority)
+  const result = boundProbeResult(operation, 'home_assistant_bridge', false)
+  operation = reducer.reduce(operation, {
+    ...event('semantic_probe_completed', 'home_assistant_bridge'),
+    probe_result: result
+  }, authority)
+  const service = operation.services.find((candidate) => candidate.service_id === 'home_assistant_bridge')
+  assert.equal(operation.phase, 'rolling_back')
+  assert.equal(operation.reason, 'semantic_probe_failed')
+  assert.equal(service.state, 'failed')
+  assert.equal(service.probe_status, 'not_ready')
+  assert.deepEqual(service.last_probe_result, result)
+  reducer.validateSnapshot(operation, authority)
+})
+
+test('rollback and recovery persist one correlated stop dispatch before cleanup result', () => {
+  let rollback = startLifecycle()
+  rollback = reducer.reduce(rollback, event('spawn_requested', 'home_assistant_bridge'), authority)
+  rollback = reducer.reduce(rollback, event('spawn_succeeded', 'home_assistant_bridge'), authority)
+  rollback = reducer.reduce(rollback, event('probe_requested', 'home_assistant_bridge'), authority)
+  rollback = reducer.reduce(rollback, event('readiness_timeout', 'home_assistant_bridge'), authority)
+  assert.equal(rollback.phase, 'rolling_back')
+  const rollbackDispatch = dispatchId('home_assistant_bridge', 'stop', 2)
+  rollback = reducer.reduce(rollback, event('stop_dispatch_requested', 'home_assistant_bridge', OPERATION_ID, rollbackDispatch), authority)
+  assert.equal(rollback.services.find((service) => service.service_id === 'home_assistant_bridge').pending_dispatch_id, rollbackDispatch)
+  reducer.validateSnapshot(rollback, authority)
+  rollback = reducer.reduce(rollback, event('service_stopped', 'home_assistant_bridge', OPERATION_ID, rollbackDispatch), authority)
+  assert.equal(rollback.services.find((service) => service.service_id === 'home_assistant_bridge').pending_dispatch_id, null)
+  assert.equal(rollback.services.find((service) => service.service_id === 'home_assistant_bridge').state, 'stopped')
+  reducer.validateSnapshot(rollback, authority)
+
+  let recovery = fullReady()
+  recovery = reducer.reduce(recovery, event('supervisor_crashed'), authority)
+  assert.equal(recovery.phase, 'recovering')
+  const recoveryDispatch = dispatchId('home_assistant_bridge', 'stop', 3)
+  recovery = reducer.reduce(recovery, event('stop_dispatch_requested', 'home_assistant_bridge', OPERATION_ID, recoveryDispatch), authority)
+  recovery = reducer.reduce(recovery, event('service_stopped', 'home_assistant_bridge', OPERATION_ID, recoveryDispatch), authority)
+  const recoveredService = recovery.services.find((service) => service.service_id === 'home_assistant_bridge')
+  assert.equal(recoveredService.pending_dispatch_id, null)
+  assert.equal(recoveredService.state, 'stopped')
+  reducer.validateSnapshot(recovery, authority)
+})
+
+test('supervisor crash cancels interrupted dispatch before correlated recovery stop', () => {
+  let operation = startLifecycle()
+  operation = reducer.reduce(operation, event('spawn_requested', 'home_assistant_bridge'), authority)
+  const interrupted = workerRequest(operation)
+  assert.equal(operation.services.find((service) => service.service_id === 'home_assistant_bridge').pending_dispatch_id, interrupted.dispatch_id)
+  operation = reducer.reduce(operation, event('supervisor_crashed'), authority)
+  const service = operation.services.find((candidate) => candidate.service_id === 'home_assistant_bridge')
+  assert.equal(operation.phase, 'recovering')
+  assert.equal(service.pending_dispatch_id, null)
+  assert.equal(service.pending_action, null)
+  expectCode(() => reducer.workerResultToEvent(workerResult(interrupted), operation, interrupted, authority), 'worker_result_correlation_mismatch')
+  const recoveryDispatch = dispatchId('home_assistant_bridge', 'stop', 4)
+  operation = reducer.reduce(operation, event('stop_dispatch_requested', 'home_assistant_bridge', OPERATION_ID, recoveryDispatch), authority)
+  assert.equal(operation.services.find((candidate) => candidate.service_id === 'home_assistant_bridge').pending_dispatch_id, recoveryDispatch)
+  reducer.validateSnapshot(operation, authority)
 })
 
 test('generation fencing and dispatch correlation reject losers without global revision coupling', () => {
@@ -582,6 +735,39 @@ test('external probe timeout becomes a bounded failure without fake external rea
   reducer.validateSnapshot(operation, authority)
 })
 
+test('every correlated external probe failure consumes dispatch and rolls back without external stop authority', () => {
+  const externalSpec = authority.graph.services.find((service) => service.service_id === 'voicevox')
+  const cases = [
+    ['invalid_request', 'probe_failed', 'semantic_probe_failed'],
+    ['internal_failure', 'probe_failed', 'semantic_probe_failed'],
+    ['cancelled', 'probe_failed', 'semantic_probe_failed'],
+    ['early_exit', 'probe_failed', 'semantic_probe_failed'],
+    ['listener_mismatch', 'listener_mismatch', 'listener_mismatch']
+  ]
+  for (const [resultClass, eventType, reason] of cases) {
+    let operation = startLifecycle()
+    operation = reducer.reduce(operation, event('probe_requested', 'voicevox'), authority)
+    const request = workerRequest(operation, 'voicevox', 'probe', 'external_probe_only', externalSpec.ready_deadline_ms)
+    const result = workerResult(request, {
+      result_class: resultClass,
+      ownership_class: 'not_applicable',
+      listener_class: resultClass === 'listener_mismatch' ? 'mismatch' : 'not_applicable',
+      descendant_class: 'not_applicable'
+    })
+    const failureEvent = reducer.workerResultToEvent(result, operation, request, authority)
+    assert.equal(failureEvent.event_type, eventType, resultClass)
+    operation = reducer.reduce(operation, failureEvent, authority)
+    assert.equal(operation.phase, 'rolling_back', resultClass)
+    assert.equal(operation.reason, reason, resultClass)
+    assert.equal(operation.rollback_required, true, resultClass)
+    const external = operation.services.find((service) => service.service_id === 'voicevox')
+    assert.equal(external.state, 'failed', resultClass)
+    assert.equal(external.pending_dispatch_id, null, resultClass)
+    assert.equal(external.pending_action, null, resultClass)
+    reducer.validateSnapshot(operation, authority)
+  }
+})
+
 test('all immutable reducer vectors execute and preserve valid snapshots', () => {
   const coverage = new Set()
   for (const vector of authority.reducerVectors.vectors) {
@@ -628,7 +814,9 @@ test('first failure survives rollback and recovery', () => {
   operation = reducer.reduce(operation, event('spawn_failed', 'home_assistant_bridge'), authority)
   operation = reducer.reduce(operation, event('supervisor_crashed'), authority)
   assert.equal(operation.reason, 'spawn_failed')
-  operation = reducer.reduce(operation, event('service_stopped', 'home_assistant_bridge'), authority)
+  const cleanupDispatch = dispatchId('home_assistant_bridge', 'stop', 2)
+  operation = reducer.reduce(operation, event('stop_dispatch_requested', 'home_assistant_bridge', OPERATION_ID, cleanupDispatch), authority)
+  operation = reducer.reduce(operation, event('service_stopped', 'home_assistant_bridge', OPERATION_ID, cleanupDispatch), authority)
   operation = reducer.reduce(operation, event('recovery_completed'), authority)
   assert.equal(operation.reason, 'spawn_failed')
   assert.equal(operation.phase, 'failed')

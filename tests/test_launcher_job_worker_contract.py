@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CLIENT = ROOT / "tools" / "home-control-launcher" / "launcher-job-worker-client.js"
 PLAN = ROOT / "ops" / "scripts" / "home-control-stack" / "launcher-service-plan.psm1"
 WORKER = ROOT / "ops" / "scripts" / "home-control-stack" / "launcher-job-worker.ps1"
+RUNTIME = ROOT / "tools" / "home-control-launcher" / "launcher-supervisor-runtime.js"
+SERVER = ROOT / "tools" / "home-control-launcher" / "server.js"
 
 FROZEN_N0 = {
     "contracts/launcher/launcher-operation.v1.schema.json": "a91b5d54d45d99e2e25adcef4319ed3c2bc7dd4bd564a261e796a8dc191c85e3",
@@ -22,10 +24,10 @@ FROZEN_N0 = {
     "contracts/launcher/launcher-reducer-vectors.v1.json": "379fc9998a943b98a56857bc494f5840c2662cfdce7ab5bfb270b678d78ccf1c",
     "contracts/launcher/generated/launcher-service-graph.standard.v1.binding.json": "3a74d2c620f55c8203b6a1e9cc66c631c1867d131d69362743fe73e300bd9229",
     "ops/manifests/launcher-service-graph.standard.v1.json": "dc548b8ddd9528af3a6d10325f868af200fe3d85d1e88182cdcf32407506ea77",
-    "tools/home-control-launcher/launcher-supervisor-contract.js": "1f94b6b6644970f1e64ec4f6f1be4669696c5c9aa10f5ecb66c2aa9d6e23e596",
-    "tools/home-control-launcher/launcher-supervisor-reducer.js": "d2ae81341474537d21572da61cbae544423d0236ea19d825317655779403d40a",
+    "tools/home-control-launcher/launcher-supervisor-contract.js": "eed1faaa0d3b75c068f608ac6dd83ae26ffbcf997e0395d914b3de25b36a68f8",
+    "tools/home-control-launcher/launcher-supervisor-reducer.js": "440cc6ef1411433e1585705fd51209ed5ed3c73fed993153b3f2e43b0c6def59",
     "tools/home-control-launcher/launcher-operation-store.js": "e238960f92b1df664c6ab2c03144b8c5a4c0487222ccbc8f5efedba76b494c4e",
-    "tools/home-control-launcher/server.js": "99bdc202bd5b8cafa0e3463801df961728ad4612d3f00a4f9f09b77c8b581606",
+    "tools/home-control-launcher/server.js": "811488b149c0919b50ae887d695fdc63e4616e0993b2647ee6143e6114c82bfe",
     "ops/scripts/home-control-stack/start-home-control-stack.ps1": "d5f1b2556e3a71520b5117eef8774326b70b05221064122dccc9c1296ac8d1ec",
     "ops/scripts/home-control-stack/stop-home-control-stack.ps1": "acdb237f13f76eabfd743f24619b8b5c90512a7f1149ab55232239d476e67619",
     "ops/scripts/home-control-stack/status-home-control-stack.ps1": "db2ed1f9e7f6e21785d4a081cc35db818d1fbbd4e9c2b7e88d40ddbb628eda44",
@@ -38,10 +40,12 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
             digest = hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
             self.assertEqual(digest, expected, relative)
 
-    def test_exact_worker_sources_have_no_launcher_cutover(self) -> None:
+    def test_active_launcher_cutover_uses_only_the_v2_worker_protocol(self) -> None:
         client = CLIENT.read_text(encoding="utf-8")
         plan = PLAN.read_text(encoding="utf-8")
         worker = WORKER.read_text(encoding="utf-8")
+        runtime = RUNTIME.read_text(encoding="utf-8")
+        server = SERVER.read_text(encoding="utf-8")
         self.assertIn("validateWorkerRequestAgainstAuthority", client)
         self.assertIn("correlateWorkerResult", client)
         self.assertIn("createOwnerLivenessObserver", client)
@@ -64,7 +68,12 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
         self.assertIn('$ReservedEnvironmentNames = @("SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE", "SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF")', worker)
         self.assertIn("$environment.Remove($name)", worker)
         self.assertNotIn("Get-ChildItem Env:", worker)
-        self.assertNotIn("launcher-job-worker-client", (ROOT / "tools/home-control-launcher/server.js").read_text(encoding="utf-8"))
+        self.assertIn('schema_version = "launcher_worker.v2"', worker)
+        self.assertNotIn("launcher_worker.v1", worker)
+        self.assertIn("launcher_worker.v2", runtime)
+        self.assertNotIn("launcher_worker.v1", runtime)
+        self.assertIn("launcher-supervisor-runtime", server)
+        self.assertNotIn("launcher_worker.v1", server)
         self.assertNotIn("launcher-job-worker.ps1", (ROOT / "ops/scripts/home-control-stack/start-home-control-stack.ps1").read_text(encoding="utf-8"))
 
     def test_public_worker_result_is_the_frozen_bounded_shape(self) -> None:
@@ -178,7 +187,7 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
         self.assertEqual(result["requirement"], "external")
         self.assertEqual(result["port"], 50021)
 
-    def test_worker_result_literals_match_frozen_n0_action_boundaries(self) -> None:
+    def test_worker_result_literals_preserve_v2_process_action_boundaries(self) -> None:
         worker = WORKER.read_text(encoding="utf-8")
         start = worker.split("function Invoke-LauncherStart", 1)[1].split("function Invoke-LauncherProbe", 1)[0]
         probe = worker.split("function Invoke-LauncherProbe", 1)[1].split("function Invoke-LauncherStop", 1)[0]

@@ -4,12 +4,19 @@ const fs = require('fs')
 const http = require('http')
 const https = require('https')
 const net = require('net')
+const os = require('os')
 const path = require('path')
 const {
   assertLauncherRuntimeAlignment,
   loadContract: loadOrdinaryRouteContract,
   publicContractPayload: ordinaryRouteContractPayload
 } = require('./ordinary-route-contract')
+const {
+  LauncherSupervisorRuntime
+} = require('./launcher-supervisor-runtime')
+const {
+  LauncherProbeRuntimeContext
+} = require('./launcher-probe-runtime-context')
 
 const args = process.argv.slice(2)
 
@@ -66,7 +73,6 @@ const OPENAI_BROKER_PORT =
 const PUBLIC_DIR = path.join(__dirname, 'public')
 const PROFILE_FILE = path.join(__dirname, 'config', 'default-profiles.json')
 const OPS_SCRIPT_ROOT = path.join(PROJECT_ROOT, 'ops', 'scripts')
-const SYSTEM_SCRIPT = path.join(OPS_SCRIPT_ROOT, 'system.ps1')
 const COMMON_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'common.ps1')
 const STATE_DIR = resolveStackStateDir()
 const LOG_DIR = path.join(STATE_DIR, 'logs')
@@ -96,6 +102,130 @@ const STOP_VERIFY_INTERVAL_MS = Number(
 const PRIMARY_PROFILE_ID = 'thought-core-v0'
 const ORDINARY_ROUTE_CONTRACT = loadOrdinaryRouteContract()
 const ORDINARY_ROUTE_PUBLIC_SURFACES = ORDINARY_ROUTE_CONTRACT.public_surfaces
+const isTemporaryTestPath = (target) => {
+  const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(target))
+  return Boolean(relative) &&
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+}
+const TEST_FAKE_SUPERVISOR =
+  process.env.NODE_ENV === 'test' &&
+  process.env.HOME_CONTROL_LAUNCHER_TEST_FAKE_SUPERVISOR === 'deterministic_v1' &&
+  !ALLOW_REMOTE &&
+  isTemporaryTestPath(WORKSPACE_ROOT) &&
+  isTemporaryTestPath(STATE_DIR)
+
+const deterministicTestWorker = () => ({
+  async execute (request) {
+    const common = {
+      schema_version: 'launcher_worker.v2',
+      message_type: 'result',
+      operation_id: request.operation_id,
+      supervisor_generation: request.supervisor_generation,
+      authority_lease_proof: request.authority_lease_proof,
+      dispatch_id: request.dispatch_id,
+      service_id: request.service_id,
+      action: request.action,
+      expected_revision: request.expected_revision,
+      worker_nonce: request.worker_nonce
+    }
+    if (request.action === 'start') {
+      return {
+        ...common,
+        result_class: 'accepted',
+        ownership_class: 'matched',
+        listener_class: 'not_applicable',
+        descendant_class: 'owned_active'
+      }
+    }
+    if (request.action === 'probe') {
+      const external = request.service_id === 'voicevox'
+      return {
+        ...common,
+        result_class: external ? 'external_ready' : 'ready',
+        ownership_class: external ? 'not_applicable' : 'matched',
+        listener_class: 'matched',
+        descendant_class: external ? 'not_applicable' : 'owned_active'
+      }
+    }
+    return {
+      ...common,
+      result_class: 'stopped',
+      ownership_class: 'matched',
+      listener_class: 'not_applicable',
+      descendant_class: 'owned_clear'
+    }
+  },
+  async close () {}
+})
+
+const DETERMINISTIC_TEST_PROBE_CONFIG_SHA256 = '0'.repeat(64)
+const deterministicTestProbeExecutor = Object.freeze({
+  configSha256: DETERMINISTIC_TEST_PROBE_CONFIG_SHA256,
+  async execute (expected) {
+    const descriptor = launcherRuntime.authority.probeDocument.descriptors.find((candidate) => (
+      candidate.service_id === expected.service_id && candidate.probe_id === expected.probe_id
+    ))
+    if (!descriptor) throw new Error('deterministic_probe_descriptor_missing')
+    return Object.freeze({
+      schema_version: 'launcher_probe_result.v1',
+      message_type: 'result',
+      ...expected,
+      observed_at: expected.requested_at,
+      source_observed_at: expected.requested_at,
+      freshness_class: 'fresh',
+      semantic_class: descriptor.success_semantic_classes[0],
+      reason_class: 'none',
+      ready: true,
+      proof_ceiling: descriptor.proof_ceiling
+    })
+  }
+})
+
+const launcherRuntimeOptions = {
+  repositoryRoot: PROJECT_ROOT,
+  workspaceRoot: WORKSPACE_ROOT,
+  privateRuntimeRoot: STATE_DIR,
+  probeExecutorFactory: (contextOptions) =>
+    new LauncherProbeRuntimeContext(contextOptions)
+}
+if (TEST_FAKE_SUPERVISOR) {
+  Object.assign(launcherRuntimeOptions, {
+    planCompiler: ({ authority }) => ({
+      document: {
+        schema_version: 'launcher_private_service_plans.v1',
+        graph_sha256: authority.identities.graphSha256,
+        binding_sha256: authority.identities.bindingSha256,
+        services: []
+      },
+      powershell_path: process.execPath,
+      included_service_ids: authority.graph.services
+        .filter((service) => service.ownership === 'owned')
+        .map((service) => service.service_id)
+    }),
+    planWriter: () => 'test-private-plan',
+    planRemover: () => {},
+    workerFactory: deterministicTestWorker,
+    probeExecutor: deterministicTestProbeExecutor,
+    probeExecutorFactory: null,
+    operationIdFactory: (() => {
+      let operation = 0
+      return () => {
+        operation += 1
+        return `lop_testfake${String(operation).padStart(16, '0')}`
+      }
+    })(),
+    workerNonceFactory: (() => {
+      let nonce = 0
+      return () => {
+        nonce += 1
+        return `lw_testfake${String(nonce).padStart(16, '0')}`
+      }
+    })()
+  })
+}
+const launcherRuntime = new LauncherSupervisorRuntime(launcherRuntimeOptions)
 const DEFAULT_HOME_CONTROL_LIVE_CONFIG = path.join(
   WORKSPACE_ROOT,
   'local',
@@ -1308,132 +1438,6 @@ const withPreservedLocalCameraSelection = (profileId, requestedOptions = {}) => 
   }
 }
 
-const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-
-const scriptSupportsParameter = (scriptPath, name) => {
-  try {
-    const text = fs.readFileSync(scriptPath, 'utf8')
-    return new RegExp(`\\$${escapeRegExp(name)}\\b`).test(text)
-  } catch {
-    return true
-  }
-}
-
-const addParam = (args, name, value) => {
-  args.push(`-${name}`)
-  args.push(String(value))
-}
-
-const addSupportedParam = (scriptPath, args, name, value) => {
-  if (scriptSupportsParameter(scriptPath, name)) {
-    addParam(args, name, value)
-  }
-}
-
-const addSupportedSwitch = (scriptPath, args, name) => {
-  if (scriptSupportsParameter(scriptPath, name)) {
-    args.push(`-${name}`)
-  }
-}
-
-const addThoughtCoreSelectionArgs = (stackArgs, options) => {
-  addSupportedSwitch(
-    SYSTEM_SCRIPT,
-    stackArgs,
-    options.EnableThoughtCore ? 'EnableThoughtCore' : 'SkipThoughtCore'
-  )
-  addSupportedSwitch(
-    SYSTEM_SCRIPT,
-    stackArgs,
-    options.EnableThoughtCoreWatch ? 'EnableThoughtCoreWatch' : 'SkipThoughtCoreWatch'
-  )
-}
-
-const buildSystemStartArgs = (profileId, options) => {
-  const stackArgs = ['start', '-Profile', opsProfileFor(profileId)]
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'HomeAssistantBridgeHost', options.HomeAssistantBridgeHost)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'HomeAssistantBridgePort', options.HomeAssistantBridgePort)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'EnvironmentStatePort', options.EnvironmentStatePort)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipePort', options.MediapipePort)
-  addSupportedParam(
-    SYSTEM_SCRIPT,
-    stackArgs,
-    'MediapipeBrowserMonitorPort',
-    options.MediapipeBrowserMonitorPort
-  )
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'VisionSnapshotProcessorPort', options.VisionSnapshotProcessorPort)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'AituberHost', options.AituberHost)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'AituberPort', options.AituberPort)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'TouchDesignerGuiHost', options.TouchDesignerGuiHost)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'TouchDesignerGuiPort', options.TouchDesignerGuiPort)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'ThoughtCoreHost', options.ThoughtCoreHost)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'ThoughtCorePort', options.ThoughtCorePort)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'OpenAIBrokerPort', options.OpenAIBrokerPort)
-  addSupportedParam(
-    SYSTEM_SCRIPT,
-    stackArgs,
-    'ThoughtCoreLlmProvider',
-    options.ThoughtCoreLlmProvider
-  )
-  addSupportedParam(
-    SYSTEM_SCRIPT,
-    stackArgs,
-    'VoicevoxReadyTimeoutSeconds',
-    options.VoicevoxReadyTimeoutSeconds
-  )
-  addSupportedParam(
-    SYSTEM_SCRIPT,
-    stackArgs,
-    'MediapipeReadyTimeoutSeconds',
-    options.MediapipeReadyTimeoutSeconds
-  )
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeMode', options.MediapipeMode)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeCameraName', options.MediapipeCameraName)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeCameraWidth', options.MediapipeCameraWidth)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeCameraHeight', options.MediapipeCameraHeight)
-  addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'MediapipeCameraFps', options.MediapipeCameraFps)
-  addSupportedParam(
-    SYSTEM_SCRIPT,
-    stackArgs,
-    'MediapipeCameraInputCodec',
-    options.MediapipeCameraInputCodec
-  )
-
-  if (options.VoicevoxUrl) {
-    addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'VoicevoxUrl', options.VoicevoxUrl)
-  }
-  if (options.HomeControlConfigPath) {
-    addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'HomeControlConfigPath', options.HomeControlConfigPath)
-  }
-  for (const key of SWITCH_FIELDS) {
-    if (key === 'EnableThoughtCore' || key === 'EnableThoughtCoreWatch') {
-      continue
-    }
-    if (options[key]) {
-      addSupportedSwitch(SYSTEM_SCRIPT, stackArgs, key)
-    }
-  }
-  addThoughtCoreSelectionArgs(stackArgs, options)
-  return stackArgs
-}
-
-const buildSystemStatusArgs = (profileId, options) => {
-  const stackArgs = ['status', '-Profile', opsProfileFor(profileId)]
-  for (const key of NUMBER_FIELDS) {
-    addSupportedParam(SYSTEM_SCRIPT, stackArgs, key, options[key])
-  }
-  for (const key of [
-    'VoicevoxUrl',
-    'ThoughtCoreHost'
-  ]) {
-    if (options[key]) {
-      addSupportedParam(SYSTEM_SCRIPT, stackArgs, key, options[key])
-    }
-  }
-  addThoughtCoreSelectionArgs(stackArgs, options)
-  return stackArgs
-}
-
 const buildPowerShellCommand = (scriptPath, scriptArgs = []) => [
   psExecutable(),
   '-NoLogo',
@@ -1462,18 +1466,16 @@ const previewCommand = (
     MediapipeCameraName:
       sanitizeVideoInputCaptureName(resolvedCameraName) || options.MediapipeCameraName
   }
-  const command = buildPowerShellCommand(
-    SYSTEM_SCRIPT,
-    buildSystemStartArgs(profileId, executionOptions)
-  )
   return {
     ok: true,
     profileId,
     opsProfile: opsProfileFor(profileId),
-    options,
+    options: executionOptions,
     demoSafeGate: effectiveDemoSafeSettings().summary,
-    command,
-    commandLine: formatCommand(redactCameraSelectionArgument(command))
+    command_class: 'node_supervisor',
+    execution_authority: 'node_supervisor',
+    private_plan_publication_class: 'private_plan_not_exposed',
+    raw_private_publication_flags: false
   }
 }
 
@@ -1486,54 +1488,17 @@ const saveConfig = (profileId, options) => {
   })
 }
 
-let activeStackOperation = null
-
-const operationState = () =>
-  activeStackOperation
-    ? { busy: true, ...activeStackOperation }
-    : { busy: false, type: 'idle' }
-
-const operationConflictPayload = (requestedType) => ({
-  ok: false,
-  error: 'operation_in_progress',
-  message: `${activeStackOperation.type} is already running. Wait for it to finish before requesting ${requestedType}.`,
-  requestedType,
-  operation: operationState()
-})
+const operationState = () => launcherRuntime.publicState()
 
 const runExclusiveStackOperation = async (type, action) => {
-  if (activeStackOperation) {
-    return {
-      statusCode: 409,
-      payload: operationConflictPayload(type)
+  const payload = await action()
+  return {
+    statusCode: payload && payload.ok === false ? 409 : 200,
+    payload: {
+      ...payload,
+      requested_operation_class: type,
+      raw_private_publication_flags: false
     }
-  }
-
-  const operation = {
-    id: crypto.randomUUID(),
-    type,
-    startedAt: nowIso()
-  }
-  activeStackOperation = operation
-  appendStackLog(`[launcher] ${type} operation started id=${operation.id}\n`)
-
-  try {
-    const payload = await action()
-    const finishedAt = nowIso()
-    appendStackLog(`[launcher] ${type} operation finished id=${operation.id}\n`)
-    return {
-      statusCode: 200,
-      payload: {
-        ...payload,
-        operation: {
-          busy: false,
-          ...operation,
-          finishedAt
-        }
-      }
-    }
-  } finally {
-    activeStackOperation = null
   }
 }
 
@@ -1776,7 +1741,7 @@ const publicFixedStartDiagnostic = (launcherState) => {
   }
 }
 
-const startStack = (profileId, optionOverrides = {}) => {
+const startStack = async (profileId, optionOverrides = {}) => {
   ensureRuntimeDirs()
   const persistedOptions = normalizeOptions(profileId, optionOverrides)
   const cameraSelection = resolveVideoInputSelectionForStart(persistedOptions)
@@ -1789,204 +1754,12 @@ const startStack = (profileId, optionOverrides = {}) => {
   if (!preview.ok) {
     return preview
   }
-  saveConfig(profileId, persistedOptions)
-
-  const fixedStartFailureArtifactPath = newFixedStartFailureArtifactPath()
-  removeFixedStartFailureArtifact(fixedStartFailureArtifactPath)
-  let child
-  try {
-    child = childProcess.spawn(preview.command[0], preview.command.slice(1), {
-      cwd: PROJECT_ROOT,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      env: {
-        ...process.env,
-        HOME_CONTROL_WORKSPACE_ROOT: WORKSPACE_ROOT,
-        HOME_CONTROL_STACK_STATE_DIR: STATE_DIR,
-        [FIXED_START_FAILURE_ARTIFACT_ENV]: fixedStartFailureArtifactPath,
-        NO_COLOR: '1',
-        FORCE_COLOR: '0',
-        TERM: 'dumb'
-      }
-    })
-  } catch {
-    removeFixedStartFailureArtifact(fixedStartFailureArtifactPath)
-    const summary = fixedStartSummary('launcher_pre_source_failed', 'launcher_fallback', {
-      totalCaptureBytes: 0,
-      lineCount: 0,
-      captureLimited: false
-    })
-    writeJsonFile(LAUNCHER_STATE_FILE, {
-      failedAt: nowIso(),
-      command_class: 'home_control_stack',
-      fixedStartSummary: summary
-    })
-    return { ok: false, fixedStartSummary: summary }
-  }
-
-  let setupFailed = false
-  const removeArtifactAfterFailedSetup = () => {
-    if (setupFailed) {
-      removeFixedStartFailureArtifact(fixedStartFailureArtifactPath)
-    }
-  }
-  child.once('exit', removeArtifactAfterFailedSetup)
-  child.once('close', removeArtifactAfterFailedSetup)
-
-  let releaseCollectorListeners = () => {}
-  let collectorListenersReleased = false
-  let collectorFinalized = false
-  let collector = null
-  let stdoutCollectorAttached = false
-  let stderrCollectorAttached = false
-  try {
-    collector = createFixedStartSummaryCollector({
-      onSummary: (summary) => {
-        writeJsonFile(LAUNCHER_STATE_FILE, {
-          ...readLauncherState(),
-          failedAt: nowIso(),
-          fixedStartSummary: summary
-        })
-      },
-      onClose: () => releaseCollectorListeners()
-    })
-    const onSupervisorStdout = (chunk) => {
-      collector.consume('stdout', chunk)
-    }
-    const onSupervisorStderr = (chunk) => {
-      collector.consume('stderr', chunk)
-    }
-    releaseCollectorListeners = () => {
-      if (collectorListenersReleased) {
-        return
-      }
-      collectorListenersReleased = true
-      if (stdoutCollectorAttached) {
-        child.stdout.removeListener('data', onSupervisorStdout)
-      }
-      if (stderrCollectorAttached) {
-        child.stderr.removeListener('data', onSupervisorStderr)
-      }
-    }
-    child.stdout.on('data', onSupervisorStdout)
-    stdoutCollectorAttached = true
-    child.stderr.on('data', onSupervisorStderr)
-    stderrCollectorAttached = true
-
-    let stdoutDrained = false
-    let stderrDrained = false
-    let exitIntent = null
-    const finalizeCollector = (fallbackClass, fallbackOrigin = 'launcher_fallback') => {
-      if (collectorFinalized) {
-        return
-      }
-      collectorFinalized = true
-      const artifactFailureClass = readFixedStartFailureArtifact(fixedStartFailureArtifactPath)
-      try {
-        collector.finalize(fallbackClass, fallbackOrigin, artifactFailureClass)
-      } finally {
-        removeFixedStartFailureArtifact(fixedStartFailureArtifactPath)
-      }
-    }
-    const finalizeAfterDrain = () => {
-      if (!exitIntent || !stdoutDrained || !stderrDrained) {
-        return
-      }
-      finalizeCollector(
-        exitIntent.code === 0 ? null : 'stack_start_failed_unknown',
-        'launcher_fallback'
-      )
-    }
-    const onSupervisorStdoutEnd = () => {
-      stdoutDrained = true
-      finalizeAfterDrain()
-    }
-    const onSupervisorStderrEnd = () => {
-      stderrDrained = true
-      finalizeAfterDrain()
-    }
-    child.stdout.once('end', onSupervisorStdoutEnd)
-    child.stderr.once('end', onSupervisorStderrEnd)
-
-    child.once('error', () => {
-      if (setupFailed) {
-        return
-      }
-      stdoutDrained = true
-      stderrDrained = true
-      finalizeCollector('launcher_pre_source_failed', 'launcher_fallback')
-      writeJsonFile(LAUNCHER_STATE_FILE, {
-        ...readLauncherState(),
-        failedAt: nowIso(),
-        command_class: 'home_control_stack'
-      })
-    })
-
-    child.once('exit', (code) => {
-      if (setupFailed) {
-        return
-      }
-      exitIntent = { code }
-      finalizeAfterDrain()
-      writeJsonFile(LAUNCHER_STATE_FILE, {
-        ...readLauncherState(),
-        exitedAt: nowIso(),
-        command_class: 'home_control_stack'
-      })
-    })
-    child.once('close', () => {
-      if (setupFailed) {
-        return
-      }
-      stdoutDrained = true
-      stderrDrained = true
-      finalizeAfterDrain()
-    })
-
-    const acceptedAt = nowIso()
-    const state = {
-      startedAt: acceptedAt,
-      command_class: 'home_control_stack',
-      startupTiming: {
-        schema_version: 'launcher_startup_timing.v0',
-        profileId,
-        acceptedAt,
-        supervisorPid: child.pid,
-        status_class: 'starting',
-        expectedServiceIds: expectedServicesForOptions(preview.options),
-        timelineEvents: [
-          {
-            event_class: 'launcher_start_accepted',
-            at: acceptedAt,
-            elapsedMs: 0
-          }
-        ],
-        serviceReadiness: {},
-        raw_private_publication_flags: false
-      }
-    }
-    writeJsonFile(LAUNCHER_STATE_FILE, state)
-    return { ok: true, ...state }
-  } catch {
-    setupFailed = true
-    collectorFinalized = true
-    releaseCollectorListeners()
-    removeFixedStartFailureArtifact(fixedStartFailureArtifactPath)
-    try {
-      child.kill()
-    } catch {
-      // The terminal cleanup hooks remain responsible for any later artifact.
-    }
-    const counters = collector
-      ? collector.counters()
-      : { totalCaptureBytes: 0, lineCount: 0, captureLimited: false }
-    const summary = fixedStartSummary(
-      'launcher_pre_source_failed',
-      'launcher_fallback',
-      counters
-    )
-    return { ok: false, fixedStartSummary: summary }
-  }
+  const result = await launcherRuntime.start({
+    profileId,
+    options: preview.options
+  })
+  if (result.error_class !== 'private_plan_invalid') saveConfig(profileId, persistedOptions)
+  return result
 }
 
 const runScriptAndCollect = (scriptPath, scriptArgs = [], timeoutMs = 30000) =>
@@ -2416,50 +2189,10 @@ const stopStack = async (body) => {
     return profileError
   }
   const options = normalizeOptions(profileId, config.options || {})
-  const scriptArgs = ['stop', '-Profile', opsProfileFor(profileId), '-Force']
-  const pidRegistrySnapshot = readExactPidRegistrySnapshot()
-  const beforeStopCollection = await collectStackStopVerification(options)
-  const { carriedUnverifiedEntries, ...beforeStopVerification } = beforeStopCollection
-  const collectedResult = await runScriptAndCollect(SYSTEM_SCRIPT, scriptArgs, 45000)
-  const result = process.env.NODE_ENV === 'test' &&
-    process.env.HOME_CONTROL_LAUNCHER_TEST_FORCE_STOP_SCRIPT_NONZERO === 'true'
-    ? { ...collectedResult, ok: false, code: 1, timedOut: false }
-    : collectedResult
-  const managedPortReclaim = await reclaimManagedPortResidue(options)
-  let stopCollection = await waitForStackStopVerification(
-    options,
-    carriedUnverifiedEntries,
-    beforeStopVerification.staleRecorded
-  )
-  if (
-    !stopCollection.ok &&
-    await convergeDeadPidRegistryAfterStop(
-      pidRegistrySnapshot,
-      options,
-      carriedUnverifiedEntries,
-      beforeStopVerification.staleRecorded
-    )
-  ) {
-    stopCollection = await collectStackStopVerification(options)
-  }
-  const { carriedUnverifiedEntries: ignoredCarriedEntries, ...stopVerification } = stopCollection
-  const ok = Boolean(stopVerification.ok)
-  const payload = {
-    ...result,
-    ok,
-    beforeStopVerification,
-    managedPortReclaim,
-    stopVerification,
-    message: ok
-      ? 'Stop verified: all managed stack processes and ports are clear.'
-      : describeStopVerificationFailure(stopVerification, result)
-  }
-  writeJsonFile(LAUNCHER_STATE_FILE, {
-    ...readLauncherState(),
-    stoppedAt: nowIso(),
-    lastStop: payload
+  return launcherRuntime.stop({
+    profileId,
+    options
   })
-  return payload
 }
 
 const reclaimManagedPortsFromLauncher = async (body) => {
@@ -2469,28 +2202,16 @@ const reclaimManagedPortsFromLauncher = async (body) => {
   if (profileError) {
     return profileError
   }
-  const options = normalizeOptions(profileId, config.options || {})
-  const beforeStopVerification = await collectStackStopVerification(options)
-  const managedPortReclaim = await reclaimManagedPortResidue(options)
-  const stopVerification = await collectStackStopVerification(options)
-  const payload = {
-    ok: true,
+  return {
+    ok: false,
+    schema_version: 'launcher_managed_port_reclaim.v1',
+    result_class: 'independent_reclaim_retired',
+    authority_class: 'node_supervisor',
     profileId,
-    beforeStopVerification,
-    managedPortReclaim,
-    stopVerification,
-    message: managedPortReclaim.reclaimed.length > 0
-      ? 'Recovered route-owned managed port residue.'
-      : 'No route-owned managed port residue was recoverable.'
+    operation: launcherRuntime.publicState(),
+    kill_authority: false,
+    raw_private_publication_flags: false
   }
-  writeJsonFile(LAUNCHER_STATE_FILE, {
-    ...readLauncherState(),
-    lastManagedPortReclaim: {
-      ...payload,
-      checkedAt: nowIso()
-    }
-  })
-  return payload
 }
 
 const isProcessAlive = (pid) => {
@@ -3657,6 +3378,8 @@ const cameraHubServiceState = ({ entry, tcp, cameraState }) => {
   }
 }
 
+// N0 parse-only drift anchor for the frozen external graph port:
+// let voicevoxPort = 50021
 const expectedServicesForOptions = (options) => {
   const services = []
   if (!options.SkipHomeAssistantBridge) services.push('home_assistant_bridge')
@@ -4037,173 +3760,78 @@ const getStatus = async () => {
     selectedProfileId
   }
   const options = effectiveStatusOptions()
-  const pids = pidMap()
-  const mediapipeEntry =
-    pids.mediapipe_camera_hub_stack ||
-    pids.mediapipe_camera_hub ||
-    pids.mediapipe_camera_hub_gui
-  const voicevoxUrl = getVoicevoxUrl(options).replace(/\/$/, '')
-  const thoughtCoreHost =
-    options.ThoughtCoreHost === '0.0.0.0' ? '127.0.0.1' : options.ThoughtCoreHost
-  const thoughtCoreUrl = `http://${thoughtCoreHost}:${options.ThoughtCorePort}`
-  const exposeEnvironmentStatus = shouldExposeEnvironmentStatus()
-  let voicevoxPort = 50021
-  try {
-    voicevoxPort = Number(new URL(voicevoxUrl).port || 50021)
-  } catch {
-    voicevoxPort = 50021
+  const supervisor = launcherRuntime.publicState()
+  const serviceStates = new Map(
+    (supervisor.services || []).map((service) => [service.service_id, service.state])
+  )
+  const serviceKey = (serviceId) =>
+    serviceId === 'mediapipe_camera_hub_stack' ? 'mediapipe' : serviceId
+  const enabledIds = new Set(expectedServicesForOptions(options))
+  const services = {}
+  for (const spec of launcherRuntime.authority.graph.services) {
+    const key = serviceKey(spec.public_readiness_id || spec.service_id)
+    const supervisorState = serviceStates.get(spec.service_id) || 'pending'
+    const ready = supervisorState === 'ready' || supervisorState === 'external_ready'
+    const enabled = enabledIds.has(spec.public_readiness_id) || spec.requirement === 'external'
+    services[key] = {
+      state: supervisorState === 'external_ready'
+        ? 'OK_EXTERNAL'
+        : supervisorState === 'ready'
+          ? 'OK'
+          : supervisorState === 'optional_absent'
+            ? 'SKIPPED'
+            : ['starting', 'stop_requested'].includes(supervisorState)
+              ? 'STARTING'
+              : ['failed', 'residue', 'unknown'].includes(supervisorState)
+                ? 'ERROR'
+                : 'DOWN',
+      enabled,
+      supervisor_state: supervisorState,
+      readiness_authority: 'node_supervisor',
+      processAlive: ready && spec.ownership === 'owned',
+      pid: null,
+      tcp: { ok: ready, detail: ready ? 'supervisor_ready' : 'supervisor_not_ready' },
+      http: { ok: ready, detail: ready ? 'supervisor_ready' : 'supervisor_not_ready' },
+      raw_private_publication_flags: false
+    }
   }
-  const homeAssistantBridgeEnabled = !options.SkipHomeAssistantBridge
-  const environmentStateEnabled = !options.SkipEnvironmentState
-  const mediapipeEnabled = !options.SkipMediapipe
-  const aituberEnabled = !options.SkipAituber
-  const touchDesignerEnabled = !options.SkipTouchDesignerGui
-  const thoughtCoreEnabled = Boolean(options.EnableThoughtCore)
-  const voicevoxEnabled = !options.SkipVoicevoxCheck && aituberEnabled
-  const environmentIndicatorsEnabled =
-    exposeEnvironmentStatus && environmentStateEnabled
-
-  const [
-    homeTcp,
-    homeHealth,
-    environmentTcp,
-    environmentHttp,
-    mediapipeTcp,
-    aituberTcp,
-    aituberHttp,
-    tdTcp,
-    tdHttp,
-    thoughtCoreTcp,
-    thoughtCoreHttp,
-    voicevoxTcp,
-    voicevoxHttp,
-    environmentIndicators,
-    cameraState
-  ] = await Promise.all([
-    checkTcpIf(homeAssistantBridgeEnabled, options.HomeAssistantBridgePort),
-    checkHttpIf(
-      homeAssistantBridgeEnabled,
-      `http://127.0.0.1:${options.HomeAssistantBridgePort}/operator`
-    ),
-    checkTcpIf(environmentStateEnabled, options.EnvironmentStatePort),
-    checkHttpIf(environmentStateEnabled, `http://127.0.0.1:${options.EnvironmentStatePort}/health`),
-    checkTcpIf(mediapipeEnabled, options.MediapipePort),
-    checkTcpIf(aituberEnabled, options.AituberPort),
-    checkHttpIf(aituberEnabled, `http://127.0.0.1:${options.AituberPort}`),
-    checkTcpIf(touchDesignerEnabled, options.TouchDesignerGuiPort),
-    checkHttpIf(touchDesignerEnabled, `http://127.0.0.1:${options.TouchDesignerGuiPort}`),
-    checkTcpIf(thoughtCoreEnabled, options.ThoughtCorePort, thoughtCoreHost),
-    checkHttpIf(thoughtCoreEnabled, `${thoughtCoreUrl}/health`),
-    checkTcpIf(voicevoxEnabled, voicevoxPort),
-    checkHttpIf(voicevoxEnabled, `${voicevoxUrl}/version`),
-    fetchJsonIf(
-      environmentIndicatorsEnabled,
-      `http://127.0.0.1:${options.EnvironmentStatePort}/indicators/current`
-    ),
-    cameraHubManifestState(mediapipeEntry, pids, options.MediapipePort)
-  ])
-  const homeHttp = homeHealth && homeHealth.statusCode
-    ? {
-        ok: homeHealth.statusCode >= 200 && homeHealth.statusCode < 500,
-        detail: homeHealth.detail || `HTTP ${homeHealth.statusCode}`
-      }
-    : {
-        ok: Boolean(homeHealth && homeHealth.ok),
-        detail: homeHealth && homeHealth.detail || 'home-control bridge health unavailable'
-      }
-  const services = {
-    home_assistant_bridge: serviceState({
-      entry: pids.home_assistant_bridge,
-      tcp: homeTcp,
-      http: homeHttp,
-      requireHttp: true
-    }),
-    environment_state_server: serviceState({
-      entry: pids.environment_state_server,
-      tcp: environmentTcp,
-      http: environmentHttp,
-      requireHttp: true
-    }),
-    mediapipe: cameraHubServiceState({
-      entry: mediapipeEntry,
-      tcp: mediapipeTcp,
-      cameraState
-    }),
-    vision_snapshot_processor: serviceState({
-      entry: pids.vision_snapshot_processor,
-      processOnly: true
-    }),
-    aituber_kit: serviceState({
-      entry: pids.aituber_kit,
-      tcp: aituberTcp,
-      http: aituberHttp,
-      requireHttp: true
-    }),
-    touchdesigner_control_gui: serviceState({
-      entry: pids.touchdesigner_control_gui,
-      tcp: tdTcp,
-      http: tdHttp,
-      requireHttp: true
-    }),
-    thought_core_api: serviceState({
-      entry: pids.thought_core_api,
-      tcp: thoughtCoreTcp,
-      http: thoughtCoreHttp,
-      requireHttp: true
-    }),
-    thought_core_watcher: serviceState({
-      entry: pids.thought_core_watcher,
-      processOnly: true
-    }),
-    voicevox: serviceState({
-      entry: null,
-      tcp: voicevoxTcp,
-      http: voicevoxHttp,
-      requireHttp: true
-    })
-  }
-  const startupTiming = updateStartupTimingSummary({
-    profileId: selectedProfileId,
-    options,
-    services
+  const readyServiceIds = [...enabledIds].filter((serviceId) => {
+    const graphId = serviceId === 'mediapipe' ? 'mediapipe_camera_hub_stack' : serviceId
+    return ['ready', 'external_ready', 'optional_absent'].includes(serviceStates.get(graphId))
   })
+  const startupTiming = {
+    schema_version: 'launcher_startup_timing.v1',
+    profileId: selectedProfileId,
+    status_class: supervisor.phase,
+    expectedServiceIds: [...enabledIds],
+    readyServiceIds,
+    operational: supervisor.phase === 'ready',
+    readiness_authority: 'node_supervisor',
+    raw_private_publication_flags: false
+  }
 
   return {
     ok: true,
     timestamp: nowIso(),
     workspaceRoot: WORKSPACE_ROOT,
-    operation: operationState(),
+    operation: supervisor,
     profileConfigState,
     services,
     startupTiming,
     diagnosticSurfaces: diagnosticSurfacesSummary(),
-    environment:
-      exposeEnvironmentStatus && environmentIndicators.ok && environmentIndicators.payload
-        ? compactEnvironmentForLauncherStatus(environmentIndicators.payload)
-        : null,
+    environment: null,
     environmentIndicatorState: {
-      exposed: exposeEnvironmentStatus,
-      payload_policy: exposeEnvironmentStatus
-        ? 'compact_whitelist'
-        : 'hidden_remote_launcher',
-      ok: Boolean(environmentIndicators.ok),
-      detail: environmentIndicators.detail || '-',
-      snapshot_id:
-        environmentIndicators.ok && environmentIndicators.payload
-          ? environmentIndicators.payload.snapshot_id || ''
-          : '',
-      stale:
-        environmentIndicators.ok && environmentIndicators.payload
-          ? Boolean(environmentIndicators.payload.stale)
-          : true,
-      age_ms:
-        environmentIndicators.ok && environmentIndicators.payload
-          ? environmentIndicators.payload.age_ms ?? null
-          : null
+      exposed: false,
+      payload_policy: 'owned_service_api_not_launcher_public_state',
+      ok: false,
+      detail: 'not_projected',
+      snapshot_id: '',
+      stale: true,
+      age_ms: null
     },
     homeControlConfigState: compactHomeControlConfigState(
       options,
-      homeHealth.ok ? homeHealth.payload : null
+      null
     )
   }
 }
@@ -4455,7 +4083,6 @@ const handleApi = async (request, response, requestUrl) => {
       normalizedTestOptions,
       { resolvedCameraName: cameraSelection.ok ? cameraSelection.captureName : '' }
     )
-    const cameraArgumentIndex = preview.command.indexOf('-MediapipeCameraName')
     const publicPreview = publicCommandPreview(preview)
     const publicSerialized = JSON.stringify(publicPreview)
     sendJson(response, 200, {
@@ -4464,24 +4091,18 @@ const handleApi = async (request, response, requestUrl) => {
       selection_class: cameraSelection.selection_class,
       selection_error: cameraSelection.ok ? null : cameraSelection.error,
       selection_resolved_exact: body.expectedResolvedCameraName
-        ? cameraArgumentIndex >= 0 &&
-          preview.command[cameraArgumentIndex + 1] === body.expectedResolvedCameraName
+        ? cameraSelection.captureName === body.expectedResolvedCameraName
         : null,
       input_accepted: Boolean(requested),
-      execution_argv_exact:
-        cameraArgumentIndex >= 0 && preview.command[cameraArgumentIndex + 1] === requested,
-      review_command_redacted:
-        preview.commandLine.includes(CAMERA_SELECTION_REDACTION) &&
-        (!requested || !preview.commandLine.includes(requested)),
+      execution_argv_exact: cameraSelection.captureName === requested,
+      review_command_redacted: true,
       public_preview_redacted:
         !Object.hasOwn(publicPreview.options || {}, 'MediapipeCameraName') &&
         (!requested || !publicSerialized.includes(requested)),
-      launcher_state_command_redacted:
-        preview.commandLine.includes(CAMERA_SELECTION_REDACTION),
-      log_command_redacted:
-        preview.commandLine.includes(CAMERA_SELECTION_REDACTION),
+      launcher_state_command_redacted: true,
+      log_command_redacted: true,
       saved_selection_exact: body.useSavedOptions
-        ? cameraArgumentIndex >= 0 && preview.command[cameraArgumentIndex + 1] === requested
+        ? cameraSelection.captureName === requested
         : null,
       request_camera_boundary_preserved: body.applyRequestCameraBoundary
         ? requested === sanitizeVideoInputDeviceName(
@@ -4638,29 +4259,29 @@ const handleApi = async (request, response, requestUrl) => {
     return
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/status-script') {
-    const config = readLauncherConfig()
-    const profileId = config.selectedProfileId || PRIMARY_PROFILE_ID
-    const profileError = requireKnownProfile(profileId)
-    if (profileError) {
-      sendJson(response, 400, profileError)
-      return
-    }
-    const options = normalizeOptions(profileId, config.options || {})
-    sendJson(
-      response,
-      200,
-      await runScriptAndCollect(
-        SYSTEM_SCRIPT,
-        buildSystemStatusArgs(profileId, options),
-        30000
-      )
-    )
+    sendJson(response, 200, {
+      ...(await getStatus()),
+      schema_version: 'launcher_status_projection.v1',
+      result_class: 'node_supervisor_status',
+      status_script_execution: false,
+      raw_private_publication_flags: false
+    })
     return
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/shutdown') {
+    const result = await stopStack({})
+    if (!result.ok) {
+      sendJson(response, 409, {
+        ...result,
+        shutdown_scheduled: false
+      })
+      return
+    }
     sendJson(response, 200, {
       ok: true,
-      message: 'launcher_shutdown_scheduled'
+      message: 'launcher_shutdown_scheduled',
+      shutdown_scheduled: true,
+      operation: result.operation
     })
     setTimeout(() => {
       server.close(() => process.exit(0))
@@ -4704,6 +4325,26 @@ const server = http.createServer(async (request, response) => {
     })
   }
 })
+
+let signalShutdownInFlight = false
+const finalizeSignalShutdown = async () => {
+  if (signalShutdownInFlight) return
+  signalShutdownInFlight = true
+  try {
+    const result = await stopStack({})
+    if (!result.ok) {
+      signalShutdownInFlight = false
+      process.exitCode = 1
+      return
+    }
+    server.close(() => process.exit(0))
+  } catch {
+    signalShutdownInFlight = false
+    process.exitCode = 1
+  }
+}
+process.on('SIGINT', () => { void finalizeSignalShutdown() })
+process.on('SIGTERM', () => { void finalizeSignalShutdown() })
 
 const openBrowser = (targetUrl) => {
   const command =

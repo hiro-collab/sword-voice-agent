@@ -1,7 +1,7 @@
 'use strict'
 
 const {
-  LauncherContractError, assertAuthority, validateWorkerMessage, validateWorkerRequestAgainstAuthority
+  LauncherContractError, assertAuthority, canonicalJsonSha256, validateWorkerMessage, validateWorkerRequestAgainstAuthority
 } = require('./launcher-supervisor-contract')
 
 const PHASE = Object.freeze({
@@ -12,7 +12,8 @@ const PHASE = Object.freeze({
 const REASON = Object.freeze({
   NONE: 'none', PREFLIGHT_FAILED: 'preflight_failed', SPAWN_FAILED: 'spawn_failed', EARLY_EXIT: 'early_exit',
   LISTENER_MISMATCH: 'listener_mismatch', READINESS_TIMEOUT: 'readiness_timeout', ROLLBACK_FAILED: 'rollback_failed',
-  STOP_FAILED: 'stop_failed', SUPERVISOR_CRASH: 'supervisor_crash', RESIDUE_PRESENT: 'residue_present', INVALID_EVENT: 'invalid_event'
+  SEMANTIC_PROBE_FAILED: 'semantic_probe_failed', STOP_FAILED: 'stop_failed', SUPERVISOR_CRASH: 'supervisor_crash',
+  RESIDUE_PRESENT: 'residue_present', INVALID_EVENT: 'invalid_event'
 })
 const CLEANUP = Object.freeze({ NOT_STARTED: 'not_started', IN_PROGRESS: 'in_progress', CLEAR: 'clear', RESIDUE: 'residue', UNKNOWN: 'unknown' })
 const SERVICE = Object.freeze({
@@ -23,6 +24,13 @@ const SERVICE = Object.freeze({
 const OPERATION_ID = /^lop_[a-z0-9]{8,64}$/u
 const DISPATCH_ID = /^ld_[a-z0-9]{16,64}$/u
 const SHA256 = /^[a-f0-9]{64}$/u
+const PROBE_ID = /^[a-z][a-z0-9_-]{0,63}$/u
+const PROBE_RESULT_KEYS = [
+  'schema_version', 'message_type', 'operation_id', 'supervisor_generation', 'dispatch_id',
+  'expected_revision', 'service_id', 'probe_id', 'graph_sha256', 'binding_sha256',
+  'descriptor_sha256', 'config_sha256', 'requested_at', 'observed_at', 'source_observed_at',
+  'freshness_class', 'semantic_class', 'reason_class', 'ready', 'proof_ceiling'
+].sort()
 const fail = (code) => { throw new LauncherContractError(code) }
 const copyServices = (services) => services.map((service) => ({ ...service }))
 const cloneOperation = (operation, changes = {}) => ({
@@ -62,7 +70,8 @@ const createOperation = (operationId, authority, supervisorGeneration = 1) => {
     recovery_required: false,
     services: authority.graph.services.map((service) => ({
       service_id: service.service_id, state: SERVICE.PENDING, attempt_sequence: 0,
-      pending_dispatch_id: null, pending_action: null
+      pending_dispatch_id: null, pending_action: null, probe_status: 'not_checked',
+      probe_expected_revision: null, last_probe_result: null
     })),
     residue_service_ids: []
   }
@@ -91,7 +100,10 @@ const primaryResult = (operation, proposed, responsibleId, actionCertainty = 'ma
     ? { class: proposed, responsible_id: responsibleId, action_certainty: actionCertainty }
     : operation.primary_result
 const cleanupResult = (klass, responsibleId = null) => ({ class: klass, responsible_id: responsibleId })
-const invalid = (operation) => next(operation, { reason: firstFailure(operation, REASON.INVALID_EVENT) })
+const invalid = (operation) => next(operation, {
+  reason: firstFailure(operation, REASON.INVALID_EVENT),
+  primary_result: primaryResult(operation, REASON.INVALID_EVENT, 'launcher_supervisor', 'not_attempted')
+})
 const stateOf = (operation, serviceId) => operation.services.find((service) => service.service_id === serviceId)?.state
 const specOf = (authority, serviceId) => authority.graph.services.find((service) => service.service_id === serviceId)
 const inPhase = (operation, phases) => phases.includes(operation.phase)
@@ -107,7 +119,13 @@ const requestServiceDispatch = (operation, event, state, phase, expectedAction) 
   const current = operation.services.find((service) => service.service_id === event.service_id)
   if (!current || current.pending_dispatch_id !== null || current.pending_action !== null || current.attempt_sequence >= Number.MAX_SAFE_INTEGER) return invalid(operation)
   const services = operation.services.map((service) => service.service_id === event.service_id
-    ? { ...service, state, attempt_sequence: service.attempt_sequence + 1, pending_dispatch_id: event.dispatch_id, pending_action: expectedAction }
+    ? {
+        ...service, state, attempt_sequence: service.attempt_sequence + 1,
+        pending_dispatch_id: event.dispatch_id, pending_action: expectedAction,
+        ...(expectedAction === 'probe'
+          ? { probe_status: 'pending', probe_expected_revision: operation.revision + 1, last_probe_result: null }
+          : {})
+      }
     : { ...service })
   return next(operation, { services, phase })
 }
@@ -118,11 +136,90 @@ const pendingMatches = (operation, event, actions) => {
     service.pending_dispatch_id === event.dispatch_id && actions.includes(service.pending_action))
 }
 
-const clearPending = (operation, serviceId) => cloneOperation(operation, {
+const clearPending = (operation, serviceId, probeStatus = null) => cloneOperation(operation, {
   services: operation.services.map((service) => service.service_id === serviceId
-    ? { ...service, pending_dispatch_id: null, pending_action: null }
+    ? {
+        ...service,
+        ...(service.pending_action === 'probe'
+          ? { probe_expected_revision: null, ...(probeStatus ? { probe_status: probeStatus } : {}) }
+          : {}),
+        pending_dispatch_id: null,
+        pending_action: null
+      }
     : { ...service })
 })
+
+const clearInterruptedPending = (operation) => cloneOperation(operation, {
+  services: operation.services.map((service) => ({
+    ...service,
+    ...(service.pending_action === 'probe'
+      ? { probe_status: 'not_ready', probe_expected_revision: null }
+      : {}),
+    pending_dispatch_id: null,
+    pending_action: null
+  }))
+})
+
+const validatePersistedProbeResult = (result, authority) => {
+  if (!result || typeof result !== 'object' || Array.isArray(result) ||
+      Object.keys(result).sort().join(',') !== PROBE_RESULT_KEYS.join(',')) fail('probe_result_invalid')
+  if (result.schema_version !== 'launcher_probe_result.v1' || result.message_type !== 'result' ||
+      typeof result.operation_id !== 'string' || !OPERATION_ID.test(result.operation_id) ||
+      !Number.isSafeInteger(result.supervisor_generation) || result.supervisor_generation < 1 ||
+      typeof result.dispatch_id !== 'string' || !DISPATCH_ID.test(result.dispatch_id) ||
+      !Number.isSafeInteger(result.expected_revision) || result.expected_revision < 0 ||
+      typeof result.service_id !== 'string' || typeof result.probe_id !== 'string' || !PROBE_ID.test(result.probe_id) ||
+      typeof result.descriptor_sha256 !== 'string' || !SHA256.test(result.descriptor_sha256) ||
+      typeof result.config_sha256 !== 'string' || !SHA256.test(result.config_sha256) ||
+      result.graph_sha256 !== authority.identities.graphSha256 ||
+      result.binding_sha256 !== authority.identities.bindingSha256 ||
+      result.freshness_class !== 'fresh' || typeof result.ready !== 'boolean') fail('probe_result_invalid')
+  const descriptor = authority.probeDocument.descriptors.find((candidate) => (
+    candidate.service_id === result.service_id && candidate.probe_id === result.probe_id
+  ))
+  const semanticClasses = authority.probeSchema?.$defs?.semantic_class?.enum
+  const reasonClasses = authority.probeSchema?.$defs?.reason_class?.enum
+  if (!descriptor || canonicalJsonSha256(descriptor) !== result.descriptor_sha256 ||
+      !Array.isArray(semanticClasses) || !semanticClasses.includes(result.semantic_class) ||
+      !Array.isArray(reasonClasses) || !reasonClasses.includes(result.reason_class) ||
+      descriptor.proof_ceiling !== result.proof_ceiling ||
+      descriptor.success_semantic_classes.includes(result.semantic_class) !== result.ready) fail('probe_result_invalid')
+  const requestedAt = Date.parse(result.requested_at)
+  const sourceObservedAt = Date.parse(result.source_observed_at)
+  const observedAt = Date.parse(result.observed_at)
+  if (![requestedAt, sourceObservedAt, observedAt].every(Number.isFinite) ||
+      requestedAt > sourceObservedAt || sourceObservedAt > observedAt) fail('probe_result_invalid')
+  return result
+}
+
+const markProbeTransportReady = (operation, event) => {
+  const service = operation.services.find((candidate) => candidate.service_id === event.service_id)
+  if (!service || service.probe_status !== 'pending' || !pendingMatches(operation, event, ['probe'])) return invalid(operation)
+  return next(operation, {
+    services: operation.services.map((candidate) => candidate.service_id === event.service_id
+      ? { ...candidate, probe_status: 'transport_ready' }
+      : { ...candidate })
+  })
+}
+
+const completeSemanticProbe = (operation, event, authority) => {
+  const service = operation.services.find((candidate) => candidate.service_id === event.service_id)
+  const spec = specOf(authority, event.service_id)
+  let result
+  try { result = validatePersistedProbeResult(event.probe_result, authority) } catch { return invalid(operation) }
+  if (!service || !spec || service.probe_status !== 'transport_ready' || !pendingMatches(operation, event, ['probe']) ||
+      result.operation_id !== operation.operation_id || result.supervisor_generation !== operation.supervisor_generation ||
+      result.dispatch_id !== service.pending_dispatch_id || result.expected_revision !== service.probe_expected_revision ||
+      result.service_id !== service.service_id || result.probe_id !== spec.readiness.probe_id) return invalid(operation)
+  const withResult = cloneOperation(operation, {
+    services: operation.services.map((candidate) => candidate.service_id === service.service_id
+      ? { ...candidate, last_probe_result: result }
+      : { ...candidate })
+  })
+  const cleared = clearPending(withResult, service.service_id, result.ready ? 'ready' : 'not_ready')
+  if (!result.ready) return failAndRollback(cleared, service.service_id, REASON.SEMANTIC_PROBE_FAILED)
+  return ready(cleared, service.service_id, spec.ownership === 'external' ? SERVICE.EXTERNAL_READY : SERVICE.READY, authority)
+}
 
 const dependenciesReady = (operation, spec, authority) => spec.dependencies.every((dependencyId) => {
   const dependency = specOf(authority, dependencyId)
@@ -155,6 +252,18 @@ const canOptionalAbsent = (operation, serviceId, authority) => {
 const canExternalReady = (operation, serviceId, authority) => {
   const spec = specOf(authority, serviceId)
   return Boolean(spec && spec.requirement === 'external' && stateOf(operation, serviceId) === SERVICE.PENDING && dependenciesReady(operation, spec, authority))
+}
+const canRequestCleanupStop = (operation, serviceId, authority) => {
+  const spec = specOf(authority, serviceId)
+  const service = operation.services.find((candidate) => candidate.service_id === serviceId)
+  return Boolean(spec && spec.ownership === 'owned' && service &&
+    ![SERVICE.PENDING, SERVICE.STOPPED, SERVICE.OPTIONAL_ABSENT].includes(service.state) &&
+    service.pending_dispatch_id === null && service.pending_action === null)
+}
+const clearCorrelatedCleanupPending = (operation, event) => {
+  const service = operation.services.find((candidate) => candidate.service_id === event.service_id)
+  if (!service || service.pending_action === null) return operation
+  return pendingMatches(operation, event, ['stop']) ? clearPending(operation, event.service_id) : null
 }
 
 const allReady = (operation, authority) => authority.graph.services.every((spec) => {
@@ -260,25 +369,37 @@ const reduce = (operation, event, authority) => {
     case 'probe_requested': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) &&
       ((canCompleteSpawn(operation, serviceId, authority)) || canOptionalAbsent(operation, serviceId, authority) || canExternalReady(operation, serviceId, authority))
       ? requestServiceDispatch(operation, event, stateOf(operation, serviceId), PHASE.WAITING_READY, 'probe') : invalid(operation)
-    case 'stop_dispatch_requested': return operation.phase === PHASE.STOPPING && stateOf(operation, serviceId) === SERVICE.STOP_REQUESTED
-      ? requestServiceDispatch(operation, event, SERVICE.STOP_REQUESTED, PHASE.STOPPING, 'stop') : invalid(operation)
+    case 'stop_dispatch_requested': {
+      if (operation.phase === PHASE.STOPPING && stateOf(operation, serviceId) === SERVICE.STOP_REQUESTED) {
+        return requestServiceDispatch(operation, event, SERVICE.STOP_REQUESTED, PHASE.STOPPING, 'stop')
+      }
+      if ([PHASE.ROLLING_BACK, PHASE.RECOVERING].includes(operation.phase) && canRequestCleanupStop(operation, serviceId, authority)) {
+        return requestServiceDispatch(operation, event, stateOf(operation, serviceId), operation.phase, 'stop')
+      }
+      return invalid(operation)
+    }
     case 'spawn_succeeded': return operation.phase === PHASE.STARTING && canCompleteSpawn(operation, serviceId, authority) && pendingMatches(operation, event, ['start'])
       ? setService(clearPending(operation, serviceId), serviceId, SERVICE.STARTING, PHASE.WAITING_READY) : invalid(operation)
     case 'spawn_failed': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) && canCompleteSpawn(operation, serviceId, authority) && pendingMatches(operation, event, ['start'])
       ? failAndRollback(clearPending(operation, serviceId), serviceId, REASON.SPAWN_FAILED) : invalid(operation)
     case 'early_exit': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) && canFailOwned(operation, serviceId, authority) && pendingMatches(operation, event, ['start', 'probe'])
-      ? failAndRollback(clearPending(operation, serviceId), serviceId, REASON.EARLY_EXIT) : invalid(operation)
-    case 'listener_mismatch': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) && canFailOwned(operation, serviceId, authority) && pendingMatches(operation, event, ['start', 'probe'])
-      ? failAndRollback(clearPending(operation, serviceId), serviceId, REASON.LISTENER_MISMATCH) : invalid(operation)
+      ? failAndRollback(clearPending(operation, serviceId, 'not_ready'), serviceId, REASON.EARLY_EXIT) : invalid(operation)
+    case 'listener_mismatch': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) &&
+      (canFailOwned(operation, serviceId, authority) || canFailExternalReadiness(operation, serviceId, authority)) && pendingMatches(operation, event, ['start', 'probe'])
+      ? failAndRollback(clearPending(operation, serviceId, 'not_ready'), serviceId, REASON.LISTENER_MISMATCH) : invalid(operation)
     case 'readiness_timeout': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) &&
       (canFailOwned(operation, serviceId, authority) || canFailExternalReadiness(operation, serviceId, authority)) && pendingMatches(operation, event, ['probe'])
-      ? failAndRollback(clearPending(operation, serviceId), serviceId, REASON.READINESS_TIMEOUT) : invalid(operation)
-    case 'service_ready': return operation.phase === PHASE.WAITING_READY && canCompleteSpawn(operation, serviceId, authority) && pendingMatches(operation, event, ['probe'])
-      ? ready(clearPending(operation, serviceId), serviceId, SERVICE.READY, authority) : invalid(operation)
+      ? failAndRollback(clearPending(operation, serviceId, 'not_ready'), serviceId, REASON.READINESS_TIMEOUT) : invalid(operation)
+    case 'probe_failed': return operation.phase === PHASE.WAITING_READY &&
+      (canFailOwned(operation, serviceId, authority) || canFailExternalReadiness(operation, serviceId, authority)) && pendingMatches(operation, event, ['probe'])
+      ? failAndRollback(clearPending(operation, serviceId, 'not_ready'), serviceId, REASON.SEMANTIC_PROBE_FAILED) : invalid(operation)
+    case 'probe_transport_ready': return operation.phase === PHASE.WAITING_READY &&
+      (canCompleteSpawn(operation, serviceId, authority) || canExternalReady(operation, serviceId, authority))
+      ? markProbeTransportReady(operation, event) : invalid(operation)
+    case 'semantic_probe_completed': return operation.phase === PHASE.WAITING_READY
+      ? completeSemanticProbe(operation, event, authority) : invalid(operation)
     case 'optional_absent': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) && canOptionalAbsent(operation, serviceId, authority)
-      && pendingMatches(operation, event, ['probe']) ? ready(clearPending(operation, serviceId), serviceId, SERVICE.OPTIONAL_ABSENT, authority) : invalid(operation)
-    case 'external_ready': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) && canExternalReady(operation, serviceId, authority)
-      && pendingMatches(operation, event, ['probe']) ? ready(clearPending(operation, serviceId), serviceId, SERVICE.EXTERNAL_READY, authority) : invalid(operation)
+      && pendingMatches(operation, event, ['probe']) ? ready(clearPending(operation, serviceId, 'not_checked'), serviceId, SERVICE.OPTIONAL_ABSENT, authority) : invalid(operation)
     case 'rollback_started': return operation.rollback_required && operation.phase === PHASE.ROLLING_BACK
       ? next(operation, { phase: PHASE.ROLLING_BACK, cleanup: CLEANUP.IN_PROGRESS }) : invalid(operation)
     case 'rollback_completed': {
@@ -291,21 +412,26 @@ const reduce = (operation, event, authority) => {
           })
         : retainUnknownResidue(operation, outstanding)
     }
-    case 'rollback_failed': return operation.rollback_required && operation.phase === PHASE.ROLLING_BACK
-      ? residue(operation, serviceId, REASON.ROLLBACK_FAILED, authority) : invalid(operation)
+    case 'rollback_failed': {
+      if (!operation.rollback_required || operation.phase !== PHASE.ROLLING_BACK) return invalid(operation)
+      const cleared = clearCorrelatedCleanupPending(operation, event)
+      return cleared ? residue(cleared, serviceId, REASON.ROLLBACK_FAILED, authority) : invalid(operation)
+    }
     case 'stop_requested': return inPhase(operation, [PHASE.PLANNED, PHASE.PREFLIGHT, PHASE.PREPARED, PHASE.STARTING, PHASE.WAITING_READY, PHASE.READY, PHASE.ROLLING_BACK, PHASE.FAILED, PHASE.RECOVERING, PHASE.RESIDUE])
       ? stop(operation, authority) : invalid(operation)
     case 'service_stopped': {
       const spec = specOf(authority, serviceId)
       if (!spec || spec.ownership !== 'owned') return invalid(operation)
       if (operation.phase === PHASE.STOPPING && pendingMatches(operation, event, ['stop'])) return serviceStopped(clearPending(operation, serviceId), serviceId, authority)
-      if ([PHASE.ROLLING_BACK, PHASE.RECOVERING, PHASE.RESIDUE].includes(operation.phase)) return setService(operation, serviceId, SERVICE.STOPPED, operation.phase)
+      if ([PHASE.ROLLING_BACK, PHASE.RECOVERING].includes(operation.phase) && pendingMatches(operation, event, ['stop'])) {
+        return setService(clearPending(operation, serviceId), serviceId, SERVICE.STOPPED, operation.phase)
+      }
       return invalid(operation)
     }
     case 'stop_failed': return inPhase(operation, [PHASE.STOPPING, PHASE.RESIDUE]) && pendingMatches(operation, event, ['stop'])
       ? residue(clearPending(operation, serviceId), serviceId, REASON.STOP_FAILED, authority) : invalid(operation)
     case 'supervisor_crashed': return inPhase(operation, [PHASE.PLANNED, PHASE.PREFLIGHT, PHASE.PREPARED, PHASE.STARTING, PHASE.WAITING_READY, PHASE.READY, PHASE.ROLLING_BACK, PHASE.STOPPING])
-      ? next(operation, {
+      ? next(clearInterruptedPending(operation), {
           phase: PHASE.RECOVERING, reason: firstFailure(operation, REASON.SUPERVISOR_CRASH), cleanup: CLEANUP.UNKNOWN,
           primary_result: primaryResult(operation, REASON.SUPERVISOR_CRASH, 'launcher_supervisor'),
           cleanup_result: cleanupResult(CLEANUP.UNKNOWN, 'launcher_supervisor'), rollback_required: false, recovery_required: true
@@ -322,7 +448,11 @@ const reduce = (operation, event, authority) => {
         cleanup: CLEANUP.CLEAR, cleanup_result: cleanupResult(CLEANUP.CLEAR), recovery_required: false
       })
     }
-    case 'residue_observed': return inPhase(operation, [PHASE.RECOVERING, PHASE.RESIDUE]) ? residue(operation, serviceId, REASON.RESIDUE_PRESENT, authority) : invalid(operation)
+    case 'residue_observed': {
+      if (!inPhase(operation, [PHASE.RECOVERING, PHASE.RESIDUE])) return invalid(operation)
+      const cleared = clearCorrelatedCleanupPending(operation, event)
+      return cleared ? residue(cleared, serviceId, REASON.RESIDUE_PRESENT, authority) : invalid(operation)
+    }
     case 'residue_cleared': {
       if (operation.phase !== PHASE.RESIDUE || !operation.residue_service_ids.includes(serviceId)) return invalid(operation)
       const residueIds = operation.residue_service_ids.filter((id) => id !== serviceId)
@@ -371,11 +501,27 @@ const validateSnapshot = (operation, authority) => {
   const expected = authority.graph.services.map((service) => service.service_id).sort()
   const actual = operation.services.map((service) => service.service_id).sort()
   if (JSON.stringify(expected) !== JSON.stringify(actual) || new Set(actual).size !== actual.length ||
-      operation.services.some((service) => Object.keys(service).sort().join(',') !== 'attempt_sequence,pending_action,pending_dispatch_id,service_id,state' ||
+      operation.services.some((service) => Object.keys(service).sort().join(',') !== 'attempt_sequence,last_probe_result,pending_action,pending_dispatch_id,probe_expected_revision,probe_status,service_id,state' ||
         !allowed.service.has(service.state) || !Number.isSafeInteger(service.attempt_sequence) || service.attempt_sequence < 0 ||
         !(service.pending_dispatch_id === null || (typeof service.pending_dispatch_id === 'string' && DISPATCH_ID.test(service.pending_dispatch_id))) ||
-        ![null, 'start', 'probe', 'stop'].includes(service.pending_action) || ((service.pending_dispatch_id === null) !== (service.pending_action === null))) ||
+        ![null, 'start', 'probe', 'stop'].includes(service.pending_action) || ((service.pending_dispatch_id === null) !== (service.pending_action === null)) ||
+        !['not_checked', 'pending', 'transport_ready', 'ready', 'not_ready'].includes(service.probe_status) ||
+        !(service.probe_expected_revision === null || (Number.isSafeInteger(service.probe_expected_revision) && service.probe_expected_revision >= 0)) ||
+        ((service.pending_action === 'probe') !== (service.probe_expected_revision !== null)) ||
+        (['pending', 'transport_ready'].includes(service.probe_status) !== (service.pending_action === 'probe')) ||
+        (service.probe_status === 'ready' && service.last_probe_result === null) ||
+        (service.last_probe_result !== null && !['ready', 'not_ready'].includes(service.probe_status))) ||
       new Set(operation.residue_service_ids).size !== operation.residue_service_ids.length || operation.residue_service_ids.some((id) => !expected.includes(id))) fail('operation_store_record_invalid')
+
+  for (const service of operation.services) {
+    if (service.last_probe_result !== null) {
+      validatePersistedProbeResult(service.last_probe_result, authority)
+      if (service.last_probe_result.operation_id !== operation.operation_id ||
+          service.last_probe_result.supervisor_generation !== operation.supervisor_generation ||
+          service.last_probe_result.service_id !== service.service_id ||
+          service.last_probe_result.ready !== (service.probe_status === 'ready')) fail('operation_store_record_invalid')
+    }
+  }
 
   const specs = new Map(authority.graph.services.map((service) => [service.service_id, service]))
   const states = new Map(operation.services.map((service) => [service.service_id, service.state]))
@@ -463,11 +609,13 @@ const workerResultToEvent = (result, current, expectedRequest, authority) => {
       (result.ownership_class !== 'not_applicable' || result.listener_class !== 'matched' || result.descendant_class !== 'not_applicable')) {
     return { event_type: 'listener_mismatch', operation_id: current.operation_id, service_id: result.service_id, dispatch_id: result.dispatch_id }
   }
+  const probeFailure = result.action === 'probe' && ['cancelled', 'invalid_request', 'internal_failure'].includes(result.result_class)
+  const externalEarlyExit = result.action === 'probe' && spec.ownership === 'external' && result.result_class === 'early_exit'
   const byResult = {
     accepted: 'spawn_succeeded',
-    ready: 'service_ready',
+    ready: 'probe_transport_ready',
     optional_absent: 'optional_absent',
-    external_ready: 'external_ready',
+    external_ready: 'probe_transport_ready',
     stopped: 'service_stopped',
     spawn_failed: 'spawn_failed',
     early_exit: 'early_exit',
@@ -475,11 +623,14 @@ const workerResultToEvent = (result, current, expectedRequest, authority) => {
     readiness_timeout: 'readiness_timeout',
     stop_failed: 'stop_failed',
     deadline: result.action === 'stop' ? 'stop_failed' : 'readiness_timeout',
-    cancelled: result.action === 'stop' ? 'stop_failed' : 'early_exit',
-    invalid_request: result.action === 'stop' ? 'stop_failed' : 'spawn_failed',
-    internal_failure: result.action === 'stop' ? 'stop_failed' : 'spawn_failed'
+    cancelled: result.action === 'stop' ? 'stop_failed' : probeFailure ? 'probe_failed' : 'early_exit',
+    invalid_request: result.action === 'stop' ? 'stop_failed' : probeFailure ? 'probe_failed' : 'spawn_failed',
+    internal_failure: result.action === 'stop' ? 'stop_failed' : probeFailure ? 'probe_failed' : 'spawn_failed'
   }
-  return { event_type: byResult[result.result_class], operation_id: current.operation_id, service_id: result.service_id, dispatch_id: result.dispatch_id }
+  return { event_type: externalEarlyExit ? 'probe_failed' : byResult[result.result_class], operation_id: current.operation_id, service_id: result.service_id, dispatch_id: result.dispatch_id }
 }
 
-module.exports = { CLEANUP, PHASE, REASON, SERVICE, createOperation, reduce, startOperation, validateIdentityInputs, validateSnapshot, workerResultToEvent }
+module.exports = {
+  CLEANUP, PHASE, REASON, SERVICE, createOperation, reduce, startOperation,
+  validateIdentityInputs, validatePersistedProbeResult, validateSnapshot, workerResultToEvent
+}
