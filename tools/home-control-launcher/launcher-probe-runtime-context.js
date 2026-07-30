@@ -33,7 +33,7 @@ const MODULE_STATUS_POLL_MS = 25
 const MODULE_STATUS_RELATIVE_SEGMENTS = Object.freeze([
   'thought-core-watcher', 'modules', 'thought_core_watcher.json'
 ])
-const MODULE_STATUS_KEYS = Object.freeze(['name', 'label', 'state', 'detail', 'timestamp'])
+const MODULE_STATUS_KEYS = Object.freeze(['type', 'name', 'label', 'state', 'detail', 'timestamp'])
 const OPERATION_KEYS = Object.freeze([
   'schema_version', 'graph_sha256', 'binding_sha256', 'profile_id',
   'effective_config_sha256', 'camera_policy', 'operation_id',
@@ -297,7 +297,8 @@ const parseModuleStatus = (bytes) => {
   let value
   try { value = JSON.parse(text) } catch { fail('probe_runtime_observer_invalid') }
   exactKeys(value, MODULE_STATUS_KEYS, 'probe_runtime_observer_invalid')
-  if (value.name !== 'thought_core_watcher' || !['starting', 'running', 'ready'].includes(value.state) ||
+  if (value.type !== 'module_status' || value.name !== 'thought_core_watcher' ||
+      !['starting', 'running', 'ready'].includes(value.state) ||
       typeof value.label !== 'string' || Buffer.byteLength(value.label, 'utf8') > 256 ||
       typeof value.detail !== 'string' || Buffer.byteLength(value.detail, 'utf8') > 2048 ||
       !Number.isFinite(value.timestamp) || value.timestamp < 0) fail('probe_runtime_observer_invalid')

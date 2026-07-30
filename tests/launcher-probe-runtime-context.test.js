@@ -120,6 +120,7 @@ const makeContext = ({ compiled = compiledPlan(), privateRuntimeRoot, fetchImpl,
 
 const statusPathFor = (root) => path.join(root, 'thought-core-watcher', 'modules', 'thought_core_watcher.json')
 const statusPayload = (timestampSeconds, state = 'running') => ({
+  type: 'module_status',
   name: 'thought_core_watcher',
   label: 'PRIVATE_LABEL_SENTINEL',
   state,
@@ -409,6 +410,23 @@ test('default module observer rejects reparse, oversized, malformed, and invalid
       (error) => error instanceof LauncherProbeRuntimeContextError && error.code === 'probe_runtime_observer_invalid'
     )
   })
+
+  const { type: ignoredType, ...missingType } = statusPayload(BASE_MS / 1000)
+  assert.equal(ignoredType, 'module_status')
+  for (const payload of [
+    missingType,
+    { ...statusPayload(BASE_MS / 1000), type: 'other_status' },
+    { ...statusPayload(BASE_MS / 1000), extra_type: 'module_status' }
+  ]) {
+    await withTempRoot(async (root) => {
+      writeStatus(root, payload)
+      const observer = createDefaultModuleStatusObserver(root)
+      await assert.rejects(
+        observer(moduleObserverInput(new AbortController().signal)),
+        (error) => error instanceof LauncherProbeRuntimeContextError && error.code === 'probe_runtime_observer_invalid'
+      )
+    })
+  }
 
   await withTempRoot(async (root) => {
     writeStatus(root, statusPayload(BASE_MS / 1000, 'stopped'))
