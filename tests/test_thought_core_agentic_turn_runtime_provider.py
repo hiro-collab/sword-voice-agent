@@ -1067,6 +1067,60 @@ class AgenticTurnRuntimeProviderTest(TestCase):
         self.assertNotIn("api_key", serialized)
         self.assertNotIn("endpoint", serialized)
 
+    def test_decision_prompt_requires_current_wish_authority_for_capability(self) -> None:
+        greeting = {**self._conversation_candidate(), "capability": None}
+        action = {
+            "schemaVersion": 1,
+            "kind": "capability",
+            "response": {"speech": "照明をつけます。", "display": "照明をつけます。"},
+            "capability": {
+                "id": "light_on",
+                "arguments": {},
+            },
+        }
+        completion = _CapturingCompletion(greeting, action)
+        provider = OpenAICompatibleAgenticTurnProvider(completion)
+
+        greeting_result = provider.decide(
+            self._provider_request(
+                human_wish="今の起動確認として、短く自然に挨拶してください。",
+                context_refs={},
+            )
+        )
+        action_result = provider.decide(
+            self._provider_request(
+                human_wish="ライトをつけてください。",
+                context_refs={},
+            )
+        )
+
+        self.assertEqual(greeting_result["kind"], "conversation")
+        self.assertIsNone(greeting_result.get("capability"))
+        self.assertEqual(action_result["kind"], "capability")
+        self.assertEqual(
+            action_result["capability"]["id"],  # type: ignore[index]
+            "light_on",
+        )
+        self.assertEqual(len(completion.calls), 2)
+        for call in completion.calls:
+            prompt = call["system_prompt"]
+            self.assertIn(
+                "Treat capability availability and prior context as options, never action authority",
+                prompt,
+            )
+            self.assertIn(
+                "only when human_wish semantically and unambiguously requests that matching action",
+                prompt,
+            )
+            self.assertIn(
+                "Greetings, ordinary conversation, capability questions, hypothetical statements, and ambiguous wishes",
+                prompt,
+            )
+            self.assertIn(
+                "must use conversation or clarification with capability null",
+                prompt,
+            )
+
     def test_predecision_context_is_bounded_explicit_and_stably_ordered(self) -> None:
         candidate = self._conversation_candidate()
         completion = _CapturingCompletion(candidate, candidate)
