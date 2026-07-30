@@ -11,6 +11,7 @@ const { assertAuthority, canonicalJsonSha256, deepFreeze } = require('./launcher
 const PLAN_DIRECTORY = 'launcher-private-plan.v1'
 const PLAN_FILE = 'launcher-private-service-plan.v1.json'
 const PLAN_TEMP_FILE = 'launcher-private-service-plan.v1.json.tmp'
+const EVENT_JOURNAL_DIRECTORY = 'event-journal'
 const MAX_PLAN_BYTES = 256 * 1024
 const MAX_WORKER_EXECUTABLE_BYTES = 64 * 1024 * 1024
 const PROFILE_ID = 'thought-core-v0'
@@ -363,6 +364,31 @@ const ownedPlan = ({ serviceId, filePath, args, cwd, environment, listenerPort, 
   listener_port: listenerPort
 })
 
+const expectedEventJournalDirectory = (privateRuntimeRoot) => {
+  if (typeof privateRuntimeRoot !== 'string' || !path.isAbsolute(privateRuntimeRoot) || privateRuntimeRoot.includes('\u0000')) {
+    fail('private_plan_root_invalid')
+  }
+  return path.join(path.resolve(privateRuntimeRoot), EVENT_JOURNAL_DIRECTORY)
+}
+
+const validateClosedLoopJournalBinding = ({ document, privateRuntimeRoot }) => {
+  if (!isPlainObject(document) || !Array.isArray(document.services)) fail('private_plan_config_invalid')
+  const thoughtCorePlans = document.services.filter((plan) => plan?.service_id === 'thought_core_api')
+  if (thoughtCorePlans.length !== 1 || !isPlainObject(thoughtCorePlans[0].environment)) {
+    fail('private_plan_config_invalid')
+  }
+  const environment = thoughtCorePlans[0].environment
+  if (
+    environment.THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED !== '1' ||
+    environment.THOUGHT_CORE_EVENT_JOURNAL_ENABLED !== '1' ||
+    environment.THOUGHT_CORE_EVENT_JOURNAL_DIR !== expectedEventJournalDirectory(privateRuntimeRoot) ||
+    Object.hasOwn(environment, 'THOUGHT_CORE_EVENT_JOURNAL_PATH')
+  ) {
+    fail('private_plan_config_invalid')
+  }
+  return true
+}
+
 const deriveEffectiveConfigIdentity = ({ profileId, options, authority }) => {
   try { assertAuthority(authority) } catch { fail('private_plan_authority_invalid') }
   if (profileId !== PROFILE_ID || authority.graph.profile_id !== PROFILE_ID) fail('private_plan_profile_invalid')
@@ -495,10 +521,13 @@ const compilePrivateServicePlan = ({
   const thoughtHost = loopbackHost(options.ThoughtCoreHost)
   const thoughtBase = `http://${thoughtHost}:${options.ThoughtCorePort}`
   const feedbackEnabled = '1'
+  const eventJournalDirectory = expectedEventJournalDirectory(privateRuntimeRoot)
   const thoughtEnvironment = {
     ...baseline,
     ...selectedEnvironment(THOUGHT_CORE_ENVIRONMENT_NAMES, processEnvironment, thoughtDotEnv),
     THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED: feedbackEnabled,
+    THOUGHT_CORE_EVENT_JOURNAL_ENABLED: '1',
+    THOUGHT_CORE_EVENT_JOURNAL_DIR: eventJournalDirectory,
     THOUGHT_CORE_LLM_ENABLED: '1',
     THOUGHT_CORE_LLM_PROVIDER: 'sword-openai-broker',
     THOUGHT_CORE_LLM_BASE_URL: `http://127.0.0.1:${options.OpenAIBrokerPort}/v1`,
@@ -708,6 +737,7 @@ const compilePrivateServicePlan = ({
     worker_file_path: powershell,
     services: plans
   }
+  validateClosedLoopJournalBinding({ document, privateRuntimeRoot })
   const serialized = serializePrivateServicePlan(document)
   if (Buffer.byteLength(serialized, 'utf8') > MAX_PLAN_BYTES) fail('private_plan_config_invalid')
   return deepFreeze({
@@ -744,7 +774,7 @@ const boundedStringArray = (value, { maximumItems = 128, maximumLength = 4096, p
   return result
 }
 
-const validatePersistedPlanDocument = ({ document, configIdentity, authority, io }) => {
+const validatePersistedPlanDocument = ({ document, privateRuntimeRoot, configIdentity, authority, io }) => {
   try { assertAuthority(authority) } catch { fail('private_plan_authority_invalid') }
   requireExactKeys(document, PLAN_DOCUMENT_FIELDS)
   requireExactKeys(configIdentity, ['profile_id', 'effective_config_sha256', 'camera_policy'], 'private_plan_identity_invalid')
@@ -801,6 +831,7 @@ const validatePersistedPlanDocument = ({ document, configIdentity, authority, io
   if (document.camera_policy === 'required' && !planIds.has('mediapipe_camera_hub_stack')) {
     fail('private_plan_identity_invalid')
   }
+  validateClosedLoopJournalBinding({ document, privateRuntimeRoot })
   return [...planIds].sort()
 }
 
@@ -843,6 +874,7 @@ const readPrivateServicePlan = ({
     if (text !== serializePrivateServicePlan(document)) fail('private_plan_identity_invalid')
     const includedServiceIds = validatePersistedPlanDocument({
       document,
+      privateRuntimeRoot,
       configIdentity,
       authority,
       io: effectiveIo
@@ -913,10 +945,12 @@ module.exports = {
   TRUSTED_WINDOWS_WORKERS,
   compilePrivateServicePlan,
   deriveEffectiveConfigIdentity,
+  expectedEventJournalDirectory,
   readPrivateServicePlan,
   removePrivateServicePlan,
   resolvePlanPaths,
   serializePrivateServicePlan,
+  validateClosedLoopJournalBinding,
   verifyTrustedWindowsWorkerExecutable,
   writePrivateServicePlan
 }

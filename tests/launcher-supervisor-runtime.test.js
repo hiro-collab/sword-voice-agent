@@ -18,6 +18,7 @@ const {
   LauncherPrivatePlanError,
   compilePrivateServicePlan,
   deriveEffectiveConfigIdentity,
+  expectedEventJournalDirectory,
   readPrivateServicePlan,
   serializePrivateServicePlan,
   verifyTrustedWindowsWorkerExecutable,
@@ -193,7 +194,14 @@ const makeHarness = ({
       effective_config_sha256: CONFIG_IDENTITY.effective_config_sha256,
       camera_policy: CONFIG_IDENTITY.camera_policy,
       worker_file_path: process.execPath,
-      services: []
+      services: [{
+        service_id: 'thought_core_api',
+        environment: {
+          THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED: '1',
+          THOUGHT_CORE_EVENT_JOURNAL_ENABLED: '1',
+          THOUGHT_CORE_EVENT_JOURNAL_DIR: expectedEventJournalDirectory(root)
+        }
+      }]
     },
     powershell_path: process.execPath,
     ...PLAN_IDENTITY,
@@ -1356,6 +1364,44 @@ test('private plan preflight rejects noncanonical profiles before operation-stor
   })
 })
 
+test('closed-loop private plan without the task-owned Event Journal binding fails before store or worker actions', async () => {
+  const privateSentinel = 'must-not-publish'
+  const harness = makeHarness({
+    planCompiler: () => ({
+      document: {
+        schema_version: 'launcher_private_service_plans.v1',
+        graph_sha256: authority.identities.graphSha256,
+        binding_sha256: authority.identities.bindingSha256,
+        profile_id: CONFIG_IDENTITY.profile_id,
+        effective_config_sha256: CONFIG_IDENTITY.effective_config_sha256,
+        camera_policy: CONFIG_IDENTITY.camera_policy,
+        worker_file_path: process.execPath,
+        services: [{
+          service_id: 'thought_core_api',
+          environment: {
+            THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED: '1',
+            PRIVATE_SENTINEL: privateSentinel
+          }
+        }]
+      },
+      powershell_path: process.execPath,
+      ...PLAN_IDENTITY,
+      included_service_ids: [...allOwnedIds]
+    })
+  })
+  try {
+    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(result.ok, false)
+    assert.equal(result.result_class, 'preflight_failed')
+    assert.equal(result.error_class, 'private_plan_invalid')
+    assert.equal(harness.events.includes('store:start'), false)
+    assert.equal(harness.workers.length, 0)
+    assert.equal(JSON.stringify(result).includes(privateSentinel), false)
+  } finally {
+    harness.cleanup()
+  }
+})
+
 test('private plan preflight rejects an intermediate non-symlink Windows reparse before worker bytes or actions', async () => {
   const workerPath = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
   let workerReads = 0
@@ -1532,6 +1578,9 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
         TMP: workspace,
         HOME_CONTROL_API_TOKEN: '0123456789abcdef',
         ENVIRONMENT_API_TOKEN: 'fedcba9876543210',
+        THOUGHT_CORE_EVENT_JOURNAL_ENABLED: '0',
+        THOUGHT_CORE_EVENT_JOURNAL_DIR: path.join(workspace, 'ambient-journal'),
+        THOUGHT_CORE_EVENT_JOURNAL_PATH: path.join(workspace, 'ambient-journal.jsonl'),
         PRIVATE_SENTINEL: 'must-not-be-inherited',
         SWORD_LAUNCHER_N1_PRIVATE_PLAN_FILE: 'must-not-be-inherited'
       },
@@ -1578,6 +1627,7 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
     )
     assert.equal(compiled.document.services.some((service) => service.service_id === 'voicevox'), false)
     const aituberPlan = compiled.document.services.find((service) => service.service_id === 'aituber_kit')
+    const thoughtCorePlan = compiled.document.services.find((service) => service.service_id === 'thought_core_api')
     const homePlan = compiled.document.services.find((service) => service.service_id === 'home_assistant_bridge')
     const environmentPlan = compiled.document.services.find((service) => service.service_id === 'environment_state_server')
     for (const plan of [homePlan, environmentPlan]) {
@@ -1595,6 +1645,14 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
     assert.equal(homePlan.environment.HOME_CONTROL_CONFIG, liveConfig)
     assert.equal(Object.hasOwn(environmentPlan.environment, 'HOME_CONTROL_CONFIG'), false)
     assert.equal(Object.hasOwn(environmentPlan.environment, 'HOME_CONTROL_FAULT_MODE'), false)
+    assert.equal(thoughtCorePlan.environment.THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED, '1')
+    assert.equal(thoughtCorePlan.environment.THOUGHT_CORE_EVENT_JOURNAL_ENABLED, '1')
+    assert.equal(
+      thoughtCorePlan.environment.THOUGHT_CORE_EVENT_JOURNAL_DIR,
+      expectedEventJournalDirectory(privateRuntimeRoot)
+    )
+    assert.equal(Object.hasOwn(thoughtCorePlan.environment, 'THOUGHT_CORE_EVENT_JOURNAL_PATH'), false)
+    assert.equal(Object.hasOwn(thoughtCorePlan.environment, 'PRIVATE_SENTINEL'), false)
     assert.deepEqual(homePlan.arguments.slice(0, 5), [
       'run', 'python', '-m', 'uvicorn', 'home_control_bridge.main:app'
     ])

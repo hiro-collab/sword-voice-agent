@@ -14,6 +14,7 @@ const {
   LauncherPrivatePlanError,
   compilePrivateServicePlan,
   deriveEffectiveConfigIdentity,
+  validateClosedLoopJournalBinding,
   readPrivateServicePlan,
   removePrivateServicePlan,
   writePrivateServicePlan
@@ -406,7 +407,7 @@ class LauncherSupervisorRuntime {
   }
 
   compile (profileId, options, configIdentity) {
-    return this.planCompiler({
+    const compiled = this.planCompiler({
       repositoryRoot: this.repositoryRoot,
       workspaceRoot: this.workspaceRoot,
       privateRuntimeRoot: this.privateRuntimeRoot,
@@ -415,6 +416,11 @@ class LauncherSupervisorRuntime {
       configIdentity,
       authority: this.authority
     })
+    validateClosedLoopJournalBinding({
+      document: compiled?.document,
+      privateRuntimeRoot: this.privateRuntimeRoot
+    })
+    return compiled
   }
 
   readPersistedPlan (operation = this.current) {
