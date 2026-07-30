@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,12 +18,24 @@ from .agentic_turn_provider import (
     AgenticCapabilityView,
     AgenticCapabilityViewEntry,
 )
+from .correlation_feedback_contract import SECRET_LIKE_STRING_PATTERN
 
 
 MAX_CAPABILITY_ID_CHARS = 96
 MAX_CAPABILITY_DESCRIPTION_CHARS = 180
+MAX_CAPABILITY_ALIAS_COUNT = 16
+MAX_CAPABILITY_ALIAS_CHARS = 64
 AGENTIC_CATALOG_ID = "sword.agentic-capabilities"
 AGENTIC_CATALOG_VERSION = "agentic-capabilities.v1"
+_PRIVATE_CATALOG_ALIAS_PREFIX = re.compile(
+    r"^(?:bearer|token|secret|credential|password|api[\s_-]*key|"
+    r"access[\s_-]*token|refresh[\s_-]*token)(?:\s+|[:=_-]+)",
+    re.IGNORECASE,
+)
+_CATALOG_PROMPT_PREFIX = re.compile(
+    r"^(?:system|developer)[\s_-]+prompt(?:\s+|[:=_-]+|$)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -124,7 +137,7 @@ class HomeCapabilityCatalog:
             capabilities=tuple(
                 AgenticCapabilityViewEntry(
                     capability_id=capability_id,
-                    description=str(row["label"]),
+                    description=_agentic_home_description(row),
                     available=_is_currently_available(row),
                 )
                 for capability_id, row in sorted(snapshot.items())
@@ -266,10 +279,58 @@ def _valid_action_row(row: Mapping[str, object]) -> bool:
             and len(str(row[key])) <= MAX_CAPABILITY_DESCRIPTION_CHARS
             for key in required_text
         )
+        and _valid_catalog_aliases(row.get("aliases"))
         and type(row.get("confirmation_required")) is bool
         and type(row.get("expected_effect")) is dict
         and type(row.get("observation")) is dict
     )
+
+
+def _valid_catalog_aliases(value: object) -> bool:
+    return (
+        type(value) is list
+        and len(value) <= MAX_CAPABILITY_ALIAS_COUNT
+        and all(
+            type(alias) is str
+            and bool(alias.strip())
+            and alias == alias.strip()
+            and len(alias) <= MAX_CAPABILITY_ALIAS_CHARS
+            and not _unsafe_catalog_alias(alias)
+            for alias in value
+        )
+    )
+
+
+def _unsafe_catalog_alias(value: str) -> bool:
+    lowered = value.lower()
+    return (
+        any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or SECRET_LIKE_STRING_PATTERN.search(value) is not None
+        or _PRIVATE_CATALOG_ALIAS_PREFIX.search(value) is not None
+        or _CATALOG_PROMPT_PREFIX.search(value) is not None
+        or "://" in lowered
+        or ":\\" in value
+        or value.startswith("\\\\")
+        or "/" in value
+        or "\\" in value
+        or "access_token=" in lowered
+        or "api_key=" in lowered
+        or "password=" in lowered
+        or "prompt:" in lowered
+    )
+
+
+def _agentic_home_description(row: Mapping[str, object]) -> str:
+    aliases = row.get("aliases")
+    if not isinstance(aliases, tuple) or not all(type(alias) is str for alias in aliases):
+        raise CapabilityCatalogError("home_capability_catalog_invalid")
+    description = (
+        f"{row['label']}。対象名:{row['target_label']}。"
+        f"呼称:{'、'.join(aliases)}"
+    )
+    if len(description) > MAX_CAPABILITY_DESCRIPTION_CHARS:
+        raise CapabilityCatalogError("home_capability_catalog_invalid")
+    return description
 
 
 def _valid_projection_arguments(

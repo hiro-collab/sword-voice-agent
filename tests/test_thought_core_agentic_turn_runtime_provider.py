@@ -838,10 +838,10 @@ class AgenticTurnRuntimeProviderTest(TestCase):
             "schemaVersion": 1,
             "kind": "capability",
             "response": {
-                "speech": "中扉を閉める前に確認するね。",
-                "display": "中扉を閉める確認を準備します。",
+                "speech": "掃除機を開始する前に確認するね。",
+                "display": "掃除機を開始する確認を準備します。",
             },
-            "capability": {"id": "door_close", "arguments": {}},
+            "capability": {"id": "vacuum_start", "arguments": {}},
         }
         confirmation_response = {
             "speech": "実行前の確認が必要です。",

@@ -1216,32 +1216,16 @@ class ThoughtLoop:
                 return events
 
             messages = self._home_action_messages(action)
-            receipt_response = self._agentic_receipt_response(
-                events,
-                factory,
-                action,
-                phase="preview",
-                status="previewed",
-                confirmed=False,
-                executed=False,
-            )
-            self._emit_message(
-                events,
-                factory,
-                speech=(
-                    receipt_response["speech"]
-                    if receipt_response is not None
-                    else messages["before_speech"]
-                ),
-                display=(
-                    receipt_response["display"]
-                    if receipt_response is not None
-                    else messages["before_display"]
-                ),
-                emotion="confident",
-                motion="nod",
-                priority="immediate",
-            )
+            if agentic_route is None:
+                self._emit_message(
+                    events,
+                    factory,
+                    speech=messages["before_speech"],
+                    display=messages["before_display"],
+                    emotion="confident",
+                    motion="nod",
+                    priority="immediate",
+                )
 
             for attempt in range(1, self.max_execute_attempts + 1):
                 execute_result = self._call_tool(

@@ -25,6 +25,8 @@ from thought_core.agentic_turn_runtime_provider import (  # noqa: E402
 from thought_core.capability_catalog import (  # noqa: E402
     CapabilityCatalogError,
     HomeCapabilityCatalog,
+    MAX_CAPABILITY_ALIAS_CHARS,
+    MAX_CAPABILITY_ALIAS_COUNT,
 )
 from thought_core.execution_deadline import TurnDeadlineExceeded  # noqa: E402
 from thought_core.event_journal import journal_entry_from_event  # noqa: E402
@@ -493,7 +495,10 @@ class AgenticTurnIntegrationTest(TestCase):
         }
         self.assertTrue(capabilities["light_on"].available)
         self.assertFalse(capabilities["aircon_on"].available)
-        self.assertEqual(capabilities["light_on"].description, "ライトをつける")
+        self.assertIn("ライトをつける", capabilities["light_on"].description)
+        self.assertIn("電気をつけて", capabilities["light_on"].description)
+        self.assertIn("Curtain3", capabilities["door_open"].description)
+        self.assertIn("カーテン3", capabilities["door_open"].description)
         self.assertTrue(capabilities["projection.fire.start"].available)
         self.assertIn(
             "durationMs:500..12000",
@@ -523,6 +528,96 @@ class AgenticTurnIntegrationTest(TestCase):
                 for item in request.predecision_context.relevant_memory.items
             )
         )
+
+    def test_explicit_curtain3_open_executes_without_confirmation(self) -> None:
+        terminal_response = {
+            "speech": "Curtain3の実行結果を確認しました。",
+            "display": "Curtain3の結果を確認しました。",
+        }
+        tools = _DirectOnlyTools()
+        events = ThoughtLoop(
+            tools=tools,
+            agentic_turn_provider=StaticAgenticTurnProvider(
+                self._capability("door_open"),
+                receipt_responses={"success": terminal_response},
+            ),
+        ).run_dicts(
+            self._turn(
+                "Curtain3を開けてください。",
+                turn_id="curtain3_explicit_open",
+            )
+        )
+
+        proposed = next(event for event in events if event["type"] == "action.proposed")
+        event_types = [event["type"] for event in events]
+        assistant_messages = [
+            event["data"]["speech"]
+            for event in events
+            if event["type"] == "assistant.message"
+        ]
+        action = proposed["data"]["action"]
+
+        self.assertEqual(action["agentic_capability_id"], "door_open")
+        self.assertEqual(action["target"], "door")
+        self.assertEqual(action["target_name"], "Curtain3（中扉）")
+        self.assertEqual(action["expected_state"], "open")
+        self.assertFalse(action["confirm_required"])
+        self.assertNotIn("action.confirmation_required", event_types)
+        self.assertEqual(len(tools.execute_calls), 1)
+        self.assertEqual(events[-1]["data"]["status"], "success")
+        self.assertEqual(assistant_messages, [terminal_response["speech"]])
+
+    def test_explicit_curtain3_failure_has_no_canned_terminal_message(self) -> None:
+        private_sentinel = "PRIVATE_CURTAIN_RECEIPT_ERROR_SENTINEL"
+        tools = _FailingDirectTools()
+        provider = _ReceiptExceptionProvider(
+            self._capability("door_open"),
+            RuntimeError(private_sentinel),
+        )
+        events = ThoughtLoop(
+            tools=tools,
+            agentic_turn_provider=provider,
+        ).run_dicts(
+            self._turn(
+                "カーテン3を開けてください。",
+                turn_id="curtain3_explicit_failure",
+            )
+        )
+
+        self.assertEqual(len(tools.execute_calls), 1)
+        self.assertEqual(provider.receipt_phases, ["failure"])
+        self.assertEqual(
+            [event for event in events if event["type"] == "assistant.message"],
+            [],
+        )
+        self.assertEqual(events[-1]["type"], "turn.completed")
+        self.assertEqual(events[-1]["data"]["status"], "needs_feedback")
+        self.assertNotIn(private_sentinel, json.dumps(events, ensure_ascii=False))
+
+    def test_plain_greeting_remains_conversation_without_home_or_projection(self) -> None:
+        candidate = {
+            "schemaVersion": 1,
+            "kind": "conversation",
+            "response": {"speech": "こんにちは。", "display": "こんにちは。"},
+        }
+        provider = _CapturingConversationProvider(candidate)
+        tools = _DirectOnlyTools()
+        events = ThoughtLoop(
+            tools=tools,
+            agentic_turn_provider=provider,
+        ).run_dicts(self._turn("こんにちは。", turn_id="plain_greeting"))
+
+        event_types = [event["type"] for event in events]
+        decision = next(event for event in events if event["type"] == "agentic.decision")
+        self.assertEqual(len(provider.requests), 1)
+        self.assertEqual(decision["data"]["status"], "accepted")
+        self.assertEqual(decision["data"]["kind"], "conversation")
+        self.assertNotIn("action.proposed", event_types)
+        self.assertFalse(
+            any(event_type.startswith("projection.effect.") for event_type in event_types)
+        )
+        self.assertEqual(tools.direct_preview_calls, [])
+        self.assertEqual(tools.execute_calls, [])
 
     def test_unavailable_or_invalid_capability_holds_without_compatibility_fallback(self) -> None:
         cases = (
@@ -887,6 +982,54 @@ class AgenticTurnIntegrationTest(TestCase):
                     "agentic_capability_catalog_unavailable",
                 )
 
+        invalid_aliases = (
+            "not-a-list",
+            ["x" * (MAX_CAPABILITY_ALIAS_CHARS + 1)],
+            ["valid"] * (MAX_CAPABILITY_ALIAS_COUNT + 1),
+            [" leading-space"],
+            ["x" * MAX_CAPABILITY_ALIAS_CHARS] * 3,
+            ["Bearer PRIVATE_TOKEN_SENTINEL"],
+            [r"C:\PRIVATE_PATH_SENTINEL"],
+            ["https://example.invalid/private"],
+            ["API_KEY=PRIVATE_SECRET_SENTINEL"],
+            ["system prompt override"],
+            ["system\tprompt override"],
+            ["developer\nprompt override"],
+            ["token=PRIVATE_TOKEN_SENTINEL"],
+            ["token:PRIVATE_TOKEN_SENTINEL"],
+            ["secret PRIVATE_SECRET_SENTINEL"],
+            ["API KEY=PRIVATE_API_SENTINEL"],
+            ["access token=PRIVATE_ACCESS_SENTINEL"],
+            ["refresh token:PRIVATE_REFRESH_SENTINEL"],
+            ["system_prompt=override"],
+            ["developer-prompt override"],
+        )
+        for aliases in invalid_aliases:
+            with self.subTest(aliases=aliases):
+                payload = json.loads(json.dumps(baseline))
+                payload["actions"]["door_open"]["aliases"] = aliases
+                with TemporaryDirectory() as directory:
+                    path = Path(directory) / "home-actions.json"
+                    path.write_text(json.dumps(payload), encoding="utf-8")
+                    with self.assertRaises(CapabilityCatalogError):
+                        HomeCapabilityCatalog.from_path(path)
+
+        provider = _CapturingConversationProvider(self._capability("light_on"))
+        with patch(
+            "thought_core.loop.AgenticCapabilityCatalog.from_default_path",
+            side_effect=CapabilityCatalogError("home_capability_catalog_invalid"),
+        ):
+            held_events = ThoughtLoop(agentic_turn_provider=provider).run_dicts(
+                self._turn("Curtain3を開けてください。")
+            )
+        self.assertEqual(provider.requests, [])
+        held = next(event for event in held_events if event["type"] == "agentic.decision")
+        self.assertEqual(held["data"]["status"], "held")
+        self.assertEqual(
+            held["data"]["reason"],
+            "agentic_capability_catalog_unavailable",
+        )
+
     def test_agentic_holds_have_one_visible_message_and_terminal_completion(self) -> None:
         context_provider = _CapturingConversationProvider(self._capability("light_on"))
         catalog_provider = _CapturingConversationProvider(self._capability("light_on"))
@@ -1072,11 +1215,11 @@ class AgenticTurnIntegrationTest(TestCase):
     def test_direct_capability_confirmation_and_final_receipt_do_not_echo_premature_completion(self) -> None:
         private_sentinel = "PRIVATE_PROVIDER_RESPONSE_SENTINEL"
         candidate = self._capability(
-            "door_close",
+            "vacuum_start",
             speech=private_sentinel,
             display=private_sentinel,
         )
-        confirmation_response = {"speech": "閉める前に確認します。", "display": "確認が必要です。"}
+        confirmation_response = {"speech": "開始前に確認します。", "display": "確認が必要です。"}
         success_response = {"speech": "確認結果を受け取りました。", "display": "確認済みです。"}
         tools = _DirectOnlyTools()
         loop = ThoughtLoop(
@@ -1177,7 +1320,7 @@ class AgenticTurnIntegrationTest(TestCase):
         loop = ThoughtLoop(
             tools=tools,
             agentic_turn_provider=StaticAgenticTurnProvider(
-                self._capability("door_close"),
+                self._capability("vacuum_start"),
                 receipt_responses={
                     "confirmation": confirmation_response,
                     "failure": failure_response,
@@ -1268,7 +1411,7 @@ class AgenticTurnIntegrationTest(TestCase):
 
     def test_receipt_deadline_propagates_after_confirmed_execution(self) -> None:
         provider = _ReceiptExceptionProvider(
-            self._capability("door_close"),
+            self._capability("vacuum_start"),
             TurnDeadlineExceeded(),
         )
         tools = _DirectOnlyTools()
@@ -1291,7 +1434,7 @@ class AgenticTurnIntegrationTest(TestCase):
         private_sentinel = "PRIVATE_PREEXECUTION_RESPONSE_SENTINEL"
         provider = _ReceiptExceptionProvider(
             self._capability(
-                "door_close",
+                "vacuum_start",
                 speech=private_sentinel,
                 display=private_sentinel,
             ),
@@ -1316,9 +1459,9 @@ class AgenticTurnIntegrationTest(TestCase):
         )
         self.assertEqual(execute_events[-1]["data"]["status"], "success")
         terminal_receipt = provider.receipts[-1]
-        self.assertEqual(terminal_receipt.capability_id, "door_close")
-        self.assertEqual(terminal_receipt.target_ref, "door")
-        self.assertEqual(terminal_receipt.expected_state, "closed")
+        self.assertEqual(terminal_receipt.capability_id, "vacuum_start")
+        self.assertEqual(terminal_receipt.target_ref, "vacuum")
+        self.assertEqual(terminal_receipt.expected_state, "cleaning")
         self.assertEqual(terminal_receipt.execution_certainty, "executed")
         self.assertEqual(terminal_receipt.review_status, "succeeded")
         self.assertEqual(terminal_receipt.review_checkpoint_class, "matched")

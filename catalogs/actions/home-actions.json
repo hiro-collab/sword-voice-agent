@@ -325,9 +325,13 @@
     "door_open": {
       "label": "中扉を開ける",
       "target": "door",
-      "target_label": "中扉",
+      "target_label": "Curtain3（中扉）",
       "verb": "開ける",
       "aliases": [
+        "Curtain3を開けて",
+        "Curtain3開けて",
+        "カーテン3を開けて",
+        "カーテン3開けて",
         "中扉を開けて",
         "中扉開けて",
         "中扉を開いて",
@@ -351,8 +355,8 @@
         "entity_id": "cover.demo_curtain"
       },
       "risk_level": "medium",
-      "confirmation_required": true,
-      "confirmation_reason": "door_motion",
+      "confirmation_required": false,
+      "confirmation_reason": null,
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.door_open",
@@ -367,9 +371,13 @@
     "door_close": {
       "label": "中扉を閉める",
       "target": "door",
-      "target_label": "中扉",
+      "target_label": "Curtain3（中扉）",
       "verb": "閉める",
       "aliases": [
+        "Curtain3を閉めて",
+        "Curtain3閉めて",
+        "カーテン3を閉めて",
+        "カーテン3閉めて",
         "中扉を閉めて",
         "中扉閉めて",
         "中扉を閉じて",
@@ -395,8 +403,8 @@
         "entity_id": "cover.demo_curtain"
       },
       "risk_level": "medium",
-      "confirmation_required": true,
-      "confirmation_reason": "door_motion",
+      "confirmation_required": false,
+      "confirmation_reason": null,
       "execution": {
         "adapter": "home-assistant",
         "ha_script": "script.door_close",
