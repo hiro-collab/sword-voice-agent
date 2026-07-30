@@ -114,7 +114,7 @@ test('generic HTTP JSON and text probes bind reachable results', async () => {
     assert.equal(requests.length, 1)
     assert.equal(requests[0].options.method, 'GET')
     assert.equal(requests[0].options.redirect, 'error')
-    if (serviceId === 'aituber_kit') assert.equal(new URL(requests[0].url).pathname, '/api/health')
+    if (serviceId === 'aituber_kit') assert.equal(new URL(requests[0].url).pathname, '/api/health/')
     if (serviceId === 'voicevox') assert.deepEqual(requests[0].options.headers, {})
   }
 })

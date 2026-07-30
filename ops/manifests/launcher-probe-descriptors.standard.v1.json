@@ -113,7 +113,7 @@
       "probe_id": "aituber_health",
       "probe_class": "http_json",
       "targets": [
-        { "target_id": "health", "transport": "http", "method": "GET", "endpoint_ref": "aituber_http", "path": "/api/health", "auth_class": "none", "response_class": "bounded_json" }
+        { "target_id": "health", "transport": "http", "method": "GET", "endpoint_ref": "aituber_http", "path": "/api/health/", "auth_class": "none", "response_class": "bounded_json" }
       ],
       "checks": ["http_2xx", "bounded_json", "service_identity", "exact_service_health_v1"],
       "success_semantic_classes": ["reachable"],
