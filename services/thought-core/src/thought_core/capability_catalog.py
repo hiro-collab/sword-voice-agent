@@ -204,6 +204,7 @@ class AgenticCapabilityCatalog:
 
     home: HomeCapabilityCatalog
     capability_view: AgenticCapabilityView
+    enabled: bool = True
 
     @classmethod
     def from_default_path(cls) -> "AgenticCapabilityCatalog":
@@ -236,7 +237,27 @@ class AgenticCapabilityCatalog:
             ),
         )
 
+    def as_unavailable(self) -> "AgenticCapabilityCatalog":
+        return AgenticCapabilityCatalog(
+            home=self.home,
+            capability_view=AgenticCapabilityView(
+                catalog_id=self.capability_view.catalog_id,
+                catalog_version=self.capability_view.catalog_version,
+                capabilities=tuple(
+                    AgenticCapabilityViewEntry(
+                        capability_id=entry.capability_id,
+                        description=entry.description,
+                        available=False,
+                    )
+                    for entry in self.capability_view.capabilities
+                ),
+            ),
+            enabled=False,
+        )
+
     def authorizes(self, capability_id: str, arguments: Mapping[str, object]) -> bool:
+        if not self.enabled:
+            return False
         if capability_id in self.home.actions:
             return self.home.authorizes(capability_id, arguments)
         spec = _PROJECTION_CAPABILITIES.get(capability_id)
@@ -247,6 +268,8 @@ class AgenticCapabilityCatalog:
         capability_id: str,
         arguments: Mapping[str, object],
     ) -> dict[str, Any]:
+        if not self.enabled:
+            raise CapabilityCatalogError("agentic_capability_not_authorized")
         if capability_id in self.home.actions:
             return self.home.action_for(capability_id, arguments)
         spec = _PROJECTION_CAPABILITIES.get(capability_id)

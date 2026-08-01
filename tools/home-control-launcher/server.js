@@ -20,6 +20,9 @@ const {
 const {
   deriveEffectiveConfigIdentity
 } = require('./launcher-private-service-plan')
+const {
+  loadAuthority: loadLauncherAuthority
+} = require('./launcher-supervisor-contract')
 
 const args = process.argv.slice(2)
 
@@ -103,6 +106,7 @@ const STOP_VERIFY_INTERVAL_MS = Number(
   process.env.HOME_CONTROL_LAUNCHER_STOP_VERIFY_INTERVAL_MS || 600
 )
 const PRIMARY_PROFILE_ID = 'thought-core-v0'
+const REDUCED_ROUTE_PROFILE_ID = 'core-rehearsal-text-bubble-v0'
 const ORDINARY_ROUTE_CONTRACT = loadOrdinaryRouteContract()
 const ORDINARY_ROUTE_PUBLIC_SURFACES = ORDINARY_ROUTE_CONTRACT.public_surfaces
 const isTemporaryTestPath = (target) => {
@@ -1815,6 +1819,27 @@ const createFixedStartSummaryCollector = ({
     },
     finalize,
     counters
+  }
+}
+
+const publicReducedRouteContract = () => {
+  const authority = loadLauncherAuthority(PROJECT_ROOT, {
+    profileId: REDUCED_ROUTE_PROFILE_ID
+  })
+  return {
+    profile_id: 'core-rehearsal-text-bubble-v0',
+    profile_revision: 'parent_candidate_6b09f62',
+    config_identity: authority.identities.bindingSha256,
+    route_class: 'held_four_service_text_bubble_candidate',
+    readiness_class: [
+      'aituber_http_reachability_only',
+      'message_receiver_unproved',
+      'browser_store_unproved',
+      'bubble_applied_unproved',
+      'visible_pixels_unproved'
+    ].join('__'),
+    reason_class: 'reduced_route_turn_admission_held',
+    raw_private_publication_flags: false
   }
 }
 
@@ -4270,6 +4295,13 @@ const handleApi = async (request, response, requestUrl) => {
     requestUrl.pathname === ORDINARY_ROUTE_PUBLIC_SURFACES.status.path
   ) {
     sendJson(response, 200, await getStatus(), launcherStatusCorsHeaders())
+    return
+  }
+  if (
+    request.method === 'GET' &&
+    requestUrl.pathname === '/api/reduced-route-contract'
+  ) {
+    sendJson(response, 200, publicReducedRouteContract())
     return
   }
   if (request.method === 'GET' && requestUrl.pathname === '/api/video-input-devices') {

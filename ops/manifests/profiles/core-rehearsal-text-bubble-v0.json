@@ -1,0 +1,74 @@
+{
+  "profile_id": "core-rehearsal-text-bubble-v0",
+  "layer": "ops",
+  "description": "Held reduced-route candidate for one bounded manual text handoff and browser-direct SSE bubble contract.",
+  "status": "candidate_not_selected",
+  "parent_profile": {
+    "profile_id": "core-rehearsal-text-bubble",
+    "source_commit": "6b09f62ea343dea0ac53bc9e8e466980d9971a4a",
+    "source_path": "manifests/profiles/core-rehearsal-text-bubble.json",
+    "source_sha256": "1F8182AD80BA150D696869895D699121397EE5D088A3CCFACE3B5027B7829836"
+  },
+  "services": [
+    "openai_provider_broker",
+    "thought_core_api",
+    "thought_core_watcher",
+    "aituber_kit"
+  ],
+  "service_order": [
+    "openai_provider_broker",
+    "thought_core_api",
+    "thought_core_watcher",
+    "aituber_kit"
+  ],
+  "execution_contract": {
+    "mode": "conversation_only",
+    "tools_adapter": "disabled",
+    "capabilities": "unavailable",
+    "actions": "disabled_action0",
+    "action_submit_max": 0,
+    "home_calls_max": 0,
+    "environment_calls_max": 0,
+    "automatic_retries_max": 0,
+    "mock_fallback": "forbidden"
+  },
+  "watcher_contract": {
+    "turn_admission": "held",
+    "skip_existing": true,
+    "thought_dispatch_max": 0,
+    "result_write_max": 0,
+    "narration_max": 0,
+    "presentation_dispatch_max": 0,
+    "tts": "disabled",
+    "direct_send": "disabled",
+    "local_ack": "disabled",
+    "auto_review": "disabled",
+    "closed_loop_output": "disabled"
+  },
+  "readiness_contract": {
+    "missing_proof": "unknown",
+    "aituber_http": "reachability_only",
+    "message_receiver": "unproved",
+    "browser_store": "unproved",
+    "bubble_applied": "unproved",
+    "visible_pixels": "unproved",
+    "may_claim_standard_ready": false,
+    "may_claim_full_ready": false
+  },
+  "privacy_contract": {
+    "public_profile_fields": ["profile_id", "profile_revision", "config_identity", "route_class", "readiness_class", "reason_class"],
+    "raw_path_public": false,
+    "raw_command_public": false,
+    "private_identifier_public": false,
+    "home_environment_private_inputs": "forbidden"
+  },
+  "proof_contract": {
+    "ceiling": "source_static_candidate_contract",
+    "parent_selected": false,
+    "provider_available": false,
+    "runtime_ready": false,
+    "presentation_observed": false,
+    "cleanup_residue0": false,
+    "core_rehearsal_clear": false
+  }
+}

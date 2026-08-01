@@ -1,0 +1,20 @@
+{
+  "binding_sha256": "77bcd913014a8806649d5ae37e612fdc293001f8ee6b87ef4353bbe110df3812",
+  "binding": {
+    "binding_version": "launcher_service_graph.binding.v2",
+    "text_hash_mode": "utf8_lf_v1",
+    "profile_id": "core-rehearsal-text-bubble-v0",
+    "graph_sha256": "c6dc09ffed2cc4b9f93f9bf20044eee5b957bae887a7719875a58b9c8df547b8",
+    "graph_schema_sha256": "263b5e7093fce33cd94769a910cecf837b522ca03cc75294ce815135d62e3ee0",
+    "operation_schema_sha256": "da58f7d9f4bb80ff10012e5be2fdc74805183dc9e601c4fb60a782ac9746bc95",
+    "worker_schema_sha256": "55357f2e327a54a4bba467a01149be189ea76df7426db6ad62a50c24f7797122",
+    "reducer_vectors_sha256": "4d89395efda733c1240be1a095a7ccb049100b968b9d3d0c72c5f6ecf4a0aefb",
+    "probe_schema_sha256": "7c00d0857fe990af779e4809fa6f3427a10dc7b76c1df07ec4baf361d76c8a13",
+    "probe_document_sha256": "1442ed5f20c963522eb3bdd30f8dada4625c0fc448c396de31fce96d363dcf6c",
+    "service_order": ["openai_provider_broker", "thought_core_api", "thought_core_watcher", "aituber_kit"],
+    "public_readiness_ids": ["aituber_kit", "thought_core_api", "thought_core_watcher"],
+    "required_service_ids": ["aituber_kit", "openai_provider_broker", "thought_core_api", "thought_core_watcher"],
+    "optional_service_ids": [],
+    "external_service_ids": []
+  }
+}

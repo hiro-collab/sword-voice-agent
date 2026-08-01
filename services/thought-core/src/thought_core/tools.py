@@ -67,6 +67,67 @@ class ThoughtTools(Protocol):
 
 
 @dataclass(frozen=True)
+class UnavailableThoughtTools:
+    """Fail-closed no-I/O tools for the reduced conversation-only profile."""
+
+    reason: str = "conversation_only_capabilities_unavailable"
+
+    def environment_observe(self, turn: TurnInput, *, reason: str) -> dict[str, Any]:
+        del turn, reason
+        return {
+            "status": "unavailable",
+            "reason": self.reason,
+            "facts": {"devices": []},
+        }
+
+    def home_preview(self, turn: TurnInput, observation: dict[str, Any]) -> dict[str, Any]:
+        del turn, observation
+        return {"status": "unavailable", "reason": self.reason, "action": {}}
+
+    def home_preview_direct(
+        self,
+        turn: TurnInput,
+        observation: dict[str, Any],
+        action: dict[str, Any],
+    ) -> dict[str, Any]:
+        del turn, observation, action
+        return {"status": "unavailable", "reason": self.reason, "action": {}}
+
+    def home_execute(self, turn: TurnInput, action: dict[str, Any]) -> dict[str, Any]:
+        del turn, action
+        return {
+            "status": "held",
+            "reason": self.reason,
+            "executed": False,
+            "retryable": False,
+        }
+
+    def state_query_feedback(
+        self,
+        turn: TurnInput,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        del turn, payload
+        return {"status": "unavailable", "reason": self.reason}
+
+    def memory_retrieve(self, turn: TurnInput) -> dict[str, Any]:
+        del turn
+        return {"status": "unavailable", "reason": self.reason, "items": []}
+
+    def short_memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
+        del turn, item
+        return {"status": "unavailable", "reason": self.reason, "written": False}
+
+    def memory_write(self, turn: TurnInput, item: dict[str, Any]) -> dict[str, Any]:
+        del turn, item
+        return {"status": "unavailable", "reason": self.reason, "written": False}
+
+    def web_search(self, turn: TurnInput, query: str) -> dict[str, Any]:
+        del turn, query
+        return {"status": "unavailable", "reason": self.reason, "results": []}
+
+
+@dataclass(frozen=True)
 class HomeLightIntent:
     action_id: str
     expected_state: str
@@ -1036,6 +1097,9 @@ class HomeControlToolError(Exception):
 
 
 def build_tools_from_env() -> ThoughtTools:
+    profile_id = _env_first("THOUGHT_CORE_PROFILE_ID").strip().lower()
+    if profile_id == "core-rehearsal-text-bubble-v0":
+        return UnavailableThoughtTools()
     adapter = _env_first("THOUGHT_CORE_TOOLS_ADAPTER").strip().lower()
     if adapter in {"mock", "local_mock", "local-mock"}:
         return MockThoughtTools()

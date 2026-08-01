@@ -576,12 +576,21 @@ class ThoughtLoop:
             input_understanding or build_input_understanding_from_env()
         )
         self.agentic_turn_provider = agentic_turn_provider
+        self.reduced_conversation_only = (
+            os.environ.get("THOUGHT_CORE_PROFILE_ID", "").strip().lower()
+            == "core-rehearsal-text-bubble-v0"
+        )
         self.capability_catalog = capability_catalog
         if self.agentic_turn_provider is not None and self.capability_catalog is None:
             try:
                 self.capability_catalog = AgenticCapabilityCatalog.from_default_path()
             except CapabilityCatalogError:
                 self.capability_catalog = None
+        if self.reduced_conversation_only and isinstance(
+            self.capability_catalog,
+            AgenticCapabilityCatalog,
+        ):
+            self.capability_catalog = self.capability_catalog.as_unavailable()
         self.persona = persona or build_persona_from_env()
         self.conversation_continuity = (
             conversation_continuity or ConversationContinuity()
@@ -709,16 +718,22 @@ class ThoughtLoop:
                 if agentic_handled and agentic_route is None:
                     return events
             elif self.agentic_turn_provider is not None:
-                (
-                    predecision_context,
-                    observation,
-                    memory_context,
-                    continuity_context,
-                ) = self._prepare_agentic_predecision_context(
-                    events,
-                    factory,
-                    turn_input,
-                )
+                if self.reduced_conversation_only:
+                    predecision_context = AgenticPredecisionContext()
+                    observation = MappingProxyType({})
+                    memory_context = {}
+                    continuity_context = {}
+                else:
+                    (
+                        predecision_context,
+                        observation,
+                        memory_context,
+                        continuity_context,
+                    ) = self._prepare_agentic_predecision_context(
+                        events,
+                        factory,
+                        turn_input,
+                    )
                 agentic_handled, agentic_route = self._handle_agentic_turn_if_configured(
                     events,
                     factory,

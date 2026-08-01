@@ -39,6 +39,7 @@ NO_SPEECH_PLACEHOLDER = "音声を認識できませんでした。"
 THOUGHT_CORE_WATCHER_MODULE = "thought_core_watcher"
 THOUGHT_CORE_WATCHER_LABEL = "thought-core watcher"
 LOCAL_ACK_MODES = {"auto", "off"}
+ADMISSION_MODES = {"active", "held"}
 SPEECH_END_CHARS = "。．.!?！？\n"
 SPEECH_SOFT_BREAK_CHARS = "、,， "
 
@@ -184,6 +185,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Post a tiny local AITuber acknowledgement before the thought-core request.",
     )
     parser.add_argument(
+        "--admission-mode",
+        choices=sorted(ADMISSION_MODES),
+        default=default_admission_mode(),
+        help="Admit turns or hold them before Thought and presentation side effects.",
+    )
+    parser.add_argument(
         "--poll-interval-s",
         type=float,
         default=0.5,
@@ -298,6 +305,20 @@ def run_once(
     client: ThoughtCoreClient | None = None,
 ) -> dict[str, Any]:
     result = build_result(args)
+    if getattr(args, "admission_mode", "held") == "held":
+        return {
+            "schema_version": "thought-core-watcher-admission.v0",
+            "admission_class": "held",
+            "reason_class": "reduced_route_turn_admission_held",
+            "owner_class": "thought_core_watcher",
+            "boundary_class": "turn_admission",
+            "thought_dispatch_count": 0,
+            "result_write_count": 0,
+            "narration_count": 0,
+            "presentation_dispatch_count": 0,
+            "retry_count": 0,
+            "raw_private_publication_flags": False,
+        }
     status_store = StatusStore(args.status_dir) if args.status_dir else None
     turn_id = turn_id_from_result(result)
     session_id = session_id_from_result(result)
@@ -494,6 +515,11 @@ def default_closed_loop_feedback_v1() -> bool:
 def default_local_ack_mode() -> str:
     value = os.environ.get("THOUGHT_CORE_LOCAL_ACK_MODE", "auto").strip().lower()
     return value if value in LOCAL_ACK_MODES else "auto"
+
+
+def default_admission_mode() -> str:
+    value = os.environ.get("THOUGHT_CORE_WATCHER_ADMISSION_MODE", "active").strip().lower()
+    return value if value in ADMISSION_MODES else "held"
 
 
 def default_auto_review_pending() -> bool:
@@ -1210,6 +1236,15 @@ def thought_core_tts_chunk_payload(
 
 
 def run_watch(args: argparse.Namespace) -> None:
+    if getattr(args, "admission_mode", "held") == "held":
+        print("[thought-core-watch] reduced route held: dispatch0 / output0")
+        while True:
+            write_watcher_module_status(
+                args,
+                "running",
+                detail="reduced route held / dispatch0 / output0",
+            )
+            time.sleep(max(0.05, args.poll_interval_s))
     handoff_path = resolve_handoff_json_path(args)
     seen = handoff_signature(handoff_path) if args.skip_existing else None
     print(format_watch_start_message(handoff_path, skip_existing=args.skip_existing))

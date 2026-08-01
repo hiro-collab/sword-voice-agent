@@ -1,0 +1,75 @@
+{
+  "schema_version": "launcher_probe_descriptors.v1",
+  "profile_id": "core-rehearsal-text-bubble-v0",
+  "graph_sha256": "c6dc09ffed2cc4b9f93f9bf20044eee5b957bae887a7719875a58b9c8df547b8",
+  "descriptors": [
+    {
+      "service_id": "openai_provider_broker",
+      "probe_id": "provider_broker_health",
+      "probe_class": "http_json",
+      "targets": [
+        { "target_id": "health", "transport": "http", "method": "GET", "endpoint_ref": "provider_broker_http", "path": "/health", "auth_class": "none", "response_class": "bounded_json" }
+      ],
+      "checks": ["http_2xx", "bounded_json", "service_identity"],
+      "success_semantic_classes": ["reachable"],
+      "freshness_source": "probe_observed_at",
+      "freshness_max_age_ms": 15000,
+      "observation_timeout_ms": 10000,
+      "degraded_allowed": false,
+      "no_touch": false,
+      "world_freshness_startup_authoritative": false,
+      "proof_ceiling": "broker_reachability_only"
+    },
+    {
+      "service_id": "thought_core_api",
+      "probe_id": "thought_core_health",
+      "probe_class": "http_json",
+      "targets": [
+        { "target_id": "health", "transport": "http", "method": "GET", "endpoint_ref": "thought_core_http", "path": "/health", "auth_class": "none", "response_class": "bounded_json" }
+      ],
+      "checks": ["http_2xx", "bounded_json", "service_identity"],
+      "success_semantic_classes": ["reachable"],
+      "freshness_source": "probe_observed_at",
+      "freshness_max_age_ms": 15000,
+      "observation_timeout_ms": 10000,
+      "degraded_allowed": false,
+      "no_touch": false,
+      "world_freshness_startup_authoritative": false,
+      "proof_ceiling": "thought_core_reachability_only"
+    },
+    {
+      "service_id": "thought_core_watcher",
+      "probe_id": "thought_core_watcher_status",
+      "probe_class": "module_status",
+      "targets": [
+        { "target_id": "module_status", "transport": "module_status", "method": "NONE", "endpoint_ref": null, "path": null, "auth_class": "not_applicable", "response_class": "bounded_json" }
+      ],
+      "checks": ["worker_owned_identity", "module_status_shape", "module_status_current_operation", "module_status_freshness"],
+      "success_semantic_classes": ["ready"],
+      "freshness_source": "module_status_timestamp",
+      "freshness_max_age_ms": 15000,
+      "observation_timeout_ms": 10000,
+      "degraded_allowed": false,
+      "no_touch": false,
+      "world_freshness_startup_authoritative": false,
+      "proof_ceiling": "watcher_current_operation_liveness_only"
+    },
+    {
+      "service_id": "aituber_kit",
+      "probe_id": "aituber_health",
+      "probe_class": "http_json",
+      "targets": [
+        { "target_id": "health", "transport": "http", "method": "GET", "endpoint_ref": "aituber_http", "path": "/api/health/", "auth_class": "none", "response_class": "bounded_json" }
+      ],
+      "checks": ["http_2xx", "bounded_json", "service_identity", "exact_service_health_v1"],
+      "success_semantic_classes": ["reachable"],
+      "freshness_source": "probe_observed_at",
+      "freshness_max_age_ms": 15000,
+      "observation_timeout_ms": 10000,
+      "degraded_allowed": false,
+      "no_touch": false,
+      "world_freshness_startup_authoritative": false,
+      "proof_ceiling": "aituber_http_reachability_only"
+    }
+  ]
+}

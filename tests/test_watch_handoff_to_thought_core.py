@@ -231,6 +231,49 @@ class CandidateThoughtCoreClient:
 
 
 class WatchHandoffToThoughtCoreTest(TestCase):
+    def test_reduced_route_held_admission_overrides_all_output_switches(self) -> None:
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            write_handoff(root, command="PRIVATE_HELD_WISH", turn_id="turn-held-1")
+            client = FakeThoughtCoreClient()
+            args = build_parser().parse_args(
+                [
+                    "--ai-talk-core-root",
+                    str(root),
+                    "--once",
+                    "--status-dir",
+                    "",
+                    "--admission-mode",
+                    "held",
+                    "--tts-chunk-url",
+                    "http://127.0.0.1:50021/api/tts/chunk",
+                    "--aituber-message-url",
+                    "http://127.0.0.1:3000/api/messages?type=direct_send",
+                    "--local-ack-mode",
+                    "auto",
+                    "--auto-review-pending",
+                    "--closed-loop-feedback-v1",
+                ]
+            )
+            with patch(
+                "sword_voice_agent.apps.watch_handoff_to_thought_core.request.urlopen"
+            ) as outbound:
+                result = run_once(args, client=client)
+
+        self.assertEqual(result["admission_class"], "held")
+        self.assertEqual(result["reason_class"], "reduced_route_turn_admission_held")
+        self.assertEqual(client.turn_payloads, [])
+        outbound.assert_not_called()
+        serialized = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn("PRIVATE_HELD_WISH", serialized)
+        for field in (
+            "response",
+            "events",
+            "narration",
+            "presentation",
+        ):
+            self.assertNotIn(field, result)
+
     def test_shared_vector_accepted_candidate_bypasses_placeholder_when_configured(
         self,
     ) -> None:

@@ -51,6 +51,7 @@ from thought_core.responders import (  # noqa: E402
     _RejectAllRedirects,
 )
 from thought_core.server import _build_default_thought_loop, create_server  # noqa: E402
+from thought_core import tools as thought_tools  # noqa: E402
 from thought_core.tools import HomeControlHttpTools  # noqa: E402
 
 
@@ -152,6 +153,63 @@ class _CountingInputUnderstanding:
 
 
 class AgenticTurnRuntimeProviderTest(TestCase):
+    def test_reduced_route_never_falls_back_to_mock_tools(self) -> None:
+        base = {
+            "THOUGHT_CORE_PROFILE_ID": "core-rehearsal-text-bubble-v0",
+        }
+        cases = {
+            "mode_absent": {},
+            "mode_unknown": {"THOUGHT_CORE_EXECUTION_MODE": "unknown"},
+            "mock_adapter": {
+                "THOUGHT_CORE_EXECUTION_MODE": "conversation_only",
+                "THOUGHT_CORE_TOOLS_ADAPTER": "mock",
+            },
+        }
+        for case, overrides in cases.items():
+            with self.subTest(case=case), patch.dict(
+                os.environ,
+                {**base, **overrides},
+                clear=True,
+            ):
+                tools = thought_tools.build_tools_from_env()
+                self.assertEqual(type(tools).__name__, "UnavailableThoughtTools")
+                self.assertNotIsInstance(tools, thought_tools.MockThoughtTools)
+
+    def test_reduced_route_exposes_no_available_capability(self) -> None:
+        env = {
+            "THOUGHT_CORE_PROFILE_ID": "core-rehearsal-text-bubble-v0",
+            "THOUGHT_CORE_EXECUTION_MODE": "conversation_only",
+            "THOUGHT_CORE_TOOLS_ADAPTER": "disabled",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            loop = _build_default_thought_loop()
+
+        self.assertIsNotNone(loop.capability_catalog)
+        capabilities = loop.capability_catalog.capability_view.capabilities
+        self.assertGreater(len(capabilities), 0)
+        self.assertTrue(all(entry.available is False for entry in capabilities))
+
+    def test_reduced_route_home_wish_is_action0_retry0(self) -> None:
+        env = {
+            "THOUGHT_CORE_PROFILE_ID": "core-rehearsal-text-bubble-v0",
+            "THOUGHT_CORE_EXECUTION_MODE": "conversation_only",
+            "THOUGHT_CORE_TOOLS_ADAPTER": "disabled",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            events = _build_default_thought_loop().run_dicts(
+                self._turn("リビングの電気をつけて。")
+            )
+
+        event_types = [event["type"] for event in events]
+        for forbidden in (
+            "environment.observed",
+            "action.proposed",
+            "action.dispatched",
+            "action.retrying",
+            "action.review_pending",
+        ):
+            self.assertNotIn(forbidden, event_types)
+
     def test_factory_selects_only_explicit_local_openai_compatible_config(self) -> None:
         configs = (
             {

@@ -18,6 +18,14 @@ const MAX_SERVICES = 64
 const MAX_REDUCER_VECTORS = 256
 const MAX_VECTOR_EVENTS = 256
 const MAX_VECTOR_COVERAGE = 64
+const STANDARD_PROFILE_ID = 'thought-core-v0'
+const REDUCED_PROFILE_ID = 'core-rehearsal-text-bubble-v0'
+const REDUCED_PARENT_PROFILE = Object.freeze({
+  profile_id: 'core-rehearsal-text-bubble',
+  source_commit: '6b09f62ea343dea0ac53bc9e8e466980d9971a4a',
+  source_path: 'manifests/profiles/core-rehearsal-text-bubble.json',
+  source_sha256: '1F8182AD80BA150D696869895D699121397EE5D088A3CCFACE3B5027B7829836'
+})
 
 class LauncherContractError extends Error {
   constructor(code, cleanupCode = 'none') {
@@ -419,6 +427,127 @@ const validateBinding = (document, identities, graph) => {
   return document
 }
 
+const validateReducedProfile = (profile, graph) => {
+  exactKeys(profile, [
+    'profile_id', 'layer', 'description', 'status', 'parent_profile', 'services',
+    'service_order', 'execution_contract', 'watcher_contract', 'readiness_contract',
+    'privacy_contract', 'proof_contract'
+  ], 'profile_shape_invalid')
+  if (profile.profile_id !== REDUCED_PROFILE_ID || graph.profile_id !== REDUCED_PROFILE_ID ||
+      profile.layer !== 'ops' || profile.status !== 'candidate_not_selected' ||
+      typeof profile.description !== 'string' || profile.description.length === 0 || profile.description.length > 512) {
+    fail('profile_identity_invalid')
+  }
+  exactKeys(profile.parent_profile, Object.keys(REDUCED_PARENT_PROFILE), 'profile_parent_source_invalid')
+  for (const [field, expected] of Object.entries(REDUCED_PARENT_PROFILE)) {
+    if (profile.parent_profile[field] !== expected) fail('profile_parent_source_invalid')
+  }
+  const graphOrder = graph.services.map((service) => service.service_id)
+  const dependencyOrder = topologicalOrder(graph.services)
+  if (!Array.isArray(profile.services) || !Array.isArray(profile.service_order) ||
+      new Set(profile.services).size !== profile.services.length ||
+      new Set(profile.service_order).size !== profile.service_order.length ||
+      JSON.stringify(profile.services) !== JSON.stringify(graphOrder) ||
+      JSON.stringify(profile.service_order) !== JSON.stringify(dependencyOrder)) {
+    fail('profile_services_invalid')
+  }
+
+  const execution = profile.execution_contract
+  exactKeys(execution, [
+    'mode', 'tools_adapter', 'capabilities', 'actions', 'action_submit_max',
+    'home_calls_max', 'environment_calls_max', 'automatic_retries_max', 'mock_fallback'
+  ], 'profile_execution_invalid')
+  if (execution.mode !== 'conversation_only' || execution.tools_adapter !== 'disabled' ||
+      execution.capabilities !== 'unavailable' || execution.actions !== 'disabled_action0' ||
+      execution.mock_fallback !== 'forbidden') fail('profile_execution_invalid')
+  for (const field of ['action_submit_max', 'home_calls_max', 'environment_calls_max', 'automatic_retries_max']) {
+    if (execution[field] !== 0) fail('profile_execution_invalid')
+  }
+
+  const watcher = profile.watcher_contract
+  exactKeys(watcher, [
+    'turn_admission', 'skip_existing', 'thought_dispatch_max', 'result_write_max',
+    'narration_max', 'presentation_dispatch_max', 'tts', 'direct_send', 'local_ack',
+    'auto_review', 'closed_loop_output'
+  ], 'profile_watcher_invalid')
+  if (watcher.turn_admission !== 'held' || watcher.skip_existing !== true ||
+      watcher.tts !== 'disabled' || watcher.direct_send !== 'disabled' ||
+      watcher.local_ack !== 'disabled' || watcher.auto_review !== 'disabled' ||
+      watcher.closed_loop_output !== 'disabled') fail('profile_watcher_invalid')
+  for (const field of ['thought_dispatch_max', 'result_write_max', 'narration_max', 'presentation_dispatch_max']) {
+    if (watcher[field] !== 0) fail('profile_watcher_invalid')
+  }
+
+  const readiness = profile.readiness_contract
+  exactKeys(readiness, [
+    'missing_proof', 'aituber_http', 'message_receiver', 'browser_store',
+    'bubble_applied', 'visible_pixels', 'may_claim_standard_ready', 'may_claim_full_ready'
+  ], 'profile_readiness_invalid')
+  if (readiness.missing_proof !== 'unknown' || readiness.aituber_http !== 'reachability_only' ||
+      readiness.message_receiver !== 'unproved' || readiness.browser_store !== 'unproved' ||
+      readiness.bubble_applied !== 'unproved' || readiness.visible_pixels !== 'unproved' ||
+      readiness.may_claim_standard_ready !== false || readiness.may_claim_full_ready !== false) {
+    fail('profile_readiness_invalid')
+  }
+
+  const privacy = profile.privacy_contract
+  exactKeys(privacy, [
+    'public_profile_fields', 'raw_path_public', 'raw_command_public',
+    'private_identifier_public', 'home_environment_private_inputs'
+  ], 'profile_privacy_invalid')
+  const publicFields = [
+    'profile_id', 'profile_revision', 'config_identity', 'route_class',
+    'readiness_class', 'reason_class'
+  ]
+  if (JSON.stringify(privacy.public_profile_fields) !== JSON.stringify(publicFields) ||
+      privacy.raw_path_public !== false || privacy.raw_command_public !== false ||
+      privacy.private_identifier_public !== false ||
+      privacy.home_environment_private_inputs !== 'forbidden') fail('profile_privacy_invalid')
+
+  const proof = profile.proof_contract
+  exactKeys(proof, [
+    'ceiling', 'parent_selected', 'provider_available', 'runtime_ready',
+    'presentation_observed', 'cleanup_residue0', 'core_rehearsal_clear'
+  ], 'profile_proof_invalid')
+  if (proof.ceiling !== 'source_static_candidate_contract' ||
+      ['parent_selected', 'provider_available', 'runtime_ready', 'presentation_observed', 'cleanup_residue0', 'core_rehearsal_clear']
+        .some((field) => proof[field] !== false)) fail('profile_proof_invalid')
+  return profile
+}
+
+const validateReducedProbeCrosswalk = (probeDocument, graph, graphSha256) => {
+  exactKeys(probeDocument, ['schema_version', 'profile_id', 'graph_sha256', 'descriptors'], 'probe_document_shape_invalid')
+  if (probeDocument.schema_version !== 'launcher_probe_descriptors.v1' ||
+      probeDocument.profile_id !== graph.profile_id || probeDocument.graph_sha256 !== graphSha256 ||
+      !Array.isArray(probeDocument.descriptors) || probeDocument.descriptors.length !== graph.services.length) {
+    fail('probe_document_identity_invalid')
+  }
+  const serviceIds = probeDocument.descriptors.map((descriptor) => descriptor?.service_id)
+  if (new Set(serviceIds).size !== serviceIds.length ||
+      JSON.stringify(serviceIds) !== JSON.stringify(graph.services.map((service) => service.service_id))) {
+    fail('probe_document_services_invalid')
+  }
+  for (const service of graph.services) {
+    const descriptor = probeDocument.descriptors.find((candidate) => candidate.service_id === service.service_id)
+    if (!isPlainObject(descriptor) || descriptor.probe_id !== service.readiness.probe_id) {
+      fail('probe_document_services_invalid')
+    }
+  }
+  const aituber = probeDocument.descriptors.find((descriptor) => descriptor.service_id === 'aituber_kit')
+  if (!aituber || aituber.proof_ceiling !== 'aituber_http_reachability_only') fail('probe_document_proof_invalid')
+  return probeDocument
+}
+
+const validateReducedInventory = (repositoryRoot, graph) => {
+  for (const service of graph.services) {
+    const manifest = readContract(
+      path.join(repositoryRoot, 'ops', 'manifests', 'services', `${service.service_id}.json`),
+      'profile_service_manifest_missing'
+    ).value
+    if (!isPlainObject(manifest) || manifest.service_id !== service.service_id) fail('profile_service_manifest_invalid')
+  }
+}
+
 const validateWorkerMessage = (message, authority) => {
   assertAuthority(authority)
   const serviceIdPattern = authority.serviceIdPattern
@@ -621,16 +750,22 @@ const validateLegacyDrift = (repositoryRoot, graph) => {
   if (JSON.stringify([...new Set(stackIds)].sort()) !== JSON.stringify(expectedStack)) fail('drift_stack_service_list')
 }
 
-const loadAuthority = (repositoryRoot) => {
+const loadAuthority = (repositoryRoot, { profileId = STANDARD_PROFILE_ID } = {}) => {
   if (typeof repositoryRoot !== 'string' || !path.isAbsolute(repositoryRoot)) fail('authority_root_invalid')
+  if (![STANDARD_PROFILE_ID, REDUCED_PROFILE_ID].includes(profileId)) fail('authority_profile_invalid')
+  const reduced = profileId === REDUCED_PROFILE_ID
+  const suffix = reduced ? 'core-rehearsal-text-bubble' : 'standard'
   const graphSchemaSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-service-graph.v1.schema.json'), 'graph_schema_read_failed')
   const operationSchemaSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-operation.v2.schema.json'), 'operation_schema_read_failed')
   const workerSchemaSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-worker.v2.schema.json'), 'worker_schema_read_failed')
   const vectorsSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-reducer-vectors.v2.json'), 'reducer_vectors_read_failed')
   const probeSchemaSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'launcher-probe-descriptor.v1.schema.json'), 'probe_schema_read_failed')
-  const probeDocumentSource = readContract(path.join(repositoryRoot, 'ops', 'manifests', 'launcher-probe-descriptors.standard.v1.json'), 'probe_document_read_failed')
-  const graphSource = readContract(path.join(repositoryRoot, 'ops', 'manifests', 'launcher-service-graph.standard.v1.json'), 'graph_read_failed')
-  const bindingSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'generated', 'launcher-service-graph.standard.v2.binding.json'), 'binding_read_failed')
+  const probeDocumentSource = readContract(path.join(repositoryRoot, 'ops', 'manifests', `launcher-probe-descriptors.${suffix}.v1.json`), 'probe_document_read_failed')
+  const graphSource = readContract(path.join(repositoryRoot, 'ops', 'manifests', `launcher-service-graph.${suffix}.v1.json`), 'graph_read_failed')
+  const bindingSource = readContract(path.join(repositoryRoot, 'contracts', 'launcher', 'generated', `launcher-service-graph.${suffix}.v2.binding.json`), 'binding_read_failed')
+  const profileSource = reduced
+    ? readContract(path.join(repositoryRoot, 'ops', 'manifests', 'profiles', `${REDUCED_PROFILE_ID}.json`), 'profile_document_read_failed')
+    : null
 
   validateStrictSchemaEnvelope(graphSchemaSource.value, 'launcher-service-graph.v1.schema.json', 'graph_schema_invalid')
   validateStrictSchemaEnvelope(operationSchemaSource.value, 'launcher-operation.v2.schema.json', 'operation_schema_invalid')
@@ -648,7 +783,14 @@ const loadAuthority = (repositoryRoot) => {
     probeDocumentSha256: probeDocumentSource.sha256
   }
   const bindingDocument = validateBinding(bindingSource.value, identities, graph)
-  validateLegacyDrift(repositoryRoot, graph)
+  let profileDocument = null
+  if (reduced) {
+    profileDocument = validateReducedProfile(profileSource.value, graph)
+    validateReducedProbeCrosswalk(probeDocumentSource.value, graph, graphSource.sha256)
+    validateReducedInventory(repositoryRoot, graph)
+  } else {
+    validateLegacyDrift(repositoryRoot, graph)
+  }
   const authority = {
     [AUTHORITY_TOKEN]: true,
     serviceIdPattern,
@@ -660,6 +802,7 @@ const loadAuthority = (repositoryRoot) => {
     probeSchema: copyJson(probeSchemaSource.value),
     probeDocument: copyJson(probeDocumentSource.value),
     bindingDocument: copyJson(bindingDocument),
+    ...(profileDocument === null ? {} : { profileDocument: copyJson(profileDocument) }),
     identities: { ...identities, bindingSha256: bindingDocument.binding_sha256 }
   }
   return deepFreeze(authority)

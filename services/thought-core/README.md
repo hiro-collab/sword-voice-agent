@@ -491,3 +491,20 @@ turn.completed
 
 実行結果を検証できない場合、retry は `home.execute` ではなく `ThoughtLoop` が行います。
 retry しても確認できなければ、`feedback.requested` を出し、`needs_feedback` として完了します。
+
+## Reduced conversation-only candidate
+
+When `THOUGHT_CORE_PROFILE_ID=core-rehearsal-text-bubble-v0`, Thought treats the
+route as a held, non-selected candidate. `conversation_only` uses disabled
+tools, exposes every catalog capability as unavailable, and performs Home,
+Environment, action submission, and automatic retry zero times. Missing or
+unknown execution mode and a requested Mock adapter fail closed to the same
+unavailable tools; they do not become a compatibility fallback.
+
+The paired watcher is compiled with `--admission-mode held`, so this candidate
+does not dispatch a Thought turn, write a turn result, narrate, or present. TTS,
+AITuber direct-send, local acknowledgement, auto-review, and closed-loop output
+are forced off after environment hydration. This source/static contract proves
+neither provider availability nor a user-visible bubble, semantic Ready,
+Stop/residue0, Parent selection, `CORE_REHEARSAL_CLEAR`, or the standard/full
+route.

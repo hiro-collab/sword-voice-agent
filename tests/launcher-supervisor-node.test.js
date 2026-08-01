@@ -12,6 +12,8 @@ const rawReducer = require('../tools/home-control-launcher/launcher-supervisor-r
 const rawStore = require('../tools/home-control-launcher/launcher-operation-store')
 
 const authority = contract.loadAuthority(ROOT)
+const REDUCED_PROFILE_ID = 'core-rehearsal-text-bubble-v0'
+const REDUCED_PARENT_PROFILE_SHA256 = '1F8182AD80BA150D696869895D699121397EE5D088A3CCFACE3B5027B7829836'
 const CONFIG_IDENTITY = Object.freeze({
   profile_id: authority.graph.profile_id,
   effective_config_sha256: 'e'.repeat(64),
@@ -128,6 +130,36 @@ const withRuntimeRoot = (action) => {
   fs.writeFileSync(path.join(runtimeRoot, 'parent-sentinel.txt'), 'parent-unchanged', { mode: 0o600 })
   try { return action(runtimeRoot) } finally { fs.rmSync(runtimeRoot, { recursive: true, force: true }) }
 }
+
+const withReducedAuthorityFixture = (action) => withRuntimeRoot((runtimeRoot) => {
+  const paths = [
+    'contracts/launcher/launcher-service-graph.v1.schema.json',
+    'contracts/launcher/launcher-operation.v2.schema.json',
+    'contracts/launcher/launcher-worker.v2.schema.json',
+    'contracts/launcher/launcher-reducer-vectors.v2.json',
+    'contracts/launcher/launcher-probe-descriptor.v1.schema.json',
+    'contracts/launcher/generated/launcher-service-graph.standard.v2.binding.json',
+    'contracts/launcher/generated/launcher-service-graph.core-rehearsal-text-bubble.v2.binding.json',
+    'ops/manifests/launcher-service-graph.standard.v1.json',
+    'ops/manifests/launcher-probe-descriptors.standard.v1.json',
+    'ops/manifests/launcher-service-graph.core-rehearsal-text-bubble.v1.json',
+    'ops/manifests/launcher-probe-descriptors.core-rehearsal-text-bubble.v1.json',
+    'ops/manifests/profiles/core-rehearsal-text-bubble-v0.json',
+    'ops/manifests/profiles/thought-core-v0.json',
+    'contracts/turn/ordinary-standard-route.v1.json',
+    'tools/home-control-launcher/server.js',
+    'ops/scripts/home-control-stack/start-home-control-stack.ps1',
+    ...fs.readdirSync(path.join(ROOT, 'ops/manifests/services'))
+      .filter((name) => name.endsWith('.json'))
+      .map((name) => `ops/manifests/services/${name}`)
+  ]
+  for (const relative of paths) {
+    const target = path.join(runtimeRoot, relative)
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.copyFileSync(path.join(ROOT, relative), target)
+  }
+  return action(runtimeRoot)
+})
 
 test('operation identity is immutable, persisted before mutation, and rejects drift', () => withRuntimeRoot((runtimeRoot) => {
   expectCode(
@@ -311,6 +343,107 @@ test('authority is canonical, hash-bound, drift-checked, and LF-stable', () => {
   assert.equal(contract.canonicalLfSha256(sample), contract.canonicalLfSha256(sample.replaceAll('\r\n', '\n')))
   const rendered = contract.renderBindingDocument({ graph: authority.graph, identities: authority.identities })
   assert.deepEqual(JSON.parse(rendered), authority.bindingDocument)
+})
+
+test('reduced authority binds the exact Parent seed to one ordered four-service graph', () => {
+  const expectedOrder = [
+    'openai_provider_broker',
+    'thought_core_api',
+    'thought_core_watcher',
+    'aituber_kit'
+  ]
+  const graphSource = fs.readFileSync(
+    path.join(ROOT, 'ops/manifests/launcher-service-graph.core-rehearsal-text-bubble.v1.json'),
+    'utf8'
+  )
+  const graph = contract.validateGraph(
+    JSON.parse(graphSource),
+    contract.serviceIdPatternFromOperationSchema(JSON.parse(fs.readFileSync(
+      path.join(ROOT, 'contracts/launcher/launcher-operation.v2.schema.json'),
+      'utf8'
+    )))
+  )
+  const probeSource = fs.readFileSync(
+    path.join(ROOT, 'ops/manifests/launcher-probe-descriptors.core-rehearsal-text-bubble.v1.json'),
+    'utf8'
+  )
+  const bindingDocument = JSON.parse(fs.readFileSync(
+    path.join(ROOT, 'contracts/launcher/generated/launcher-service-graph.core-rehearsal-text-bubble.v2.binding.json'),
+    'utf8'
+  ))
+  assert.equal(graph.profile_id, REDUCED_PROFILE_ID)
+  assert.deepEqual(contract.topologicalOrder(graph.services), expectedOrder)
+  assert.equal(bindingDocument.binding.profile_id, REDUCED_PROFILE_ID)
+  assert.equal(bindingDocument.binding.graph_sha256, contract.canonicalLfSha256(graphSource))
+  assert.equal(bindingDocument.binding.probe_document_sha256, contract.canonicalLfSha256(probeSource))
+  assert.equal(bindingDocument.binding_sha256, contract.canonicalJsonSha256(bindingDocument.binding))
+
+  const reduced = contract.loadAuthority(ROOT, { profileId: REDUCED_PROFILE_ID })
+  assert.equal(reduced.graph.profile_id, REDUCED_PROFILE_ID)
+  assert.deepEqual(contract.topologicalOrder(reduced.graph.services), expectedOrder)
+  assert.deepEqual(reduced.bindingDocument.binding.service_order, expectedOrder)
+  assert.deepEqual(reduced.graph.services.map((service) => service.service_id), expectedOrder)
+  assert.deepEqual(reduced.probeDocument.descriptors.map((descriptor) => descriptor.service_id), expectedOrder)
+  assert.deepEqual(
+    reduced.graph.services.map((service) => service.dependencies),
+    [[], ['openai_provider_broker'], ['thought_core_api'], ['thought_core_watcher']]
+  )
+  assert.ok(reduced.graph.services.every((service) => (
+    service.requirement === 'required' &&
+    service.ownership === 'owned' &&
+    service.start.adapter_id === 'job_worker_service' &&
+    service.stop.adapter_id === 'job_worker_job_close'
+  )))
+  assert.equal(reduced.profileDocument.parent_profile.source_sha256, REDUCED_PARENT_PROFILE_SHA256)
+  assert.equal(reduced.profileDocument.execution_contract.actions, 'disabled_action0')
+  assert.equal(reduced.profileDocument.watcher_contract.turn_admission, 'held')
+  assert.equal(
+    reduced.probeDocument.descriptors.find((descriptor) => descriptor.service_id === 'aituber_kit').proof_ceiling,
+    'aituber_http_reachability_only'
+  )
+})
+
+test('reduced authority fails closed on duplicate membership and source or binding hash drift', () => {
+  const graph = JSON.parse(fs.readFileSync(
+    path.join(ROOT, 'ops/manifests/launcher-service-graph.core-rehearsal-text-bubble.v1.json'),
+    'utf8'
+  ))
+  graph.services.push(structuredClone(graph.services[0]))
+  expectCode(() => contract.validateGraph(graph, authority.serviceIdPattern), 'graph_service_duplicate')
+
+  withReducedAuthorityFixture((runtimeRoot) => {
+    const profilePath = path.join(runtimeRoot, 'ops/manifests/profiles/core-rehearsal-text-bubble-v0.json')
+    const originalProfile = fs.readFileSync(profilePath, 'utf8')
+    const duplicateProfile = JSON.parse(originalProfile)
+    duplicateProfile.services[3] = duplicateProfile.services[0]
+    fs.writeFileSync(profilePath, `${JSON.stringify(duplicateProfile)}\n`, 'utf8')
+    expectCode(
+      () => contract.loadAuthority(runtimeRoot, { profileId: REDUCED_PROFILE_ID }),
+      'profile_services_invalid'
+    )
+
+    const parentDrift = JSON.parse(originalProfile)
+    parentDrift.parent_profile.source_sha256 = 'f'.repeat(64)
+    fs.writeFileSync(profilePath, `${JSON.stringify(parentDrift)}\n`, 'utf8')
+    expectCode(
+      () => contract.loadAuthority(runtimeRoot, { profileId: REDUCED_PROFILE_ID }),
+      'profile_parent_source_invalid'
+    )
+    fs.writeFileSync(profilePath, originalProfile, 'utf8')
+
+    const bindingPath = path.join(
+      runtimeRoot,
+      'contracts/launcher/generated/launcher-service-graph.core-rehearsal-text-bubble.v2.binding.json'
+    )
+    const driftedBinding = JSON.parse(fs.readFileSync(bindingPath, 'utf8'))
+    driftedBinding.binding.graph_sha256 = 'f'.repeat(64)
+    driftedBinding.binding_sha256 = contract.canonicalJsonSha256(driftedBinding.binding)
+    fs.writeFileSync(bindingPath, `${JSON.stringify(driftedBinding)}\n`, 'utf8')
+    expectCode(
+      () => contract.loadAuthority(runtimeRoot, { profileId: REDUCED_PROFILE_ID }),
+      'binding_source_drift'
+    )
+  })
 })
 
 test('operation schema is the single service-id and revision authority', () => {

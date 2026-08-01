@@ -2510,3 +2510,116 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
     fs.rmSync(workspace, { recursive: true, force: true })
   }
 })
+
+test('reduced private compiler owns only the held four-service route and strips Home and Environment inputs', () => {
+  const reducedProfileId = 'core-rehearsal-text-bubble-v0'
+  const reducedAuthority = loadAuthority(ROOT, { profileId: reducedProfileId })
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-reduced-plan-'))
+  const executableRoot = path.join(workspace, 'bin')
+  const makeDirectory = (relative) => fs.mkdirSync(path.join(workspace, relative), { recursive: true })
+  const makeFile = (relative, content = '') => {
+    const target = path.join(workspace, relative)
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, content, 'utf8')
+    return target
+  }
+  const verifyTestWorkerExecutable = ({ filePath }) => Object.freeze({
+    worker_file_path: path.resolve(filePath),
+    worker_executable_class: PLAN_IDENTITY.worker_executable_class,
+    worker_executable_sha256: PLAN_IDENTITY.worker_executable_sha256
+  })
+  try {
+    makeDirectory('organs/expression/aituber-kit')
+    const nextEntrypoint = makeFile('organs/expression/aituber-kit/node_modules/next/dist/bin/next')
+    fs.mkdirSync(executableRoot, { recursive: true })
+    const executables = Object.fromEntries(['uv', 'node', 'pwsh'].map((name) => [
+      name,
+      makeFile(`bin/${name}.exe`)
+    ]))
+    const options = {
+      OpenAIBrokerPort: 18786,
+      ThoughtCoreHost: '127.0.0.1',
+      ThoughtCorePort: 18787,
+      AituberHost: '127.0.0.1',
+      AituberPort: 3000,
+      EnableThoughtCore: true,
+      EnableThoughtCoreWatch: true,
+      SkipAituber: false
+    }
+    const configIdentity = deriveEffectiveConfigIdentity({
+      profileId: reducedProfileId,
+      options,
+      authority: reducedAuthority
+    })
+    const compiled = compilePrivateServicePlan({
+      repositoryRoot: ROOT,
+      workspaceRoot: workspace,
+      privateRuntimeRoot: path.join(workspace, 'state'),
+      profileId: reducedProfileId,
+      options,
+      configIdentity,
+      authority: reducedAuthority,
+      processEnvironment: {
+        PATH: executableRoot,
+        SYSTEMROOT: 'C:\\Windows',
+        TEMP: workspace,
+        TMP: workspace,
+        HOME_ASSISTANT_TOKEN: 'PRIVATE_HOME_SENTINEL',
+        HOME_CONTROL_API_TOKEN: 'PRIVATE_HOME_CONTROL_SENTINEL',
+        ENVIRONMENT_API_TOKEN: 'PRIVATE_ENVIRONMENT_SENTINEL',
+        HOME_CONTROL_BRIDGE_URL: 'http://127.0.0.1:8787/private-home',
+        ENVIRONMENT_STATE_URL: 'http://127.0.0.1:8790/private-environment'
+      },
+      resolveExecutable: (name) => executables[name],
+      verifyWorkerExecutable: verifyTestWorkerExecutable,
+      nonceFactory: () => '00112233445566778899aabbccddeeff'
+    })
+
+    assert.deepEqual(compiled.document.services.map((plan) => plan.service_id), [
+      'openai_provider_broker',
+      'thought_core_api',
+      'thought_core_watcher',
+      'aituber_kit'
+    ])
+    assert.deepEqual(compiled.included_service_ids, [
+      'aituber_kit',
+      'openai_provider_broker',
+      'thought_core_api',
+      'thought_core_watcher'
+    ])
+    const serialized = serializePrivateServicePlan(compiled.document)
+    for (const forbidden of [
+      'PRIVATE_HOME_SENTINEL',
+      'PRIVATE_HOME_CONTROL_SENTINEL',
+      'PRIVATE_ENVIRONMENT_SENTINEL',
+      'HOME_CONTROL_BRIDGE_URL',
+      'HOME_ASSISTANT_BRIDGE_URL',
+      'HOME_CONTROL_API_TOKEN',
+      'ENVIRONMENT_STATE_URL',
+      'ENVIRONMENT_API_TOKEN',
+      'HOME_CONTROL_CONFIG'
+    ]) assert.equal(serialized.includes(forbidden), false)
+
+    const thought = compiled.document.services.find((plan) => plan.service_id === 'thought_core_api')
+    assert.equal(thought.environment.THOUGHT_CORE_EXECUTION_MODE, 'conversation_only')
+    assert.equal(thought.environment.THOUGHT_CORE_TOOLS_ADAPTER, 'disabled')
+    assert.equal(thought.environment.THOUGHT_CORE_PROFILE_ID, reducedProfileId)
+    const watcher = compiled.document.services.find((plan) => plan.service_id === 'thought_core_watcher')
+    assert.ok(watcher.arguments.includes('-AdmissionMode'))
+    assert.ok(watcher.arguments.includes('held'))
+    assert.ok(watcher.arguments.includes('-ClosedLoopFeedbackV1Mode'))
+    assert.ok(watcher.arguments.includes('disabled'))
+    assert.ok(watcher.arguments.includes('-LocalAckMode'))
+    assert.ok(watcher.arguments.includes('off'))
+    assert.equal(watcher.arguments.includes('-AituberMessageUrl'), false)
+    assert.equal(watcher.arguments.includes('-TtsChunkUrl'), false)
+    const aituber = compiled.document.services.find((plan) => plan.service_id === 'aituber_kit')
+    assert.equal(aituber.file_path, executables.node)
+    assert.equal(aituber.arguments[0], nextEntrypoint)
+    assert.equal(aituber.environment.NEXT_PUBLIC_THOUGHT_CORE_BASE_URL, 'http://127.0.0.1:18787')
+    assert.equal(Object.hasOwn(aituber.environment, 'NEXT_PUBLIC_ENVIRONMENT_INDICATORS_URL'), false)
+    assert.equal(Object.hasOwn(aituber.environment, 'NEXT_PUBLIC_REFLEX_GESTURE_WS_URL'), false)
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true })
+  }
+})

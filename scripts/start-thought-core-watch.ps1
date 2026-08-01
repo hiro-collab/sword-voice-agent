@@ -17,6 +17,8 @@ param(
     [string]$ClosedLoopFeedbackV1Mode = "disabled",
     [ValidateSet("", "auto", "off")]
     [string]$LocalAckMode = "",
+    [ValidateSet("active", "held")]
+    [string]$AdmissionMode = "active",
     [switch]$NoSkipExisting,
     [switch]$SendNoSpeech,
     [switch]$PrintEvents,
@@ -42,6 +44,24 @@ function Set-ClosedLoopFeedbackV1ModeEnvironment {
     }
 }
 
+function Set-ReducedRouteHeldEnvironment {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("active", "held")]
+        [string]$Mode
+    )
+
+    if ($Mode -cne "held") {
+        return
+    }
+    $env:TTS_HTTP_CHUNK_URL = ""
+    $env:AITUBER_MESSAGE_URL = ""
+    $env:THOUGHT_CORE_LOCAL_ACK_MODE = "off"
+    $env:THOUGHT_CORE_AUTO_REVIEW_PENDING = "0"
+    $env:THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = ""
+    $env:THOUGHT_CORE_WATCHER_ADMISSION_MODE = "held"
+}
+
 $repoRoot = Get-SwordRepoRoot
 $workspaceRoot = Get-SwordWorkspaceRoot
 $resolvedEnvPath = Resolve-SwordPath -Path $EnvPath
@@ -52,17 +72,20 @@ else {
     Write-Warning "env file not found, continuing with process environment: $resolvedEnvPath"
 }
 Set-ClosedLoopFeedbackV1ModeEnvironment -Mode $ClosedLoopFeedbackV1Mode
+Set-ReducedRouteHeldEnvironment -Mode $AdmissionMode
 Set-SwordPythonPath
 
-if ([string]::IsNullOrWhiteSpace($AiTalkCoreRoot)) {
-    $AiTalkCoreRoot = [Environment]::GetEnvironmentVariable("AI_TALK_CORE_ROOT", "Process")
-}
-if ([string]::IsNullOrWhiteSpace($AiTalkCoreRoot)) {
-    $AiTalkCoreRoot = Join-Path $workspaceRoot "organs\speech-input\ai-talk-core"
-}
-$AiTalkCoreRoot = Resolve-SwordPath -Path $AiTalkCoreRoot -BasePath $repoRoot
-if (-not (Test-Path -LiteralPath $AiTalkCoreRoot -PathType Container)) {
-    throw "ai-talk-core root not found: $AiTalkCoreRoot"
+if ($AdmissionMode -cne "held") {
+    if ([string]::IsNullOrWhiteSpace($AiTalkCoreRoot)) {
+        $AiTalkCoreRoot = [Environment]::GetEnvironmentVariable("AI_TALK_CORE_ROOT", "Process")
+    }
+    if ([string]::IsNullOrWhiteSpace($AiTalkCoreRoot)) {
+        $AiTalkCoreRoot = Join-Path $workspaceRoot "organs\speech-input\ai-talk-core"
+    }
+    $AiTalkCoreRoot = Resolve-SwordPath -Path $AiTalkCoreRoot -BasePath $repoRoot
+    if (-not (Test-Path -LiteralPath $AiTalkCoreRoot -PathType Container)) {
+        throw "ai-talk-core root not found: $AiTalkCoreRoot"
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($ThoughtCoreBaseUrl)) {
@@ -100,6 +123,16 @@ if ([string]::IsNullOrWhiteSpace($LocalAckMode)) {
 if ([string]::IsNullOrWhiteSpace($LocalAckMode)) {
     $LocalAckMode = "auto"
 }
+if ($AdmissionMode -ceq "held") {
+    Set-ReducedRouteHeldEnvironment -Mode $AdmissionMode
+    $TtsChunkUrl = ""
+    $TtsHttpTimeout = ""
+    $AituberMessageUrl = ""
+    $AituberHttpTimeout = ""
+    $AituberSpeechMaxChars = 0
+    $LocalAckMode = "off"
+    $SendNoSpeech = $false
+}
 
 $command = @(
     "uv",
@@ -107,8 +140,6 @@ $command = @(
     "python",
     "-m",
     "sword_voice_agent.apps.watch_handoff_to_thought_core",
-    "--ai-talk-core-root",
-    $AiTalkCoreRoot,
     "--source",
     $Source,
     "--field",
@@ -118,6 +149,14 @@ $command = @(
     "--status-dir",
     (Resolve-SwordPath -Path $StatusDir)
 )
+
+$command += @("--admission-mode", $AdmissionMode)
+if ($AdmissionMode -cne "held") {
+    $command += @("--ai-talk-core-root", $AiTalkCoreRoot)
+}
+else {
+    $command += "--no-auto-review-pending"
+}
 
 if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
     $command += @("--session-id", $SessionId)

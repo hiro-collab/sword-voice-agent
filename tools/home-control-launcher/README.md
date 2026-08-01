@@ -345,3 +345,25 @@ Or from this repository:
 
 Use `-ReuseExisting` when you only want to open or reuse the already-running
 launcher instead of moving it into the current terminal.
+
+## Reduced text/bubble candidate (held)
+
+`core-rehearsal-text-bubble-v0` is a non-selected source/static candidate. Its
+validated graph has exactly four owned services, in order:
+`openai_provider_broker -> thought_core_api -> thought_core_watcher ->
+aituber_kit`. The Launcher binds the exact Parent profile source hash to that
+graph, probe document, generated binding, private plan, worker adapter, and
+Stop class; drift is rejected before the plan is accepted.
+
+The current candidate deliberately holds watcher turn admission. Thought uses
+`conversation_only` with disabled tools, every capability unavailable, action
+submission/Home/Environment calls/retries all zero, and no Mock fallback. The
+compiled watcher plan forces TTS, direct-send, local acknowledgement,
+auto-review, and closed-loop output off after environment hydration. Its public
+contract is `GET /api/reduced-route-contract`, which returns only opaque
+profile/config identity and fixed route/readiness/reason classes.
+
+AITuber HTTP reachability is not proof of message receiver, browser store,
+bubble application, or visible pixels. This candidate is not Parent-selected
+and proves no provider availability, turn, browser input, semantic Ready,
+presentation, Stop/residue0, `CORE_REHEARSAL_CLEAR`, standard/full route, or U1.

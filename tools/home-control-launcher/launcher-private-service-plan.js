@@ -15,6 +15,7 @@ const EVENT_JOURNAL_DIRECTORY = 'event-journal'
 const MAX_PLAN_BYTES = 256 * 1024
 const MAX_WORKER_EXECUTABLE_BYTES = 64 * 1024 * 1024
 const PROFILE_ID = 'thought-core-v0'
+const REDUCED_PROFILE_ID = 'core-rehearsal-text-bubble-v0'
 const EFFECTIVE_CONFIG_SCHEMA = 'launcher_effective_config.v1'
 const CAMERA_POLICIES = new Set(['required', 'camera_excluded_by_profile'])
 const SHA256 = /^[a-f0-9]{64}$/u
@@ -353,6 +354,28 @@ const requireCanonicalOptions = (options, authority) => {
   }
 }
 
+const requireReducedOptions = (options, authority) => {
+  if (!isPlainObject(options)) fail('private_plan_config_invalid')
+  const fixedPorts = {
+    OpenAIBrokerPort: 'openai_provider_broker',
+    ThoughtCorePort: 'thought_core_api',
+    AituberPort: 'aituber_kit'
+  }
+  for (const [optionName, serviceId] of Object.entries(fixedPorts)) {
+    const spec = authority.graph.services.find((service) => service.service_id === serviceId)
+    if (!spec || Number(options[optionName]) !== Number(spec.port.loopback_port)) {
+      fail('private_plan_config_invalid')
+    }
+  }
+  if (options.EnableThoughtCore !== true || options.EnableThoughtCoreWatch !== true ||
+      options.SkipAituber !== false) fail('private_plan_profile_invalid')
+  for (const name of ['AituberHost', 'ThoughtCoreHost']) {
+    if (!['127.0.0.1', '0.0.0.0', 'localhost'].includes(String(options[name] || '').toLowerCase())) {
+      fail('private_plan_config_invalid')
+    }
+  }
+}
+
 const ownedPlan = ({ serviceId, filePath, args, cwd, environment, listenerPort, removeEnvironment = [] }) => ({
   service_id: serviceId,
   file_path: filePath,
@@ -391,17 +414,36 @@ const validateClosedLoopJournalBinding = ({ document, privateRuntimeRoot }) => {
 
 const deriveEffectiveConfigIdentity = ({ profileId, options, authority }) => {
   try { assertAuthority(authority) } catch { fail('private_plan_authority_invalid') }
-  if (profileId !== PROFILE_ID || authority.graph.profile_id !== PROFILE_ID) fail('private_plan_profile_invalid')
-  requireCanonicalOptions(options, authority)
-  if (options.SkipMediapipe === true && options.SkipVisionSnapshotProcessor !== true) {
-    fail('private_plan_config_invalid')
+  if (profileId !== authority.graph.profile_id || ![PROFILE_ID, REDUCED_PROFILE_ID].includes(profileId)) {
+    fail('private_plan_profile_invalid')
   }
-  const cameraPolicy = options.SkipMediapipe === true
-    ? 'camera_excluded_by_profile'
-    : 'required'
-  const identityOptions = { ...options }
-  if (identityOptions.MediapipeCameraSelectionKey !== '') {
-    identityOptions.MediapipeCameraName = ''
+  let cameraPolicy
+  let identityOptions
+  if (profileId === REDUCED_PROFILE_ID) {
+    requireReducedOptions(options, authority)
+    cameraPolicy = 'camera_excluded_by_profile'
+    identityOptions = {
+      OpenAIBrokerPort: Number(options.OpenAIBrokerPort),
+      ThoughtCoreHost: String(options.ThoughtCoreHost),
+      ThoughtCorePort: Number(options.ThoughtCorePort),
+      AituberHost: String(options.AituberHost),
+      AituberPort: Number(options.AituberPort),
+      EnableThoughtCore: true,
+      EnableThoughtCoreWatch: true,
+      SkipAituber: false
+    }
+  } else {
+    requireCanonicalOptions(options, authority)
+    if (options.SkipMediapipe === true && options.SkipVisionSnapshotProcessor !== true) {
+      fail('private_plan_config_invalid')
+    }
+    cameraPolicy = options.SkipMediapipe === true
+      ? 'camera_excluded_by_profile'
+      : 'required'
+    identityOptions = { ...options }
+    if (identityOptions.MediapipeCameraSelectionKey !== '') {
+      identityOptions.MediapipeCameraName = ''
+    }
   }
   const configDocument = {
     schema_version: EFFECTIVE_CONFIG_SCHEMA,
@@ -426,6 +468,203 @@ const requireEffectiveConfigIdentity = (candidate, derived) => {
   }
 }
 
+const validateReducedHeldBinding = ({ document }) => {
+  if (!isPlainObject(document) || !Array.isArray(document.services)) fail('private_plan_config_invalid')
+  const byId = new Map(document.services.map((plan) => [plan?.service_id, plan]))
+  const thought = byId.get('thought_core_api')
+  const watcher = byId.get('thought_core_watcher')
+  const aituber = byId.get('aituber_kit')
+  if (!isPlainObject(thought?.environment) || !Array.isArray(watcher?.arguments) ||
+      !isPlainObject(watcher?.environment) || !isPlainObject(aituber?.environment)) {
+    fail('private_plan_config_invalid')
+  }
+  if (thought.environment.THOUGHT_CORE_PROFILE_ID !== REDUCED_PROFILE_ID ||
+      thought.environment.THOUGHT_CORE_EXECUTION_MODE !== 'conversation_only' ||
+      thought.environment.THOUGHT_CORE_TOOLS_ADAPTER !== 'disabled' ||
+      thought.environment.THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED !== '') {
+    fail('private_plan_config_invalid')
+  }
+  const watcherArgs = watcher.arguments.join('\u0000')
+  if (!watcherArgs.includes('-AdmissionMode\u0000held') ||
+      !watcherArgs.includes('-ClosedLoopFeedbackV1Mode\u0000disabled') ||
+      !watcherArgs.includes('-LocalAckMode\u0000off') ||
+      /-AituberMessageUrl|-TtsChunkUrl/u.test(watcherArgs) ||
+      watcher.environment.THOUGHT_CORE_WATCHER_ADMISSION_MODE !== 'held' ||
+      watcher.environment.THOUGHT_CORE_LOCAL_ACK_MODE !== 'off' ||
+      watcher.environment.THOUGHT_CORE_AUTO_REVIEW_PENDING !== '0' ||
+      watcher.environment.THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED !== '') {
+    fail('private_plan_config_invalid')
+  }
+  const serialized = serializePrivateServicePlan(document)
+  for (const forbidden of [
+    'HOME_CONTROL_BRIDGE_URL', 'HOME_ASSISTANT_BRIDGE_URL', 'HOME_CONTROL_API_TOKEN',
+    'HOME_ASSISTANT_TOKEN', 'HOME_CONTROL_CONFIG', 'ENVIRONMENT_STATE_URL',
+    'ENVIRONMENT_API_TOKEN', 'NEXT_PUBLIC_ENVIRONMENT_INDICATORS_URL',
+    'NEXT_PUBLIC_REFLEX_GESTURE_WS_URL', 'NEXT_PUBLIC_GESTURE_VOICE_WS_URL'
+  ]) {
+    if (serialized.includes(forbidden)) fail('private_plan_config_invalid')
+  }
+  return true
+}
+
+const compileReducedPrivateServicePlan = ({
+  repositoryRoot,
+  workspaceRoot,
+  privateRuntimeRoot,
+  profileId,
+  options,
+  configIdentity,
+  authority,
+  processEnvironment,
+  resolveExecutable,
+  verifyWorkerExecutable,
+  nonceFactory,
+  io
+}) => {
+  const effectiveIo = {
+    existsSync: io.existsSync || fs.existsSync,
+    lstatSync: io.lstatSync || fs.lstatSync,
+    readdirSync: io.readdirSync || fs.readdirSync
+  }
+  const readFileSync = io.readFileSync || fs.readFileSync
+  const repo = exactAbsoluteDirectory(repositoryRoot, effectiveIo)
+  const workspace = exactAbsoluteDirectory(workspaceRoot, effectiveIo)
+  if (typeof privateRuntimeRoot !== 'string' || !path.isAbsolute(privateRuntimeRoot) || privateRuntimeRoot.includes('\u0000')) {
+    fail('private_plan_root_invalid')
+  }
+  requireReducedOptions(options, authority)
+  const derivedConfigIdentity = deriveEffectiveConfigIdentity({ profileId, options, authority })
+  requireEffectiveConfigIdentity(configIdentity, derivedConfigIdentity)
+
+  const aituberRoot = exactAbsoluteDirectory(
+    path.join(workspace, 'organs', 'expression', 'aituber-kit'),
+    effectiveIo
+  )
+  const uv = validatedExecutable('uv', resolveExecutable, effectiveIo)
+  const node = validatedExecutable('node', resolveExecutable, effectiveIo)
+  const workerIdentity = verifyWorkerExecutable({
+    filePath: validatedExecutable('pwsh', resolveExecutable, effectiveIo),
+    io: { ...effectiveIo, readFileSync }
+  })
+  requireExactKeys(workerIdentity, [
+    'worker_file_path', 'worker_executable_class', 'worker_executable_sha256'
+  ], 'private_plan_identity_invalid')
+  if (!Object.hasOwn(TRUSTED_WINDOWS_WORKERS, workerIdentity.worker_executable_class) ||
+      typeof workerIdentity.worker_executable_sha256 !== 'string' ||
+      !SHA256.test(workerIdentity.worker_executable_sha256)) fail('private_plan_identity_invalid')
+  const powershell = exactAbsoluteFile(workerIdentity.worker_file_path, effectiveIo)
+  const nextEntrypoint = exactAbsoluteFile(
+    path.join(aituberRoot, 'node_modules', 'next', 'dist', 'bin', 'next'),
+    effectiveIo
+  )
+  const thoughtStart = exactAbsoluteFile(path.join(repo, 'scripts', 'start-thought-core.ps1'), effectiveIo)
+  const watcherStart = exactAbsoluteFile(path.join(repo, 'scripts', 'start-thought-core-watch.ps1'), effectiveIo)
+  const baseline = inheritedRuntimeEnvironment(processEnvironment)
+  const thoughtHost = loopbackHost(options.ThoughtCoreHost)
+  const aituberHost = loopbackHost(options.AituberHost)
+  const thoughtBase = `http://${thoughtHost}:${options.ThoughtCorePort}`
+  const thoughtEnvironment = {
+    ...baseline,
+    THOUGHT_CORE_PROFILE_ID: REDUCED_PROFILE_ID,
+    THOUGHT_CORE_EXECUTION_MODE: 'conversation_only',
+    THOUGHT_CORE_TOOLS_ADAPTER: 'disabled',
+    THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED: '',
+    THOUGHT_CORE_LLM_ENABLED: '1',
+    THOUGHT_CORE_LLM_PROVIDER: 'sword-openai-broker',
+    THOUGHT_CORE_LLM_BASE_URL: `http://127.0.0.1:${options.OpenAIBrokerPort}/v1`,
+    THOUGHT_CORE_LLM_MODEL: 'gpt-4o-mini',
+    THOUGHT_CORE_LLM_TIMEOUT_S: '12',
+    THOUGHT_CORE_ACTION_LLM_ENABLED: '0',
+    SWORD_THOUGHT_CORE_CONTROLLER_MANIFEST: path.join(privateRuntimeRoot, 'thought-core-api', 'controller.json'),
+    SWORD_THOUGHT_CORE_LAUNCH_NONCE: String(nonceFactory())
+  }
+  const watcherEnvironment = {
+    ...baseline,
+    THOUGHT_CORE_WATCHER_ADMISSION_MODE: 'held',
+    THOUGHT_CORE_LOCAL_ACK_MODE: 'off',
+    THOUGHT_CORE_AUTO_REVIEW_PENDING: '0',
+    THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED: ''
+  }
+  const plans = [
+    ownedPlan({
+      serviceId: 'openai_provider_broker',
+      filePath: uv,
+      args: ['run', 'python', '-m', 'sword_voice_agent.apps.openai_broker', '--port', options.OpenAIBrokerPort],
+      cwd: repo,
+      environment: baseline,
+      removeEnvironment: PROVIDER_ENVIRONMENT_NAMES,
+      listenerPort: options.OpenAIBrokerPort
+    }),
+    ownedPlan({
+      serviceId: 'thought_core_api',
+      filePath: powershell,
+      args: [
+        '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', thoughtStart,
+        '-HostName', options.ThoughtCoreHost, '-Port', options.ThoughtCorePort,
+        '-StatusDir', path.join(privateRuntimeRoot, 'thought-core-api'), '-SkipEnvImport'
+      ],
+      cwd: repo,
+      environment: thoughtEnvironment,
+      removeEnvironment: PROVIDER_ENVIRONMENT_NAMES,
+      listenerPort: options.ThoughtCorePort
+    }),
+    ownedPlan({
+      serviceId: 'thought_core_watcher',
+      filePath: powershell,
+      args: [
+        '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', watcherStart,
+        '-EnvPath', path.join(repo, '.env'), '-ThoughtCoreBaseUrl', thoughtBase,
+        '-StatusDir', path.join(privateRuntimeRoot, 'thought-core-watcher'),
+        '-AdmissionMode', 'held', '-ClosedLoopFeedbackV1Mode', 'disabled',
+        '-LocalAckMode', 'off'
+      ],
+      cwd: repo,
+      environment: watcherEnvironment,
+      listenerPort: 0
+    }),
+    ownedPlan({
+      serviceId: 'aituber_kit',
+      filePath: node,
+      args: [nextEntrypoint, 'dev', '--hostname', options.AituberHost, '--port', options.AituberPort],
+      cwd: aituberRoot,
+      environment: {
+        ...baseline,
+        THOUGHT_CORE_BASE_URL: thoughtBase,
+        NEXT_PUBLIC_THOUGHT_CORE_BASE_URL: thoughtBase,
+        NEXT_PUBLIC_THOUGHT_CORE_SESSION_ID: 'aituber-kit',
+        NEXT_PUBLIC_SYSTEM_CELL_AI_SERVICE: 'thought-core',
+        NEXT_PUBLIC_SELECT_AI_SERVICE: 'thought-core'
+      },
+      listenerPort: options.AituberPort
+    })
+  ]
+  const expectedOrder = authority.graph.services.map((service) => service.service_id)
+  if (JSON.stringify(plans.map((plan) => plan.service_id)) !== JSON.stringify(expectedOrder)) {
+    fail('private_plan_config_invalid')
+  }
+  const document = {
+    schema_version: 'launcher_private_service_plans.v1',
+    graph_sha256: authority.identities.graphSha256,
+    binding_sha256: authority.identities.bindingSha256,
+    profile_id: derivedConfigIdentity.profile_id,
+    effective_config_sha256: derivedConfigIdentity.effective_config_sha256,
+    camera_policy: derivedConfigIdentity.camera_policy,
+    worker_file_path: powershell,
+    services: plans
+  }
+  validateReducedHeldBinding({ document })
+  const serialized = serializePrivateServicePlan(document)
+  if (Buffer.byteLength(serialized, 'utf8') > MAX_PLAN_BYTES) fail('private_plan_config_invalid')
+  return deepFreeze({
+    document,
+    powershell_path: powershell,
+    private_plan_sha256: sha256Bytes(Buffer.from(serialized, 'utf8')),
+    worker_executable_class: workerIdentity.worker_executable_class,
+    worker_executable_sha256: workerIdentity.worker_executable_sha256,
+    included_service_ids: expectedOrder.slice().sort()
+  })
+}
+
 const compilePrivateServicePlan = ({
   repositoryRoot,
   workspaceRoot,
@@ -441,6 +680,22 @@ const compilePrivateServicePlan = ({
   io = {}
 }) => {
   try { assertAuthority(authority) } catch { fail('private_plan_authority_invalid') }
+  if (profileId === REDUCED_PROFILE_ID && authority.graph.profile_id === REDUCED_PROFILE_ID) {
+    return compileReducedPrivateServicePlan({
+      repositoryRoot,
+      workspaceRoot,
+      privateRuntimeRoot,
+      profileId,
+      options,
+      configIdentity,
+      authority,
+      processEnvironment,
+      resolveExecutable,
+      verifyWorkerExecutable,
+      nonceFactory,
+      io
+    })
+  }
   const effectiveIo = {
     existsSync: io.existsSync || fs.existsSync,
     lstatSync: io.lstatSync || fs.lstatSync,
@@ -831,7 +1086,11 @@ const validatePersistedPlanDocument = ({ document, privateRuntimeRoot, configIde
   if (document.camera_policy === 'required' && !planIds.has('mediapipe_camera_hub_stack')) {
     fail('private_plan_identity_invalid')
   }
-  validateClosedLoopJournalBinding({ document, privateRuntimeRoot })
+  if (document.profile_id === REDUCED_PROFILE_ID) {
+    validateReducedHeldBinding({ document })
+  } else {
+    validateClosedLoopJournalBinding({ document, privateRuntimeRoot })
+  }
   return [...planIds].sort()
 }
 

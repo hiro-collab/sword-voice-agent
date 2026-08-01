@@ -78,6 +78,99 @@ class OpsManifestTest(TestCase):
         aituber_only = set(profiles["aituber-only"]["services"])
         self.assertEqual(aituber_only, {"aituber_kit"})
 
+    def test_core_rehearsal_profile_is_an_exact_held_action0_candidate(self) -> None:
+        profiles = _load_profile_manifests()
+        profile = profiles["core-rehearsal-text-bubble-v0"]
+        expected_order = [
+            "openai_provider_broker",
+            "thought_core_api",
+            "thought_core_watcher",
+            "aituber_kit",
+        ]
+
+        self.assertEqual(profile["status"], "candidate_not_selected")
+        self.assertEqual(profile["services"], expected_order)
+        self.assertEqual(profile["service_order"], expected_order)
+        self.assertEqual(len(set(profile["services"])), 4)
+        self.assertEqual(
+            profile["parent_profile"],
+            {
+                "profile_id": "core-rehearsal-text-bubble",
+                "source_commit": "6b09f62ea343dea0ac53bc9e8e466980d9971a4a",
+                "source_path": "manifests/profiles/core-rehearsal-text-bubble.json",
+                "source_sha256": (
+                    "1F8182AD80BA150D696869895D699121397EE5D088A3CCFACE3B5027B7829836"
+                ),
+            },
+        )
+
+        execution = profile["execution_contract"]
+        self.assertEqual(execution["mode"], "conversation_only")
+        self.assertEqual(execution["tools_adapter"], "disabled")
+        self.assertEqual(execution["capabilities"], "unavailable")
+        self.assertEqual(execution["actions"], "disabled_action0")
+        self.assertEqual(execution["mock_fallback"], "forbidden")
+        for field in (
+            "action_submit_max",
+            "home_calls_max",
+            "environment_calls_max",
+            "automatic_retries_max",
+        ):
+            self.assertIs(type(execution[field]), int)
+            self.assertEqual(execution[field], 0)
+
+        watcher = profile["watcher_contract"]
+        self.assertEqual(watcher["turn_admission"], "held")
+        self.assertIs(watcher["skip_existing"], True)
+        for field in (
+            "thought_dispatch_max",
+            "result_write_max",
+            "narration_max",
+            "presentation_dispatch_max",
+        ):
+            self.assertIs(type(watcher[field]), int)
+            self.assertEqual(watcher[field], 0)
+        for field in (
+            "tts",
+            "direct_send",
+            "local_ack",
+            "auto_review",
+            "closed_loop_output",
+        ):
+            self.assertEqual(watcher[field], "disabled")
+
+        readiness = profile["readiness_contract"]
+        self.assertEqual(readiness["missing_proof"], "unknown")
+        self.assertEqual(readiness["aituber_http"], "reachability_only")
+        for field in (
+            "message_receiver",
+            "browser_store",
+            "bubble_applied",
+            "visible_pixels",
+        ):
+            self.assertEqual(readiness[field], "unproved")
+        self.assertIs(readiness["may_claim_standard_ready"], False)
+        self.assertIs(readiness["may_claim_full_ready"], False)
+
+        privacy = profile["privacy_contract"]
+        self.assertEqual(
+            privacy["public_profile_fields"],
+            [
+                "profile_id",
+                "profile_revision",
+                "config_identity",
+                "route_class",
+                "readiness_class",
+                "reason_class",
+            ],
+        )
+        self.assertIs(privacy["raw_path_public"], False)
+        self.assertIs(privacy["raw_command_public"], False)
+        self.assertIs(privacy["private_identifier_public"], False)
+        self.assertEqual(
+            privacy["home_environment_private_inputs"], "forbidden"
+        )
+
     def test_openai_broker_manifest_is_the_thought_core_primary_dependency(self) -> None:
         services = _load_service_manifests()
         broker = services["openai_provider_broker"]

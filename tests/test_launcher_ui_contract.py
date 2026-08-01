@@ -94,6 +94,62 @@ def extract_between(text: str, start: str, end: str) -> str:
 
 
 class LauncherUiContractTest(TestCase):
+    def test_reduced_route_public_contract_is_raw0_and_http_is_not_bubble_ready(self) -> None:
+        server = read_launcher_server()
+
+        self.assertIn("const publicReducedRouteContract", server)
+        self.assertIn("/api/reduced-route-contract", server)
+        projection = extract_between(
+            server,
+            "const publicReducedRouteContract",
+            "const publicFixedStartDiagnostic",
+        )
+        for required in (
+            "core-rehearsal-text-bubble-v0",
+            "aituber_http_reachability_only",
+            "message_receiver_unproved",
+            "browser_store_unproved",
+            "bubble_applied_unproved",
+            "visible_pixels_unproved",
+            "raw_private_publication_flags: false",
+        ):
+            self.assertIn(required, projection)
+        for forbidden in (
+            "source_path",
+            "private_plan",
+            "file_path",
+            "commandLine",
+            "HOME_CONTROL",
+            "HOME_ASSISTANT",
+            "ENVIRONMENT_STATE",
+            "API_TOKEN",
+        ):
+            self.assertNotIn(forbidden, projection)
+
+    def test_reduced_watcher_hydration_forces_outputs_off_after_env_import(self) -> None:
+        watcher_start = read_thought_core_watch_start_script()
+
+        import_index = watcher_start.index("Import-SwordEnv")
+        hold_index = watcher_start.index(
+            "Set-ReducedRouteHeldEnvironment -Mode $AdmissionMode"
+        )
+        self.assertLess(import_index, hold_index)
+        held = extract_between(
+            watcher_start,
+            "function Set-ReducedRouteHeldEnvironment",
+            "$repoRoot = Get-SwordRepoRoot",
+        ) + watcher_start[hold_index:]
+        for required in (
+            '$env:TTS_HTTP_CHUNK_URL = ""',
+            '$env:AITUBER_MESSAGE_URL = ""',
+            '$env:THOUGHT_CORE_LOCAL_ACK_MODE = "off"',
+            '$env:THOUGHT_CORE_AUTO_REVIEW_PENDING = "0"',
+            '$env:THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED = ""',
+            '"--admission-mode",',
+            '"held"',
+        ):
+            self.assertIn(required, held)
+
     def test_standard_ops_profile_activates_closed_loop_feedback_for_both_services(self) -> None:
         self.skipTest("N2 keeps legacy PowerShell supervisor assertions as unreachable N3 reference")
         system = read_system_script()
