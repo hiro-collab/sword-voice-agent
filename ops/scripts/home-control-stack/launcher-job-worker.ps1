@@ -592,7 +592,7 @@ function Invoke-LauncherStop {
         return New-LauncherWorkerResult $Request "stopped" "not_applicable" "not_applicable" "not_applicable"
     }
     if (-not $Jobs.ContainsKey([string]$Request.service_id)) {
-        return New-LauncherWorkerResult $Request "stopped" "matched" "not_applicable" "owned_clear"
+        return New-LauncherWorkerResult $Request "stop_failed" "unknown" "unknown" "unknown"
     }
     $record = $Jobs[[string]$Request.service_id]
     $identity = [int]$record.Native.ObserveRoot()

@@ -625,7 +625,7 @@ class LauncherSupervisorRuntime {
     let held = null
     let heldServiceId = null
     try {
-      this.ensureClient(compiled)
+      if (!this.client) return false
       for (let index = 0; index < candidates.length; index += 1) {
         const serviceId = candidates[index]
         let workerEvent
@@ -684,15 +684,14 @@ class LauncherSupervisorRuntime {
     if ([reducer.PHASE.FAILED, reducer.PHASE.RESIDUE].includes(this.current?.phase)) this.releaseSupervisorLease()
   }
 
-  async recover (compiled) {
+  async recover () {
     if (!this.current || !ACTIVE_PHASES.has(this.current.phase)) return
-    const retainedCompiled = this.compiled || compiled
     if (this.current.phase !== reducer.PHASE.RECOVERING) this.apply('supervisor_crashed')
     if (this.current.phase !== reducer.PHASE.RECOVERING) return
-    if (!(await this.closeClientAndPlan({ removePlan: false }))) return false
+    if (!(await this.closeClientAndPlan())) return false
     this.apply('recovery_started')
-    const clear = await this.stopOwnedServices('recovery', retainedCompiled)
-    if (clear && this.current.phase === reducer.PHASE.RECOVERING) this.apply('recovery_completed')
+    this.apply('recovery_completed')
+    const clear = this.current.cleanup === reducer.CLEANUP.CLEAR
     if ([reducer.PHASE.FAILED, reducer.PHASE.RESIDUE].includes(this.current?.phase)) this.releaseSupervisorLease()
     return clear
   }
@@ -939,6 +938,20 @@ class LauncherSupervisorRuntime {
         resultClass: 'operation_in_progress',
         operation: this.current,
         profileId
+      })
+    }
+    if (!this.client && [
+      reducer.PHASE.RECOVERING,
+      reducer.PHASE.ROLLING_BACK,
+      reducer.PHASE.STOPPING,
+      reducer.PHASE.RESIDUE
+    ].includes(this.current?.phase)) {
+      return publicResult({
+        ok: false,
+        resultClass: 'operation_in_progress',
+        operation: this.current,
+        profileId,
+        errorClass: 'supervisor_runtime_failed'
       })
     }
     this.inflight = 'stop'

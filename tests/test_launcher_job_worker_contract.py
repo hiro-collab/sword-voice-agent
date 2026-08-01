@@ -26,9 +26,9 @@ FROZEN_N0 = {
     "contracts/launcher/generated/launcher-service-graph.standard.v1.binding.json": "3a74d2c620f55c8203b6a1e9cc66c631c1867d131d69362743fe73e300bd9229",
     "ops/manifests/launcher-service-graph.standard.v1.json": "dc548b8ddd9528af3a6d10325f868af200fe3d85d1e88182cdcf32407506ea77",
     "tools/home-control-launcher/launcher-supervisor-contract.js": "eed1faaa0d3b75c068f608ac6dd83ae26ffbcf997e0395d914b3de25b36a68f8",
-    "tools/home-control-launcher/launcher-supervisor-reducer.js": "4188cddeab48b712655c26efe0b8bd5d20c126fcd0df47d477ffdf3cd7562615",
-    "tools/home-control-launcher/launcher-operation-store.js": "fd4854c4696205142e366021b37bbbd6f8bf096ac31a8a3144010fb9f76d6d3c",
-    "tools/home-control-launcher/server.js": "2f9d6ca281374951241b69e7bd73a1bca1a250793ab7b2af5bd58978a514f219",
+    "tools/home-control-launcher/launcher-supervisor-reducer.js": "3644e3b28986c4eb12d9dab5ed7d3e1bec3281f85f6e0a302d0d7ca581ffbd8d",
+    "tools/home-control-launcher/launcher-operation-store.js": "79c3a0e040244150807efc1a1a9de617f9c93e320aa9ae5baa6ff146cc3d41b1",
+    "tools/home-control-launcher/server.js": "62770dfcd20c263ccca115f78c1d85cc3c3a5f8e7ac0b949dabec4818c882b22",
     "ops/scripts/home-control-stack/start-home-control-stack.ps1": "d5f1b2556e3a71520b5117eef8774326b70b05221064122dccc9c1296ac8d1ec",
     "ops/scripts/home-control-stack/stop-home-control-stack.ps1": "acdb237f13f76eabfd743f24619b8b5c90512a7f1149ab55232239d476e67619",
     "ops/scripts/home-control-stack/status-home-control-stack.ps1": "db2ed1f9e7f6e21785d4a081cc35db818d1fbbd4e9c2b7e88d40ddbb628eda44",
@@ -201,8 +201,12 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
         self.assertNotIn("Wait-LauncherOwnedReady", start)
         self.assertNotIn('"optional_absent"', start)
         self.assertIn('"external_ready" "not_applicable" "matched" "not_applicable"', probe)
-        self.assertIn('"stopped" "matched" "not_applicable" "owned_clear"', stop)
         self.assertIn('"stop_failed" "unknown" "unknown" "unknown"', stop)
+        self.assertNotIn(
+            'if (-not $Jobs.ContainsKey([string]$Request.service_id)) {\n'
+            '        return New-LauncherWorkerResult $Request "stopped"',
+            stop,
+        )
         self.assertNotIn('"stop_failed" "matched" "mismatch" "foreign"', stop)
 
     def test_private_plan_accepts_current_aituber_and_rejects_foreign_capabilities(self) -> None:

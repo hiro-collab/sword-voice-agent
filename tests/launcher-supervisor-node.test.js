@@ -615,13 +615,10 @@ test('operation store generations increase only when a terminal operation is rep
   const first = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
   assert.equal(first.operation.supervisor_generation, 1)
   store.releaseSupervisorLease(first.supervisorLease, authority)
-  const joined = store.startAndPersist('lop_node0002', authority, runtimeRoot)
-  assert.equal(joined.joined_existing, true)
-  assert.equal(joined.operation.supervisor_generation, 1)
-  let current = joined.operation
+  expectCode(() => store.startAndPersist('lop_node0002', authority, runtimeRoot), 'supervisor_lease_unavailable')
+  let current = first.operation
   current = store.reduceAndPersist(current, event('preflight_started'), authority, runtimeRoot)
   current = store.reduceAndPersist(current, event('preflight_failed'), authority, runtimeRoot)
-  store.releaseSupervisorLease(joined.supervisorLease, authority)
   const replacement = store.startAndPersist('lop_node0003', authority, runtimeRoot)
   assert.equal(replacement.joined_existing, false)
   assert.equal(replacement.operation.supervisor_generation, 2)
@@ -926,43 +923,31 @@ test('supervisor lease fails closed for live reused denied unknown malformed and
   })
 })
 
-test('confirmed absent lease takeover succeeds and replacement race preserves replacement bytes', () => {
+test('absent owner liveness never authorizes supervisor lease takeover', () => {
   withRuntimeRoot((runtimeRoot) => {
     const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
     store.releaseSupervisorLease(started.supervisorLease, authority)
     const leasePath = path.join(runtimeRoot, store.STORE_DIRECTORY, store.SUPERVISOR_LEASE_FILE)
-    fs.writeFileSync(leasePath, `${JSON.stringify(abandonedSupervisorLeaseRecord(424242))}\n`, { mode: 0o600 })
-    const lease = store.acquireSupervisorLease({
+    const bytes = Buffer.from(`${JSON.stringify(abandonedSupervisorLeaseRecord(424242))}\n`)
+    fs.writeFileSync(leasePath, bytes, { mode: 0o600 })
+    expectCode(() => store.acquireSupervisorLease({
       operationId: OPERATION_ID, supervisorGeneration: started.operation.supervisor_generation,
       authority, authorizedPrivateRuntimeRoot: runtimeRoot, ownerLivenessObserver: () => 'absent'
-    })
-    assert.match(store.getSupervisorLeaseBinding(lease, authority).authority_lease_proof, /^lp_[a-f0-9]{64}$/u)
-    store.releaseSupervisorLease(lease, authority)
-  })
-  withRuntimeRoot((runtimeRoot) => {
-    const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
-    store.releaseSupervisorLease(started.supervisorLease, authority)
-    const child = path.join(runtimeRoot, store.STORE_DIRECTORY)
-    const leasePath = path.join(child, store.SUPERVISOR_LEASE_FILE)
-    const discardPath = path.join(child, store.SUPERVISOR_LEASE_DISCARD_FILE)
-    fs.writeFileSync(leasePath, `${JSON.stringify(abandonedSupervisorLeaseRecord(424243))}\n`, { mode: 0o600 })
-    const replacement = Buffer.from(`${JSON.stringify(abandonedSupervisorLeaseRecord(424244, 1, `sl_${'1'.repeat(64)}`))}\n`)
-    const originalRename = fs.renameSync
-    fs.renameSync = (source, destination) => {
-      originalRename(source, destination)
-      if (path.resolve(source) === path.resolve(leasePath) && path.resolve(destination) === path.resolve(discardPath)) {
-        fs.writeFileSync(leasePath, replacement, { mode: 0o600 })
-      }
-    }
-    try {
-      expectCode(() => store.acquireSupervisorLease({
-        operationId: OPERATION_ID, supervisorGeneration: started.operation.supervisor_generation,
-        authority, authorizedPrivateRuntimeRoot: runtimeRoot, ownerLivenessObserver: () => 'absent'
-      }), 'supervisor_lease_unavailable')
-    } finally { fs.renameSync = originalRename }
-    assert.deepEqual(fs.readFileSync(leasePath), replacement)
+    }), 'supervisor_lease_unavailable')
+    assert.deepEqual(fs.readFileSync(leasePath), bytes)
   })
 })
+
+test('missing supervisor lease cannot create authority for an active operation', () => withRuntimeRoot((runtimeRoot) => {
+  const started = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
+  store.releaseSupervisorLease(started.supervisorLease, authority)
+  expectCode(() => store.acquireSupervisorLease({
+    operationId: OPERATION_ID, supervisorGeneration: started.operation.supervisor_generation,
+    authority, authorizedPrivateRuntimeRoot: runtimeRoot, ownerLivenessObserver: () => 'absent'
+  }), 'supervisor_lease_unavailable')
+  expectCode(() => store.startAndPersist('lop_competing03', authority, runtimeRoot, () => 'absent'), 'supervisor_lease_unavailable')
+  assert.equal(store.readOperation(authority, runtimeRoot).operation_id, OPERATION_ID)
+}))
 
 test('external probe timeout becomes a bounded failure without fake external readiness', () => {
   let operation = startLifecycle()
@@ -1089,21 +1074,20 @@ test('foreign operation event is a pure no-op before store access', () => {
   assert.equal(fs.existsSync(nonexistent), false)
 })
 
-test('store persists planned before preflight, joins after predecessor release, and preserves parent', () => withRuntimeRoot((runtimeRoot) => {
+test('store persists planned before preflight and refuses a missing-lease join', () => withRuntimeRoot((runtimeRoot) => {
   const first = store.startAndPersist(OPERATION_ID, authority, runtimeRoot)
   assert.equal(first.operation.phase, 'planned')
   assert.equal(first.operation.revision, 0)
   assert.equal(first.joined_existing, false)
   store.releaseSupervisorLease(first.supervisorLease, authority)
-  const second = store.startAndPersist('lop_node0002', authority, runtimeRoot)
-  assert.equal(second.joined_existing, true)
-  assert.equal(second.operation.operation_id, OPERATION_ID)
-  assert.equal(second.operation.revision, 1)
+  expectCode(() => store.startAndPersist('lop_node0002', authority, runtimeRoot), 'supervisor_lease_unavailable')
+  const current = store.readOperation(authority, runtimeRoot)
+  assert.equal(current.operation_id, OPERATION_ID)
+  assert.equal(current.revision, 0)
   assert.equal(fs.readFileSync(path.join(runtimeRoot, 'parent-sentinel.txt'), 'utf8'), 'parent-unchanged')
   const child = path.join(runtimeRoot, store.STORE_DIRECTORY)
-  assert.deepEqual(fs.readdirSync(child).sort(), [store.RECORD_FILE, store.SUPERVISOR_LEASE_FILE].sort())
+  assert.deepEqual(fs.readdirSync(child).sort(), [store.RECORD_FILE])
   assert.equal(fs.readdirSync(child).some((name) => name.endsWith('.tmp')), false)
-  store.releaseSupervisorLease(second.supervisorLease, authority)
 }))
 
 test('store revision CAS rejects stale input without rewriting the record', () => withRuntimeRoot((runtimeRoot) => {

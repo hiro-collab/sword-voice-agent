@@ -306,20 +306,6 @@ const withLock = (paths, authority, ownerLivenessObserver, action, onCommittedRe
   return result
 }
 
-const exactSupervisorLeaseRecord = (value) => {
-  if (!value || typeof value !== 'object' || Array.isArray(value) ||
-      Object.keys(value).sort().join(',') !== 'binding_sha256,created_at_ms,graph_sha256,operation_id,owner_nonce,owner_pid,schema_version,supervisor_generation' ||
-      value.schema_version !== 'launcher_supervisor_lease.v2' || typeof value.owner_nonce !== 'string' ||
-      !SUPERVISOR_LEASE_NONCE.test(value.owner_nonce) || !Number.isSafeInteger(value.owner_pid) || value.owner_pid <= 0 ||
-      !Number.isSafeInteger(value.created_at_ms) || value.created_at_ms < 0 ||
-      typeof value.operation_id !== 'string' || !/^lop_[a-z0-9]{8,64}$/u.test(value.operation_id) ||
-      !Number.isSafeInteger(value.supervisor_generation) || value.supervisor_generation < 1 ||
-      !SHA256.test(value.graph_sha256) || !SHA256.test(value.binding_sha256)) {
-    fail('supervisor_lease_unavailable')
-  }
-  return value
-}
-
 const readSupervisorLeaseText = (target) => {
   let stat
   try { stat = fs.lstatSync(target) } catch { fail('supervisor_lease_unavailable') }
@@ -329,54 +315,10 @@ const readSupervisorLeaseText = (target) => {
   )
 }
 
-const parseSupervisorLeaseText = (text) => {
-  try { return exactSupervisorLeaseRecord(JSON.parse(text)) } catch (error) {
-    if (error instanceof LauncherContractError) throw error
-    fail('supervisor_lease_unavailable')
-  }
-}
-
-const requireConfirmedLeaseOwnerAbsent = (observer, record) => {
-  if (observeOwnerLiveness(observer, record) !== 'absent') fail('supervisor_lease_unavailable')
-}
-
 const supervisorLeaseProof = (record) => `lp_${crypto.createHash('sha256').update(Buffer.from([
   record.schema_version, record.operation_id, String(record.supervisor_generation), record.graph_sha256,
   record.binding_sha256, record.owner_nonce, String(record.owner_pid), String(record.created_at_ms)
 ].join('\n'), 'utf8')).digest('hex')}`
-
-const preserveLeaseReplacement = (paths) => {
-  try {
-    if (!fs.existsSync(paths.supervisorLeasePath) && fs.existsSync(paths.supervisorLeaseDiscardPath)) {
-      fs.renameSync(paths.supervisorLeaseDiscardPath, paths.supervisorLeasePath)
-    }
-  } catch {}
-  fail('supervisor_lease_unavailable')
-}
-
-const removeAbandonedSupervisorLease = (paths, ownerLivenessObserver) => {
-  if (fs.existsSync(paths.supervisorLeaseDiscardPath)) fail('supervisor_lease_unavailable')
-  if (!fs.existsSync(paths.supervisorLeasePath)) return
-  const observedText = readSupervisorLeaseText(paths.supervisorLeasePath)
-  const observed = parseSupervisorLeaseText(observedText)
-  requireConfirmedLeaseOwnerAbsent(ownerLivenessObserver, observed)
-  if (readSupervisorLeaseText(paths.supervisorLeasePath) !== observedText) fail('supervisor_lease_unavailable')
-  requireConfirmedLeaseOwnerAbsent(ownerLivenessObserver, observed)
-  try { fs.renameSync(paths.supervisorLeasePath, paths.supervisorLeaseDiscardPath) } catch { fail('supervisor_lease_unavailable') }
-  let claimedText
-  try { claimedText = readSupervisorLeaseText(paths.supervisorLeaseDiscardPath) } catch { preserveLeaseReplacement(paths) }
-  if (claimedText !== observedText || fs.existsSync(paths.supervisorLeasePath)) preserveLeaseReplacement(paths)
-  if (observeOwnerLiveness(ownerLivenessObserver, observed) !== 'absent') preserveLeaseReplacement(paths)
-  try {
-    if (readSupervisorLeaseText(paths.supervisorLeaseDiscardPath) !== observedText || fs.existsSync(paths.supervisorLeasePath)) {
-      preserveLeaseReplacement(paths)
-    }
-    fs.unlinkSync(paths.supervisorLeaseDiscardPath)
-  } catch (error) {
-    if (error instanceof LauncherContractError) throw error
-    preserveLeaseReplacement(paths)
-  }
-}
 
 const requireSupervisorLeaseState = (lease, authority) => {
   assertAuthority(authority)
@@ -453,8 +395,7 @@ const acquireSupervisorLease = ({
     if (!fs.existsSync(paths.recordPath)) fail('operation_store_record_missing')
     const operation = readResolved(paths.recordPath, authority)
     if (operation.operation_id !== operationId || operation.supervisor_generation !== supervisorGeneration) fail('supervisor_lease_operation_mismatch')
-    removeAbandonedSupervisorLease(paths, ownerLivenessObserver)
-    return createSupervisorLeaseFile({ paths, operationId, supervisorGeneration, authority })
+    fail('supervisor_lease_unavailable')
   })
 }
 
@@ -590,8 +531,11 @@ const startAndPersist = (
   validateIdentityInputs(operationId, authority.identities.graphSha256, authority.identities.bindingSha256)
   const paths = resolvePaths(authorizedPrivateRuntimeRoot)
   const result = withLock(paths, authority, ownerLivenessObserver, () => {
-    removeAbandonedSupervisorLease(paths, ownerLivenessObserver)
+    if (fs.existsSync(paths.supervisorLeasePath) || fs.existsSync(paths.supervisorLeaseDiscardPath)) {
+      fail('supervisor_lease_unavailable')
+    }
     const active = fs.existsSync(paths.recordPath) ? readResolved(paths.recordPath, authority) : null
+    if (active && !['stopped', 'failed'].includes(active.phase)) fail('supervisor_lease_unavailable')
     const generation = active === null ? 1 : active.supervisor_generation + 1
     if (!Number.isSafeInteger(generation) || generation > Number.MAX_SAFE_INTEGER) fail('operation_store_generation_exhausted')
     const decision = startOperation(active, operationId, authority, configIdentity, planIdentity, probeConfigSha256, generation)

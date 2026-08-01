@@ -504,6 +504,14 @@ test('PowerShell worker resolves service membership and adapter before latching 
   assert.match(source, /\[string\]\$Request\.authority_lease_proof -cne \$ExpectedAuthorityLeaseProof/u)
 })
 
+test('PowerShell worker cannot report owned clear when its owned Job map is empty', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'ops', 'scripts', 'home-control-stack', 'launcher-job-worker.ps1'), 'utf8')
+  const stop = source.split('function Invoke-LauncherStop', 2)[1].split('function New-LauncherInvalidRequestResult', 1)[0]
+  assert.match(stop, /if \(-not \$Jobs\.ContainsKey\(\[string\]\$Request\.service_id\)\) \{\s*return New-LauncherWorkerResult \$Request "stop_failed" "unknown" "unknown" "unknown"/u)
+  assert.doesNotMatch(stop, /if \(-not \$Jobs\.ContainsKey\(\[string\]\$Request\.service_id\)\) \{\s*return New-LauncherWorkerResult \$Request "stopped"/u)
+  assert.match(stop, /if \(\$Plan\.Ownership -eq "external"\) \{\s*return New-LauncherWorkerResult \$Request "stopped" "not_applicable" "not_applicable" "not_applicable"/u)
+})
+
 test('correlation, malformed, oversize, and private sentinel responses fail closed', async () => {
   const request = requestFor('aituber_kit', 'start')
   for (const [response, code] of [
