@@ -134,7 +134,11 @@ const deterministicTestWorker = () => ({
       service_id: request.service_id,
       action: request.action,
       expected_revision: request.expected_revision,
-      worker_nonce: request.worker_nonce
+      worker_nonce: request.worker_nonce,
+      termination_class: 'not_applicable',
+      job_query_class: 'not_applicable',
+      active_count_after: null,
+      post_stop_listener_class: 'not_applicable'
     }
     if (request.action === 'start') {
       if (deterministicTestClearFailurePending) {
@@ -170,7 +174,11 @@ const deterministicTestWorker = () => ({
       result_class: 'stopped',
       ownership_class: 'matched',
       listener_class: 'not_applicable',
-      descendant_class: 'owned_clear'
+      descendant_class: 'owned_clear',
+      termination_class: 'forced_only',
+      job_query_class: 'trusted',
+      active_count_after: 0,
+      post_stop_listener_class: 'not_applicable'
     }
   },
   async close () {}

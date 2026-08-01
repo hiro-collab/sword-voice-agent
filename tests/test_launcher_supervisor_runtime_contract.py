@@ -65,8 +65,27 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
         self.assertIn("const cleanupClear = await this.closeClientAndPlan()", stop_owned)
         self.assertLess(
             stop_owned.index("const cleanupClear = await this.closeClientAndPlan()"),
-            stop_owned.index("if (held) this.apply(held.event_type, held.service_id"),
+            stop_owned.index("this.privatePlanCleanup('clear')"),
         )
+        self.assertIn("this.apply(workerEvent.event_type, serviceId", stop_owned)
+        self.assertIn("this.cleanupUnattempted(unattemptedServiceId)", stop_owned)
+
+    def test_recovery_records_private_plan_truth_before_terminal_events(self) -> None:
+        runtime = read(RUNTIME)
+        recovery = between(runtime, "  async recover ()", "  async start ({ profileId, options, configIdentity })")
+
+        close_index = recovery.index("const planClear = await this.closeClientAndPlan()")
+        plan_event_index = recovery.index("this.privatePlanCleanup(")
+        gate_index = recovery.index("if (!planClear || this.current.phase !== reducer.PHASE.RECOVERING) return false")
+        started_index = recovery.index("this.apply('recovery_started')")
+        completed_index = recovery.index("this.apply('recovery_completed')")
+        self.assertLess(close_index, plan_event_index)
+        self.assertLess(plan_event_index, gate_index)
+        self.assertLess(gate_index, started_index)
+        self.assertLess(started_index, completed_index)
+
+        public_projection = between(runtime, "const hasPartialTerminalCleanupProof", "const publicOperation")
+        self.assertIn("return !reducer.hasTerminalPrivatePlanProof(operation)", public_projection)
 
     def test_launcher_routes_cannot_reach_legacy_supervisor_or_independent_kill(self) -> None:
         server = read(SERVER)
@@ -103,6 +122,18 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
         self.assertIn("process.on('SIGINT', () => { void finalizeSignalShutdown() })", server)
         self.assertIn("process.on('SIGTERM', () => { void finalizeSignalShutdown() })", server)
         self.assertNotIn("SYSTEM_SCRIPT", server)
+
+    def test_deterministic_worker_uses_the_strict_v2_stop_proof_shape(self) -> None:
+        server = read(SERVER)
+        worker = between(server, "const deterministicTestWorker", "const DETERMINISTIC_TEST_PROBE_CONFIG_SHA256")
+
+        self.assertIn("termination_class: 'not_applicable'", worker)
+        self.assertIn("job_query_class: 'not_applicable'", worker)
+        self.assertIn("active_count_after: null", worker)
+        self.assertIn("post_stop_listener_class: 'not_applicable'", worker)
+        self.assertIn("termination_class: 'forced_only'", worker)
+        self.assertIn("job_query_class: 'trusted'", worker)
+        self.assertIn("active_count_after: 0", worker)
 
     def test_active_stop_uses_durable_operation_and_persisted_plan_only(self) -> None:
         runtime = read(RUNTIME)

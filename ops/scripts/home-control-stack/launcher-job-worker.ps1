@@ -296,20 +296,23 @@ public sealed class SwordLauncherOwnedJob : IDisposable
         finally { Marshal.FreeHGlobal(buffer); }
     }
 
-    public bool TerminateAndClose(int timeoutMilliseconds)
+    public int TerminateAndClose(int timeoutMilliseconds)
     {
-        if (_closed) return true;
-        if (timeoutMilliseconds < 0 || timeoutMilliseconds > 300000) return false;
-        if (_job != IntPtr.Zero && ActiveProcessCount() > 0 && !SwordLauncherNativeMethods.TerminateJobObject(_job, 1))
+        if (_closed) return 0;
+        if (timeoutMilliseconds < 0 || timeoutMilliseconds > 300000) return -1;
+        int active = ActiveProcessCount();
+        if (_job != IntPtr.Zero && active > 0 && !SwordLauncherNativeMethods.TerminateJobObject(_job, 1))
             throw new Win32Exception(Marshal.GetLastWin32Error(), "job_stop_failed");
         Stopwatch wait = Stopwatch.StartNew();
-        while (_job != IntPtr.Zero && ActiveProcessCount() > 0)
+        active = _job == IntPtr.Zero ? 0 : ActiveProcessCount();
+        while (_job != IntPtr.Zero && active > 0)
         {
-            if (wait.ElapsedMilliseconds >= timeoutMilliseconds) return false;
+            if (wait.ElapsedMilliseconds >= timeoutMilliseconds) return active;
             Thread.Sleep(25);
+            active = ActiveProcessCount();
         }
         Dispose();
-        return true;
+        return active;
     }
 
     public void Dispose()
@@ -398,7 +401,11 @@ function New-LauncherWorkerResult {
         [Parameter(Mandatory = $true)][string]$ResultClass,
         [Parameter(Mandatory = $true)][string]$OwnershipClass,
         [Parameter(Mandatory = $true)][string]$ListenerClass,
-        [Parameter(Mandatory = $true)][string]$DescendantClass
+        [Parameter(Mandatory = $true)][string]$DescendantClass,
+        [string]$TerminationClass = "not_applicable",
+        [string]$JobQueryClass = "not_applicable",
+        [AllowNull()][object]$ActiveCountAfter = $null,
+        [string]$PostStopListenerClass = "not_applicable"
     )
     if ($ResultClasses -notcontains $ResultClass) { throw "launcher_worker_result_invalid" }
     return [ordered]@{
@@ -416,6 +423,10 @@ function New-LauncherWorkerResult {
         ownership_class = $OwnershipClass
         listener_class = $ListenerClass
         descendant_class = $DescendantClass
+        termination_class = $TerminationClass
+        job_query_class = $JobQueryClass
+        active_count_after = $ActiveCountAfter
+        post_stop_listener_class = $PostStopListenerClass
     }
 }
 
@@ -504,6 +515,14 @@ function Get-LauncherForeignListenerPresent {
     return @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue).Count -gt 0
 }
 
+function Get-LauncherPostStopListenerClass {
+    param([Parameter(Mandatory = $true)][int]$Port)
+    if ($Port -eq 0) { return "not_applicable" }
+    if ($null -eq (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) { return "unknown" }
+    $listeners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    return $(if ($listeners.Count -eq 0) { "clear" } else { "foreign_present" })
+}
+
 function Wait-LauncherOwnedReady {
     param([Parameter(Mandatory = $true)][object]$Request, [Parameter(Mandatory = $true)][object]$Record)
     $deadline = [DateTimeOffset]::UtcNow.AddMilliseconds([long]$Request.deadline_ms)
@@ -586,28 +605,50 @@ function Invoke-LauncherProbe {
 function Invoke-LauncherStop {
     param([Parameter(Mandatory = $true)][object]$Request, [Parameter(Mandatory = $true)][AllowNull()][object]$Plan)
     if ($null -eq $Plan) {
-        return New-LauncherWorkerResult $Request "stopped" "matched" "not_applicable" "owned_clear"
+        return New-LauncherWorkerResult $Request "stopped" "matched" "not_applicable" "owned_clear" `
+            -TerminationClass "not_applicable" -JobQueryClass "not_applicable" -ActiveCountAfter $null -PostStopListenerClass "not_applicable"
     }
     if ($Plan.Ownership -eq "external") {
-        return New-LauncherWorkerResult $Request "stopped" "not_applicable" "not_applicable" "not_applicable"
+        return New-LauncherWorkerResult $Request "stopped" "not_applicable" "not_applicable" "not_applicable" `
+            -TerminationClass "not_applicable" -JobQueryClass "not_applicable" -ActiveCountAfter $null -PostStopListenerClass "not_applicable"
     }
     if (-not $Jobs.ContainsKey([string]$Request.service_id)) {
-        return New-LauncherWorkerResult $Request "stop_failed" "unknown" "unknown" "unknown"
+        return New-LauncherWorkerResult $Request "stop_failed" "unknown" "unknown" "unknown" `
+            -TerminationClass "unknown" -JobQueryClass "unknown" -ActiveCountAfter $null -PostStopListenerClass "unknown"
     }
     $record = $Jobs[[string]$Request.service_id]
     $identity = [int]$record.Native.ObserveRoot()
-    if ($identity -eq 2) { return New-LauncherWorkerResult $Request "stop_failed" "unknown" "unknown" "unknown" }
-    if ($identity -eq 3) { return New-LauncherWorkerResult $Request "stop_failed" "unknown" "unknown" "unknown" }
+    if ($identity -eq 2) {
+        return New-LauncherWorkerResult $Request "stop_failed" "unknown" "unknown" "unknown" `
+            -TerminationClass "unknown" -JobQueryClass "unknown" -ActiveCountAfter $null -PostStopListenerClass "unknown"
+    }
+    if ($identity -eq 3) {
+        return New-LauncherWorkerResult $Request "stop_failed" "unknown" "unknown" "unknown" `
+            -TerminationClass "unknown" -JobQueryClass "unknown" -ActiveCountAfter $null -PostStopListenerClass "unknown"
+    }
     $listener = Get-LauncherListenerObservation -Record $record
-    if ($listener.State -eq "mismatch") { return New-LauncherWorkerResult $Request "stop_failed" "matched" "unknown" "unknown" }
+    if ($listener.State -eq "mismatch") {
+        return New-LauncherWorkerResult $Request "stop_failed" "matched" "unknown" "unknown" `
+            -TerminationClass "unknown" -JobQueryClass "unknown" -ActiveCountAfter $null -PostStopListenerClass "foreign_present"
+    }
     try {
-        if (-not $record.Native.TerminateAndClose([int]$Request.deadline_ms)) {
-            return New-LauncherWorkerResult $Request "stop_failed" "matched" $listener.Class "owned_active"
+        $activeCountBefore = [int]$record.Native.ActiveProcessCount()
+        $terminationClass = $(if ($activeCountBefore -eq 0) { "already_clear" } else { "forced_only" })
+        $activeCountAfter = [int]$record.Native.TerminateAndClose([int]$Request.deadline_ms)
+        if ($activeCountAfter -ne 0) {
+            return New-LauncherWorkerResult $Request "stop_failed" "matched" $listener.Class "owned_active" `
+                -TerminationClass $terminationClass -JobQueryClass "trusted" -ActiveCountAfter $activeCountAfter -PostStopListenerClass "unknown"
         }
         $Jobs.Remove([string]$Request.service_id)
-        return New-LauncherWorkerResult $Request "stopped" "matched" $listener.Class "owned_clear"
+        $postStopListenerClass = Get-LauncherPostStopListenerClass -Port ([int]$Plan.ListenerPort)
+        $resultClass = $(if ($postStopListenerClass -in @("clear", "not_applicable")) { "stopped" } else { "stop_failed" })
+        return New-LauncherWorkerResult $Request $resultClass "matched" $listener.Class "owned_clear" `
+            -TerminationClass $terminationClass -JobQueryClass "trusted" -ActiveCountAfter 0 -PostStopListenerClass $postStopListenerClass
     }
-    catch { return New-LauncherWorkerResult $Request "stop_failed" "matched" $listener.Class "unknown" }
+    catch {
+        return New-LauncherWorkerResult $Request "stop_failed" "matched" $listener.Class "unknown" `
+            -TerminationClass "unknown" -JobQueryClass "failed" -ActiveCountAfter $null -PostStopListenerClass "unknown"
+    }
 }
 
 function New-LauncherInvalidRequestResult {

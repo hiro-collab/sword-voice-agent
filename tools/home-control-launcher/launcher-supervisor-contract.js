@@ -142,6 +142,57 @@ const requireEnum = (value, allowed, code) => {
   return value
 }
 
+const CLEANUP_ATTEMPT_KEYS = [
+  'sequence', 'target_class', 'responsible_id', 'outcome_class', 'reason_class',
+  'termination_class', 'job_query_class', 'active_count_after', 'post_stop_listener_class'
+]
+const TERMINATION_CLASSES = ['forced_only', 'graceful', 'already_clear', 'not_applicable', 'unknown']
+const JOB_QUERY_CLASSES = ['trusted', 'failed', 'not_applicable', 'unknown']
+const POST_STOP_LISTENER_CLASSES = ['clear', 'foreign_present', 'unknown', 'not_applicable']
+const CLEANUP_REASON_CLASSES = [
+  'none', 'rollback_failed', 'stop_failed', 'unattempted_transport_unavailable',
+  'legacy_missing', 'private_plan_cleanup_failed'
+]
+
+const hasClearServiceCleanupProof = (attempt) => Boolean(attempt) &&
+  attempt.target_class === 'service' && attempt.outcome_class === 'clear' && attempt.reason_class === 'none' &&
+  ['forced_only', 'already_clear'].includes(attempt.termination_class) &&
+  attempt.job_query_class === 'trusted' && attempt.active_count_after === 0 &&
+  ['clear', 'not_applicable'].includes(attempt.post_stop_listener_class)
+
+const validateCleanupAttempt = (attempt, serviceIdPattern = SERVICE_ID_PATTERN) => {
+  exactKeys(attempt, CLEANUP_ATTEMPT_KEYS, 'cleanup_attempt_shape_invalid')
+  requireInteger(attempt.sequence, 1, 65, 'cleanup_attempt_sequence_invalid')
+  requireEnum(attempt.target_class, ['service', 'private_plan'], 'cleanup_attempt_target_invalid')
+  requireEnum(attempt.outcome_class, ['clear', 'failed', 'unattempted'], 'cleanup_attempt_outcome_invalid')
+  requireEnum(attempt.reason_class, CLEANUP_REASON_CLASSES, 'cleanup_attempt_reason_invalid')
+  requireEnum(attempt.termination_class, TERMINATION_CLASSES, 'cleanup_attempt_termination_invalid')
+  requireEnum(attempt.job_query_class, JOB_QUERY_CLASSES, 'cleanup_attempt_job_query_invalid')
+  requireEnum(attempt.post_stop_listener_class, POST_STOP_LISTENER_CLASSES, 'cleanup_attempt_listener_invalid')
+  if (attempt.job_query_class === 'trusted') {
+    requireInteger(attempt.active_count_after, 0, 4294967295, 'cleanup_attempt_active_count_invalid')
+  } else if (attempt.active_count_after !== null) fail('cleanup_attempt_active_count_invalid')
+  if (attempt.target_class === 'service') {
+    requireServiceId(attempt.responsible_id, serviceIdPattern, 'cleanup_attempt_responsible_invalid')
+  } else if (attempt.responsible_id !== 'launcher_supervisor' ||
+      attempt.termination_class !== 'not_applicable' || attempt.job_query_class !== 'not_applicable' ||
+      attempt.active_count_after !== null || attempt.post_stop_listener_class !== 'not_applicable') {
+    fail('cleanup_attempt_private_plan_invalid')
+  }
+  if (attempt.outcome_class === 'clear' && attempt.reason_class !== 'none') fail('cleanup_attempt_reason_invalid')
+  if (attempt.outcome_class === 'failed' && !['rollback_failed', 'stop_failed', 'private_plan_cleanup_failed'].includes(attempt.reason_class)) {
+    fail('cleanup_attempt_reason_invalid')
+  }
+  if (attempt.outcome_class === 'unattempted' &&
+      !['unattempted_transport_unavailable', 'legacy_missing'].includes(attempt.reason_class)) {
+    fail('cleanup_attempt_reason_invalid')
+  }
+  if (attempt.target_class === 'service' && attempt.outcome_class === 'clear' && !hasClearServiceCleanupProof(attempt)) {
+    fail('cleanup_attempt_clear_proof_invalid')
+  }
+  return attempt
+}
+
 const requireId = (value, code) => {
   if (typeof value !== 'string' || !ID.test(value)) fail(code)
   return value
@@ -401,7 +452,8 @@ const validateWorkerMessage = (message, authority) => {
   if (message.message_type === 'result') {
     exactKeys(message, [
       'schema_version', 'message_type', 'operation_id', 'supervisor_generation', 'authority_lease_proof', 'dispatch_id', 'service_id', 'action', 'expected_revision',
-      'worker_nonce', 'result_class', 'ownership_class', 'listener_class', 'descendant_class'
+      'worker_nonce', 'result_class', 'ownership_class', 'listener_class', 'descendant_class',
+      'termination_class', 'job_query_class', 'active_count_after', 'post_stop_listener_class'
     ], 'worker_result_shape_invalid')
     if (message.schema_version !== 'launcher_worker.v2') fail('worker_schema_version_invalid')
     requireOperationId(message.operation_id, 'worker_operation_id_invalid')
@@ -419,6 +471,15 @@ const validateWorkerMessage = (message, authority) => {
     requireEnum(message.ownership_class, ['matched', 'mismatch', 'unknown', 'not_applicable'], 'worker_ownership_class_invalid')
     requireEnum(message.listener_class, ['matched', 'mismatch', 'unknown', 'not_applicable'], 'worker_listener_class_invalid')
     requireEnum(message.descendant_class, ['owned_clear', 'owned_active', 'foreign', 'unknown', 'not_applicable'], 'worker_descendant_class_invalid')
+    requireEnum(message.termination_class, TERMINATION_CLASSES, 'worker_termination_class_invalid')
+    requireEnum(message.job_query_class, JOB_QUERY_CLASSES, 'worker_job_query_class_invalid')
+    requireEnum(message.post_stop_listener_class, POST_STOP_LISTENER_CLASSES, 'worker_post_stop_listener_class_invalid')
+    if (message.job_query_class === 'trusted') {
+      requireInteger(message.active_count_after, 0, 4294967295, 'worker_active_count_after_invalid')
+    } else if (message.active_count_after !== null) fail('worker_active_count_after_invalid')
+    if (message.action !== 'stop' && (message.termination_class !== 'not_applicable' ||
+        message.job_query_class !== 'not_applicable' || message.active_count_after !== null ||
+        message.post_stop_listener_class !== 'not_applicable')) fail('worker_stop_proof_action_invalid')
     return message
   }
   fail('worker_message_type_invalid')
@@ -450,7 +511,7 @@ const validateReducerVectors = (document, serviceIdPattern) => {
   const phases = ['planned', 'preflight', 'prepared', 'starting', 'waiting_ready', 'ready', 'rolling_back', 'failed', 'stopping', 'stopped', 'recovering', 'residue']
   const reasons = ['none', 'preflight_failed', 'spawn_failed', 'early_exit', 'listener_mismatch', 'readiness_timeout', 'semantic_probe_failed', 'rollback_failed', 'stop_failed', 'supervisor_crash', 'residue_present', 'invalid_event']
   const cleanups = ['not_started', 'in_progress', 'clear', 'residue', 'unknown']
-  const events = new Set(['preflight_started', 'preflight_passed', 'preflight_failed', 'start_requested', 'spawn_requested', 'probe_requested', 'stop_dispatch_requested', 'spawn_succeeded', 'spawn_failed', 'early_exit', 'listener_mismatch', 'readiness_timeout', 'probe_failed', 'probe_transport_ready', 'semantic_probe_completed', 'optional_absent', 'rollback_started', 'rollback_completed', 'rollback_failed', 'stop_requested', 'service_stopped', 'stop_failed', 'supervisor_crashed', 'recovery_started', 'recovery_completed', 'residue_observed', 'residue_cleared'])
+  const events = new Set(['preflight_started', 'preflight_passed', 'preflight_failed', 'start_requested', 'spawn_requested', 'probe_requested', 'stop_dispatch_requested', 'spawn_succeeded', 'spawn_failed', 'early_exit', 'listener_mismatch', 'readiness_timeout', 'probe_failed', 'probe_transport_ready', 'semantic_probe_completed', 'optional_absent', 'rollback_started', 'rollback_completed', 'rollback_failed', 'stop_requested', 'service_stopped', 'stop_failed', 'cleanup_unattempted', 'private_plan_cleanup_completed', 'private_plan_cleanup_failed', 'private_plan_cleanup_unattempted', 'supervisor_crashed', 'recovery_started', 'recovery_completed', 'residue_observed', 'residue_cleared'])
   for (const vector of document.vectors) {
     const hasEventOperation = isPlainObject(vector) && Object.hasOwn(vector, 'event_operation_id')
     const keys = ['vector_id', 'events', 'expected', 'coverage', ...(hasEventOperation ? ['event_operation_id'] : [])]
@@ -464,17 +525,24 @@ const validateReducerVectors = (document, serviceIdPattern) => {
       const hasService = isPlainObject(event) && Object.hasOwn(event, 'service_id')
       const hasDispatch = Object.hasOwn(event, 'dispatch_id')
       const hasAction = Object.hasOwn(event, 'action')
-      exactKeys(event, ['event_type', ...(hasService ? ['service_id'] : []), ...(hasDispatch ? ['dispatch_id'] : []), ...(hasAction ? ['action'] : [])], 'reducer_vector_event_shape_invalid')
+      const hasCleanupAttempt = Object.hasOwn(event, 'cleanup_attempt')
+      exactKeys(event, ['event_type', ...(hasService ? ['service_id'] : []), ...(hasDispatch ? ['dispatch_id'] : []), ...(hasAction ? ['action'] : []), ...(hasCleanupAttempt ? ['cleanup_attempt'] : [])], 'reducer_vector_event_shape_invalid')
       if (!events.has(event.event_type)) fail('reducer_vector_event_type_invalid')
       if (hasService) requireServiceId(event.service_id, serviceIdPattern, 'reducer_vector_service_id_invalid')
       if (hasDispatch && (typeof event.dispatch_id !== 'string' || !DISPATCH_ID.test(event.dispatch_id))) fail('reducer_vector_dispatch_id_invalid')
       if (hasAction) requireEnum(event.action, ['start', 'probe', 'stop'], 'reducer_vector_action_invalid')
+      if (hasCleanupAttempt) validateCleanupAttempt(event.cleanup_attempt, serviceIdPattern)
     }
-    exactKeys(vector.expected, ['phase', 'reason', 'cleanup', 'residue_service_ids'], 'reducer_vector_expected_shape_invalid')
+    exactKeys(vector.expected, ['phase', 'reason', 'cleanup', 'residue_service_ids', 'cleanup_attempts'], 'reducer_vector_expected_shape_invalid')
     requireEnum(vector.expected.phase, phases, 'reducer_vector_phase_invalid')
     requireEnum(vector.expected.reason, reasons, 'reducer_vector_reason_invalid')
     requireEnum(vector.expected.cleanup, cleanups, 'reducer_vector_cleanup_invalid')
     requireServiceIdArray(vector.expected.residue_service_ids, serviceIdPattern, 'reducer_vector_residue_invalid')
+    if (!Array.isArray(vector.expected.cleanup_attempts) || vector.expected.cleanup_attempts.length > 65) fail('reducer_vector_cleanup_attempts_invalid')
+    vector.expected.cleanup_attempts.forEach((attempt, index) => {
+      validateCleanupAttempt(attempt, serviceIdPattern)
+      if (attempt.sequence !== index + 1) fail('reducer_vector_cleanup_attempts_invalid')
+    })
     if (!Array.isArray(vector.coverage) || vector.coverage.length > MAX_VECTOR_COVERAGE) fail('reducer_vector_coverage_invalid')
     requireIdArray(vector.coverage, 'reducer_vector_coverage_invalid')
   }
@@ -610,11 +678,13 @@ module.exports = {
   canonicalLfText,
   deepFreeze,
   loadAuthority,
+  hasClearServiceCleanupProof,
   readBoundedUtf8Text,
   renderBindingDocument,
   serviceIdPatternFromOperationSchema,
   topologicalOrder,
   validateGraph,
+  validateCleanupAttempt,
   validateReducerVectors,
   validateWorkerMessage,
   validateWorkerRequestAgainstAuthority

@@ -4,7 +4,7 @@
     {
       "vector_id": "preflight_failure_keeps_primary_and_cleanup",
       "events": [{ "event_type": "preflight_started" }, { "event_type": "preflight_failed" }],
-      "expected": { "phase": "failed", "reason": "preflight_failed", "cleanup": "clear", "residue_service_ids": [] },
+      "expected": { "phase": "failed", "reason": "preflight_failed", "cleanup": "clear", "residue_service_ids": [], "cleanup_attempts": [] },
       "coverage": ["primary_result", "cleanup_result", "zero_resource"]
     },
     {
@@ -13,17 +13,222 @@
         { "event_type": "preflight_started" }, { "event_type": "preflight_passed" }, { "event_type": "start_requested" },
         { "event_type": "spawn_requested", "service_id": "home_assistant_bridge" },
         { "event_type": "spawn_failed", "service_id": "home_assistant_bridge" },
-        { "event_type": "rollback_failed", "service_id": "home_assistant_bridge" }
+        {
+          "event_type": "rollback_failed",
+          "service_id": "home_assistant_bridge",
+          "cleanup_attempt": {
+            "sequence": 1,
+            "target_class": "service",
+            "responsible_id": "home_assistant_bridge",
+            "outcome_class": "failed",
+            "reason_class": "rollback_failed",
+            "termination_class": "unknown",
+            "job_query_class": "unknown",
+            "active_count_after": null,
+            "post_stop_listener_class": "unknown"
+          }
+        }
       ],
-      "expected": { "phase": "residue", "reason": "spawn_failed", "cleanup": "residue", "residue_service_ids": ["home_assistant_bridge"] },
-      "coverage": ["dispatch", "primary_result", "cleanup_result", "residue"]
+      "expected": {
+        "phase": "residue",
+        "reason": "spawn_failed",
+        "cleanup": "residue",
+        "residue_service_ids": ["home_assistant_bridge"],
+        "cleanup_attempts": [
+          {
+            "sequence": 1,
+            "target_class": "service",
+            "responsible_id": "home_assistant_bridge",
+            "outcome_class": "failed",
+            "reason_class": "rollback_failed",
+            "termination_class": "unknown",
+            "job_query_class": "unknown",
+            "active_count_after": null,
+            "post_stop_listener_class": "unknown"
+          }
+        ]
+      },
+      "coverage": ["dispatch", "primary_result", "cleanup_result", "cleanup_attempts", "residue"]
     },
     {
       "vector_id": "foreign_operation_is_noop",
       "event_operation_id": "lop_foreign00",
       "events": [{ "event_type": "preflight_started" }],
-      "expected": { "phase": "planned", "reason": "none", "cleanup": "not_started", "residue_service_ids": [] },
+      "expected": { "phase": "planned", "reason": "none", "cleanup": "not_started", "residue_service_ids": [], "cleanup_attempts": [] },
       "coverage": ["operation_identity", "replay"]
+    },
+    {
+      "vector_id": "recovery_records_private_plan_clear_before_terminal_clear",
+      "events": [
+        { "event_type": "preflight_started" },
+        { "event_type": "preflight_passed" },
+        { "event_type": "start_requested" },
+        { "event_type": "supervisor_crashed" },
+        {
+          "event_type": "private_plan_cleanup_completed",
+          "cleanup_attempt": {
+            "sequence": 1,
+            "target_class": "private_plan",
+            "responsible_id": "launcher_supervisor",
+            "outcome_class": "clear",
+            "reason_class": "none",
+            "termination_class": "not_applicable",
+            "job_query_class": "not_applicable",
+            "active_count_after": null,
+            "post_stop_listener_class": "not_applicable"
+          }
+        },
+        { "event_type": "recovery_started" },
+        { "event_type": "recovery_completed" }
+      ],
+      "expected": {
+        "phase": "failed",
+        "reason": "supervisor_crash",
+        "cleanup": "clear",
+        "residue_service_ids": [],
+        "cleanup_attempts": [
+          {
+            "sequence": 1,
+            "target_class": "private_plan",
+            "responsible_id": "launcher_supervisor",
+            "outcome_class": "clear",
+            "reason_class": "none",
+            "termination_class": "not_applicable",
+            "job_query_class": "not_applicable",
+            "active_count_after": null,
+            "post_stop_listener_class": "not_applicable"
+          }
+        ]
+      },
+      "coverage": ["cleanup_attempts", "private_plan", "recovery", "terminal_clear"]
+    },
+    {
+      "vector_id": "recovery_private_plan_failure_stays_residue",
+      "events": [
+        { "event_type": "preflight_started" },
+        { "event_type": "preflight_passed" },
+        { "event_type": "start_requested" },
+        { "event_type": "supervisor_crashed" },
+        {
+          "event_type": "private_plan_cleanup_failed",
+          "cleanup_attempt": {
+            "sequence": 1,
+            "target_class": "private_plan",
+            "responsible_id": "launcher_supervisor",
+            "outcome_class": "failed",
+            "reason_class": "private_plan_cleanup_failed",
+            "termination_class": "not_applicable",
+            "job_query_class": "not_applicable",
+            "active_count_after": null,
+            "post_stop_listener_class": "not_applicable"
+          }
+        }
+      ],
+      "expected": {
+        "phase": "residue",
+        "reason": "supervisor_crash",
+        "cleanup": "residue",
+        "residue_service_ids": [],
+        "cleanup_attempts": [
+          {
+            "sequence": 1,
+            "target_class": "private_plan",
+            "responsible_id": "launcher_supervisor",
+            "outcome_class": "failed",
+            "reason_class": "private_plan_cleanup_failed",
+            "termination_class": "not_applicable",
+            "job_query_class": "not_applicable",
+            "active_count_after": null,
+            "post_stop_listener_class": "not_applicable"
+          }
+        ]
+      },
+      "coverage": ["cleanup_attempts", "private_plan", "recovery", "artifact_residue"]
+    },
+    {
+      "vector_id": "recovery_private_plan_unavailable_stays_unknown",
+      "events": [
+        { "event_type": "preflight_started" },
+        { "event_type": "preflight_passed" },
+        { "event_type": "start_requested" },
+        { "event_type": "supervisor_crashed" },
+        {
+          "event_type": "private_plan_cleanup_unattempted",
+          "cleanup_attempt": {
+            "sequence": 1,
+            "target_class": "private_plan",
+            "responsible_id": "launcher_supervisor",
+            "outcome_class": "unattempted",
+            "reason_class": "unattempted_transport_unavailable",
+            "termination_class": "not_applicable",
+            "job_query_class": "not_applicable",
+            "active_count_after": null,
+            "post_stop_listener_class": "not_applicable"
+          }
+        }
+      ],
+      "expected": {
+        "phase": "residue",
+        "reason": "supervisor_crash",
+        "cleanup": "unknown",
+        "residue_service_ids": [],
+        "cleanup_attempts": [
+          {
+            "sequence": 1,
+            "target_class": "private_plan",
+            "responsible_id": "launcher_supervisor",
+            "outcome_class": "unattempted",
+            "reason_class": "unattempted_transport_unavailable",
+            "termination_class": "not_applicable",
+            "job_query_class": "not_applicable",
+            "active_count_after": null,
+            "post_stop_listener_class": "not_applicable"
+          }
+        ]
+      },
+      "coverage": ["cleanup_attempts", "private_plan", "recovery", "unknown"]
+    },
+    {
+      "vector_id": "private_plan_cleanup_failure_is_artifact_residue",
+      "events": [
+        { "event_type": "preflight_started" },
+        { "event_type": "preflight_failed" },
+        { "event_type": "stop_requested" },
+        {
+          "event_type": "private_plan_cleanup_failed",
+          "cleanup_attempt": {
+            "sequence": 1,
+            "target_class": "private_plan",
+            "responsible_id": "launcher_supervisor",
+            "outcome_class": "failed",
+            "reason_class": "private_plan_cleanup_failed",
+            "termination_class": "not_applicable",
+            "job_query_class": "not_applicable",
+            "active_count_after": null,
+            "post_stop_listener_class": "not_applicable"
+          }
+        }
+      ],
+      "expected": {
+        "phase": "residue",
+        "reason": "preflight_failed",
+        "cleanup": "residue",
+        "residue_service_ids": [],
+        "cleanup_attempts": [
+          {
+            "sequence": 1,
+            "target_class": "private_plan",
+            "responsible_id": "launcher_supervisor",
+            "outcome_class": "failed",
+            "reason_class": "private_plan_cleanup_failed",
+            "termination_class": "not_applicable",
+            "job_query_class": "not_applicable",
+            "active_count_after": null,
+            "post_stop_listener_class": "not_applicable"
+          }
+        ]
+      },
+      "coverage": ["cleanup_attempts", "private_plan", "primary_result", "artifact_residue"]
     }
   ]
 }

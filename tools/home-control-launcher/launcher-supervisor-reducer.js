@@ -1,7 +1,8 @@
 'use strict'
 
 const {
-  LauncherContractError, assertAuthority, canonicalJsonSha256, validateWorkerMessage, validateWorkerRequestAgainstAuthority
+  LauncherContractError, assertAuthority, canonicalJsonSha256, hasClearServiceCleanupProof, validateCleanupAttempt,
+  validateWorkerMessage, validateWorkerRequestAgainstAuthority
 } = require('./launcher-supervisor-contract')
 
 const PHASE = Object.freeze({
@@ -46,6 +47,9 @@ const cloneOperation = (operation, changes = {}) => ({
   ...operation,
   primary_result: { ...operation.primary_result, ...(changes.primary_result || {}) },
   cleanup_result: { ...operation.cleanup_result, ...(changes.cleanup_result || {}) },
+  cleanup_attempts: changes.cleanup_attempts
+    ? changes.cleanup_attempts.map((attempt) => ({ ...attempt }))
+    : Array.isArray(operation.cleanup_attempts) ? operation.cleanup_attempts.map((attempt) => ({ ...attempt })) : [],
   services: changes.services ? copyServices(changes.services) : copyServices(operation.services),
   residue_service_ids: changes.residue_service_ids ? [...changes.residue_service_ids] : [...operation.residue_service_ids],
   ...changes
@@ -111,6 +115,7 @@ const createOperation = (operationId, authority, configIdentity, planIdentity, p
     cleanup: CLEANUP.NOT_STARTED,
     primary_result: { class: REASON.NONE, responsible_id: null, action_certainty: 'not_attempted' },
     cleanup_result: { class: CLEANUP.NOT_STARTED, responsible_id: null },
+    cleanup_attempts: [],
     revision: 0,
     joined_existing: false,
     rollback_required: false,
@@ -152,6 +157,51 @@ const primaryResult = (operation, proposed, responsibleId, actionCertainty = 'ma
     ? { class: proposed, responsible_id: responsibleId, action_certainty: actionCertainty }
     : operation.primary_result
 const cleanupResult = (klass, responsibleId = null) => ({ class: klass, responsible_id: responsibleId })
+const appendCleanupAttempt = (operation, attempt, authority) => {
+  try { validateCleanupAttempt(attempt, authority.serviceIdPattern) } catch { return null }
+  const attempts = Array.isArray(operation.cleanup_attempts) ? operation.cleanup_attempts : []
+  if (attempt.sequence !== attempts.length + 1) return null
+  return cloneOperation(operation, { cleanup_attempts: [...attempts, attempt] })
+}
+const finalServiceCleanupAttempt = (operation, serviceId) => (Array.isArray(operation.cleanup_attempts)
+  ? operation.cleanup_attempts.filter((attempt) => attempt.target_class === 'service' && attempt.responsible_id === serviceId).at(-1)
+  : null) || null
+const incompleteParticipatingServiceIds = (operation, authority) => {
+  const owned = new Set(authority.graph.services.filter((service) => service.ownership === 'owned').map((service) => service.service_id))
+  return operation.services
+    .filter((service) => owned.has(service.service_id) && service.state === SERVICE.STOPPED && service.attempt_sequence > 0 &&
+      !hasClearServiceCleanupProof(finalServiceCleanupAttempt(operation, service.service_id)))
+    .map((service) => service.service_id)
+    .sort()
+}
+const finalPrivatePlanCleanupAttempt = (operation) => (Array.isArray(operation.cleanup_attempts)
+  ? operation.cleanup_attempts.reduce((finalAttempt, attempt) => (
+      attempt.target_class === 'private_plan' && (!finalAttempt || attempt.sequence > finalAttempt.sequence)
+        ? attempt
+        : finalAttempt
+    ), null)
+  : null)
+const hasExactPreflightNoSideEffectClear = (operation) => operation?.phase === PHASE.FAILED &&
+  operation.cleanup === CLEANUP.CLEAR && operation.reason === REASON.PREFLIGHT_FAILED &&
+  operation.primary_result?.class === REASON.PREFLIGHT_FAILED && operation.primary_result?.action_certainty === 'not_attempted' &&
+  Array.isArray(operation.cleanup_attempts) && operation.cleanup_attempts.length === 0 &&
+  Array.isArray(operation.services) && operation.services.every((service) => service.attempt_sequence === 0)
+const hasTerminalPrivatePlanProof = (operation) => {
+  if (hasExactPreflightNoSideEffectClear(operation)) return true
+  const finalAttempt = finalPrivatePlanCleanupAttempt(operation)
+  return finalAttempt?.outcome_class === 'clear' && finalAttempt.reason_class === 'none'
+}
+const privatePlanAttempt = (operation, outcomeClass, reasonClass) => ({
+  sequence: (Array.isArray(operation.cleanup_attempts) ? operation.cleanup_attempts.length : 0) + 1,
+  target_class: 'private_plan',
+  responsible_id: 'launcher_supervisor',
+  outcome_class: outcomeClass,
+  reason_class: reasonClass,
+  termination_class: 'not_applicable',
+  job_query_class: 'not_applicable',
+  active_count_after: null,
+  post_stop_listener_class: 'not_applicable'
+})
 const CRASH_RESPONSIBLE_IDS = new Set([
   'operation_store',
   'semantic_probe_expectation',
@@ -393,9 +443,93 @@ const residue = (operation, serviceId, reason, authority) => {
   })
 }
 
+const finalizeTerminalClear = (operation, authority, phase) => {
+  const normalized = normalizePendingOwned(operation, authority)
+  const incompleteServiceIds = incompleteParticipatingServiceIds(normalized, authority)
+  if (incompleteServiceIds.length > 0) return retainUnknownResidue(normalized, incompleteServiceIds)
+  const terminalCandidate = {
+    ...normalized,
+    phase,
+    cleanup: CLEANUP.CLEAR,
+    rollback_required: false,
+    recovery_required: false
+  }
+  if (!hasTerminalPrivatePlanProof(terminalCandidate)) {
+    return next(normalized, {
+      phase: PHASE.RECOVERING,
+      cleanup: CLEANUP.UNKNOWN,
+      cleanup_result: cleanupResult(CLEANUP.UNKNOWN, 'launcher_supervisor'),
+      rollback_required: false,
+      recovery_required: true
+    })
+  }
+  return next(normalized, {
+    phase,
+    cleanup: CLEANUP.CLEAR,
+    cleanup_result: cleanupResult(CLEANUP.CLEAR),
+    rollback_required: false,
+    recovery_required: false
+  })
+}
+
+const privatePlanCleanup = (operation, event, outcome, authority) => {
+  const expectedReason = outcome === 'clear' ? 'none' : outcome === 'failed' ? 'private_plan_cleanup_failed' : 'unattempted_transport_unavailable'
+  const attempt = event?.cleanup_attempt || privatePlanAttempt(operation, outcome, expectedReason)
+  const appended = appendCleanupAttempt(operation, attempt, authority)
+  if (!appended || attempt.target_class !== 'private_plan' ||
+      attempt.outcome_class !== outcome || attempt.reason_class !== expectedReason) return invalid(operation)
+  if (outcome === 'clear') {
+    const owned = new Set(authority.graph.services.filter((service) => service.ownership === 'owned').map((service) => service.service_id))
+    const allOwnedClear = appended.services
+      .filter((service) => owned.has(service.service_id))
+      .every((service) => [SERVICE.STOPPED, SERVICE.OPTIONAL_ABSENT].includes(service.state))
+    return operation.phase === PHASE.STOPPING && allOwnedClear
+      ? finalizeTerminalClear(appended, authority, PHASE.STOPPED)
+      : next(appended)
+  }
+  const unresolved = [...new Set([...appended.residue_service_ids, ...outstandingOwned(appended, authority)])].sort()
+  const unresolvedSet = new Set(unresolved)
+  return next(appended, {
+    services: appended.services.map((service) => unresolvedSet.has(service.service_id) && service.state !== SERVICE.RESIDUE
+      ? { ...service, state: SERVICE.UNKNOWN }
+      : { ...service }),
+    residue_service_ids: unresolved,
+    phase: PHASE.RESIDUE,
+    reason: firstFailure(operation, REASON.STOP_FAILED),
+    cleanup: outcome === 'failed' ? CLEANUP.RESIDUE : CLEANUP.UNKNOWN,
+    primary_result: primaryResult(operation, REASON.STOP_FAILED, 'launcher_supervisor'),
+    cleanup_result: cleanupResult(outcome === 'failed' ? CLEANUP.RESIDUE : CLEANUP.UNKNOWN, 'launcher_supervisor'),
+    rollback_required: false,
+    recovery_required: true
+  })
+}
+
+const cleanupUnattempted = (operation, serviceId, event, authority) => {
+  const spec = specOf(authority, serviceId)
+  const appended = appendCleanupAttempt(operation, event?.cleanup_attempt, authority)
+  if (!spec || spec.ownership !== 'owned' || !appended ||
+      event.cleanup_attempt.target_class !== 'service' || event.cleanup_attempt.responsible_id !== serviceId ||
+      event.cleanup_attempt.outcome_class !== 'unattempted' ||
+      event.cleanup_attempt.reason_class !== 'unattempted_transport_unavailable') return invalid(operation)
+  const changed = setService(appended, serviceId, SERVICE.UNKNOWN, PHASE.RESIDUE)
+  const residueIds = [...new Set([...changed.residue_service_ids, serviceId])].sort()
+  return next(changed, {
+    residue_service_ids: residueIds,
+    phase: PHASE.RESIDUE,
+    reason: firstFailure(operation, REASON.STOP_FAILED),
+    cleanup: CLEANUP.UNKNOWN,
+    primary_result: primaryResult(operation, REASON.STOP_FAILED, serviceId),
+    cleanup_result: operation.cleanup_result.class === CLEANUP.IN_PROGRESS
+      ? cleanupResult(CLEANUP.UNKNOWN, serviceId)
+      : operation.cleanup_result,
+    rollback_required: false,
+    recovery_required: true
+  })
+}
+
 const hasClearTerminalFailure = (operation, authority) => {
   if (!operation || operation.phase !== PHASE.FAILED || operation.cleanup !== CLEANUP.CLEAR ||
-      operation.residue_service_ids.length !== 0 || operation.rollback_required || operation.recovery_required) return false
+      !Array.isArray(operation.cleanup_attempts) || operation.residue_service_ids.length !== 0 || operation.rollback_required || operation.recovery_required) return false
   const outstandingWork = operation.services.some((service) =>
     service.pending_action !== null || service.pending_dispatch_id !== null ||
     service.probe_expected_revision !== null || ['pending', 'transport_ready'].includes(service.probe_status))
@@ -403,7 +537,7 @@ const hasClearTerminalFailure = (operation, authority) => {
   const owned = new Set(authority.graph.services
     .filter((service) => service.ownership === 'owned')
     .map((service) => service.service_id))
-  return operation.services
+  return hasTerminalPrivatePlanProof(operation) && incompleteParticipatingServiceIds(operation, authority).length === 0 && operation.services
     .filter((service) => owned.has(service.service_id))
     .every((service) => [SERVICE.STOPPED, SERVICE.OPTIONAL_ABSENT].includes(service.state))
 }
@@ -412,8 +546,9 @@ const stop = (operation, authority) => {
   if (operation.phase === PHASE.STOPPED) return operation
   if (hasClearTerminalFailure(operation, authority)) {
     return next(operation, {
-      intent: 'stop', phase: PHASE.STOPPED, cleanup: CLEANUP.CLEAR,
-      cleanup_result: cleanupResult(CLEANUP.CLEAR), rollback_required: false, recovery_required: false
+      intent: 'stop', phase: PHASE.STOPPING, cleanup: CLEANUP.IN_PROGRESS,
+      cleanup_result: cleanupResult(CLEANUP.IN_PROGRESS, 'launcher_supervisor'),
+      rollback_required: false, recovery_required: false
     })
   }
   const external = new Set(authority.graph.services.filter((service) => service.ownership === 'external').map((service) => service.service_id))
@@ -425,13 +560,24 @@ const stop = (operation, authority) => {
   })
 }
 
-const serviceStopped = (operation, serviceId, authority) => {
-  const changed = setService(operation, serviceId, SERVICE.STOPPED, PHASE.STOPPING)
+const serviceStopped = (operation, serviceId, event, authority) => {
+  const appended = appendCleanupAttempt(operation, event?.cleanup_attempt, authority)
+  if (!appended || event.cleanup_attempt.target_class !== 'service' ||
+      event.cleanup_attempt.responsible_id !== serviceId || event.cleanup_attempt.outcome_class !== 'clear' ||
+      event.cleanup_attempt.reason_class !== 'none') return invalid(operation)
+  const priorPhase = operation.phase
+  const changed = setService(appended, serviceId, SERVICE.STOPPED, priorPhase)
+  if (priorPhase === PHASE.RESIDUE) {
+    return next(changed, {
+      residue_service_ids: changed.residue_service_ids.filter((id) => id !== serviceId),
+      phase: PHASE.RESIDUE
+    })
+  }
+  if (priorPhase !== PHASE.STOPPING) return changed
   const external = new Set(authority.graph.services.filter((service) => service.ownership === 'external').map((service) => service.service_id))
   const complete = changed.services.filter((service) => !external.has(service.service_id)).every((service) => [SERVICE.STOPPED, SERVICE.OPTIONAL_ABSENT].includes(service.state))
-  return complete ? next(changed, {
-    phase: PHASE.STOPPED, cleanup: CLEANUP.CLEAR, cleanup_result: cleanupResult(CLEANUP.CLEAR), recovery_required: false
-  }) : changed
+  const terminalCandidate = { ...changed, phase: PHASE.STOPPED, cleanup: CLEANUP.CLEAR, rollback_required: false, recovery_required: false }
+  return complete && hasTerminalPrivatePlanProof(terminalCandidate) ? finalizeTerminalClear(changed, authority, PHASE.STOPPED) : changed
 }
 
 const reduce = (operation, event, authority) => {
@@ -461,7 +607,7 @@ const reduce = (operation, event, authority) => {
       if (operation.phase === PHASE.STOPPING && stateOf(operation, serviceId) === SERVICE.STOP_REQUESTED) {
         return requestServiceDispatch(operation, event, SERVICE.STOP_REQUESTED, PHASE.STOPPING, 'stop')
       }
-      if ([PHASE.ROLLING_BACK, PHASE.RECOVERING].includes(operation.phase) && canRequestCleanupStop(operation, serviceId, authority)) {
+      if ([PHASE.ROLLING_BACK, PHASE.RECOVERING, PHASE.RESIDUE].includes(operation.phase) && canRequestCleanupStop(operation, serviceId, authority)) {
         return requestServiceDispatch(operation, event, stateOf(operation, serviceId), operation.phase, 'stop')
       }
       return invalid(operation)
@@ -494,30 +640,45 @@ const reduce = (operation, event, authority) => {
       if (!operation.rollback_required || operation.phase !== PHASE.ROLLING_BACK) return invalid(operation)
       const outstanding = outstandingOwned(operation, authority)
       return outstanding.length === 0 && operation.residue_service_ids.length === 0
-        ? next(normalizePendingOwned(operation, authority), {
-            phase: PHASE.FAILED, cleanup: CLEANUP.CLEAR, cleanup_result: cleanupResult(CLEANUP.CLEAR),
-            rollback_required: false, recovery_required: false
-          })
+        ? finalizeTerminalClear(operation, authority, PHASE.FAILED)
         : retainUnknownResidue(operation, outstanding)
     }
     case 'rollback_failed': {
       if (!operation.rollback_required || operation.phase !== PHASE.ROLLING_BACK) return invalid(operation)
       const cleared = clearCorrelatedCleanupPending(operation, event)
-      return cleared ? residue(cleared, serviceId, REASON.ROLLBACK_FAILED, authority) : invalid(operation)
+      const appended = cleared ? appendCleanupAttempt(cleared, event.cleanup_attempt, authority) : null
+      return appended ? residue(appended, serviceId, REASON.ROLLBACK_FAILED, authority) : invalid(operation)
     }
     case 'stop_requested': return inPhase(operation, [PHASE.PLANNED, PHASE.PREFLIGHT, PHASE.PREPARED, PHASE.STARTING, PHASE.WAITING_READY, PHASE.READY, PHASE.ROLLING_BACK, PHASE.FAILED, PHASE.RECOVERING, PHASE.RESIDUE])
       ? stop(operation, authority) : invalid(operation)
     case 'service_stopped': {
       const spec = specOf(authority, serviceId)
       if (!spec || spec.ownership !== 'owned') return invalid(operation)
-      if (operation.phase === PHASE.STOPPING && pendingMatches(operation, event, ['stop'])) return serviceStopped(clearPending(operation, serviceId), serviceId, authority)
+      if (operation.phase === PHASE.STOPPING && pendingMatches(operation, event, ['stop'])) return serviceStopped(clearPending(operation, serviceId), serviceId, event, authority)
       if ([PHASE.ROLLING_BACK, PHASE.RECOVERING].includes(operation.phase) && pendingMatches(operation, event, ['stop'])) {
-        return setService(clearPending(operation, serviceId), serviceId, SERVICE.STOPPED, operation.phase)
+        return serviceStopped(clearPending(operation, serviceId), serviceId, event, authority)
+      }
+      if (operation.phase === PHASE.RESIDUE && pendingMatches(operation, event, ['stop'])) {
+        return serviceStopped(clearPending(operation, serviceId), serviceId, event, authority)
       }
       return invalid(operation)
     }
-    case 'stop_failed': return inPhase(operation, [PHASE.STOPPING, PHASE.RESIDUE]) && pendingMatches(operation, event, ['stop'])
-      ? residue(clearPending(operation, serviceId), serviceId, REASON.STOP_FAILED, authority) : invalid(operation)
+    case 'stop_failed': {
+      if (!inPhase(operation, [PHASE.STOPPING, PHASE.ROLLING_BACK, PHASE.RECOVERING, PHASE.RESIDUE]) ||
+          !pendingMatches(operation, event, ['stop'])) return invalid(operation)
+      const cleared = clearPending(operation, serviceId)
+      const appended = appendCleanupAttempt(cleared, event.cleanup_attempt, authority)
+      return appended ? residue(appended, serviceId,
+        operation.phase === PHASE.ROLLING_BACK ? REASON.ROLLBACK_FAILED : REASON.STOP_FAILED, authority) : invalid(operation)
+    }
+    case 'cleanup_unattempted': return inPhase(operation, [PHASE.STOPPING, PHASE.ROLLING_BACK, PHASE.RECOVERING, PHASE.RESIDUE])
+      ? cleanupUnattempted(operation, serviceId, event, authority) : invalid(operation)
+    case 'private_plan_cleanup_completed': return inPhase(operation, [PHASE.FAILED, PHASE.STOPPED, PHASE.ROLLING_BACK, PHASE.STOPPING, PHASE.RECOVERING, PHASE.RESIDUE])
+      ? privatePlanCleanup(operation, event, 'clear', authority) : invalid(operation)
+    case 'private_plan_cleanup_failed': return inPhase(operation, [PHASE.FAILED, PHASE.STOPPED, PHASE.ROLLING_BACK, PHASE.STOPPING, PHASE.RECOVERING, PHASE.RESIDUE])
+      ? privatePlanCleanup(operation, event, 'failed', authority) : invalid(operation)
+    case 'private_plan_cleanup_unattempted': return inPhase(operation, [PHASE.FAILED, PHASE.STOPPED, PHASE.ROLLING_BACK, PHASE.STOPPING, PHASE.RECOVERING, PHASE.RESIDUE])
+      ? privatePlanCleanup(operation, event, 'unattempted', authority) : invalid(operation)
     case 'supervisor_crashed': return inPhase(operation, [PHASE.PLANNED, PHASE.PREFLIGHT, PHASE.PREPARED, PHASE.STARTING, PHASE.WAITING_READY, PHASE.READY, PHASE.ROLLING_BACK, PHASE.STOPPING])
       ? next(clearInterruptedPending(operation), {
         phase: PHASE.RECOVERING, reason: firstFailure(operation, REASON.SUPERVISOR_CRASH), cleanup: CLEANUP.UNKNOWN,
@@ -531,10 +692,7 @@ const reduce = (operation, event, authority) => {
       if (!operation.recovery_required || operation.phase !== PHASE.RECOVERING) return invalid(operation)
       const outstanding = outstandingOwned(operation, authority)
       if (outstanding.length > 0 || operation.residue_service_ids.length > 0) return retainUnknownResidue(operation, outstanding)
-      return next(normalizePendingOwned(operation, authority), {
-        phase: operation.intent === 'stop' ? PHASE.STOPPED : PHASE.FAILED,
-        cleanup: CLEANUP.CLEAR, cleanup_result: cleanupResult(CLEANUP.CLEAR), recovery_required: false
-      })
+      return finalizeTerminalClear(operation, authority, operation.intent === 'stop' ? PHASE.STOPPED : PHASE.FAILED)
     }
     case 'residue_observed': {
       if (!inPhase(operation, [PHASE.RECOVERING, PHASE.RESIDUE])) return invalid(operation)
@@ -548,10 +706,7 @@ const reduce = (operation, event, authority) => {
       const changed = cloneOperation(operation, { services, residue_service_ids: residueIds })
       const outstanding = outstandingOwned(changed, authority)
       if (residueIds.length > 0 || outstanding.length > 0) return retainUnknownResidue(changed, outstanding)
-      return next(normalizePendingOwned(changed, authority), {
-        phase: operation.intent === 'stop' ? PHASE.STOPPED : PHASE.FAILED,
-        cleanup: CLEANUP.CLEAR, cleanup_result: cleanupResult(CLEANUP.CLEAR), recovery_required: false
-      })
+      return finalizeTerminalClear(changed, authority, operation.intent === 'stop' ? PHASE.STOPPED : PHASE.FAILED)
     }
     default: return invalid(operation)
   }
@@ -573,7 +728,9 @@ const validateSnapshot = (operation, authority) => {
   validateIdentityInputs(operation?.operation_id, operation?.graph_sha256, operation?.binding_sha256)
   if (operation.schema_version !== 'launcher_operation.v2' || operation.graph_sha256 !== authority.identities.graphSha256 ||
       operation.binding_sha256 !== authority.identities.bindingSha256) fail('operation_store_identity_mismatch')
-  const exact = ['schema_version', 'graph_sha256', 'binding_sha256', 'profile_id', 'effective_config_sha256', 'camera_policy', 'private_plan_sha256', 'worker_executable_class', 'worker_executable_sha256', 'probe_config_sha256', 'operation_id', 'supervisor_generation', 'intent', 'phase', 'reason', 'cleanup', 'primary_result', 'cleanup_result', 'revision', 'joined_existing', 'rollback_required', 'recovery_required', 'services', 'residue_service_ids'].sort()
+  const legacyExact = ['schema_version', 'graph_sha256', 'binding_sha256', 'profile_id', 'effective_config_sha256', 'camera_policy', 'private_plan_sha256', 'worker_executable_class', 'worker_executable_sha256', 'probe_config_sha256', 'operation_id', 'supervisor_generation', 'intent', 'phase', 'reason', 'cleanup', 'primary_result', 'cleanup_result', 'revision', 'joined_existing', 'rollback_required', 'recovery_required', 'services', 'residue_service_ids'].sort()
+  const hasCleanupAttempts = Object.hasOwn(operation, 'cleanup_attempts')
+  const exact = [...legacyExact, ...(hasCleanupAttempts ? ['cleanup_attempts'] : [])].sort()
   if (!operation || Object.keys(operation).sort().some((key, index) => key !== exact[index]) || Object.keys(operation).length !== exact.length) fail('operation_store_record_invalid')
   validateConfigIdentity({ profile_id: operation.profile_id, effective_config_sha256: operation.effective_config_sha256, camera_policy: operation.camera_policy }, authority)
   validatePlanIdentity({ private_plan_sha256: operation.private_plan_sha256, worker_executable_class: operation.worker_executable_class, worker_executable_sha256: operation.worker_executable_sha256 })
@@ -588,7 +745,14 @@ const validateSnapshot = (operation, authority) => {
       !['start', 'stop'].includes(operation.intent) || !Number.isSafeInteger(operation.revision) || operation.revision < 0 || operation.revision > Number.MAX_SAFE_INTEGER ||
       !allowed.phase.has(operation.phase) || !allowed.reason.has(operation.reason) || !allowed.cleanup.has(operation.cleanup) ||
       typeof operation.joined_existing !== 'boolean' || typeof operation.rollback_required !== 'boolean' || typeof operation.recovery_required !== 'boolean' ||
-      !Array.isArray(operation.services) || !Array.isArray(operation.residue_service_ids)) fail('operation_store_record_invalid')
+      !Array.isArray(operation.services) || !Array.isArray(operation.residue_service_ids) ||
+      (hasCleanupAttempts && (!Array.isArray(operation.cleanup_attempts) || operation.cleanup_attempts.length > 65))) fail('operation_store_record_invalid')
+  if (hasCleanupAttempts) {
+    operation.cleanup_attempts.forEach((attempt, index) => {
+      try { validateCleanupAttempt(attempt, authority.serviceIdPattern) } catch { fail('operation_store_record_invalid') }
+      if (attempt.sequence !== index + 1) fail('operation_store_record_invalid')
+    })
+  }
   const expected = authority.graph.services.map((service) => service.service_id).sort()
   const actual = operation.services.map((service) => service.service_id).sort()
   if (JSON.stringify(expected) !== JSON.stringify(actual) || new Set(actual).size !== actual.length ||
@@ -638,7 +802,10 @@ const validateSnapshot = (operation, authority) => {
   const allAreReady = allReady(operation, authority)
   const dependenciesSatisfied = operation.services.filter((service) => service.state !== SERVICE.PENDING).every((service) => dependenciesReady(operation, specs.get(service.service_id), authority))
 
-  if (operation.cleanup === CLEANUP.CLEAR && (![PHASE.FAILED, PHASE.STOPPED].includes(operation.phase) || !allOwnedClear || residueIds.size !== 0 || operation.rollback_required || operation.recovery_required)) fail('operation_store_record_invalid')
+  const incompleteServiceIds = incompleteParticipatingServiceIds(operation, authority)
+  if (operation.cleanup === CLEANUP.CLEAR && (!hasCleanupAttempts || ![PHASE.FAILED, PHASE.STOPPED].includes(operation.phase) || !allOwnedClear ||
+      incompleteServiceIds.length > 0 || residueIds.size !== 0 || operation.rollback_required || operation.recovery_required ||
+      !hasTerminalPrivatePlanProof(operation))) fail('operation_store_record_invalid')
   if (!cleanupMatches(operation.phase, operation.cleanup)) fail('operation_store_record_invalid')
   if (operation.rollback_required !== (operation.phase === PHASE.ROLLING_BACK) || operation.recovery_required !== [PHASE.RECOVERING, PHASE.RESIDUE].includes(operation.phase)) fail('operation_store_record_invalid')
   const activeReason = [REASON.NONE, REASON.INVALID_EVENT].includes(operation.reason)
@@ -651,7 +818,10 @@ const validateSnapshot = (operation, authority) => {
   if (operation.phase === PHASE.STOPPING && (operation.intent !== 'stop' || residueIds.size !== 0 || ownedStates.some((state) => ![SERVICE.STOP_REQUESTED, SERVICE.STOPPED, SERVICE.OPTIONAL_ABSENT].includes(state)))) fail('operation_store_record_invalid')
   if (operation.phase === PHASE.STOPPED && operation.intent !== 'stop') fail('operation_store_record_invalid')
   if (operation.phase === PHASE.RECOVERING && (operation.reason === REASON.NONE || residueIds.size !== 0)) fail('operation_store_record_invalid')
-  if (operation.phase === PHASE.RESIDUE && (operation.reason === REASON.NONE || residueIds.size === 0 || outstanding.some((id) => !residueIds.has(id)))) fail('operation_store_record_invalid')
+  const privatePlanFailure = hasCleanupAttempts && operation.cleanup_attempts.some((attempt) =>
+    attempt.target_class === 'private_plan' && ['failed', 'unattempted'].includes(attempt.outcome_class) &&
+    ['private_plan_cleanup_failed', 'unattempted_transport_unavailable'].includes(attempt.reason_class))
+  if (operation.phase === PHASE.RESIDUE && (operation.reason === REASON.NONE || (residueIds.size === 0 && !privatePlanFailure) || outstanding.some((id) => !residueIds.has(id)))) fail('operation_store_record_invalid')
   return operation
 }
 
@@ -686,7 +856,43 @@ const workerResultToEvent = (result, current, expectedRequest, authority) => {
   if (!compatibleResults[result.action].has(result.result_class)) fail('worker_result_action_incompatible')
   if (result.result_class === 'optional_absent' && spec.requirement !== 'optional') fail('worker_result_ownership_incompatible')
   if (result.result_class === 'external_ready' && spec.ownership !== 'external') fail('worker_result_ownership_incompatible')
-  if (['accepted', 'ready', 'stopped'].includes(result.result_class) && spec.ownership !== 'owned') fail('worker_result_ownership_incompatible')
+  if (['accepted', 'ready'].includes(result.result_class) && spec.ownership !== 'owned') fail('worker_result_ownership_incompatible')
+  if (result.action === 'stop') {
+    if (spec.ownership === 'external') {
+      const externalClear = result.result_class === 'stopped' &&
+        result.ownership_class === 'not_applicable' && result.descendant_class === 'not_applicable' &&
+        result.termination_class === 'not_applicable' && result.job_query_class === 'not_applicable' &&
+        result.active_count_after === null && result.post_stop_listener_class === 'not_applicable'
+      return {
+        event_type: externalClear ? 'service_stopped' : 'stop_failed',
+        operation_id: current.operation_id,
+        service_id: result.service_id,
+        dispatch_id: result.dispatch_id
+      }
+    }
+    const proofClear = result.result_class === 'stopped' && result.ownership_class === 'matched' &&
+      result.descendant_class === 'owned_clear' && ['forced_only', 'already_clear'].includes(result.termination_class) &&
+      result.job_query_class === 'trusted' && result.active_count_after === 0 &&
+      ['clear', 'not_applicable'].includes(result.post_stop_listener_class)
+    const cleanupAttempt = {
+      sequence: (Array.isArray(current.cleanup_attempts) ? current.cleanup_attempts.length : 0) + 1,
+      target_class: 'service',
+      responsible_id: result.service_id,
+      outcome_class: proofClear ? 'clear' : 'failed',
+      reason_class: proofClear ? 'none' : current.phase === PHASE.ROLLING_BACK ? 'rollback_failed' : 'stop_failed',
+      termination_class: result.termination_class,
+      job_query_class: result.job_query_class,
+      active_count_after: result.active_count_after,
+      post_stop_listener_class: result.post_stop_listener_class
+    }
+    return {
+      event_type: proofClear ? 'service_stopped' : 'stop_failed',
+      operation_id: current.operation_id,
+      service_id: result.service_id,
+      dispatch_id: result.dispatch_id,
+      cleanup_attempt: cleanupAttempt
+    }
+  }
   if (result.ownership_class === 'mismatch' || result.listener_class === 'mismatch' || result.descendant_class === 'foreign') {
     return { event_type: 'listener_mismatch', operation_id: current.operation_id, service_id: result.service_id, dispatch_id: result.dispatch_id }
   }
@@ -729,7 +935,7 @@ const workerResultToEvent = (result, current, expectedRequest, authority) => {
 }
 
 module.exports = {
-  CLEANUP, PHASE, REASON, SERVICE, createOperation, isClearTerminalFailure, reduce, startOperation,
+  CLEANUP, PHASE, REASON, SERVICE, createOperation, hasTerminalPrivatePlanProof, isClearTerminalFailure, reduce, startOperation,
   validateConfigIdentity, validateIdentityInputs, validatePersistedProbeResult, validatePlanIdentity,
   validateProbeConfigSha256, validateSnapshot, workerResultToEvent
 }

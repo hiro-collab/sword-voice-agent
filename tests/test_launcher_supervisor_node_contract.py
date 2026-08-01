@@ -68,6 +68,65 @@ class LauncherSupervisorNodeContractTests(unittest.TestCase):
         self.assertIn("mismatch", result["ownership_class"]["enum"])
         self.assertIn("mismatch", result["listener_class"]["enum"])
         self.assertIn("foreign", result["descendant_class"]["enum"])
+        self.assertEqual(
+            set(result["termination_class"]["enum"]),
+            {"forced_only", "graceful", "already_clear", "not_applicable", "unknown"},
+        )
+        self.assertEqual(
+            set(result["job_query_class"]["enum"]),
+            {"trusted", "failed", "not_applicable", "unknown"},
+        )
+        self.assertEqual(
+            set(result["post_stop_listener_class"]["enum"]),
+            {"clear", "foreign_present", "unknown", "not_applicable"},
+        )
+
+    def test_operation_v2_has_optional_bounded_s2_cleanup_attempts(self) -> None:
+        schema = json.loads((ROOT / "contracts" / "launcher" / "launcher-operation.v2.schema.json").read_text(encoding="utf-8"))
+        self.assertNotIn("cleanup_attempts", schema["required"])
+        self.assertEqual(schema["properties"]["cleanup_attempts"]["maxItems"], 65)
+        attempt = schema["$defs"]["cleanup_attempt"]
+        self.assertIs(attempt["additionalProperties"], False)
+        self.assertEqual(set(attempt["properties"]), set(attempt["required"]))
+        self.assertEqual(set(attempt["properties"]["target_class"]["enum"]), {"service", "private_plan"})
+        self.assertEqual(set(attempt["properties"]["outcome_class"]["enum"]), {"clear", "failed", "unattempted"})
+        self.assertIn("legacy_missing", attempt["properties"]["reason_class"]["enum"])
+        self.assertIn("unattempted_transport_unavailable", attempt["properties"]["reason_class"]["enum"])
+        clear_rule = attempt["allOf"][1]
+        self.assertEqual(clear_rule["if"]["properties"]["target_class"]["const"], "service")
+        self.assertEqual(clear_rule["if"]["properties"]["outcome_class"]["const"], "clear")
+        self.assertEqual(clear_rule["then"]["properties"]["reason_class"]["const"], "none")
+        self.assertEqual(set(clear_rule["then"]["properties"]["termination_class"]["enum"]), {"forced_only", "already_clear"})
+        self.assertEqual(clear_rule["then"]["properties"]["job_query_class"]["const"], "trusted")
+        self.assertEqual(clear_rule["then"]["properties"]["active_count_after"]["const"], 0)
+        self.assertEqual(set(clear_rule["then"]["properties"]["post_stop_listener_class"]["enum"]), {"clear", "not_applicable"})
+
+    def test_reducer_vectors_cover_artifact_only_cleanup_residue(self) -> None:
+        vectors = json.loads((ROOT / "contracts" / "launcher" / "launcher-reducer-vectors.v2.json").read_text(encoding="utf-8"))["vectors"]
+        artifact = next(vector for vector in vectors if vector["vector_id"] == "private_plan_cleanup_failure_is_artifact_residue")
+        self.assertEqual(artifact["expected"]["residue_service_ids"], [])
+        self.assertEqual(artifact["expected"]["cleanup_attempts"][0]["target_class"], "private_plan")
+        self.assertEqual(artifact["expected"]["cleanup_attempts"][0]["reason_class"], "private_plan_cleanup_failed")
+
+    def test_terminal_clear_uses_the_final_private_plan_row_and_exact_preflight_exemption(self) -> None:
+        source = (ROOT / "tools" / "home-control-launcher" / "launcher-supervisor-reducer.js").read_text(encoding="utf-8")
+        self.assertIn("const finalPrivatePlanCleanupAttempt", source)
+        self.assertIn("attempt.sequence > finalAttempt.sequence", source)
+        self.assertIn("const hasExactPreflightNoSideEffectClear", source)
+        self.assertIn("operation.cleanup_attempts.length === 0", source)
+        self.assertIn("operation.services.every((service) => service.attempt_sequence === 0)", source)
+        self.assertIn("const hasTerminalPrivatePlanProof", source)
+        self.assertIn("hasTerminalPrivatePlanProof(operation)", source)
+
+        vectors = json.loads((ROOT / "contracts" / "launcher" / "launcher-reducer-vectors.v2.json").read_text(encoding="utf-8"))["vectors"]
+        by_id = {vector["vector_id"]: vector for vector in vectors}
+        success = by_id["recovery_records_private_plan_clear_before_terminal_clear"]
+        self.assertLess(
+            next(index for index, event in enumerate(success["events"]) if event["event_type"] == "private_plan_cleanup_completed"),
+            next(index for index, event in enumerate(success["events"]) if event["event_type"] == "recovery_started"),
+        )
+        self.assertEqual(by_id["recovery_private_plan_failure_stays_residue"]["expected"]["cleanup"], "residue")
+        self.assertEqual(by_id["recovery_private_plan_unavailable_stays_unknown"]["expected"]["cleanup"], "unknown")
 
     def test_operation_store_has_fixed_child_files_and_fixed_error_surface(self) -> None:
         source = (ROOT / "tools" / "home-control-launcher" / "launcher-operation-store.js").read_text(encoding="utf-8")

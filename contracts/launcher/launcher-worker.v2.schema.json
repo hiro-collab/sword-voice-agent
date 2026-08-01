@@ -27,7 +27,7 @@
     },
     "result": {
       "type": "object", "additionalProperties": false,
-      "required": ["schema_version", "message_type", "operation_id", "supervisor_generation", "authority_lease_proof", "dispatch_id", "service_id", "action", "expected_revision", "worker_nonce", "result_class", "ownership_class", "listener_class", "descendant_class"],
+      "required": ["schema_version", "message_type", "operation_id", "supervisor_generation", "authority_lease_proof", "dispatch_id", "service_id", "action", "expected_revision", "worker_nonce", "result_class", "ownership_class", "listener_class", "descendant_class", "termination_class", "job_query_class", "active_count_after", "post_stop_listener_class"],
       "properties": {
         "schema_version": { "const": "launcher_worker.v2" }, "message_type": { "const": "result" },
         "operation_id": { "$ref": "#/$defs/operation_id" },
@@ -41,8 +41,35 @@
         "result_class": { "enum": ["accepted", "ready", "optional_absent", "external_ready", "stopped", "spawn_failed", "early_exit", "listener_mismatch", "readiness_timeout", "stop_failed", "deadline", "cancelled", "invalid_request", "internal_failure"] },
         "ownership_class": { "enum": ["matched", "mismatch", "unknown", "not_applicable"] },
         "listener_class": { "enum": ["matched", "mismatch", "unknown", "not_applicable"] },
-        "descendant_class": { "enum": ["owned_clear", "owned_active", "foreign", "unknown", "not_applicable"] }
-      }
+        "descendant_class": { "enum": ["owned_clear", "owned_active", "foreign", "unknown", "not_applicable"] },
+        "termination_class": { "enum": ["forced_only", "graceful", "already_clear", "not_applicable", "unknown"] },
+        "job_query_class": { "enum": ["trusted", "failed", "not_applicable", "unknown"] },
+        "active_count_after": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+          ]
+        },
+        "post_stop_listener_class": { "enum": ["clear", "foreign_present", "unknown", "not_applicable"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "job_query_class": { "const": "trusted" } }, "required": ["job_query_class"] },
+          "then": { "properties": { "active_count_after": { "type": "integer", "minimum": 0, "maximum": 4294967295 } } },
+          "else": { "properties": { "active_count_after": { "type": "null" } } }
+        },
+        {
+          "if": { "not": { "properties": { "action": { "const": "stop" } }, "required": ["action"] } },
+          "then": {
+            "properties": {
+              "termination_class": { "const": "not_applicable" },
+              "job_query_class": { "const": "not_applicable" },
+              "active_count_after": { "type": "null" },
+              "post_stop_listener_class": { "const": "not_applicable" }
+            }
+          }
+        }
+      ]
     }
   }
 }

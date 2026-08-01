@@ -2,7 +2,9 @@
 
 const crypto = require('node:crypto')
 
-const { LauncherContractError, assertAuthority, canonicalJsonSha256, loadAuthority } = require('./launcher-supervisor-contract')
+const {
+  LauncherContractError, assertAuthority, canonicalJsonSha256, hasClearServiceCleanupProof, loadAuthority
+} = require('./launcher-supervisor-contract')
 const operationStore = require('./launcher-operation-store')
 const reducer = require('./launcher-supervisor-reducer')
 const {
@@ -111,6 +113,21 @@ const eventFor = (operation, eventType, serviceId = null, fields = {}) => ({
   ...fields
 })
 
+const hasPartialTerminalCleanupProof = (operation) => {
+  if (!operation || ![reducer.PHASE.STOPPED, reducer.PHASE.FAILED].includes(operation.phase) ||
+      operation.cleanup !== reducer.CLEANUP.CLEAR) return false
+  if (!Array.isArray(operation.cleanup_attempts)) return true
+  const participating = operation.services.filter((service) => service.state === reducer.SERVICE.STOPPED && service.attempt_sequence > 0)
+  const incomplete = participating.some((service) => {
+    const finalAttempt = operation.cleanup_attempts.filter((attempt) => (
+      attempt.target_class === 'service' && attempt.responsible_id === service.service_id
+    )).at(-1)
+    return !hasClearServiceCleanupProof(finalAttempt)
+  })
+  if (incomplete) return true
+  return !reducer.hasTerminalPrivatePlanProof(operation)
+}
+
 const publicOperation = (operation, profileId = 'thought-core-v0') => {
   if (!operation) {
     return {
@@ -130,9 +147,11 @@ const publicOperation = (operation, profileId = 'thought-core-v0') => {
       recovery_required: false,
       services: [],
       residue_service_ids: [],
+      cleanup_attempts: [],
       raw_private_publication_flags: false
     }
   }
+  const partialClear = hasPartialTerminalCleanupProof(operation)
   return {
     schema_version: 'launcher_supervisor_public.v1',
     authority_class: 'node_supervisor',
@@ -142,17 +161,30 @@ const publicOperation = (operation, profileId = 'thought-core-v0') => {
     operation_id: operation.operation_id,
     intent: operation.intent,
     phase: operation.phase,
-    reason: operation.reason,
-    cleanup: operation.cleanup,
+    reason: partialClear ? reducer.REASON.STOP_FAILED : operation.reason,
+    cleanup: partialClear ? reducer.CLEANUP.UNKNOWN : operation.cleanup,
     revision: operation.revision,
     joined_existing: operation.joined_existing,
     rollback_required: operation.rollback_required,
-    recovery_required: operation.recovery_required,
+    recovery_required: partialClear ? true : operation.recovery_required,
     services: operation.services.map((service) => ({
       service_id: service.service_id,
       state: service.state
     })),
     residue_service_ids: [...operation.residue_service_ids],
+    cleanup_attempts: Array.isArray(operation.cleanup_attempts)
+      ? operation.cleanup_attempts.map((attempt) => ({
+          sequence: attempt.sequence,
+          target_class: attempt.target_class,
+          responsible_id: attempt.responsible_id,
+          outcome_class: attempt.outcome_class,
+          reason_class: attempt.reason_class,
+          termination_class: attempt.termination_class,
+          job_query_class: attempt.job_query_class,
+          active_count_after: attempt.active_count_after,
+          post_stop_listener_class: attempt.post_stop_listener_class
+        }))
+      : [],
     raw_private_publication_flags: false
   }
 }
@@ -174,11 +206,13 @@ const publicOperationStoreFailure = (profileId = 'thought-core-v0') => ({
   recovery_required: false,
   services: [],
   residue_service_ids: [],
+  cleanup_attempts: [],
   raw_private_publication_flags: false
 })
 
 const resultClassFor = (operation) => {
   if (!operation) return 'idle'
+  if (hasPartialTerminalCleanupProof(operation)) return 'failed'
   if (operation.phase === reducer.PHASE.READY) return 'ready'
   if (operation.phase === reducer.PHASE.STOPPED) return 'stopped'
   if (operation.phase === reducer.PHASE.RESIDUE) return 'residue'
@@ -506,6 +540,7 @@ class LauncherSupervisorRuntime {
         }
       }
     }
+    this.lastCloseResult = Object.freeze({ client_clear: clientClear, plan_clear: planClear, remove_plan: Boolean(removePlan) })
     return clientClear && planClear
   }
 
@@ -614,16 +649,62 @@ class LauncherSupervisorRuntime {
 
   cleanupFailure (mode, serviceId) {
     const dispatchId = this.pendingDispatchId(serviceId, 'stop')
-    const fields = dispatchId ? { dispatch_id: dispatchId } : {}
+    const fields = {
+      ...(dispatchId ? { dispatch_id: dispatchId } : {}),
+      cleanup_attempt: {
+        sequence: (Array.isArray(this.current?.cleanup_attempts) ? this.current.cleanup_attempts.length : 0) + 1,
+        target_class: 'service',
+        responsible_id: serviceId,
+        outcome_class: 'failed',
+        reason_class: mode === 'rollback' ? 'rollback_failed' : 'stop_failed',
+        termination_class: 'unknown',
+        job_query_class: 'unknown',
+        active_count_after: null,
+        post_stop_listener_class: 'unknown'
+      }
+    }
     if (mode === 'rollback') return this.apply('rollback_failed', serviceId, fields)
     if (mode === 'recovery') return this.apply('residue_observed', serviceId, fields)
     return this.apply('stop_failed', serviceId, fields)
   }
 
+  cleanupUnattempted (serviceId) {
+    return this.apply('cleanup_unattempted', serviceId, {
+      cleanup_attempt: {
+        sequence: (Array.isArray(this.current?.cleanup_attempts) ? this.current.cleanup_attempts.length : 0) + 1,
+        target_class: 'service',
+        responsible_id: serviceId,
+        outcome_class: 'unattempted',
+        reason_class: 'unattempted_transport_unavailable',
+        termination_class: 'unknown',
+        job_query_class: 'unknown',
+        active_count_after: null,
+        post_stop_listener_class: 'unknown'
+      }
+    })
+  }
+
+  privatePlanCleanup (outcome) {
+    const eventType = outcome === 'clear'
+      ? 'private_plan_cleanup_completed'
+      : outcome === 'failed' ? 'private_plan_cleanup_failed' : 'private_plan_cleanup_unattempted'
+    return this.apply(eventType, null, {
+      cleanup_attempt: {
+        sequence: (Array.isArray(this.current?.cleanup_attempts) ? this.current.cleanup_attempts.length : 0) + 1,
+        target_class: 'private_plan',
+        responsible_id: 'launcher_supervisor',
+        outcome_class: outcome,
+        reason_class: outcome === 'clear' ? 'none' : outcome === 'failed' ? 'private_plan_cleanup_failed' : 'unattempted_transport_unavailable',
+        termination_class: 'not_applicable',
+        job_query_class: 'not_applicable',
+        active_count_after: null,
+        post_stop_listener_class: 'not_applicable'
+      }
+    })
+  }
+
   async stopOwnedServices (mode, compiled) {
     const candidates = this.stopCandidates()
-    let held = null
-    let heldServiceId = null
     try {
       if (!this.client) return false
       for (let index = 0; index < candidates.length; index += 1) {
@@ -633,39 +714,29 @@ class LauncherSupervisorRuntime {
           workerEvent = await this.exchange(serviceId, 'stop')
         } catch {
           this.cleanupFailure(mode, serviceId)
+          for (const unattemptedServiceId of candidates.slice(index + 1)) this.cleanupUnattempted(unattemptedServiceId)
           const closed = await this.closeClientAndPlan({ removePlan: false })
           if (closed && [reducer.PHASE.FAILED, reducer.PHASE.RESIDUE].includes(this.current?.phase)) {
             this.releaseSupervisorLease()
           }
           return false
         }
-        if (workerEvent.event_type !== 'service_stopped') {
-          this.cleanupFailure(mode, serviceId)
-          const closed = await this.closeClientAndPlan({ removePlan: false })
-          if (closed && [reducer.PHASE.FAILED, reducer.PHASE.RESIDUE].includes(this.current?.phase)) {
-            this.releaseSupervisorLease()
-          }
-          return false
-        }
-        if (index === candidates.length - 1) {
-          held = workerEvent
-          heldServiceId = serviceId
-        } else {
-          this.apply(workerEvent.event_type, serviceId, { dispatch_id: workerEvent.dispatch_id })
-        }
+        this.apply(workerEvent.event_type, serviceId, {
+          dispatch_id: workerEvent.dispatch_id,
+          ...(workerEvent.cleanup_attempt ? { cleanup_attempt: workerEvent.cleanup_attempt } : {})
+        })
       }
       const cleanupClear = await this.closeClientAndPlan()
       if (!cleanupClear) {
-        const serviceId = heldServiceId || candidates[0]
-        if (serviceId) this.cleanupFailure(mode, serviceId)
+        this.privatePlanCleanup(this.lastCloseResult?.client_clear ? 'failed' : 'unattempted')
         return false
       }
-      if (held) this.apply(held.event_type, held.service_id, { dispatch_id: held.dispatch_id })
-      return true
+      this.privatePlanCleanup('clear')
+      return ![reducer.CLEANUP.RESIDUE, reducer.CLEANUP.UNKNOWN].includes(this.current.cleanup)
     } catch {
       const closed = await this.closeClientAndPlan({ removePlan: false })
-      const serviceId = heldServiceId || candidates[0]
-      if (serviceId && this.current && this.current.phase !== reducer.PHASE.RESIDUE) {
+      const serviceId = candidates[0]
+      if (serviceId && this.current && this.current.phase !== reducer.PHASE.RESIDUE && this.pendingDispatchId(serviceId, 'stop')) {
         try { this.cleanupFailure(mode, serviceId) } catch {}
       }
       if (closed && [reducer.PHASE.FAILED, reducer.PHASE.RESIDUE].includes(this.current?.phase)) {
@@ -688,7 +759,9 @@ class LauncherSupervisorRuntime {
     if (!this.current || !ACTIVE_PHASES.has(this.current.phase)) return
     if (this.current.phase !== reducer.PHASE.RECOVERING) this.apply('supervisor_crashed')
     if (this.current.phase !== reducer.PHASE.RECOVERING) return
-    if (!(await this.closeClientAndPlan())) return false
+    const planClear = await this.closeClientAndPlan()
+    this.privatePlanCleanup(planClear ? 'clear' : this.lastCloseResult?.client_clear ? 'failed' : 'unattempted')
+    if (!planClear || this.current.phase !== reducer.PHASE.RECOVERING) return false
     this.apply('recovery_started')
     this.apply('recovery_completed')
     const clear = this.current.cleanup === reducer.CLEANUP.CLEAR
@@ -976,8 +1049,6 @@ class LauncherSupervisorRuntime {
         })
       }
       if (current.phase === reducer.PHASE.STOPPED) {
-        const closed = await this.closeClientAndPlan()
-        if (closed) this.releaseSupervisorLease()
         return publicResult({
           ok: true,
           resultClass: 'already_stopped',
@@ -988,6 +1059,8 @@ class LauncherSupervisorRuntime {
       if (reducer.isClearTerminalFailure(current, this.authority)) {
         if (!this.supervisorLease) this.acquireExistingSupervisorLease()
         this.apply('stop_requested')
+        const planClear = await this.closeClientAndPlan()
+        this.privatePlanCleanup(planClear ? 'clear' : this.lastCloseResult?.client_clear ? 'failed' : 'unattempted')
         const released = this.current.phase === reducer.PHASE.STOPPED
           ? this.releaseSupervisorLease()
           : false

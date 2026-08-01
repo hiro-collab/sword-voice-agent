@@ -60,7 +60,55 @@ const workerResult = (request, values = {}) => ({
   authority_lease_proof: request.authority_lease_proof,
   service_id: request.service_id, action: request.action, expected_revision: request.expected_revision,
   worker_nonce: request.worker_nonce, result_class: 'accepted', ownership_class: 'matched',
-  listener_class: 'not_applicable', descendant_class: 'owned_active', ...values
+  listener_class: 'not_applicable', descendant_class: 'owned_active',
+  termination_class: request.action === 'stop' ? 'forced_only' : 'not_applicable',
+  job_query_class: request.action === 'stop' ? 'trusted' : 'not_applicable',
+  active_count_after: request.action === 'stop' ? 0 : null,
+  post_stop_listener_class: 'not_applicable',
+  ...values
+})
+const serviceCleanupAttempt = (operation, serviceId, values = {}) => ({
+  sequence: (operation.cleanup_attempts?.length || 0) + 1,
+  target_class: 'service',
+  responsible_id: serviceId,
+  outcome_class: 'clear',
+  reason_class: 'none',
+  termination_class: 'forced_only',
+  job_query_class: 'trusted',
+  active_count_after: 0,
+  post_stop_listener_class: 'not_applicable',
+  ...values
+})
+const cleanupEvent = (operation, eventType, serviceId, operationId = OPERATION_ID, dispatch = undefined) => ({
+  ...event(eventType, serviceId, operationId, dispatch),
+  cleanup_attempt: serviceCleanupAttempt(operation, serviceId, eventType === 'service_stopped'
+    ? {}
+    : {
+        outcome_class: 'failed',
+        reason_class: eventType === 'rollback_failed' ? 'rollback_failed' : 'stop_failed',
+        termination_class: 'unknown',
+        job_query_class: 'unknown',
+        active_count_after: null,
+        post_stop_listener_class: 'unknown'
+      })
+})
+const privatePlanCleanupEvent = (operation, eventType = 'private_plan_cleanup_completed') => ({
+  ...event(eventType),
+  cleanup_attempt: {
+    sequence: (operation.cleanup_attempts?.length || 0) + 1,
+    target_class: 'private_plan',
+    responsible_id: 'launcher_supervisor',
+    outcome_class: eventType === 'private_plan_cleanup_completed'
+      ? 'clear'
+      : eventType === 'private_plan_cleanup_failed' ? 'failed' : 'unattempted',
+    reason_class: eventType === 'private_plan_cleanup_completed'
+      ? 'none'
+      : eventType === 'private_plan_cleanup_failed' ? 'private_plan_cleanup_failed' : 'unattempted_transport_unavailable',
+    termination_class: 'not_applicable',
+    job_query_class: 'not_applicable',
+    active_count_after: null,
+    post_stop_listener_class: 'not_applicable'
+  }
 })
 const staleLockRecord = (ownerPid, ownerNonce = 'll_00000000000000000000000000000000') => ({
   schema_version: 'launcher_operation_lock.v1', owner_nonce: ownerNonce, owner_pid: ownerPid,
@@ -236,6 +284,24 @@ const fullReady = () => {
   return operation
 }
 
+const fullStopped = () => {
+  let operation = fullReady()
+  operation = reducer.reduce(operation, event('stop_requested'), authority)
+  for (const service of authority.graph.services.filter((item) => item.ownership === 'owned' && item.requirement !== 'optional')) {
+    operation = reducer.reduce(operation, event('stop_dispatch_requested', service.service_id), authority)
+    operation = reducer.reduce(operation, cleanupEvent(operation, 'service_stopped', service.service_id), authority)
+  }
+  operation = reducer.reduce(operation, privatePlanCleanupEvent(operation), authority)
+  assert.equal(operation.phase, 'stopped')
+  assert.equal(operation.cleanup, 'clear')
+  return operation
+}
+
+const withCleanupAttempts = (operation, attempts) => ({
+  ...operation,
+  cleanup_attempts: attempts.map((attempt, index) => ({ ...attempt, sequence: index + 1 }))
+})
+
 test('authority is canonical, hash-bound, drift-checked, and LF-stable', () => {
   assert.equal(authority.bindingDocument.binding.text_hash_mode, 'utf8_lf_v1')
   assert.equal(authority.identities.bindingSha256, authority.bindingDocument.binding_sha256)
@@ -363,7 +429,8 @@ test('worker result correlation protects revision, nonce, ownership, PID, and li
     dispatch_id: request.dispatch_id,
     service_id: 'home_assistant_bridge', action: 'start', expected_revision: operation.revision,
     worker_nonce: 'lw_0000000000000001', result_class: 'accepted', ownership_class: 'matched',
-    listener_class: 'matched', descendant_class: 'owned_active'
+    listener_class: 'matched', descendant_class: 'owned_active', termination_class: 'not_applicable',
+    job_query_class: 'not_applicable', active_count_after: null, post_stop_listener_class: 'not_applicable'
   }
   assert.equal(reducer.workerResultToEvent(result, operation, request, authority).event_type, 'spawn_succeeded')
   expectCode(() => reducer.workerResultToEvent({ ...result, expected_revision: operation.revision + 1 }, operation, request, authority), 'worker_result_correlation_mismatch')
@@ -382,6 +449,319 @@ test('worker result correlation protects revision, nonce, ownership, PID, and li
     expected_revision: probeRequest.expected_revision, dispatch_id: probeRequest.dispatch_id
   }
   assert.equal(reducer.workerResultToEvent(probeResult, operation, probeRequest, authority).event_type, 'probe_transport_ready')
+})
+
+test('Stop proof is incomplete unless termination Job count and post-stop listener are all clear', () => {
+  const stopDeadline = authority.graph.services.find((service) => service.service_id === 'home_assistant_bridge').stop.graceful_timeout_ms
+  const cases = [
+    ['termination_unknown', { termination_class: 'unknown' }],
+    ['job_failed', { job_query_class: 'failed', active_count_after: null }],
+    ['job_unknown', { job_query_class: 'unknown', active_count_after: null }],
+    ['job_nonzero', { active_count_after: 1 }],
+    ['listener_foreign', { post_stop_listener_class: 'foreign_present' }],
+    ['listener_unknown', { post_stop_listener_class: 'unknown' }]
+  ]
+  for (const [name, proof] of cases) {
+    let operation = fullReady()
+    operation = reducer.reduce(operation, event('stop_requested'), authority)
+    operation = reducer.reduce(operation, event('stop_dispatch_requested', 'home_assistant_bridge'), authority)
+    const request = workerRequest(operation, 'home_assistant_bridge', 'stop', 'job_worker_job_close', stopDeadline)
+    const result = workerResult(request, {
+      result_class: 'stopped',
+      ownership_class: 'matched',
+      descendant_class: 'owned_clear',
+      ...proof
+    })
+    const failure = reducer.workerResultToEvent(result, operation, request, authority)
+    assert.equal(failure.event_type, 'stop_failed', name)
+    operation = reducer.reduce(operation, failure, authority)
+    assert.equal(operation.phase, 'residue', name)
+    assert.notEqual(operation.cleanup, 'clear', name)
+    assert.deepEqual(operation.cleanup_attempts.at(-1), failure.cleanup_attempt, name)
+  }
+
+  let operation = fullReady()
+  operation = reducer.reduce(operation, event('stop_requested'), authority)
+  operation = reducer.reduce(operation, event('stop_dispatch_requested', 'home_assistant_bridge'), authority)
+  const request = workerRequest(operation, 'home_assistant_bridge', 'stop', 'job_worker_job_close', stopDeadline)
+  const missing = workerResult(request, { result_class: 'stopped', descendant_class: 'owned_clear' })
+  delete missing.post_stop_listener_class
+  expectCode(() => reducer.workerResultToEvent(missing, operation, request, authority), 'worker_result_shape_invalid')
+})
+
+test('service cleanup clear rows require the complete forced-or-already-clear proof tuple', () => {
+  const base = serviceCleanupAttempt({ cleanup_attempts: [] }, 'home_assistant_bridge')
+  const malformed = [
+    { termination_class: 'unknown' },
+    { termination_class: 'graceful' },
+    { termination_class: 'not_applicable' },
+    { job_query_class: 'failed', active_count_after: null },
+    { job_query_class: 'unknown', active_count_after: null },
+    { job_query_class: 'not_applicable', active_count_after: null },
+    { active_count_after: null },
+    { active_count_after: 1 },
+    { post_stop_listener_class: 'foreign_present' },
+    { post_stop_listener_class: 'unknown' }
+  ]
+  for (const mutation of malformed) {
+    assert.throws(() => contract.validateCleanupAttempt({ ...base, ...mutation }, authority.serviceIdPattern))
+  }
+  assert.equal(contract.validateCleanupAttempt(base, authority.serviceIdPattern), base)
+  assert.equal(contract.validateCleanupAttempt({ ...base, termination_class: 'already_clear' }, authority.serviceIdPattern).termination_class, 'already_clear')
+  assert.equal(contract.validateCleanupAttempt({ ...base, post_stop_listener_class: 'clear' }, authority.serviceIdPattern).post_stop_listener_class, 'clear')
+})
+
+test('terminal cleanup clear requires each participating owned service final row to be complete', () => {
+  const stopped = fullStopped()
+  const participatingId = stopped.services.find((service) => service.state === 'stopped' && service.attempt_sequence > 0).service_id
+  const serviceRows = stopped.cleanup_attempts.filter((attempt) => attempt.target_class === 'service')
+  const privatePlanRows = stopped.cleanup_attempts.filter((attempt) => attempt.target_class === 'private_plan')
+  const participantRows = serviceRows.filter((attempt) => attempt.responsible_id === participatingId)
+  const otherServiceRows = serviceRows.filter((attempt) => attempt.responsible_id !== participatingId)
+  const earlierClear = participantRows.at(-1)
+  const failed = {
+    ...earlierClear,
+    outcome_class: 'failed',
+    reason_class: 'stop_failed',
+    active_count_after: 1,
+    post_stop_listener_class: 'foreign_present'
+  }
+  const unattempted = {
+    ...earlierClear,
+    outcome_class: 'unattempted',
+    reason_class: 'unattempted_transport_unavailable',
+    termination_class: 'unknown',
+    job_query_class: 'unknown',
+    active_count_after: null,
+    post_stop_listener_class: 'unknown'
+  }
+  const incomplete = { ...earlierClear, active_count_after: 1 }
+  const invalidTerminalRecords = [
+    withCleanupAttempts(stopped, privatePlanRows),
+    withCleanupAttempts(stopped, [...otherServiceRows, ...privatePlanRows]),
+    withCleanupAttempts(stopped, [...serviceRows, failed, ...privatePlanRows]),
+    withCleanupAttempts(stopped, [...serviceRows, unattempted, ...privatePlanRows]),
+    withCleanupAttempts(stopped, [...serviceRows, incomplete, ...privatePlanRows])
+  ]
+  for (const record of invalidTerminalRecords) {
+    expectCode(() => reducer.validateSnapshot(record, authority), 'operation_store_record_invalid')
+  }
+  assert.equal(reducer.validateSnapshot(stopped, authority), stopped)
+})
+
+test('terminal cleanup clear requires the final private-plan row except for exact preflight no-side-effect failure', () => {
+  let preflight = reducer.createOperation(OPERATION_ID, authority)
+  preflight = reducer.reduce(preflight, event('preflight_started'), authority)
+  preflight = reducer.reduce(preflight, event('preflight_failed'), authority)
+  assert.equal(reducer.hasTerminalPrivatePlanProof(preflight), true)
+  assert.equal(reducer.isClearTerminalFailure(preflight, authority), true)
+  assert.equal(reducer.validateSnapshot(preflight, authority), preflight)
+
+  const stopped = fullStopped()
+  const serviceRows = stopped.cleanup_attempts.filter((attempt) => attempt.target_class === 'service')
+  const privatePlanClear = stopped.cleanup_attempts.filter((attempt) => attempt.target_class === 'private_plan').at(-1)
+  const privatePlanFailed = {
+    ...privatePlanClear,
+    outcome_class: 'failed',
+    reason_class: 'private_plan_cleanup_failed'
+  }
+  const privatePlanUnattempted = {
+    ...privatePlanClear,
+    outcome_class: 'unattempted',
+    reason_class: 'unattempted_transport_unavailable'
+  }
+  const nonPreflightFailure = {
+    ...withCleanupAttempts(stopped, serviceRows),
+    intent: 'start',
+    phase: 'failed',
+    reason: 'spawn_failed',
+    primary_result: { class: 'spawn_failed', responsible_id: 'home_assistant_bridge', action_certainty: 'may_have_occurred' }
+  }
+  const invalidTerminalRecords = [
+    withCleanupAttempts(stopped, serviceRows),
+    withCleanupAttempts(stopped, [...stopped.cleanup_attempts, privatePlanFailed]),
+    withCleanupAttempts(stopped, [...stopped.cleanup_attempts, privatePlanUnattempted]),
+    nonPreflightFailure
+  ]
+  for (const record of invalidTerminalRecords) {
+    assert.equal(reducer.hasTerminalPrivatePlanProof(record), false)
+    expectCode(() => reducer.validateSnapshot(record, authority), 'operation_store_record_invalid')
+  }
+
+  const firstOwnedIndex = preflight.services.findIndex((service) => service.state === 'stopped')
+  const nearMisses = [
+    {
+      ...preflight,
+      primary_result: { ...preflight.primary_result, action_certainty: 'may_have_occurred' }
+    },
+    {
+      ...preflight,
+      reason: 'spawn_failed',
+      primary_result: { class: 'spawn_failed', responsible_id: 'launcher_supervisor', action_certainty: 'not_attempted' }
+    },
+    {
+      ...preflight,
+      services: preflight.services.map((service, index) => index === firstOwnedIndex
+        ? { ...service, attempt_sequence: 1 }
+        : { ...service })
+    },
+    withCleanupAttempts(preflight, [{ ...privatePlanFailed, sequence: 1 }])
+  ]
+  for (const record of nearMisses) {
+    assert.equal(reducer.hasTerminalPrivatePlanProof(record), false)
+    expectCode(() => reducer.validateSnapshot(record, authority), 'operation_store_record_invalid')
+  }
+})
+
+test('recovery and residue completion cannot clear an absent or superseded private-plan proof', () => {
+  const stopped = fullStopped()
+  const privatePlanClear = stopped.cleanup_attempts.filter((attempt) => attempt.target_class === 'private_plan').at(-1)
+  const serviceRows = stopped.cleanup_attempts.filter((attempt) => attempt.target_class === 'service')
+  const privatePlanFailed = {
+    ...privatePlanClear,
+    outcome_class: 'failed',
+    reason_class: 'private_plan_cleanup_failed'
+  }
+  const privatePlanUnattempted = {
+    ...privatePlanClear,
+    outcome_class: 'unattempted',
+    reason_class: 'unattempted_transport_unavailable'
+  }
+  const recovering = (intent, attempts) => withCleanupAttempts({
+    ...stopped,
+    intent,
+    phase: 'recovering',
+    reason: 'supervisor_crash',
+    cleanup: 'unknown',
+    cleanup_result: { class: 'unknown', responsible_id: 'launcher_supervisor' },
+    primary_result: { class: 'supervisor_crash', responsible_id: 'launcher_supervisor', action_certainty: 'may_have_occurred' },
+    recovery_required: true
+  }, attempts)
+
+  const successful = reducer.reduce(recovering('start', stopped.cleanup_attempts), event('recovery_completed'), authority)
+  assert.equal(successful.phase, 'failed')
+  assert.equal(successful.cleanup, 'clear')
+  reducer.validateSnapshot(successful, authority)
+
+  for (const attempts of [
+    serviceRows,
+    [...stopped.cleanup_attempts, privatePlanFailed],
+    [...stopped.cleanup_attempts, privatePlanUnattempted]
+  ]) {
+    for (const intent of ['start', 'stop']) {
+      const result = reducer.reduce(recovering(intent, attempts), event('recovery_completed'), authority)
+      assert.notEqual(result.cleanup, 'clear')
+      reducer.validateSnapshot(result, authority)
+    }
+  }
+
+  const residueServiceId = stopped.services.find((service) => service.state === 'stopped' && service.attempt_sequence > 0).service_id
+  const residue = {
+    ...recovering('stop', [...stopped.cleanup_attempts, privatePlanFailed]),
+    phase: 'residue',
+    cleanup: 'residue',
+    services: stopped.services.map((service) => service.service_id === residueServiceId
+      ? { ...service, state: 'residue' }
+      : { ...service }),
+    residue_service_ids: [residueServiceId],
+    cleanup_result: { class: 'stop_failed', responsible_id: residueServiceId }
+  }
+  reducer.validateSnapshot(residue, authority)
+  const residueCleared = reducer.reduce(residue, event('residue_cleared', residueServiceId), authority)
+  assert.notEqual(residueCleared.cleanup, 'clear')
+  reducer.validateSnapshot(residueCleared, authority)
+})
+
+test('ordinary Stop rollback recovery and residue events cannot clear a partial cleanup ledger', () => {
+  const stopped = fullStopped()
+  const participating = stopped.services.find((service) => service.state === 'stopped' && service.attempt_sequence > 0)
+  const clearRow = stopped.cleanup_attempts.filter((attempt) => attempt.target_class === 'service' && attempt.responsible_id === participating.service_id).at(-1)
+  const failedRow = {
+    ...clearRow,
+    sequence: stopped.cleanup_attempts.length + 1,
+    outcome_class: 'failed',
+    reason_class: 'stop_failed',
+    active_count_after: 1,
+    post_stop_listener_class: 'foreign_present'
+  }
+  const partialAttempts = [...stopped.cleanup_attempts, failedRow]
+
+  let ordinary = fullReady()
+  ordinary = reducer.reduce(ordinary, event('stop_requested'), authority)
+  const omittedId = participating.service_id
+  for (const service of authority.graph.services.filter((item) => item.ownership === 'owned' && item.requirement !== 'optional')) {
+    ordinary = reducer.reduce(ordinary, event('stop_dispatch_requested', service.service_id), authority)
+    if (service.service_id === omittedId) {
+      ordinary = {
+        ...ordinary,
+        services: ordinary.services.map((current) => current.service_id === omittedId
+          ? { ...current, state: 'stopped', pending_dispatch_id: null, pending_action: null }
+          : { ...current })
+      }
+    } else {
+      ordinary = reducer.reduce(ordinary, cleanupEvent(ordinary, 'service_stopped', service.service_id), authority)
+    }
+  }
+  ordinary = reducer.reduce(ordinary, privatePlanCleanupEvent(ordinary), authority)
+  assert.notEqual(ordinary.cleanup, 'clear')
+  reducer.validateSnapshot(ordinary, authority)
+
+  const rollback = {
+    ...stopped,
+    intent: 'start',
+    phase: 'rolling_back',
+    reason: 'spawn_failed',
+    cleanup: 'in_progress',
+    cleanup_attempts: partialAttempts,
+    primary_result: { class: 'spawn_failed', responsible_id: participating.service_id, action_certainty: 'may_have_occurred' },
+    cleanup_result: { class: 'in_progress', responsible_id: 'launcher_supervisor' },
+    rollback_required: true,
+    recovery_required: false
+  }
+  reducer.validateSnapshot(rollback, authority)
+  const rolledBack = reducer.reduce(rollback, event('rollback_completed'), authority)
+  assert.notEqual(rolledBack.cleanup, 'clear')
+  reducer.validateSnapshot(rolledBack, authority)
+
+  const recovering = {
+    ...rollback,
+    phase: 'recovering',
+    cleanup: 'unknown',
+    cleanup_result: { class: 'unknown', responsible_id: 'launcher_supervisor' },
+    rollback_required: false,
+    recovery_required: true
+  }
+  reducer.validateSnapshot(recovering, authority)
+  const recovered = reducer.reduce(recovering, event('recovery_completed'), authority)
+  assert.notEqual(recovered.cleanup, 'clear')
+  reducer.validateSnapshot(recovered, authority)
+
+  const residue = {
+    ...recovering,
+    phase: 'residue',
+    cleanup: 'residue',
+    services: recovering.services.map((service) => service.service_id === participating.service_id ? { ...service, state: 'residue' } : { ...service }),
+    residue_service_ids: [participating.service_id],
+    cleanup_result: { class: 'stop_failed', responsible_id: participating.service_id }
+  }
+  reducer.validateSnapshot(residue, authority)
+  const residueCleared = reducer.reduce(residue, event('residue_cleared', participating.service_id), authority)
+  assert.notEqual(residueCleared.cleanup, 'clear')
+  reducer.validateSnapshot(residueCleared, authority)
+
+  const missingPlanRecovery = withCleanupAttempts({
+    ...stopped,
+    phase: 'recovering',
+    reason: 'supervisor_crash',
+    cleanup: 'unknown',
+    primary_result: { class: 'supervisor_crash', responsible_id: 'launcher_supervisor', action_certainty: 'may_have_occurred' },
+    cleanup_result: { class: 'unknown', responsible_id: 'launcher_supervisor' },
+    recovery_required: true
+  }, stopped.cleanup_attempts.filter((attempt) => attempt.target_class === 'service'))
+  reducer.validateSnapshot(missingPlanRecovery, authority)
+  const missingPlanResult = reducer.reduce(missingPlanRecovery, event('recovery_completed'), authority)
+  assert.notEqual(missingPlanResult.cleanup, 'clear')
+  reducer.validateSnapshot(missingPlanResult, authority)
 })
 
 test('semantic probe result is required, fully correlated, and retained before Ready', () => {
@@ -541,7 +921,7 @@ test('rollback and recovery persist one correlated stop dispatch before cleanup 
   rollback = reducer.reduce(rollback, event('stop_dispatch_requested', 'home_assistant_bridge', OPERATION_ID, rollbackDispatch), authority)
   assert.equal(rollback.services.find((service) => service.service_id === 'home_assistant_bridge').pending_dispatch_id, rollbackDispatch)
   reducer.validateSnapshot(rollback, authority)
-  rollback = reducer.reduce(rollback, event('service_stopped', 'home_assistant_bridge', OPERATION_ID, rollbackDispatch), authority)
+  rollback = reducer.reduce(rollback, cleanupEvent(rollback, 'service_stopped', 'home_assistant_bridge', OPERATION_ID, rollbackDispatch), authority)
   assert.equal(rollback.services.find((service) => service.service_id === 'home_assistant_bridge').pending_dispatch_id, null)
   assert.equal(rollback.services.find((service) => service.service_id === 'home_assistant_bridge').state, 'stopped')
   reducer.validateSnapshot(rollback, authority)
@@ -551,7 +931,7 @@ test('rollback and recovery persist one correlated stop dispatch before cleanup 
   assert.equal(recovery.phase, 'recovering')
   const recoveryDispatch = dispatchId('home_assistant_bridge', 'stop', 3)
   recovery = reducer.reduce(recovery, event('stop_dispatch_requested', 'home_assistant_bridge', OPERATION_ID, recoveryDispatch), authority)
-  recovery = reducer.reduce(recovery, event('service_stopped', 'home_assistant_bridge', OPERATION_ID, recoveryDispatch), authority)
+  recovery = reducer.reduce(recovery, cleanupEvent(recovery, 'service_stopped', 'home_assistant_bridge', OPERATION_ID, recoveryDispatch), authority)
   const recoveredService = recovery.services.find((service) => service.service_id === 'home_assistant_bridge')
   assert.equal(recoveredService.pending_dispatch_id, null)
   assert.equal(recoveredService.state, 'stopped')
@@ -601,7 +981,7 @@ test('same-service dispatch is single-flight and primary failure survives cleanu
   assert.equal(duplicate.services.find((service) => service.service_id === 'home_assistant_bridge').attempt_sequence, 1)
 
   operation = reducer.reduce(operation, event('spawn_failed', 'home_assistant_bridge'), authority)
-  operation = reducer.reduce(operation, event('rollback_failed', 'home_assistant_bridge'), authority)
+  operation = reducer.reduce(operation, cleanupEvent(operation, 'rollback_failed', 'home_assistant_bridge'), authority)
   assert.deepEqual(operation.primary_result, {
     class: 'spawn_failed', responsible_id: 'home_assistant_bridge', action_certainty: 'may_have_occurred'
   })
@@ -632,11 +1012,14 @@ test('clear terminal failure stops without owned dispatch and permits a fresh ch
   const failedServices = failed.services.map((service) => ({ ...service }))
 
   assert.equal(rawReducer.isClearTerminalFailure(failed, authority), true)
-  const stopped = reducer.reduce(failed, event('stop_requested'), authority)
+  let stopped = reducer.reduce(failed, event('stop_requested'), authority)
+  assert.equal(stopped.phase, 'stopping')
+  assert.equal(stopped.cleanup, 'in_progress')
+  stopped = reducer.reduce(stopped, privatePlanCleanupEvent(stopped), authority)
   assert.equal(stopped.phase, 'stopped')
   assert.equal(stopped.cleanup, 'clear')
   assert.equal(stopped.intent, 'stop')
-  assert.equal(stopped.revision, failed.revision + 1)
+  assert.equal(stopped.revision, failed.revision + 2)
   assert.deepEqual(stopped.services, failedServices)
   assert.equal(stopped.services.some((service) => service.pending_action === 'stop'), false)
   rawReducer.validateSnapshot(stopped, authority)
@@ -960,7 +1343,8 @@ test('external probe timeout becomes a bounded failure without fake external rea
     dispatch_id: request.dispatch_id,
     service_id: 'voicevox', action: 'probe', expected_revision: operation.revision,
     worker_nonce: request.worker_nonce, result_class: 'readiness_timeout', ownership_class: 'not_applicable',
-    listener_class: 'not_applicable', descendant_class: 'not_applicable'
+    listener_class: 'not_applicable', descendant_class: 'not_applicable', termination_class: 'not_applicable',
+    job_query_class: 'not_applicable', active_count_after: null, post_stop_listener_class: 'not_applicable'
   }
   const timeoutEvent = reducer.workerResultToEvent(result, operation, request, authority)
   assert.deepEqual(timeoutEvent, { event_type: 'readiness_timeout', operation_id: OPERATION_ID, service_id: 'voicevox', dispatch_id: request.dispatch_id })
@@ -970,6 +1354,7 @@ test('external probe timeout becomes a bounded failure without fake external rea
   assert.equal(operation.rollback_required, true)
   assert.equal(operation.services.find((service) => service.service_id === 'voicevox').state, 'failed')
   reducer.validateSnapshot(operation, authority)
+  operation = reducer.reduce(operation, privatePlanCleanupEvent(operation), authority)
   operation = reducer.reduce(operation, event('rollback_completed'), authority)
   assert.equal(operation.phase, 'failed')
   assert.equal(operation.cleanup, 'clear')
@@ -1015,16 +1400,20 @@ test('all immutable reducer vectors execute and preserve valid snapshots', () =>
   for (const vector of authority.reducerVectors.vectors) {
     let operation = reducer.createOperation(OPERATION_ID, authority)
     for (const vectorEvent of vector.events) {
-      operation = reducer.reduce(operation, event(vectorEvent.event_type, vectorEvent.service_id, vector.event_operation_id || OPERATION_ID), authority)
+      operation = reducer.reduce(operation, {
+        ...event(vectorEvent.event_type, vectorEvent.service_id, vector.event_operation_id || OPERATION_ID),
+        ...(vectorEvent.cleanup_attempt ? { cleanup_attempt: vectorEvent.cleanup_attempt } : {})
+      }, authority)
       reducer.validateSnapshot(operation, authority)
     }
     assert.equal(operation.phase, vector.expected.phase, vector.vector_id)
     assert.equal(operation.reason, vector.expected.reason, vector.vector_id)
     assert.equal(operation.cleanup, vector.expected.cleanup, vector.vector_id)
     assert.deepEqual(operation.residue_service_ids, vector.expected.residue_service_ids, vector.vector_id)
+    assert.deepEqual(operation.cleanup_attempts, vector.expected.cleanup_attempts, vector.vector_id)
     vector.coverage.forEach((item) => coverage.add(item))
   }
-  for (const required of ['primary_result', 'cleanup_result', 'dispatch', 'operation_identity', 'replay', 'residue']) {
+  for (const required of ['primary_result', 'cleanup_result', 'cleanup_attempts', 'dispatch', 'operation_identity', 'replay', 'residue']) {
     assert.ok(coverage.has(required), required)
   }
 })
@@ -1035,8 +1424,9 @@ test('full graph reaches Ready and repeats ten Start/Stop cycles', () => {
     operation = reducer.reduce(operation, event('stop_requested'), authority)
     for (const service of authority.graph.services.filter((item) => item.ownership === 'owned' && item.requirement !== 'optional')) {
       operation = reducer.reduce(operation, event('stop_dispatch_requested', service.service_id), authority)
-      operation = reducer.reduce(operation, event('service_stopped', service.service_id), authority)
+      operation = reducer.reduce(operation, cleanupEvent(operation, 'service_stopped', service.service_id), authority)
     }
+    operation = reducer.reduce(operation, privatePlanCleanupEvent(operation), authority)
     assert.equal(operation.phase, 'stopped')
     assert.equal(operation.cleanup, 'clear')
     assert.deepEqual(operation.residue_service_ids, [])
@@ -1058,7 +1448,8 @@ test('first failure survives rollback and recovery', () => {
   assert.equal(operation.reason, 'spawn_failed')
   const cleanupDispatch = dispatchId('home_assistant_bridge', 'stop', 2)
   operation = reducer.reduce(operation, event('stop_dispatch_requested', 'home_assistant_bridge', OPERATION_ID, cleanupDispatch), authority)
-  operation = reducer.reduce(operation, event('service_stopped', 'home_assistant_bridge', OPERATION_ID, cleanupDispatch), authority)
+  operation = reducer.reduce(operation, cleanupEvent(operation, 'service_stopped', 'home_assistant_bridge', OPERATION_ID, cleanupDispatch), authority)
+  operation = reducer.reduce(operation, privatePlanCleanupEvent(operation), authority)
   operation = reducer.reduce(operation, event('recovery_completed'), authority)
   assert.equal(operation.reason, 'spawn_failed')
   assert.equal(operation.phase, 'failed')

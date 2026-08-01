@@ -25,10 +25,10 @@ FROZEN_N0 = {
     "contracts/launcher/launcher-reducer-vectors.v1.json": "379fc9998a943b98a56857bc494f5840c2662cfdce7ab5bfb270b678d78ccf1c",
     "contracts/launcher/generated/launcher-service-graph.standard.v1.binding.json": "3a74d2c620f55c8203b6a1e9cc66c631c1867d131d69362743fe73e300bd9229",
     "ops/manifests/launcher-service-graph.standard.v1.json": "dc548b8ddd9528af3a6d10325f868af200fe3d85d1e88182cdcf32407506ea77",
-    "tools/home-control-launcher/launcher-supervisor-contract.js": "eed1faaa0d3b75c068f608ac6dd83ae26ffbcf997e0395d914b3de25b36a68f8",
-    "tools/home-control-launcher/launcher-supervisor-reducer.js": "3644e3b28986c4eb12d9dab5ed7d3e1bec3281f85f6e0a302d0d7ca581ffbd8d",
+    "tools/home-control-launcher/launcher-supervisor-contract.js": "7a3d4283ec1c097603ffe04f65a8c0f4b93c961f8171716b9cfd79f3548cbf82",
+    "tools/home-control-launcher/launcher-supervisor-reducer.js": "bfe275d7261f4f51a538cf80327fd5de02f79d8f7acf67ad5f7a7cf96cfbfc64",
     "tools/home-control-launcher/launcher-operation-store.js": "79c3a0e040244150807efc1a1a9de617f9c93e320aa9ae5baa6ff146cc3d41b1",
-    "tools/home-control-launcher/server.js": "62770dfcd20c263ccca115f78c1d85cc3c3a5f8e7ac0b949dabec4818c882b22",
+    "tools/home-control-launcher/server.js": "d26929efb20a8533eaa61d949f78f03dbd310baf57b1988149c7bc2366840fea",
     "ops/scripts/home-control-stack/start-home-control-stack.ps1": "d5f1b2556e3a71520b5117eef8774326b70b05221064122dccc9c1296ac8d1ec",
     "ops/scripts/home-control-stack/stop-home-control-stack.ps1": "acdb237f13f76eabfd743f24619b8b5c90512a7f1149ab55232239d476e67619",
     "ops/scripts/home-control-stack/status-home-control-stack.ps1": "db2ed1f9e7f6e21785d4a081cc35db818d1fbbd4e9c2b7e88d40ddbb628eda44",
@@ -98,10 +98,19 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
             "ownership_class",
             "listener_class",
             "descendant_class",
+            "termination_class",
+            "job_query_class",
+            "active_count_after",
+            "post_stop_listener_class",
         }
         schema = json.loads((ROOT / "contracts/launcher/launcher-worker.v2.schema.json").read_text(encoding="utf-8"))
         self.assertEqual(set(schema["$defs"]["result"]["required"]), expected)
         self.assertEqual(set(schema["$defs"]["result"]["properties"]), expected)
+        for field in (
+            "termination_class", "job_query_class", "active_count_after",
+            "post_stop_listener_class",
+        ):
+            self.assertIn(field, worker)
         for prohibited in (
             "raw_command", "raw_args", "raw_env", "raw_path", "raw_stdout",
             "raw_stderr", "secret_value", "PRIVATE_SENTINEL",

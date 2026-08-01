@@ -74,6 +74,39 @@ For appliance command-stimulus demos, unknown current state is reported as a
 proof limitation unless the reviewed route explicitly requires current-state
 proof before command submission.
 
+### Launcher Stop proof
+
+The existing `launcher-worker.v2` Stop result carries bounded
+`termination_class`, `job_query_class`, `active_count_after`, and
+`post_stop_listener_class` facts. The current Windows producer emits
+`forced_only`, not `graceful`. The Launcher reducer may emit service clear only
+for `forced_only|already_clear` plus a trusted Job query with active count zero
+and listener `clear|not_applicable`. Missing or incomplete proof is failure or
+unknown; PID absence, root exit, a free port, or an external census cannot
+upgrade it.
+
+The private `launcher_operation.v2` record keeps ordered bounded
+`cleanup_attempts`. Cleanup continues after a service-local failure only through
+the same trusted worker and Job lineage. Transport loss makes remaining rows
+`unattempted_transport_unavailable` with no replacement worker. For every owned
+service finally `stopped` with `attempt_sequence>0`, the final service row must
+be the complete clear tuple; a missing, failed, unattempted, or incomplete final
+row invalidates terminal cleanup clear even if an earlier row was clear.
+`optional_absent` and `stopped` with `attempt_sequence=0` remain the bounded
+non-participant cases. Terminal `stopped/clear` and non-preflight
+`failed/clear` additionally require the final private-plan row by `sequence` to
+be `clear/none`; an earlier clear cannot override a later failed or unattempted
+row, and private-plan proof cannot replace service proof. Exact
+`preflight_failed` is the sole row-free exemption when the action certainty is
+`not_attempted`, every service attempt sequence is zero, and the cleanup ledger
+is empty. Recovery records private-plan completed/failed/unattempted before its
+started/completed terminal events; failure/unavailability stays residue or
+unknown. Public projection applies the same predicate and exposes only these
+fixed classes and responsible service IDs; raw PID, port, path, command,
+environment, and private-plan content remain private. Older v2 rows without
+cleanup attempts cannot authorize terminal cleanup clear and are reported
+fail-visibly as unknown.
+
 Launcher also exposes summary endpoints used by reviewed diagnostic and timing
 routes:
 

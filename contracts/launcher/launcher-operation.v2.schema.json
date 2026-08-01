@@ -31,6 +31,10 @@
     "cleanup": { "enum": ["not_started", "in_progress", "clear", "residue", "unknown"] },
     "primary_result": { "$ref": "#/$defs/primary_result" },
     "cleanup_result": { "$ref": "#/$defs/cleanup_result" },
+    "cleanup_attempts": {
+      "type": "array", "maxItems": 65,
+      "items": { "$ref": "#/$defs/cleanup_attempt" }
+    },
     "revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
     "joined_existing": { "type": "boolean" },
     "rollback_required": { "type": "boolean" },
@@ -83,6 +87,54 @@
         "class": { "enum": ["not_started", "in_progress", "clear", "rollback_failed", "stop_failed", "residue", "unknown"] },
         "responsible_id": { "$ref": "#/$defs/responsible_id" }
       }
+    },
+    "cleanup_attempt": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "sequence", "target_class", "responsible_id", "outcome_class", "reason_class",
+        "termination_class", "job_query_class", "active_count_after", "post_stop_listener_class"
+      ],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1, "maximum": 65 },
+        "target_class": { "enum": ["service", "private_plan"] },
+        "responsible_id": { "$ref": "#/$defs/responsible_id" },
+        "outcome_class": { "enum": ["clear", "failed", "unattempted"] },
+        "reason_class": { "enum": ["none", "rollback_failed", "stop_failed", "unattempted_transport_unavailable", "legacy_missing", "private_plan_cleanup_failed"] },
+        "termination_class": { "enum": ["forced_only", "graceful", "already_clear", "not_applicable", "unknown"] },
+        "job_query_class": { "enum": ["trusted", "failed", "not_applicable", "unknown"] },
+        "active_count_after": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+          ]
+        },
+        "post_stop_listener_class": { "enum": ["clear", "foreign_present", "unknown", "not_applicable"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "job_query_class": { "const": "trusted" } }, "required": ["job_query_class"] },
+          "then": { "properties": { "active_count_after": { "type": "integer", "minimum": 0, "maximum": 4294967295 } } },
+          "else": { "properties": { "active_count_after": { "type": "null" } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "target_class": { "const": "service" },
+              "outcome_class": { "const": "clear" }
+            },
+            "required": ["target_class", "outcome_class"]
+          },
+          "then": {
+            "properties": {
+              "reason_class": { "const": "none" },
+              "termination_class": { "enum": ["forced_only", "already_clear"] },
+              "job_query_class": { "const": "trusted" },
+              "active_count_after": { "const": 0 },
+              "post_stop_listener_class": { "enum": ["clear", "not_applicable"] }
+            }
+          }
+        }
+      ]
     }
   }
 }

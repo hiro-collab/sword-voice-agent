@@ -251,6 +251,10 @@ const resultFor = (request, values = {}) => ({
   ownership_class: 'matched',
   listener_class: 'matched',
   descendant_class: 'owned_active',
+  termination_class: request.action === 'stop' ? 'forced_only' : 'not_applicable',
+  job_query_class: request.action === 'stop' ? 'trusted' : 'not_applicable',
+  active_count_after: request.action === 'stop' ? 0 : null,
+  post_stop_listener_class: 'not_applicable',
   ...values
 })
 

@@ -11,6 +11,8 @@
 | AITuberKit renderer API proposal | 設計案。実装済み接続契約ではない。 |
 | `tts-service` status-file source | 互換・切り分け用。通常は HTTP source と streaming chunk endpoint を使う。 |
 | Home Control `aircon_on` / `aircon_off` | `legacy-delete-candidate`。現在の製品経路に直接 action ID を指定する consumer はなく、自然言語の「つける／消す」は HA state を追跡できる `aircon_cool` / `aircon_hvac_off` へ移行済み。削除条件は、非archiveの direct-ID reference が引き続き 0、Home Control側の同名actionも同時に撤去、置換先のon/off・already-state・restore回帰がgreenであること。条件成立まではcurrent-facingに戻さない。暖房用 tracked action がない間は「暖房をつける」を別モードへ推測しない。 |
+| pre-S2 `launcher_operation.v2` without `cleanup_attempts` | 読み取り互換のため field omission は残すが、旧 row の `stopped/clear` は cleanup proof として使用しない。現行 reducer/store は fail closed、bounded public projection は `stop_failed/unknown` として扱う。新しい v1 path、fallback、migration service は作らない。 |
+| pre-S2 terminal clear based on any historical private-plan clear row | LEGACY。`stopped/clear` と非preflight `failed/clear` は `sequence` 上の最終 private-plan row が `clear/none` の場合だけ有効。後続 failed/unattempted、欠落、recovery event より後付けの proof は clear authority に使わず、public も unknown に落とす。厳密な no-side-effect `preflight_failed` だけは空 ledger を許す。 |
 
 `archives/legacy-md/2026-05-07-doc-rebuild/` には剪定前のメモやレビューを残しています。通常の実装判断では読まなくても大丈夫です。
 

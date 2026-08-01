@@ -43,6 +43,8 @@
 | AITuberKit speech queue | AITuberKit | `/api/messages` | 発話キューと表示 |
 | TouchDesigner visual trigger | TouchDesigner runtime | UDP 9001 | 視覚演出状態 |
 | projection files and event log | `StatusStore` | `.cache/sword_voice_agent` | 表示・デバッグ用 |
+| Launcher Stop process/listener facts | Windows Job worker | private `launcher-worker.v2` result | 現行 producer は `forced_only`。Job query、active count、post-stop listener の観測事実を発行するが、operation terminal state は決めない |
+| Launcher cleanup/terminal state | Node Launcher reducer | private `launcher_operation.v2`; bounded public projection | ordered `cleanup_attempts` を検証し、参加した各 owned service の final row が trusted Job `active_count_after=0`、listener `clear|not_applicable`、`forced_only|already_clear` を揃え、かつ `stopped/clear` と非preflightの `failed/clear` は `sequence` 上の最終 private-plan row が `clear/none` になるまで認めない。例外は action未試行・全service attempt 0・ledger空の厳密な `preflight_failed` のみ。recovery は private-plan fact を terminal event より先に保存し、public projection も同一判定を使う。以前の clear row や private-plan row は後続 failure・欠落した final service proof を代替しない。raw PID/port/path/command は public に出さない |
 
 ## Closed-loop correlation and feedback v1
 

@@ -2425,8 +2425,10 @@ assert.deepStrictEqual(previewSnapshots[2], {
         self.assertIn("const cleanupClear = await this.closeClientAndPlan()", stop_owned)
         self.assertLess(
             stop_owned.index("const cleanupClear = await this.closeClientAndPlan()"),
-            stop_owned.index("if (held) this.apply(held.event_type, held.service_id"),
+            stop_owned.index("this.privatePlanCleanup('clear')"),
         )
+        self.assertIn("this.apply(workerEvent.event_type, serviceId", stop_owned)
+        self.assertIn("this.cleanupUnattempted(unattemptedServiceId)", stop_owned)
 
     def test_service_rows_mark_startup_booting_progress(self) -> None:
         app = read_public("app.js")

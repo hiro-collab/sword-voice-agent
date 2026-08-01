@@ -94,7 +94,7 @@ boundary for the future single Launcher lifecycle authority:
   rollback, recovery, stop, residue, optional-camera, and external-VOICEVOX
   semantics.
 - `launcher-operation-store.js` owns the fixed private
-  `launcher-operation.v1` child record, exclusive lock, revision compare-and-
+  `launcher-operation.v2` child record, exclusive lock, revision compare-and-
   swap, duplicate-Start join, restart recovery record, reparse/path rejection,
   and atomic bounded state persistence.
 
@@ -176,6 +176,36 @@ on a worker crash, so `KILL_ON_JOB_CLOSE` cleans the exact owned descendants.
 Repeated Start/Stop is idempotent, external Stop is a no-op, and public JSON is
 restricted to the existing `launcher-worker.v2` enums and correlation fields.
 
+The current worker Stop producer is `forced_only`; the reserved `graceful`
+class is not emitted. An owned service is clear only when the result proves an
+exact `forced_only` or `already_clear` termination, a trusted Job query with
+`active_count_after=0`, and a post-stop listener result of `clear` or exact
+`not_applicable`. Failed/unknown Job queries, nonzero descendants, and
+foreign/unknown listeners remain failed or unknown even if an external census
+finds the port free.
+
+`launcher_operation.v2.cleanup_attempts` records bounded attempts in execution
+order. A service-local failure does not hide later safe reverse cleanup through
+the same trusted worker. Loss of that worker transport records every remaining
+owned candidate as `unattempted_transport_unavailable`; it never creates a
+replacement cleanup worker. Every owned service that is finally `stopped` and
+has `attempt_sequence>0` must have a final service cleanup row with the complete
+clear tuple above; an earlier clear row cannot override a later failed,
+unattempted, incomplete, or missing final row. `optional_absent` and genuinely
+never-started `stopped` rows with `attempt_sequence=0` are exempt.
+`stopped/clear` and non-preflight `failed/clear` also require the final
+private-plan cleanup row, selected by `sequence`, to be `clear/none`; that
+artifact row cannot substitute for service proof, and an earlier clear cannot
+mask a later failed or unattempted row. The only row-free terminal-clear case
+is exact `preflight_failed` with `action_certainty=not_attempted`, every service
+`attempt_sequence=0`, and an empty cleanup ledger. Recovery persists the
+private-plan completed/failed/unattempted fact before `recovery_started` or
+`recovery_completed`; failed/unavailable cleanup remains residue/unknown. A
+private-plan removal failure after every owned service is already stopped is
+artifact residue with no fabricated service residue IDs. Pre-S2 v2 records may
+omit `cleanup_attempts` for compatibility, but an omitted proof cannot retain
+or publish terminal cleanup-clear authority.
+
 N1 was reviewed and adopted at a source/static and synthetic-only proof
 ceiling. N2 binds those exact worker bytes to the Node lifecycle authority;
 normal-user ACL inheritance and real listener/job ownership remain distinct
@@ -197,9 +227,10 @@ reduced into the private bounded operation record.
 The plan is written only below the private Launcher runtime directory. Raw
 commands, arguments, environment values, working directories, executable
 paths, plan paths, and process IDs are never copied into the public operation
-projection. The plan is removed only after the worker closes, and the final
-bounded stop/rollback/recovery event is persisted after that cleanup
-completes.
+projection. The plan is removed only after the worker closes. The ordered
+private-plan cleanup fact is persisted before a bounded recovery terminal
+event, and the final stop/rollback/recovery state is persisted only after that
+proof exists.
 
 VOICEVOX is the only external service in this graph. The runtime sends it only
 `probe`; it never sends external `start` or `stop`, never fabricates
