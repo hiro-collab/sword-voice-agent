@@ -76,7 +76,8 @@ const PUBLIC_RESULT_CLASSES = new Set([
   'preflight_failed',
   'ready',
   'residue',
-  'stopped'
+  'stopped',
+  'terminal_unknown'
 ])
 const PUBLIC_ERROR_CLASSES = new Set([
   'none',
@@ -164,7 +165,7 @@ const publicOperation = (operation, profileId = 'thought-core-v0') => {
     reason: partialClear ? reducer.REASON.STOP_FAILED : operation.reason,
     cleanup: partialClear ? reducer.CLEANUP.UNKNOWN : operation.cleanup,
     revision: operation.revision,
-    joined_existing: operation.joined_existing,
+    joined_existing: false,
     rollback_required: operation.rollback_required,
     recovery_required: partialClear ? true : operation.recovery_required,
     services: operation.services.map((service) => ({
@@ -213,6 +214,7 @@ const publicOperationStoreFailure = (profileId = 'thought-core-v0') => ({
 const resultClassFor = (operation) => {
   if (!operation) return 'idle'
   if (hasPartialTerminalCleanupProof(operation)) return 'failed'
+  if (operation.reason === reducer.REASON.START_DISPATCH_UNKNOWN) return 'terminal_unknown'
   if (operation.phase === reducer.PHASE.READY) return 'ready'
   if (operation.phase === reducer.PHASE.STOPPED) return 'stopped'
   if (operation.phase === reducer.PHASE.RESIDUE) return 'residue'
@@ -249,6 +251,7 @@ class LauncherSupervisorRuntime {
     workerFactory = null,
     probeExecutor = null,
     probeExecutorFactory = null,
+    diagnosticSink = null,
     operationIdFactory = () => `lop_${crypto.randomBytes(16).toString('hex')}`,
     workerNonceFactory = () => `lw_${crypto.randomBytes(16).toString('hex')}`,
     dispatchIdFactory = () => `ld_${crypto.randomBytes(16).toString('hex')}`
@@ -274,6 +277,7 @@ class LauncherSupervisorRuntime {
         typeof probeExecutor.configSha256 === 'string' && SHA256.test(probeExecutor.configSha256))) ||
       !(probeExecutorFactory === null || typeof probeExecutorFactory === 'function') ||
       (probeExecutor !== null && probeExecutorFactory !== null) ||
+      !(diagnosticSink === null || typeof diagnosticSink === 'function') ||
       typeof store.getSupervisorLeaseBinding !== 'function' ||
       typeof store.releaseSupervisorLease !== 'function' ||
       typeof store.acquireSupervisorLease !== 'function'
@@ -301,6 +305,7 @@ class LauncherSupervisorRuntime {
     }))
     this.probeExecutor = probeExecutor
     this.probeExecutorFactory = probeExecutorFactory
+    this.diagnosticSink = diagnosticSink
     this.generatedProbeExecutor = false
     this.operationIdFactory = operationIdFactory
     this.workerNonceFactory = workerNonceFactory
@@ -311,6 +316,7 @@ class LauncherSupervisorRuntime {
     this.supervisorLease = null
     this.leaseBinding = null
     this.inflight = null
+    this.startCancellation = null
     this.profileId = 'thought-core-v0'
   }
 
@@ -348,6 +354,153 @@ class LauncherSupervisorRuntime {
     }
   }
 
+  emitDiagnostic (boundaryClass, {
+    operation = this.current,
+    reasonClass = null,
+    terminalProofClass = null,
+    sideEffectCertainty = null,
+    cleanupCertainty = null
+  } = {}) {
+    if (!this.diagnosticSink) return
+    const resultClass = resultClassFor(operation)
+    const inferredTerminalProof = ['ready', 'stopped', 'terminal_unknown'].includes(resultClass)
+      ? resultClass
+      : [reducer.PHASE.FAILED, reducer.PHASE.RESIDUE].includes(operation?.phase) ? 'terminal_failure' : 'absent'
+    const entry = Object.freeze({
+      owner_class: 'launcher_supervisor',
+      boundary_class: boundaryClass,
+      operation_ref: operation?.operation_id ?? null,
+      generation: operation?.supervisor_generation ?? null,
+      revision: operation?.revision ?? null,
+      phase: operation?.phase ?? 'idle',
+      reason_class: reasonClass ?? operation?.reason ?? 'none',
+      terminal_proof_class: terminalProofClass ?? inferredTerminalProof,
+      side_effect_certainty: sideEffectCertainty ?? operation?.primary_result?.action_certainty ?? 'not_attempted',
+      cleanup_certainty: cleanupCertainty ?? operation?.cleanup ?? 'not_started',
+      retry_class: 'retry0'
+    })
+    try { this.diagnosticSink(entry) } catch {}
+  }
+
+  diagnosticResult (args, boundaryClass = 'command_terminal') {
+    const result = publicResult(args)
+    this.emitDiagnostic(boundaryClass, {
+      operation: args.operation,
+      terminalProofClass: result.result_class
+    })
+    return result
+  }
+
+  hasTrustedStartCancellationAuthority (cancellation = this.startCancellation) {
+    return Boolean(cancellation && !cancellation.authorityUnknown && this.current && this.client && this.supervisorLease && this.leaseBinding &&
+      cancellation.client === this.client && cancellation.supervisorLease === this.supervisorLease &&
+      cancellation.operationId === this.current.operation_id &&
+      cancellation.supervisorGeneration === this.current.supervisor_generation &&
+      cancellation.authorityLeaseProof === this.leaseBinding.authority_lease_proof &&
+      this.leaseBinding.operation_id === this.current.operation_id &&
+      this.leaseBinding.supervisor_generation === this.current.supervisor_generation)
+  }
+
+  requestStartCancellation (profileId) {
+    if (this.startCancellation) return this.startCancellation.promise
+    if (profileId !== this.profileId) {
+      return this.diagnosticResult({
+        ok: false,
+        resultClass: 'preflight_failed',
+        operation: this.current,
+        profileId,
+        errorClass: 'private_plan_invalid'
+      }, 'command_rejected')
+    }
+    let stored
+    try { stored = this.readStoredOperation() } catch { stored = null }
+    if (!this.current || !sameStoredOperation(this.current, stored) ||
+        !this.client || !this.supervisorLease || !this.leaseBinding ||
+        this.leaseBinding.operation_id !== this.current.operation_id ||
+        this.leaseBinding.supervisor_generation !== this.current.supervisor_generation) {
+      const unknown = this.diagnosticResult({
+        ok: false,
+        resultClass: 'terminal_unknown',
+        operation: this.current,
+        profileId,
+        errorClass: 'supervisor_runtime_failed'
+      }, 'command_rejected')
+      this.startCancellation = {
+        operationId: this.current?.operation_id ?? null,
+        supervisorGeneration: this.current?.supervisor_generation ?? null,
+        authorityLeaseProof: null,
+        authorityUnknown: true,
+        client: this.client,
+        supervisorLease: this.supervisorLease,
+        promise: Promise.resolve(unknown),
+        resolve: () => {},
+        settled: true
+      }
+      return this.startCancellation.promise
+    }
+    let resolve
+    const promise = new Promise((settle) => { resolve = settle })
+    this.startCancellation = {
+      operationId: this.current.operation_id,
+      supervisorGeneration: this.current.supervisor_generation,
+      authorityLeaseProof: this.leaseBinding.authority_lease_proof,
+      authorityUnknown: false,
+      client: this.client,
+      supervisorLease: this.supervisorLease,
+      promise,
+      resolve,
+      settled: false
+    }
+    this.emitDiagnostic('stop_during_start_fence')
+    return promise
+  }
+
+  settleStartCancellation (result) {
+    if (!this.startCancellation || this.startCancellation.settled) return
+    this.startCancellation.settled = true
+    this.startCancellation.resolve(result)
+  }
+
+  async completeStartCancellation (compiled, profileId) {
+    if (!this.startCancellation) return null
+    if (!this.hasTrustedStartCancellationAuthority()) {
+      const unknown = this.diagnosticResult({
+        ok: false,
+        resultClass: 'terminal_unknown',
+        operation: this.current,
+        profileId,
+        errorClass: 'supervisor_runtime_failed'
+      })
+      this.settleStartCancellation(unknown)
+      return unknown
+    }
+    try {
+      this.apply('stop_requested')
+      const clear = await this.stopOwnedServices('stop', compiled)
+      const released = clear && this.current.phase === reducer.PHASE.STOPPED
+        ? this.releaseSupervisorLease()
+        : false
+      const stopped = this.diagnosticResult({
+        ok: clear && released && this.current.phase === reducer.PHASE.STOPPED,
+        resultClass: resultClassFor(this.current),
+        operation: this.current,
+        profileId
+      })
+      this.settleStartCancellation(stopped)
+      return stopped
+    } catch {
+      const unknown = this.diagnosticResult({
+        ok: false,
+        resultClass: 'terminal_unknown',
+        operation: this.current,
+        profileId,
+        errorClass: 'supervisor_runtime_failed'
+      })
+      this.settleStartCancellation(unknown)
+      return unknown
+    }
+  }
+
   isClearTerminalFailure () {
     try {
       return reducer.isClearTerminalFailure(this.current, this.authority)
@@ -374,6 +527,13 @@ class LauncherSupervisorRuntime {
       this.authority,
       this.privateRuntimeRoot
     )
+    const privatePlanEvent = eventType.startsWith('private_plan_cleanup_')
+    const privatePlanReason = eventType === 'private_plan_cleanup_failed'
+      ? 'private_plan_cleanup_failed'
+      : eventType === 'private_plan_cleanup_unattempted' ? 'unattempted_transport_unavailable' : null
+    this.emitDiagnostic(privatePlanEvent ? 'private_plan_adapter' : 'state_transition', {
+      reasonClass: privatePlanReason
+    })
     return this.current
   }
 
@@ -436,6 +596,7 @@ class LauncherSupervisorRuntime {
     const dispatchId = this.dispatchIdFactory()
     this.applyPersistedEvent(requestEvent, serviceId, { dispatch_id: dispatchId, action })
     const request = this.requestFor(serviceId, action, dispatchId)
+    this.emitDiagnostic('worker_dispatch')
     const result = await this.client.execute(request)
     return reducer.workerResultToEvent(result, this.current, request, this.authority)
   }
@@ -803,12 +964,12 @@ class LauncherSupervisorRuntime {
           errorClass: error instanceof LauncherPrivatePlanError ? 'private_plan_invalid' : 'supervisor_runtime_failed'
         })
       }
-      return publicResult({
-        ok: this.inflight === 'start',
-        resultClass: this.inflight === 'start' ? 'joined_existing' : 'operation_in_progress',
+      return this.diagnosticResult({
+        ok: false,
+        resultClass: 'operation_in_progress',
         operation: current,
         profileId
-      })
+      }, 'command_rejected')
     }
     this.inflight = 'start'
     this.profileId = profileId
@@ -826,7 +987,12 @@ class LauncherSupervisorRuntime {
             errorClass: error instanceof LauncherPrivatePlanError ? 'private_plan_invalid' : 'supervisor_runtime_failed'
           })
         }
-        return publicResult({ ok: true, resultClass: 'joined_existing', operation: current, profileId })
+        return this.diagnosticResult({
+          ok: false,
+          resultClass: 'operation_in_progress',
+          operation: current,
+          profileId
+        }, 'command_rejected')
       }
       let compiled
       let compiledPlanIdentity
@@ -858,64 +1024,15 @@ class LauncherSupervisorRuntime {
       )
       this.current = decision.operation
       this.bindSupervisorLease(decision.supervisorLease)
-      if (decision.joined_existing && this.client) {
-        return publicResult({
-          ok: true,
-          resultClass: 'joined_existing',
+      if (decision.joined_existing) {
+        return this.diagnosticResult({
+          ok: false,
+          resultClass: 'operation_in_progress',
           operation: this.current,
           profileId
-        })
+        }, 'command_rejected')
       }
-      if (decision.joined_existing) {
-        let persistedPlan
-        try {
-          persistedPlan = this.readPersistedPlan(this.current)
-        } catch (error) {
-          if (this.generatedProbeExecutor) {
-            this.probeExecutor = null
-            this.generatedProbeExecutor = false
-          }
-          this.releaseSupervisorLease()
-          return publicResult({
-            ok: false,
-            resultClass: 'preflight_failed',
-            operation: this.current,
-            profileId,
-            errorClass: error instanceof LauncherPrivatePlanError ? 'private_plan_invalid' : 'supervisor_runtime_failed'
-          })
-        }
-        if (this.generatedProbeExecutor) {
-          this.probeExecutor = null
-          this.generatedProbeExecutor = false
-        }
-        if (!(await this.recover(persistedPlan))) {
-          return publicResult({
-            ok: false,
-            resultClass: resultClassFor(this.current),
-            operation: this.current,
-            profileId
-          })
-        }
-        this.ensureProbeExecutor(compiled)
-        decision = this.store.startAndPersist(
-          this.operationIdFactory(),
-          validatedConfigIdentity,
-          compiledPlanIdentity,
-          this.probeExecutor.configSha256,
-          this.authority,
-          this.privateRuntimeRoot
-        )
-        this.current = decision.operation
-        this.bindSupervisorLease(decision.supervisorLease)
-        if (decision.joined_existing) {
-          return publicResult({
-            ok: false,
-            resultClass: 'operation_in_progress',
-            operation: this.current,
-            profileId
-          })
-        }
-      }
+      this.emitDiagnostic('command_accepted')
 
       this.apply('preflight_started')
       this.apply('preflight_passed')
@@ -934,6 +1051,7 @@ class LauncherSupervisorRuntime {
 
       const included = new Set(compiled.included_service_ids)
       for (const serviceId of this.authority.bindingDocument.binding.service_order) {
+        if (this.startCancellation) break
         const spec = this.authority.graph.services.find((service) => service.service_id === serviceId)
         if (spec.ownership === 'external') {
           try {
@@ -958,6 +1076,7 @@ class LauncherSupervisorRuntime {
           try {
             const startEvent = await this.exchange(serviceId, 'start')
             this.applyPersistedEvent(startEvent.event_type, serviceId, { dispatch_id: startEvent.dispatch_id })
+            if (this.startCancellation) break
             if (this.current.phase === reducer.PHASE.ROLLING_BACK) break
             const probeEvent = await this.exchange(serviceId, 'probe')
             this.applyPersistedEvent(probeEvent.event_type, serviceId, { dispatch_id: probeEvent.dispatch_id })
@@ -966,8 +1085,14 @@ class LauncherSupervisorRuntime {
             }
           } catch (error) {
             if (error instanceof LauncherJobWorkerError && error.code === 'worker_transport_timeout') {
-              const dispatchId = this.pendingDispatchId(serviceId, 'probe')
-              this.apply('readiness_timeout', serviceId, dispatchId ? { dispatch_id: dispatchId } : {})
+              const startDispatchId = this.pendingDispatchId(serviceId, 'start')
+              const probeDispatchId = this.pendingDispatchId(serviceId, 'probe')
+              if (startDispatchId) {
+                this.apply('start_dispatch_unknown', serviceId, { dispatch_id: startDispatchId })
+                this.emitDiagnostic('worker_dispatch_unknown')
+              } else {
+                this.apply('readiness_timeout', serviceId, probeDispatchId ? { dispatch_id: probeDispatchId } : {})
+              }
             } else this.apply('supervisor_crashed', null, {
               responsible_id: serviceLoopFailureResponsibleId(error, serviceId)
             })
@@ -976,10 +1101,11 @@ class LauncherSupervisorRuntime {
         if ([reducer.PHASE.ROLLING_BACK, reducer.PHASE.RECOVERING, reducer.PHASE.RESIDUE, reducer.PHASE.FAILED].includes(this.current.phase)) break
       }
 
+      if (this.startCancellation) return await this.completeStartCancellation(compiled, profileId)
       if (this.current.phase === reducer.PHASE.ROLLING_BACK) await this.rollback(compiled)
       if (this.current.phase === reducer.PHASE.RECOVERING) await this.recover(compiled)
       const resultClass = resultClassFor(this.current)
-      return publicResult({
+      return this.diagnosticResult({
         ok: resultClass === 'ready',
         resultClass,
         operation: this.current,
@@ -1000,18 +1126,29 @@ class LauncherSupervisorRuntime {
         errorClass: 'supervisor_runtime_failed'
       })
     } finally {
+      if (this.startCancellation && !this.startCancellation.settled) {
+        this.settleStartCancellation(this.diagnosticResult({
+          ok: false,
+          resultClass: 'terminal_unknown',
+          operation: this.current,
+          profileId,
+          errorClass: 'supervisor_runtime_failed'
+        }))
+      }
+      this.startCancellation = null
       this.inflight = null
     }
   }
 
   async stop ({ profileId }) {
     if (this.inflight) {
-      return publicResult({
+      if (this.inflight === 'start') return this.requestStartCancellation(profileId)
+      return this.diagnosticResult({
         ok: false,
         resultClass: 'operation_in_progress',
         operation: this.current,
         profileId
-      })
+      }, 'command_rejected')
     }
     if (!this.client && [
       reducer.PHASE.RECOVERING,
@@ -1032,7 +1169,7 @@ class LauncherSupervisorRuntime {
     try {
       const current = this.readCurrent()
       if (!current) {
-        return publicResult({
+        return this.diagnosticResult({
           ok: true,
           resultClass: 'already_stopped',
           operation: null,
@@ -1040,22 +1177,23 @@ class LauncherSupervisorRuntime {
         })
       }
       if (profileId !== current.profile_id) {
-        return publicResult({
+        return this.diagnosticResult({
           ok: false,
           resultClass: 'preflight_failed',
           operation: current,
           profileId,
           errorClass: 'private_plan_invalid'
-        })
+        }, 'command_rejected')
       }
       if (current.phase === reducer.PHASE.STOPPED) {
-        return publicResult({
+        return this.diagnosticResult({
           ok: true,
           resultClass: 'already_stopped',
           operation: current,
           profileId
         })
       }
+      this.emitDiagnostic('command_accepted')
       if (reducer.isClearTerminalFailure(current, this.authority)) {
         if (!this.supervisorLease) this.acquireExistingSupervisorLease()
         this.apply('stop_requested')
@@ -1064,7 +1202,7 @@ class LauncherSupervisorRuntime {
         const released = this.current.phase === reducer.PHASE.STOPPED
           ? this.releaseSupervisorLease()
           : false
-        return publicResult({
+        return this.diagnosticResult({
           ok: released && this.current.phase === reducer.PHASE.STOPPED,
           resultClass: resultClassFor(this.current),
           operation: this.current,
@@ -1093,7 +1231,7 @@ class LauncherSupervisorRuntime {
       const released = clear && this.current.phase === reducer.PHASE.STOPPED
         ? this.releaseSupervisorLease()
         : false
-      return publicResult({
+      return this.diagnosticResult({
         ok: clear && released && this.current.phase === reducer.PHASE.STOPPED,
         resultClass: resultClassFor(this.current),
         operation: this.current,

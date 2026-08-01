@@ -211,6 +211,7 @@ const launcherRuntimeOptions = {
   repositoryRoot: PROJECT_ROOT,
   workspaceRoot: WORKSPACE_ROOT,
   privateRuntimeRoot: STATE_DIR,
+  diagnosticSink: (entry) => appendStackLog(`${JSON.stringify({ diagnostic_class: 'launcher_runtime', ...entry })}\n`),
   probeExecutorFactory: (contextOptions) =>
     new LauncherProbeRuntimeContext(contextOptions)
 }

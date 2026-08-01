@@ -222,6 +222,22 @@ message. It then persists `planned`, `preflight_started`, and
 derived from the frozen authority, correlated by operation/revision/nonce, and
 reduced into the private bounded operation record.
 
+S3A keeps positive Start joining disabled. Repeated, concurrent, in-flight, or
+already-Ready Start requests return the existing bounded conflict result with
+`joined_existing=false`, revision mutation zero, and dispatch zero. A worker
+transport timeout while a Start dispatch is outstanding is not a readiness
+timeout: it persists `start_dispatch_unknown`, reports `terminal_unknown` with
+`may_have_occurred`, retries zero times, and fences every later child dispatch.
+Only the already-held trusted worker/client lineage may run S2 rollback.
+
+Stop can preempt an in-flight Start only inside the same runtime when the
+cached operation, supervisor generation, lease proof, and client still match.
+The in-memory fence is installed before another child dispatch; never-attempted
+owned rows become stopped without a worker call, while attempted rows use the
+existing S2 cleanup route. Missing or uncertain authority returns unknown and
+creates no replacement worker. This is not orphan takeover or full positive
+join support.
+
 `launcher-private-service-plan.js` compiles the canonical
 `thought-core-v0` primary profile independently from the legacy start script.
 The plan is written only below the private Launcher runtime directory. Raw
@@ -282,6 +298,14 @@ logs/launcher-stack.log.1
 logs/launcher-stack.log.2
 logs/launcher-stack.log.3
 ```
+
+The runtime may append allowlisted JSONL diagnostics to this same bounded log.
+Records contain only fixed owner/boundary, operation reference, generation,
+revision, phase, reason, terminal-proof, side-effect, cleanup, and retry
+classes. `private_plan_adapter` is an allowed attribution class, but private
+plan bytes, hashes, paths, payloads, raw commands, PID, and port are excluded.
+Diagnostic sink failure never changes lifecycle state. Source and deterministic
+tests do not prove local ACL or retention behavior in a live product run.
 
 The limits can be overridden with:
 

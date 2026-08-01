@@ -229,6 +229,24 @@
         ]
       },
       "coverage": ["cleanup_attempts", "private_plan", "primary_result", "artifact_residue"]
+    },
+    {
+      "vector_id": "start_dispatch_timeout_is_terminal_unknown",
+      "events": [
+        { "event_type": "preflight_started" },
+        { "event_type": "preflight_passed" },
+        { "event_type": "start_requested" },
+        { "event_type": "spawn_requested", "service_id": "aituber_kit", "dispatch_id": "ld_0000000000000001", "action": "start" },
+        { "event_type": "start_dispatch_unknown", "service_id": "aituber_kit", "dispatch_id": "ld_0000000000000001" }
+      ],
+      "expected": {
+        "phase": "rolling_back",
+        "reason": "start_dispatch_unknown",
+        "cleanup": "in_progress",
+        "residue_service_ids": [],
+        "cleanup_attempts": []
+      },
+      "coverage": ["dispatch", "start_dispatch_unknown", "terminal_unknown", "retry0", "later_child_fence"]
     }
   ]
 }

@@ -84,3 +84,20 @@ For text logs, put the layer in the prefix or logger name:
 Do not use a runtime log as the only place where a boundary is defined. If a log
 field becomes part of an integration promise, move the promise to `contracts/`
 or an integration doc.
+
+## Launcher Runtime Diagnostics
+
+The Node Launcher may send optional owner-scoped JSONL records to the existing
+bounded rotating `launcher-stack.log`; this does not create a tracing backend
+or another authority. The allowlist is owner class, boundary class, operation
+reference, generation, revision, phase, reason class, terminal-proof class,
+side-effect certainty, cleanup certainty, and retry class. Required boundaries
+include command accepted/rejected, worker dispatch/unknown, state transition,
+private-plan adapter, and command terminal.
+
+`private_plan_adapter` and `private_plan_cleanup_failed` are fixed attribution
+classes, not artifact publication. Do not include private-plan bytes, digest,
+path, payload, local command, PID, port, secret, media, transcript, or provider
+payload. Sink failure is ignored by lifecycle authority; absence of the expected
+bounded record is a later failure-injection proof failure. Source/static tests
+do not establish live ACL, retention, or product-runtime reachability.

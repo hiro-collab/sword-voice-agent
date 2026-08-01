@@ -166,6 +166,8 @@ test('operation identity is immutable, persisted before mutation, and rejects dr
     started.operation.supervisor_generation + 1
   )
   assert.equal(joinedWithNewPlan.joined_existing, true)
+  assert.equal(joinedWithNewPlan.operation.joined_existing, false)
+  assert.equal(joinedWithNewPlan.operation.revision, started.operation.revision)
   assert.equal(joinedWithNewPlan.operation.private_plan_sha256, PLAN_IDENTITY.private_plan_sha256)
   assert.equal(joinedWithNewPlan.operation.worker_executable_class, PLAN_IDENTITY.worker_executable_class)
   assert.equal(joinedWithNewPlan.operation.worker_executable_sha256, PLAN_IDENTITY.worker_executable_sha256)
@@ -1402,6 +1404,8 @@ test('all immutable reducer vectors execute and preserve valid snapshots', () =>
     for (const vectorEvent of vector.events) {
       operation = reducer.reduce(operation, {
         ...event(vectorEvent.event_type, vectorEvent.service_id, vector.event_operation_id || OPERATION_ID),
+        ...(vectorEvent.dispatch_id ? { dispatch_id: vectorEvent.dispatch_id } : {}),
+        ...(vectorEvent.action ? { action: vectorEvent.action } : {}),
         ...(vectorEvent.cleanup_attempt ? { cleanup_attempt: vectorEvent.cleanup_attempt } : {})
       }, authority)
       reducer.validateSnapshot(operation, authority)
@@ -1437,7 +1441,10 @@ test('full graph reaches Ready and repeats ten Start/Stop cycles', () => {
 test('operation revision uses the same safe-integer ceiling as both schemas', () => {
   const maximum = { ...reducer.createOperation(OPERATION_ID, authority), revision: Number.MAX_SAFE_INTEGER }
   assert.equal(reducer.validateSnapshot(maximum, authority).revision, Number.MAX_SAFE_INTEGER)
-  expectCode(() => reducer.startOperation(maximum, 'lop_node0002', authority), 'operation_revision_exhausted')
+  const conflict = reducer.startOperation(maximum, 'lop_node0002', authority)
+  assert.equal(conflict.joined_existing, true)
+  assert.equal(conflict.operation.joined_existing, false)
+  assert.equal(conflict.operation.revision, Number.MAX_SAFE_INTEGER)
 })
 
 test('first failure survives rollback and recovery', () => {

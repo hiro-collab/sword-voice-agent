@@ -202,6 +202,25 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
         self.assertIn("HomeAssistantBridgeHost", private_plan)
         self.assertNotIn("service_id: 'voicevox'", private_plan)
 
+    def test_s3a_conflict_unknown_cancel_and_diagnostics_stay_inside_node_authority(self) -> None:
+        runtime = read(RUNTIME)
+        server = read(SERVER)
+        start = between(runtime, "  async start ({ profileId, options, configIdentity })", "  async stop ({ profileId })")
+        runtime_options = between(server, "const launcherRuntimeOptions", "if (TEST_FAKE_SUPERVISOR)")
+
+        self.assertNotIn("resultClass: 'joined_existing'", start)
+        self.assertIn("this.apply('start_dispatch_unknown'", start)
+        self.assertIn("if (this.startCancellation) break", start)
+        self.assertIn("return await this.completeStartCancellation(compiled, profileId)", start)
+        self.assertIn("requestStartCancellation", runtime)
+        self.assertIn("hasTrustedStartCancellationAuthority", runtime)
+        self.assertIn("diagnosticSink = null", runtime)
+        self.assertIn("try { this.diagnosticSink(entry) } catch {}", runtime)
+        self.assertIn("boundary_class: boundaryClass", runtime)
+        self.assertIn("diagnosticSink: (entry) => appendStackLog", runtime_options)
+        self.assertIn("diagnostic_class: 'launcher_runtime'", runtime_options)
+        self.assertNotIn("private_plan_sha256", between(runtime, "  emitDiagnostic", "  diagnosticResult"))
+
     def test_fake_api_worker_requires_two_explicit_test_gates(self) -> None:
         server = read(SERVER)
         gate = between(server, "const TEST_FAKE_SUPERVISOR", "const deterministicTestWorker")

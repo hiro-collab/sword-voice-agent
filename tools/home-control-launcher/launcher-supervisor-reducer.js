@@ -12,7 +12,7 @@ const PHASE = Object.freeze({
 })
 const REASON = Object.freeze({
   NONE: 'none', PREFLIGHT_FAILED: 'preflight_failed', SPAWN_FAILED: 'spawn_failed', EARLY_EXIT: 'early_exit',
-  LISTENER_MISMATCH: 'listener_mismatch', READINESS_TIMEOUT: 'readiness_timeout', ROLLBACK_FAILED: 'rollback_failed',
+  LISTENER_MISMATCH: 'listener_mismatch', READINESS_TIMEOUT: 'readiness_timeout', START_DISPATCH_UNKNOWN: 'start_dispatch_unknown', ROLLBACK_FAILED: 'rollback_failed',
   SEMANTIC_PROBE_FAILED: 'semantic_probe_failed', STOP_FAILED: 'stop_failed', SUPERVISOR_CRASH: 'supervisor_crash',
   RESIDUE_PRESENT: 'residue_present', INVALID_EVENT: 'invalid_event'
 })
@@ -141,7 +141,7 @@ const startOperation = (active, operationId, authority, configIdentity, planIden
       if (active.graph_sha256 !== authority.identities.graphSha256 || active.binding_sha256 !== authority.identities.bindingSha256 ||
           active.profile_id !== configIdentity.profile_id || active.effective_config_sha256 !== configIdentity.effective_config_sha256 ||
           active.camera_policy !== configIdentity.camera_policy || active.probe_config_sha256 !== probeConfigSha256) fail('operation_active_identity_mismatch')
-      return { operation: next(active, { joined_existing: true }), joined_existing: true }
+      return { operation: cloneOperation(active, { joined_existing: false }), joined_existing: true }
     }
   }
   return { operation: createOperation(operationId, authority, configIdentity, planIdentity, probeConfigSha256, supervisorGeneration), joined_existing: false }
@@ -552,7 +552,14 @@ const stop = (operation, authority) => {
     })
   }
   const external = new Set(authority.graph.services.filter((service) => service.ownership === 'external').map((service) => service.service_id))
-  const services = operation.services.map((service) => external.has(service.service_id) || service.state === SERVICE.OPTIONAL_ABSENT ? { ...service } : { ...service, state: SERVICE.STOP_REQUESTED })
+  const duringStart = [PHASE.PLANNED, PHASE.PREFLIGHT, PHASE.PREPARED, PHASE.STARTING, PHASE.WAITING_READY].includes(operation.phase)
+  const services = operation.services.map((service) => {
+    if (external.has(service.service_id) || service.state === SERVICE.OPTIONAL_ABSENT) return { ...service }
+    if (duringStart && service.state === SERVICE.PENDING && service.attempt_sequence === 0) {
+      return { ...service, state: SERVICE.STOPPED }
+    }
+    return { ...service, state: SERVICE.STOP_REQUESTED }
+  })
   return next(operation, {
     services, residue_service_ids: [], intent: 'stop', phase: PHASE.STOPPING,
     cleanup: CLEANUP.IN_PROGRESS, cleanup_result: cleanupResult(CLEANUP.IN_PROGRESS, 'launcher_supervisor'),
@@ -616,6 +623,8 @@ const reduce = (operation, event, authority) => {
       ? setService(clearPending(operation, serviceId), serviceId, SERVICE.STARTING, PHASE.WAITING_READY) : invalid(operation)
     case 'spawn_failed': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) && canCompleteSpawn(operation, serviceId, authority) && pendingMatches(operation, event, ['start'])
       ? failAndRollback(clearPending(operation, serviceId), serviceId, REASON.SPAWN_FAILED) : invalid(operation)
+    case 'start_dispatch_unknown': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) && canCompleteSpawn(operation, serviceId, authority) && pendingMatches(operation, event, ['start'])
+      ? failAndRollback(clearPending(operation, serviceId), serviceId, REASON.START_DISPATCH_UNKNOWN) : invalid(operation)
     case 'early_exit': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) && canFailOwned(operation, serviceId, authority) && pendingMatches(operation, event, ['start', 'probe'])
       ? failAndRollback(clearPending(operation, serviceId, 'not_ready'), serviceId, REASON.EARLY_EXIT) : invalid(operation)
     case 'listener_mismatch': return inPhase(operation, [PHASE.STARTING, PHASE.WAITING_READY]) &&

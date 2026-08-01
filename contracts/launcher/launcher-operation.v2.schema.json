@@ -69,7 +69,7 @@
     "service_id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
     "dispatch_id": { "type": "string", "pattern": "^ld_[a-z0-9]{16,64}$" },
     "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-    "result_class": { "enum": ["none", "preflight_failed", "spawn_failed", "early_exit", "listener_mismatch", "readiness_timeout", "semantic_probe_failed", "rollback_failed", "stop_failed", "supervisor_crash", "residue_present", "invalid_event"] },
+    "result_class": { "enum": ["none", "preflight_failed", "spawn_failed", "early_exit", "listener_mismatch", "readiness_timeout", "start_dispatch_unknown", "semantic_probe_failed", "rollback_failed", "stop_failed", "supervisor_crash", "residue_present", "invalid_event"] },
     "responsible_id": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/service_id" }, { "enum": ["launcher_supervisor", "launcher_worker", "operation_store"] }] },
     "primary_result": {
       "type": "object", "additionalProperties": false,

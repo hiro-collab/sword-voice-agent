@@ -107,6 +107,23 @@ environment, and private-plan content remain private. Older v2 rows without
 cleanup attempts cannot authorize terminal cleanup clear and are reported
 fail-visibly as unknown.
 
+### Launcher Start conflict and cancellation
+
+S3A disables positive `joined_existing`. Repeated, concurrent, in-flight, and
+Ready Start requests are bounded conflicts with operation mutation zero,
+dispatch zero, and public `joined_existing=false`. A Start transport timeout is
+`start_dispatch_unknown`, not `readiness_timeout`: the command returns
+`terminal_unknown`, records `may_have_occurred`, retries zero times, fences
+later child dispatch, and can invoke S2 cleanup only through the same trusted
+client/lease/generation.
+
+Stop during Start installs an in-memory dispatch fence only when the cached
+operation, lease proof, generation, and client remain the same. It cleans only
+attempted owned services; never-attempted rows are normalized without worker
+dispatch. Unknown authority returns unknown and creates no replacement worker.
+This contract adds no recovery takeover, positive join, or persisted
+cancellation field.
+
 Launcher also exposes summary endpoints used by reviewed diagnostic and timing
 routes:
 

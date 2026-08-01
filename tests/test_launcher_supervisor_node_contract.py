@@ -108,6 +108,17 @@ class LauncherSupervisorNodeContractTests(unittest.TestCase):
         self.assertEqual(artifact["expected"]["cleanup_attempts"][0]["target_class"], "private_plan")
         self.assertEqual(artifact["expected"]["cleanup_attempts"][0]["reason_class"], "private_plan_cleanup_failed")
 
+    def test_s3a_dispatch_unknown_vector_and_conflict_are_bounded_v2(self) -> None:
+        schema = json.loads((ROOT / "contracts" / "launcher" / "launcher-operation.v2.schema.json").read_text(encoding="utf-8"))
+        self.assertIn("start_dispatch_unknown", schema["$defs"]["result_class"]["enum"])
+        vectors = json.loads((ROOT / "contracts" / "launcher" / "launcher-reducer-vectors.v2.json").read_text(encoding="utf-8"))["vectors"]
+        unknown = next(vector for vector in vectors if vector["vector_id"] == "start_dispatch_timeout_is_terminal_unknown")
+        self.assertEqual(unknown["expected"]["phase"], "rolling_back")
+        self.assertEqual(unknown["expected"]["reason"], "start_dispatch_unknown")
+        source = (ROOT / "tools" / "home-control-launcher" / "launcher-supervisor-reducer.js").read_text(encoding="utf-8")
+        self.assertIn("case 'start_dispatch_unknown'", source)
+        self.assertIn("cloneOperation(active, { joined_existing: false })", source)
+
     def test_terminal_clear_uses_the_final_private_plan_row_and_exact_preflight_exemption(self) -> None:
         source = (ROOT / "tools" / "home-control-launcher" / "launcher-supervisor-reducer.js").read_text(encoding="utf-8")
         self.assertIn("const finalPrivatePlanCleanupAttempt", source)

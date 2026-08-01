@@ -184,6 +184,7 @@ const makeHarness = ({
   planRemover = null,
   probeExecutor = undefined,
   probeExecutorFactory = null,
+  diagnosticSink = null,
   storeOverrides = {}
 } = {}) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-runtime-'))
@@ -290,7 +291,8 @@ const makeHarness = ({
     dispatchIdFactory: () => {
       dispatchSequence += 1
       return `ld_${String(dispatchSequence).padStart(16, '0')}`
-    }
+    },
+    diagnosticSink
   })
   const runtime = createRuntime()
   const startWithIdentity = runtime.start.bind(runtime)
@@ -754,7 +756,7 @@ test('fresh Start cannot rebind recovery authority after the prior lease is rele
   }
 })
 
-test('an in-flight duplicate joins without a second worker exchange', async () => {
+test('repeated and concurrent Start conflict without mutation or a second worker exchange', async () => {
   let releaseFirst
   let firstSeen
   let readMode = 'normal'
@@ -800,8 +802,12 @@ test('an in-flight duplicate joins without a second worker exchange', async () =
     assert.equal(unreadableDuplicate.operation.operation_id, null)
     assert.equal(harness.workers[0].requests.length, 1)
     readMode = 'normal'
+    const inflightRevision = harness.runtime.current.revision
     const duplicate = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
-    assert.equal(duplicate.result_class, 'joined_existing')
+    assert.equal(duplicate.ok, false)
+    assert.equal(duplicate.result_class, 'operation_in_progress')
+    assert.equal(duplicate.operation.joined_existing, false)
+    assert.equal(duplicate.operation.revision, inflightRevision)
     assert.equal(harness.workers.length, 1)
     assert.equal(harness.workers[0].requests.length, 1)
     releaseFirst()
@@ -823,9 +829,12 @@ test('an in-flight duplicate joins without a second worker exchange', async () =
     assert.equal(driftedReady.operation.operation_id, null)
     assert.equal(harness.workers.length, 1)
     readMode = 'normal'
+    const readyRevision = harness.runtime.current.revision
     const readyDuplicate = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
-    assert.equal(readyDuplicate.ok, true)
-    assert.equal(readyDuplicate.result_class, 'joined_existing')
+    assert.equal(readyDuplicate.ok, false)
+    assert.equal(readyDuplicate.result_class, 'operation_in_progress')
+    assert.equal(readyDuplicate.operation.joined_existing, false)
+    assert.equal(readyDuplicate.operation.revision, readyRevision)
     assert.equal(harness.workers.length, 1)
     const readyMismatch = await harness.runtime.start({
       profileId: 'thought-core-v0',
@@ -844,6 +853,194 @@ test('an in-flight duplicate joins without a second worker exchange', async () =
     assert.equal(readyMismatch.result_class, 'preflight_failed')
     assert.equal(readyMismatch.error_class, 'private_plan_invalid')
     assert.equal(harness.workers.length, 1)
+  } finally {
+    releaseFirst()
+    harness.cleanup()
+  }
+})
+
+test('Start dispatch timeout is terminal unknown, retry0, fences later children, and emits bounded owner diagnostics', async () => {
+  const diagnostics = []
+  const harness = makeHarness({
+    diagnosticSink: (entry) => diagnostics.push(entry),
+    responses: {
+      'aituber_kit:start': new LauncherJobWorkerError('worker_transport_timeout')
+    }
+  })
+  try {
+    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(result.ok, false)
+    assert.equal(result.result_class, 'terminal_unknown')
+    assert.equal(result.operation.reason, 'start_dispatch_unknown')
+    assert.equal(result.operation.cleanup, 'clear')
+    assert.equal(harness.workers.length, 1)
+    assert.deepEqual(
+      harness.workers[0].requests.filter((request) => request.action === 'start').map((request) => request.service_id),
+      ['aituber_kit']
+    )
+    assert.deepEqual(
+      harness.workers[0].requests.filter((request) => request.action === 'stop').map((request) => request.service_id),
+      ['aituber_kit']
+    )
+    const terminal = diagnostics.find((entry) => entry.boundary_class === 'command_terminal' && entry.reason_class === 'start_dispatch_unknown')
+    assert.ok(terminal)
+    assert.deepEqual({
+      owner_class: terminal.owner_class,
+      phase: terminal.phase,
+      terminal_proof_class: terminal.terminal_proof_class,
+      side_effect_certainty: terminal.side_effect_certainty,
+      cleanup_certainty: terminal.cleanup_certainty,
+      retry_class: terminal.retry_class
+    }, {
+      owner_class: 'launcher_supervisor',
+      phase: 'failed',
+      terminal_proof_class: 'terminal_unknown',
+      side_effect_certainty: 'may_have_occurred',
+      cleanup_certainty: 'clear',
+      retry_class: 'retry0'
+    })
+    assert.equal(Number.isInteger(terminal.generation), true)
+    assert.equal(Number.isInteger(terminal.revision), true)
+    assert.match(terminal.operation_ref, /^lop_[a-z0-9]{8,64}$/u)
+    const serialized = JSON.stringify([...diagnostics, {
+      owner_class: 'launcher_supervisor',
+      boundary_class: 'private_plan_adapter',
+      reason_class: 'private_plan_cleanup_failed'
+    }])
+    assert.equal(serialized.includes('"boundary_class":"private_plan_adapter"'), true)
+    for (const forbidden of ['private_plan_sha256', 'private_plan_bytes', 'private_plan_path', 'private_plan_payload', 'file_path', 'working_directory', 'command_line', '"pid"', '"port"']) {
+      assert.equal(serialized.includes(forbidden), false, forbidden)
+    }
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('owner diagnostics identify Start and Stop terminal proof without raw execution fields', async () => {
+  const diagnostics = []
+  const harness = makeHarness({ diagnosticSink: (entry) => diagnostics.push(entry) })
+  try {
+    const started = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(started.result_class, 'ready')
+    const duplicate = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(duplicate.result_class, 'operation_in_progress')
+    const stopped = await harness.runtime.stop({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(stopped.result_class, 'stopped')
+    const startTerminal = diagnostics.find((entry) => entry.boundary_class === 'command_terminal' && entry.phase === 'ready')
+    const stopTerminal = diagnostics.find((entry) => entry.boundary_class === 'command_terminal' && entry.phase === 'stopped')
+    assert.ok(startTerminal)
+    assert.ok(stopTerminal)
+    assert.ok(diagnostics.some((entry) => entry.boundary_class === 'command_accepted'))
+    assert.ok(diagnostics.some((entry) => entry.boundary_class === 'command_rejected'))
+    assert.ok(diagnostics.some((entry) => entry.boundary_class === 'worker_dispatch'))
+    assert.ok(diagnostics.some((entry) => entry.boundary_class === 'state_transition'))
+    assert.ok(diagnostics.some((entry) => entry.boundary_class === 'private_plan_adapter'))
+    for (const entry of [startTerminal, stopTerminal]) {
+      assert.equal(entry.owner_class, 'launcher_supervisor')
+      assert.equal(Number.isInteger(entry.generation), true)
+      assert.equal(Number.isInteger(entry.revision), true)
+      assert.match(entry.operation_ref, /^lop_[a-z0-9]{8,64}$/u)
+      assert.notEqual(entry.terminal_proof_class, 'absent')
+    }
+    assert.equal(stopTerminal.cleanup_certainty, 'clear')
+    const serialized = JSON.stringify(diagnostics)
+    for (const forbidden of ['private_plan_sha256', 'private_plan_bytes', 'private_plan_path', 'private_plan_payload', 'file_path', 'working_directory', 'command_line', '"pid"', '"port"']) {
+      assert.equal(serialized.includes(forbidden), false, forbidden)
+    }
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('diagnostic sink failure never changes Start or Stop lifecycle truth', async () => {
+  const harness = makeHarness({ diagnosticSink: () => { throw new Error('diagnostic_sink_failed') } })
+  try {
+    const started = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(started.result_class, 'ready')
+    const stopped = await harness.runtime.stop({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(stopped.result_class, 'stopped')
+    assert.equal(stopped.operation.cleanup, 'clear')
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('Stop during Start fences later dispatch and cleans only the already attempted owned service', async () => {
+  let releaseFirst
+  let firstSeen
+  let gated = false
+  const firstGate = new Promise((resolve) => { firstSeen = resolve })
+  const releaseGate = new Promise((resolve) => { releaseFirst = resolve })
+  const harness = makeHarness({
+    workerBuilders: [({ events }) => new FakeWorker({
+      events,
+      onExecute: async (request) => {
+        if (gated || request.action !== 'start') return
+        gated = true
+        firstSeen()
+        await releaseGate
+      }
+    })]
+  })
+  try {
+    const startPromise = harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    await firstGate
+    const stopPromise = harness.runtime.stop({ profileId: 'thought-core-v0', options: canonicalOptions })
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(harness.workers[0].requests.map((request) => `${request.service_id}:${request.action}`), ['aituber_kit:start'])
+    releaseFirst()
+    const [startResult, stopResult] = await Promise.all([startPromise, stopPromise])
+    assert.notEqual(startResult.result_class, 'ready')
+    assert.notEqual(startResult.result_class, 'joined_existing')
+    assert.equal(stopResult.ok, true)
+    assert.equal(stopResult.result_class, 'stopped')
+    assert.equal(stopResult.operation.cleanup, 'clear')
+    assert.deepEqual(harness.workers[0].requests.map((request) => `${request.service_id}:${request.action}`), [
+      'aituber_kit:start',
+      'aituber_kit:stop'
+    ])
+    assert.equal(harness.workers.length, 1)
+  } finally {
+    releaseFirst()
+    harness.cleanup()
+  }
+})
+
+test('Stop during Start with uncertain cached authority fences later dispatch and creates no replacement worker', async () => {
+  let releaseFirst
+  let firstSeen
+  let drifted = false
+  const firstGate = new Promise((resolve) => { firstSeen = resolve })
+  const releaseGate = new Promise((resolve) => { releaseFirst = resolve })
+  const harness = makeHarness({
+    storeOverrides: {
+      readOperation: (...args) => {
+        const operation = realStore.readOperation(...args)
+        return drifted ? { ...operation, revision: operation.revision + 1 } : operation
+      }
+    },
+    workerBuilders: [({ events }) => new FakeWorker({
+      events,
+      onExecute: async (request) => {
+        if (request.action !== 'start') return
+        firstSeen()
+        await releaseGate
+      }
+    })]
+  })
+  try {
+    const startPromise = harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    await firstGate
+    drifted = true
+    const stopResult = await harness.runtime.stop({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(stopResult.ok, false)
+    assert.equal(stopResult.result_class, 'terminal_unknown')
+    releaseFirst()
+    const startResult = await startPromise
+    assert.equal(startResult.ok, false)
+    assert.equal(startResult.result_class, 'terminal_unknown')
+    assert.equal(harness.workers.length, 1)
+    assert.deepEqual(harness.workers[0].requests.map((request) => `${request.service_id}:${request.action}`), ['aituber_kit:start'])
   } finally {
     releaseFirst()
     harness.cleanup()
