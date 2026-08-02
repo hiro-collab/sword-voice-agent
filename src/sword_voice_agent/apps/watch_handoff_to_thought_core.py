@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import queue
+import secrets
 from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
@@ -40,6 +41,29 @@ THOUGHT_CORE_WATCHER_MODULE = "thought_core_watcher"
 THOUGHT_CORE_WATCHER_LABEL = "thought-core watcher"
 LOCAL_ACK_MODES = {"auto", "off"}
 ADMISSION_MODES = {"active", "held"}
+TURN_ADMISSION_PATH = "/api/turn-admission-snapshot"
+TURN_ADMISSION_CHALLENGE = re.compile(r"^tac_[a-f0-9]{32}$")
+TURN_ADMISSION_SHA256 = re.compile(r"^[a-f0-9]{64}$")
+TURN_ADMISSION_RESPONSE_KEYS = {
+    "admission_class",
+    "reason_class",
+    "owner_class",
+    "boundary_class",
+    "profile_id",
+    "effective_config_sha256",
+    "operation_ref",
+    "generation",
+    "revision",
+    "request_challenge",
+    "terminal_proof_class",
+    "side_effect_certainty",
+    "cleanup_certainty",
+    "retry_class",
+    "long_lived_ready",
+    "lease_or_reservation",
+    "immune_from_later_stop",
+    "raw_private_publication_flags",
+}
 SPEECH_END_CHARS = "。．.!?！？\n"
 SPEECH_SOFT_BREAK_CHARS = "、,， "
 
@@ -191,6 +215,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Admit turns or hold them before Thought and presentation side effects.",
     )
     parser.add_argument(
+        "--launcher-admission-url",
+        default=os.environ.get("THOUGHT_CORE_LAUNCHER_ADMISSION_URL", ""),
+        help="Private loopback Launcher admission snapshot endpoint used only in held mode.",
+    )
+    parser.add_argument(
+        "--launcher-admission-profile-id",
+        default=os.environ.get("THOUGHT_CORE_LAUNCHER_ADMISSION_PROFILE_ID", ""),
+        help="Exact reduced-route profile identity for the private admission snapshot.",
+    )
+    parser.add_argument(
+        "--launcher-admission-config-sha256",
+        default=os.environ.get("THOUGHT_CORE_LAUNCHER_ADMISSION_CONFIG_SHA256", ""),
+        help="Exact effective config identity for the private admission snapshot.",
+    )
+    parser.add_argument(
+        "--launcher-admission-timeout-s",
+        type=float,
+        default=0.75,
+        help="Bounded timeout for the private loopback admission snapshot.",
+    )
+    parser.add_argument(
         "--poll-interval-s",
         type=float,
         default=0.5,
@@ -299,17 +344,180 @@ def resolve_handoff_json_path(args: argparse.Namespace) -> Path:
     )
 
 
+def _unknown_turn_admission(reason_class: str) -> dict[str, object]:
+    return {
+        "admission_class": "unknown",
+        "reason_class": reason_class,
+        "owner_class": "thought_core_watcher",
+        "boundary_class": "turn_admission_fetch",
+        "retry_class": "retry0",
+        "raw_private_publication_flags": False,
+    }
+
+
+def _exact_loopback_turn_admission_url(value: object) -> str:
+    if value != f"http://127.0.0.1:8799{TURN_ADMISSION_PATH}":
+        raise ValueError("turn_admission_url_invalid")
+    return str(value)
+
+
+class _RejectTurnAdmissionRedirect(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        raise error.HTTPError(
+            req.full_url,
+            code,
+            "turn_admission_redirect_rejected",
+            headers,
+            fp,
+        )
+
+
+def _accepted_turn_admission_response(
+    value: object,
+    *,
+    profile_id: str,
+    config_sha256: str,
+    challenge: str,
+) -> dict[str, object] | None:
+    if not isinstance(value, dict) or set(value) != TURN_ADMISSION_RESPONSE_KEYS:
+        return None
+    if (
+        value.get("admission_class") != "admissible_at_evaluation_time"
+        or value.get("reason_class") != "none"
+        or value.get("owner_class") != "launcher_supervisor"
+        or value.get("boundary_class") != "runtime_to_turn_admission"
+        or value.get("profile_id") != profile_id
+        or value.get("effective_config_sha256") != config_sha256
+        or value.get("request_challenge") != challenge
+        or not isinstance(value.get("operation_ref"), str)
+        or not re.fullmatch(r"lop_[a-z0-9]{8,64}", value["operation_ref"])
+        or not isinstance(value.get("generation"), int)
+        or isinstance(value.get("generation"), bool)
+        or value["generation"] < 1
+        or not isinstance(value.get("revision"), int)
+        or isinstance(value.get("revision"), bool)
+        or value["revision"] < 0
+        or value.get("terminal_proof_class") != "ready"
+        or value.get("side_effect_certainty") != "not_attempted"
+        or value.get("cleanup_certainty") != "not_started"
+        or value.get("retry_class") != "retry0"
+        or value.get("long_lived_ready") is not False
+        or value.get("lease_or_reservation") is not False
+        or value.get("immune_from_later_stop") is not False
+        or value.get("raw_private_publication_flags") is not False
+    ):
+        return None
+    return dict(value)
+
+
+def fetch_turn_admission_snapshot(
+    args: argparse.Namespace,
+    *,
+    challenge_factory: Callable[[], str] | None = None,
+) -> dict[str, object]:
+    try:
+        endpoint = _exact_loopback_turn_admission_url(args.launcher_admission_url)
+        profile_id = str(args.launcher_admission_profile_id)
+        config_sha256 = str(args.launcher_admission_config_sha256)
+        challenge = (
+            challenge_factory()
+            if challenge_factory is not None
+            else f"tac_{secrets.token_hex(16)}"
+        )
+        if (
+            profile_id != "core-rehearsal-text-bubble-v0"
+            or not TURN_ADMISSION_SHA256.fullmatch(config_sha256)
+            or not isinstance(challenge, str)
+            or not TURN_ADMISSION_CHALLENGE.fullmatch(challenge)
+            or not isinstance(args.launcher_admission_timeout_s, (int, float))
+            or isinstance(args.launcher_admission_timeout_s, bool)
+            or args.launcher_admission_timeout_s <= 0
+            or args.launcher_admission_timeout_s > 5
+        ):
+            raise ValueError("turn_admission_request_invalid")
+        body = json.dumps(
+            {
+                "profile_id": profile_id,
+                "effective_config_sha256": config_sha256,
+                "request_challenge": challenge,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        outbound = request.Request(
+            endpoint,
+            data=body,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            method="POST",
+        )
+        opener = request.build_opener(
+            request.ProxyHandler({}),
+            _RejectTurnAdmissionRedirect(),
+        )
+        with opener.open(outbound, timeout=float(args.launcher_admission_timeout_s)) as response:
+            content_type = str(response.headers.get("Content-Type", "")).lower()
+            cache_control = str(response.headers.get("Cache-Control", "")).lower()
+            final_url = response.geturl()
+            raw = response.read(4097)
+            if (
+                response.status != 200
+                or (isinstance(final_url, str) and final_url != endpoint)
+                or not content_type.startswith("application/json")
+                or cache_control != "no-store"
+                or len(raw) > 4096
+            ):
+                raise ValueError("turn_admission_response_mismatch")
+        payload = json.loads(raw.decode("utf-8"))
+        accepted = _accepted_turn_admission_response(
+            payload,
+            profile_id=profile_id,
+            config_sha256=config_sha256,
+            challenge=challenge,
+        )
+        if accepted is None:
+            return _unknown_turn_admission("turn_admission_response_mismatch")
+        return accepted
+    except (AttributeError, OSError, UnicodeError, ValueError, json.JSONDecodeError, error.URLError):
+        return _unknown_turn_admission("turn_admission_response_mismatch")
+
+
 def run_once(
     args: argparse.Namespace,
     *,
     client: ThoughtCoreClient | None = None,
+    admission_challenge_factory: Callable[[], str] | None = None,
 ) -> dict[str, Any]:
     result = build_result(args)
     if getattr(args, "admission_mode", "held") == "held":
+        snapshot: dict[str, object] | None = None
+        if getattr(args, "launcher_admission_url", ""):
+            snapshot = fetch_turn_admission_snapshot(
+                args,
+                challenge_factory=admission_challenge_factory,
+            )
+            if args.status_dir:
+                StatusStore(args.status_dir).append_event(
+                    "turn_admission.snapshot",
+                    source="thought_core_watcher",
+                    payload={
+                        "boundary_class": "turn_admission_fetch",
+                        "snapshot_class": snapshot["admission_class"],
+                        "reason_class": snapshot["reason_class"],
+                        "side_effect_certainty": "not_attempted",
+                        "retry_class": "retry0",
+                        "raw_private_publication_flags": False,
+                    },
+                )
+        snapshot_class = snapshot["admission_class"] if snapshot is not None else "unknown"
+        reason_class = (
+            "reduced_route_turn_admission_held"
+            if snapshot is None or snapshot_class == "admissible_at_evaluation_time"
+            else str(snapshot["reason_class"])
+        )
         return {
             "schema_version": "thought-core-watcher-admission.v0",
             "admission_class": "held",
-            "reason_class": "reduced_route_turn_admission_held",
+            "snapshot_class": snapshot_class,
+            "reason_class": reason_class,
             "owner_class": "thought_core_watcher",
             "boundary_class": "turn_admission",
             "thought_dispatch_count": 0,

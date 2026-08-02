@@ -1862,3 +1862,27 @@ test('N0 modules contain no process execution authority', () => {
     assert.equal(/\b(?:spawn|exec|fork|kill)Sync?\s*\(/u.test(source), false, file)
   }
 })
+
+test('turn-admission request validator accepts only the exact bounded request-local challenge envelope', () => {
+  assert.equal(typeof contract.validateTurnAdmissionRequest, 'function')
+  const request = {
+    profile_id: REDUCED_PROFILE_ID,
+    effective_config_sha256: 'e'.repeat(64),
+    request_challenge: `tac_${'a'.repeat(32)}`
+  }
+  assert.deepEqual(contract.validateTurnAdmissionRequest(request), request)
+  for (const malformed of [
+    {},
+    { ...request, extra: true },
+    { ...request, profile_id: 'thought-core-v0' },
+    { ...request, effective_config_sha256: 'bad' },
+    { ...request, request_challenge: '' },
+    { ...request, request_challenge: `tac_${'a'.repeat(33)}` },
+    { ...request, request_challenge: 'PRIVATE_TOKEN_SENTINEL' }
+  ]) {
+    expectCode(
+      () => contract.validateTurnAdmissionRequest(malformed),
+      'turn_admission_request_invalid'
+    )
+  }
+})

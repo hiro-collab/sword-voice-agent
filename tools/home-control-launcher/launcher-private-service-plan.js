@@ -16,6 +16,7 @@ const MAX_PLAN_BYTES = 256 * 1024
 const MAX_WORKER_EXECUTABLE_BYTES = 64 * 1024 * 1024
 const PROFILE_ID = 'thought-core-v0'
 const REDUCED_PROFILE_ID = 'core-rehearsal-text-bubble-v0'
+const REDUCED_TURN_ADMISSION_URL = 'http://127.0.0.1:8799/api/turn-admission-snapshot'
 const EFFECTIVE_CONFIG_SCHEMA = 'launcher_effective_config.v1'
 const CAMERA_POLICIES = new Set(['required', 'camera_excluded_by_profile'])
 const SHA256 = /^[a-f0-9]{64}$/u
@@ -488,6 +489,9 @@ const validateReducedHeldBinding = ({ document }) => {
   if (!watcherArgs.includes('-AdmissionMode\u0000held') ||
       !watcherArgs.includes('-ClosedLoopFeedbackV1Mode\u0000disabled') ||
       !watcherArgs.includes('-LocalAckMode\u0000off') ||
+      !watcherArgs.includes(`-LauncherAdmissionUrl\u0000${REDUCED_TURN_ADMISSION_URL}`) ||
+      !watcherArgs.includes(`-LauncherAdmissionProfileId\u0000${document.profile_id}`) ||
+      !watcherArgs.includes(`-LauncherAdmissionConfigSha256\u0000${document.effective_config_sha256}`) ||
       /-AituberMessageUrl|-TtsChunkUrl/u.test(watcherArgs) ||
       watcher.environment.THOUGHT_CORE_WATCHER_ADMISSION_MODE !== 'held' ||
       watcher.environment.THOUGHT_CORE_LOCAL_ACK_MODE !== 'off' ||
@@ -616,7 +620,10 @@ const compileReducedPrivateServicePlan = ({
         '-EnvPath', path.join(repo, '.env'), '-ThoughtCoreBaseUrl', thoughtBase,
         '-StatusDir', path.join(privateRuntimeRoot, 'thought-core-watcher'),
         '-AdmissionMode', 'held', '-ClosedLoopFeedbackV1Mode', 'disabled',
-        '-LocalAckMode', 'off'
+        '-LocalAckMode', 'off',
+        '-LauncherAdmissionUrl', REDUCED_TURN_ADMISSION_URL,
+        '-LauncherAdmissionProfileId', derivedConfigIdentity.profile_id,
+        '-LauncherAdmissionConfigSha256', derivedConfigIdentity.effective_config_sha256
       ],
       cwd: repo,
       environment: watcherEnvironment,

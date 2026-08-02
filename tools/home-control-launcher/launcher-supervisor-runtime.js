@@ -24,7 +24,10 @@ const {
 } = require('./launcher-private-service-plan')
 const { LauncherProbeExecutorError } = require('./launcher-probe-executor')
 const { LauncherProbeContractError } = require('./launcher-probe-result-binding')
-const { LauncherProbeRuntimeContextError } = require('./launcher-probe-runtime-context')
+const {
+  LauncherProbeRuntimeContextError,
+  evaluateTurnAdmissionSnapshot
+} = require('./launcher-probe-runtime-context')
 
 class LauncherOperationStorePersistenceError extends Error {
   constructor () {
@@ -546,6 +549,66 @@ class LauncherSupervisorRuntime {
     } catch {
       return false
     }
+  }
+
+  turnAdmissionSnapshot ({ profileId, effectiveConfigSha256, requestChallenge, nowMs = Date.now() } = {}) {
+    const expected = {
+      profileId,
+      effectiveConfigSha256,
+      operationId: this.current?.operation_id ?? null,
+      generation: this.current?.supervisor_generation ?? null,
+      revision: this.current?.revision ?? null
+    }
+    let storedOperation
+    try { storedOperation = this.readStoredOperation() } catch { storedOperation = null }
+    let snapshot
+    if (!storedOperation || !this.current) {
+      snapshot = {
+        ...evaluateTurnAdmissionSnapshot({ authority: this.authority, operation: storedOperation, expected, nowMs }),
+        admission_class: 'unknown',
+        reason_class: 'supervisor_authority_unknown',
+        terminal_proof_class: 'unknown',
+        cleanup_certainty: 'unknown'
+      }
+    } else if (!sameStoredOperation(this.current, storedOperation)) {
+      snapshot = evaluateTurnAdmissionSnapshot({
+        authority: this.authority,
+        operation: storedOperation,
+        expected,
+        nowMs
+      })
+    } else if (!this.client || !this.supervisorLease || !this.leaseBinding ||
+        this.leaseBinding.operation_id !== storedOperation.operation_id ||
+        this.leaseBinding.supervisor_generation !== storedOperation.supervisor_generation) {
+      snapshot = {
+        ...evaluateTurnAdmissionSnapshot({ authority: this.authority, operation: storedOperation, expected, nowMs }),
+        admission_class: 'unknown',
+        reason_class: 'supervisor_authority_unknown',
+        terminal_proof_class: 'unknown',
+        cleanup_certainty: 'unknown'
+      }
+    } else {
+      snapshot = evaluateTurnAdmissionSnapshot({
+        authority: this.authority,
+        operation: storedOperation,
+        expected,
+        nowMs
+      })
+    }
+    const result = Object.freeze({
+      ...snapshot,
+      request_challenge: typeof requestChallenge === 'string' && /^tac_[a-f0-9]{32}$/u.test(requestChallenge)
+        ? requestChallenge
+        : null
+    })
+    this.emitDiagnostic('runtime_to_turn_admission', {
+      operation: storedOperation || this.current,
+      reasonClass: result.reason_class,
+      terminalProofClass: result.terminal_proof_class,
+      sideEffectCertainty: 'not_attempted',
+      cleanupCertainty: result.cleanup_certainty
+    })
+    return result
   }
 
   status () {

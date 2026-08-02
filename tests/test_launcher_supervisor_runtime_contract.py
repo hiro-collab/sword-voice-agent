@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "tools" / "home-control-launcher"
 SERVER = LAUNCHER / "server.js"
 RUNTIME = LAUNCHER / "launcher-supervisor-runtime.js"
+PROBE_RUNTIME = LAUNCHER / "launcher-probe-runtime-context.js"
 PRIVATE_PLAN = LAUNCHER / "launcher-private-service-plan.js"
 README = LAUNCHER / "README.md"
 SYSTEM = ROOT / "ops" / "scripts" / "system.ps1"
@@ -302,6 +303,40 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
         self.assertIn("runtime proof gates", readme)
         self.assertIn("launcher-worker.v2", readme)
         self.assertNotIn("launcher-worker.v1", readme)
+
+    def test_turn_admission_snapshot_reuses_probe_and_runtime_authority_without_mutation(self) -> None:
+        probe_runtime = read(PROBE_RUNTIME)
+        runtime = read(RUNTIME)
+        self.assertIn("const evaluateTurnAdmissionSnapshot", probe_runtime)
+        evaluator = between(
+            probe_runtime,
+            "const evaluateTurnAdmissionSnapshot",
+            "class LauncherProbeRuntimeContext",
+        )
+        self.assertIn("admissible_at_evaluation_time", evaluator)
+        self.assertIn("probe_proof_stale", evaluator)
+        self.assertIn("freshness_max_age_ms", evaluator)
+        self.assertNotIn("workerFactory", evaluator)
+        self.assertNotIn("reduceAndPersist", evaluator)
+        self.assertIn("evaluateTurnAdmissionSnapshot", between(probe_runtime, "module.exports", "}"))
+
+        snapshot = between(
+            runtime,
+            "  turnAdmissionSnapshot",
+            "  status ()",
+        )
+        self.assertIn("this.readStoredOperation()", snapshot)
+        self.assertIn("sameStoredOperation", snapshot)
+        self.assertIn("this.client", snapshot)
+        self.assertIn("this.supervisorLease", snapshot)
+        self.assertIn("this.leaseBinding", snapshot)
+        self.assertIn("runtime_to_turn_admission", snapshot)
+        self.assertIn("supervisor_authority_unknown", snapshot)
+        self.assertNotIn("ensureClient", snapshot)
+        self.assertNotIn("workerFactory", snapshot)
+        self.assertNotIn("this.apply(", snapshot)
+        self.assertNotIn("reduceAndPersist", snapshot)
+        self.assertNotIn("readPersistedPlan", snapshot)
 
 
 if __name__ == "__main__":

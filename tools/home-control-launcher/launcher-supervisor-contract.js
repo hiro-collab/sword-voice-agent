@@ -11,6 +11,7 @@ const SHA256 = /^[a-f0-9]{64}$/u
 const WORKER_NONCE = /^lw_[a-z0-9]{16,64}$/u
 const DISPATCH_ID = /^ld_[a-z0-9]{16,64}$/u
 const AUTHORITY_LEASE_PROOF = /^lp_[a-f0-9]{64}$/u
+const TURN_ADMISSION_CHALLENGE = /^tac_[a-f0-9]{32}$/u
 const SERVICE_ID_PATTERN = '^[a-z][a-z0-9_]{0,63}$'
 const MAX_CONTRACT_BYTES = 1024 * 1024
 const MAX_LEGACY_SOURCE_BYTES = 4 * 1024 * 1024
@@ -227,6 +228,19 @@ const requireOperationId = (value, code = 'operation_id_invalid') => {
 const requireSha = (value, code) => {
   if (typeof value !== 'string' || !SHA256.test(value)) fail(code)
   return value
+}
+
+const validateTurnAdmissionRequest = (request) => {
+  const code = 'turn_admission_request_invalid'
+  exactKeys(request, [
+    'profile_id', 'effective_config_sha256', 'request_challenge'
+  ], code)
+  if (request.profile_id !== REDUCED_PROFILE_ID ||
+      typeof request.effective_config_sha256 !== 'string' || !SHA256.test(request.effective_config_sha256) ||
+      typeof request.request_challenge !== 'string' || !TURN_ADMISSION_CHALLENGE.test(request.request_challenge)) {
+    fail(code)
+  }
+  return Object.freeze({ ...request })
 }
 
 const requireInteger = (value, minimum, maximum, code) => {
@@ -829,6 +843,7 @@ module.exports = {
   validateGraph,
   validateCleanupAttempt,
   validateReducerVectors,
+  validateTurnAdmissionRequest,
   validateWorkerMessage,
   validateWorkerRequestAgainstAuthority
 }

@@ -32,6 +32,7 @@ from sword_voice_agent.apps.watch_handoff_to_thought_core import (
     write_watcher_module_status,
 )
 from sword_voice_agent.protocol.messages import AgentResponse
+import sword_voice_agent.apps.watch_handoff_to_thought_core as watcher_app
 
 
 SHARED_VECTOR_ENV = "SWORD_M4_SHARED_VECTOR_PATH"
@@ -273,6 +274,347 @@ class WatchHandoffToThoughtCoreTest(TestCase):
             "presentation",
         ):
             self.assertNotIn(field, result)
+
+    @patch("sword_voice_agent.apps.watch_handoff_to_thought_core.request.build_opener")
+    def test_turn_admission_snapshot_fetch_validates_correlation_and_stays_held(
+        self,
+        build_opener: MagicMock,
+    ) -> None:
+        self.assertTrue(hasattr(watcher_app, "fetch_turn_admission_snapshot"))
+        profile_id = "core-rehearsal-text-bubble-v0"
+        config_sha256 = "a" * 64
+        first_challenge = "tac_" + ("1" * 32)
+        second_challenge = "tac_" + ("2" * 32)
+
+        def response(payload: dict[str, object]) -> MagicMock:
+            current = MagicMock()
+            current.status = 200
+            current.headers = {
+                "Content-Type": "application/json; charset=utf-8",
+                "Cache-Control": "no-store",
+            }
+            current.read.return_value = json.dumps(payload).encode("utf-8")
+            current.__enter__.return_value = current
+            current.__exit__.return_value = False
+            return current
+
+        def accepted(challenge: str) -> dict[str, object]:
+            return {
+                "admission_class": "admissible_at_evaluation_time",
+                "reason_class": "none",
+                "owner_class": "launcher_supervisor",
+                "boundary_class": "runtime_to_turn_admission",
+                "profile_id": profile_id,
+                "effective_config_sha256": config_sha256,
+                "operation_ref": "lop_admissionsnapshot0001",
+                "generation": 7,
+                "revision": 51,
+                "request_challenge": challenge,
+                "terminal_proof_class": "ready",
+                "side_effect_certainty": "not_attempted",
+                "cleanup_certainty": "not_started",
+                "retry_class": "retry0",
+                "long_lived_ready": False,
+                "lease_or_reservation": False,
+                "immune_from_later_stop": False,
+                "raw_private_publication_flags": False,
+            }
+
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            write_handoff(root, command="PRIVATE_ADMISSION_WISH", turn_id="turn-admission-1")
+            status_dir = root / "status"
+            args = build_parser().parse_args(
+                [
+                    "--ai-talk-core-root",
+                    str(root),
+                    "--once",
+                    "--status-dir",
+                    str(status_dir),
+                    "--admission-mode",
+                    "held",
+                    "--launcher-admission-url",
+                    "http://127.0.0.1:8799/api/turn-admission-snapshot",
+                    "--launcher-admission-profile-id",
+                    profile_id,
+                    "--launcher-admission-config-sha256",
+                    config_sha256,
+                ]
+            )
+            client = FakeThoughtCoreClient()
+            opener = MagicMock()
+            build_opener.return_value = opener
+            opener.open.return_value = response(accepted(first_challenge))
+            result = run_once(
+                args,
+                client=client,
+                admission_challenge_factory=lambda: first_challenge,
+            )
+
+            self.assertEqual(result["admission_class"], "held")
+            self.assertEqual(result["snapshot_class"], "admissible_at_evaluation_time")
+            self.assertEqual(result["thought_dispatch_count"], 0)
+            self.assertEqual(result["result_write_count"], 0)
+            self.assertEqual(result["narration_count"], 0)
+            self.assertEqual(result["presentation_dispatch_count"], 0)
+            self.assertEqual(result["retry_count"], 0)
+            self.assertEqual(client.turn_payloads, [])
+            sent = json.loads(opener.open.call_args.args[0].data.decode("utf-8"))
+            self.assertEqual(
+                sent,
+                {
+                    "profile_id": profile_id,
+                    "effective_config_sha256": config_sha256,
+                    "request_challenge": first_challenge,
+                },
+            )
+            self.assertEqual(opener.open.call_args.args[0].method, "POST")
+            self.assertEqual(opener.open.call_args.args[0].full_url, "http://127.0.0.1:8799/api/turn-admission-snapshot")
+
+            failures = [
+                accepted(first_challenge),
+                {**accepted(second_challenge), "profile_id": "thought-core-v0"},
+                {**accepted(second_challenge), "unexpected": True},
+            ]
+            for payload in failures:
+                opener.open.return_value = response(payload)
+                held = run_once(
+                    args,
+                    client=client,
+                    admission_challenge_factory=lambda: second_challenge,
+                )
+                self.assertEqual(held["admission_class"], "held")
+                self.assertEqual(held["snapshot_class"], "unknown")
+                self.assertEqual(held["reason_class"], "turn_admission_response_mismatch")
+                self.assertEqual(held["thought_dispatch_count"], 0)
+                self.assertEqual(held["result_write_count"], 0)
+                self.assertEqual(held["narration_count"], 0)
+                self.assertEqual(held["presentation_dispatch_count"], 0)
+                self.assertEqual(held["retry_count"], 0)
+
+            events = StatusStore(status_dir).read_events()
+            admission_events = [event for event in events if event["type"] == "turn_admission.snapshot"]
+            self.assertEqual(len(admission_events), 4)
+            for event in admission_events:
+                self.assertEqual(event["source"], "thought_core_watcher")
+                self.assertEqual(event["payload"]["boundary_class"], "turn_admission_fetch")
+                self.assertFalse(event["payload"]["raw_private_publication_flags"])
+            serialized = json.dumps({"results": [result, held], "events": admission_events})
+            for forbidden in (
+                "PRIVATE_ADMISSION_WISH",
+                "private_plan",
+                "lease_proof",
+                "client_secret",
+                "token",
+                "command",
+                "payload_bytes",
+            ):
+                self.assertNotIn(forbidden, serialized)
+            self.assertEqual(opener.open.call_count, 4)
+            self.assertEqual(build_opener.call_count, 4)
+            for call in build_opener.call_args_list:
+                proxy_handlers = [
+                    handler
+                    for handler in call.args
+                    if isinstance(handler, watcher_app.request.ProxyHandler)
+                ]
+                redirect_handlers = [
+                    handler
+                    for handler in call.args
+                    if isinstance(handler, watcher_app.request.HTTPRedirectHandler)
+                ]
+                self.assertEqual(len(proxy_handlers), 1)
+                self.assertEqual(proxy_handlers[0].proxies, {})
+                self.assertEqual(len(redirect_handlers), 1)
+            self.assertEqual(client.turn_payloads, [])
+
+    def test_turn_admission_redirect_is_rejected_before_external_followup(self) -> None:
+        profile_id = "core-rehearsal-text-bubble-v0"
+        config_sha256 = "b" * 64
+        challenge = "tac_" + ("3" * 32)
+        local_requests = []
+        external_requests = []
+        created_openers = []
+
+        class RedirectingOpener:
+            def __init__(self, redirect_handler) -> None:  # type: ignore[no-untyped-def]
+                self.redirect_handler = redirect_handler
+
+            def open(self, outbound, *, timeout):  # type: ignore[no-untyped-def]
+                local_requests.append((outbound, timeout))
+                external_url = "http://192.0.2.1/private-redirect"
+                try:
+                    self.redirect_handler.redirect_request(
+                        outbound,
+                        None,
+                        302,
+                        "Found",
+                        {"Location": external_url},
+                        external_url,
+                    )
+                except watcher_app.error.HTTPError:
+                    raise
+                external_requests.append(external_url)
+                raise AssertionError("redirect_followup_was_not_rejected")
+
+        def build_redirecting_opener(*handlers):  # type: ignore[no-untyped-def]
+            proxy_handlers = [
+                handler
+                for handler in handlers
+                if isinstance(handler, watcher_app.request.ProxyHandler)
+            ]
+            redirect_handlers = [
+                handler
+                for handler in handlers
+                if isinstance(handler, watcher_app.request.HTTPRedirectHandler)
+            ]
+            self.assertEqual(len(proxy_handlers), 1)
+            self.assertEqual(proxy_handlers[0].proxies, {})
+            self.assertEqual(len(redirect_handlers), 1)
+            current = RedirectingOpener(redirect_handlers[0])
+            created_openers.append(current)
+            return current
+
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            status_dir = root / "status"
+            write_handoff(root, command="PRIVATE_REDIRECT_WISH", turn_id="turn-admission-redirect-1")
+            args = build_parser().parse_args(
+                [
+                    "--ai-talk-core-root",
+                    str(root),
+                    "--once",
+                    "--status-dir",
+                    str(status_dir),
+                    "--admission-mode",
+                    "held",
+                    "--launcher-admission-url",
+                    "http://127.0.0.1:8799/api/turn-admission-snapshot",
+                    "--launcher-admission-profile-id",
+                    profile_id,
+                    "--launcher-admission-config-sha256",
+                    config_sha256,
+                ]
+            )
+            client = FakeThoughtCoreClient()
+            with patch(
+                "sword_voice_agent.apps.watch_handoff_to_thought_core.request.urlopen",
+                side_effect=AssertionError("legacy_urlopen_must_not_be_used"),
+            ) as legacy_urlopen, patch(
+                "sword_voice_agent.apps.watch_handoff_to_thought_core.request.build_opener",
+                side_effect=build_redirecting_opener,
+            ):
+                result = run_once(
+                    args,
+                    client=client,
+                    admission_challenge_factory=lambda: challenge,
+                )
+
+            events = StatusStore(status_dir).read_events()
+
+        self.assertEqual(len(created_openers), 1)
+        self.assertEqual(len(local_requests), 1)
+        self.assertEqual(local_requests[0][0].method, "POST")
+        self.assertEqual(
+            local_requests[0][0].full_url,
+            "http://127.0.0.1:8799/api/turn-admission-snapshot",
+        )
+        self.assertEqual(external_requests, [])
+        legacy_urlopen.assert_not_called()
+        self.assertEqual(result["admission_class"], "held")
+        self.assertEqual(result["snapshot_class"], "unknown")
+        self.assertEqual(result["reason_class"], "turn_admission_response_mismatch")
+        self.assertEqual(result["thought_dispatch_count"], 0)
+        self.assertEqual(result["result_write_count"], 0)
+        self.assertEqual(result["narration_count"], 0)
+        self.assertEqual(result["presentation_dispatch_count"], 0)
+        self.assertEqual(result["retry_count"], 0)
+        self.assertEqual(client.turn_payloads, [])
+        admission_events = [event for event in events if event["type"] == "turn_admission.snapshot"]
+        self.assertEqual(len(admission_events), 1)
+        serialized = json.dumps({"result": result, "events": admission_events})
+        for forbidden in (
+            "PRIVATE_REDIRECT_WISH",
+            "192.0.2.1",
+            "private_plan",
+            "lease_proof",
+            "client_secret",
+            "token",
+            "payload_bytes",
+        ):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_turn_admission_rejects_noncanonical_loopback_aliases_before_request(self) -> None:
+        profile_id = "core-rehearsal-text-bubble-v0"
+        config_sha256 = "c" * 64
+        challenge = "tac_" + ("4" * 32)
+
+        for endpoint in (
+            "http://localhost:8799/api/turn-admission-snapshot",
+            "http://[::1]:8799/api/turn-admission-snapshot",
+        ):
+            with self.subTest(endpoint=endpoint), workspace_tempdir() as tmp:
+                root = Path(tmp)
+                status_dir = root / "status"
+                write_handoff(root, command="PRIVATE_ALIAS_WISH", turn_id="turn-admission-alias-1")
+                args = build_parser().parse_args(
+                    [
+                        "--ai-talk-core-root",
+                        str(root),
+                        "--once",
+                        "--status-dir",
+                        str(status_dir),
+                        "--admission-mode",
+                        "held",
+                        "--launcher-admission-url",
+                        endpoint,
+                        "--launcher-admission-profile-id",
+                        profile_id,
+                        "--launcher-admission-config-sha256",
+                        config_sha256,
+                    ]
+                )
+                client = FakeThoughtCoreClient()
+                with patch(
+                    "sword_voice_agent.apps.watch_handoff_to_thought_core.request.Request"
+                ) as outbound_request, patch(
+                    "sword_voice_agent.apps.watch_handoff_to_thought_core.request.build_opener"
+                ) as build_opener:
+                    result = run_once(
+                        args,
+                        client=client,
+                        admission_challenge_factory=lambda: challenge,
+                    )
+
+                outbound_request.assert_not_called()
+                build_opener.assert_not_called()
+                self.assertEqual(result["admission_class"], "held")
+                self.assertEqual(result["snapshot_class"], "unknown")
+                self.assertEqual(result["reason_class"], "turn_admission_response_mismatch")
+                self.assertEqual(result["thought_dispatch_count"], 0)
+                self.assertEqual(result["result_write_count"], 0)
+                self.assertEqual(result["narration_count"], 0)
+                self.assertEqual(result["presentation_dispatch_count"], 0)
+                self.assertEqual(result["retry_count"], 0)
+                self.assertEqual(client.turn_payloads, [])
+                admission_events = [
+                    event
+                    for event in StatusStore(status_dir).read_events()
+                    if event["type"] == "turn_admission.snapshot"
+                ]
+                self.assertEqual(len(admission_events), 1)
+                serialized = json.dumps({"result": result, "events": admission_events})
+                for forbidden in (
+                    "PRIVATE_ALIAS_WISH",
+                    "localhost",
+                    "::1",
+                    "private_plan",
+                    "lease_proof",
+                    "client_secret",
+                    "token",
+                    "payload_bytes",
+                ):
+                    self.assertNotIn(forbidden, serialized)
 
     def test_shared_vector_accepted_candidate_bypasses_placeholder_when_configured(
         self,

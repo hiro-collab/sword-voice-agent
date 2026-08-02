@@ -8,6 +8,7 @@ const path = require('node:path')
 const test = require('node:test')
 
 const {
+  canonicalJsonSha256,
   LauncherContractError,
   loadAuthority
 } = require('../tools/home-control-launcher/launcher-supervisor-contract')
@@ -147,6 +148,80 @@ const successfulSemanticProbeResult = (expected) => {
     reason_class: 'none',
     ready: true,
     proof_ceiling: descriptor.proof_ceiling
+  }
+}
+
+const reducedReadyAdmissionOperation = ({
+  effectiveConfigSha256 = 'a'.repeat(64),
+  operationId = 'lop_admissionsnapshot0001',
+  generation = 7,
+  revision = 51,
+  observedAt = new Date(Date.parse('2026-08-01T12:00:00.000Z') - 1000).toISOString()
+} = {}) => {
+  const reducedAuthority = loadAuthority(ROOT, { profileId: 'core-rehearsal-text-bubble-v0' })
+  const probeConfigSha256 = 'b'.repeat(64)
+  return {
+    authority: reducedAuthority,
+    operation: {
+      schema_version: 'launcher_operation.v2',
+      graph_sha256: reducedAuthority.identities.graphSha256,
+      binding_sha256: reducedAuthority.identities.bindingSha256,
+      profile_id: reducedAuthority.graph.profile_id,
+      effective_config_sha256: effectiveConfigSha256,
+      camera_policy: 'camera_excluded_by_profile',
+      private_plan_sha256: 'c'.repeat(64),
+      worker_executable_class: 'powershell_7_program_files',
+      worker_executable_sha256: 'd'.repeat(64),
+      probe_config_sha256: probeConfigSha256,
+      operation_id: operationId,
+      supervisor_generation: generation,
+      intent: 'start',
+      phase: 'ready',
+      reason: 'none',
+      cleanup: 'not_started',
+      primary_result: { class: 'none', responsible_id: null, action_certainty: 'observed' },
+      cleanup_result: { class: 'not_started', responsible_id: null },
+      revision,
+      joined_existing: false,
+      rollback_required: false,
+      recovery_required: false,
+      services: reducedAuthority.graph.services.map((service, index) => {
+        const descriptorDocument = reducedAuthority.probeDocument.descriptors.find((candidate) => candidate.service_id === service.service_id)
+        const descriptor = { ...descriptorDocument, descriptor_sha256: canonicalJsonSha256(descriptorDocument) }
+        return {
+          service_id: service.service_id,
+          state: 'ready',
+          attempt_sequence: 1,
+          pending_dispatch_id: null,
+          pending_action: null,
+          probe_status: 'ready',
+          probe_expected_revision: null,
+          last_probe_result: {
+            schema_version: 'launcher_probe_result.v1',
+            message_type: 'result',
+            operation_id: operationId,
+            supervisor_generation: generation,
+            dispatch_id: `ld_${String(index + 1).padStart(16, '0')}`,
+            expected_revision: revision - index - 1,
+            service_id: service.service_id,
+            probe_id: descriptor.probe_id,
+            graph_sha256: reducedAuthority.identities.graphSha256,
+            binding_sha256: reducedAuthority.identities.bindingSha256,
+            descriptor_sha256: descriptor.descriptor_sha256,
+            config_sha256: probeConfigSha256,
+            requested_at: observedAt,
+            observed_at: observedAt,
+            source_observed_at: observedAt,
+            freshness_class: 'fresh',
+            semantic_class: descriptor.success_semantic_classes[0],
+            reason_class: 'none',
+            ready: true,
+            proof_ceiling: descriptor.proof_ceiling
+          }
+        }
+      }),
+      residue_service_ids: []
+    }
   }
 }
 
@@ -2853,6 +2928,18 @@ test('reduced private compiler owns only the held four-service route and strips 
     assert.ok(watcher.arguments.includes('disabled'))
     assert.ok(watcher.arguments.includes('-LocalAckMode'))
     assert.ok(watcher.arguments.includes('off'))
+    assert.equal(
+      watcher.arguments[watcher.arguments.indexOf('-LauncherAdmissionUrl') + 1],
+      'http://127.0.0.1:8799/api/turn-admission-snapshot'
+    )
+    assert.equal(
+      watcher.arguments[watcher.arguments.indexOf('-LauncherAdmissionProfileId') + 1],
+      reducedProfileId
+    )
+    assert.equal(
+      watcher.arguments[watcher.arguments.indexOf('-LauncherAdmissionConfigSha256') + 1],
+      configIdentity.effective_config_sha256
+    )
     assert.equal(watcher.arguments.includes('-AituberMessageUrl'), false)
     assert.equal(watcher.arguments.includes('-TtsChunkUrl'), false)
     const aituber = compiled.document.services.find((plan) => plan.service_id === 'aituber_kit')
@@ -2863,5 +2950,123 @@ test('reduced private compiler owns only the held four-service route and strips 
     assert.equal(Object.hasOwn(aituber.environment, 'NEXT_PUBLIC_REFLEX_GESTURE_WS_URL'), false)
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true })
+  }
+})
+
+test('turn-admission snapshot is same-authority, mutation-free, diagnostic and raw-private0', () => {
+  const nowMs = Date.parse('2026-08-01T12:00:00.000Z')
+  const { authority: reducedAuthority, operation } = reducedReadyAdmissionOperation()
+  const counters = { reads: 0, starts: 0, reductions: 0, workers: 0, dispatches: 0 }
+  let storedOperation = operation
+  const diagnostics = []
+  const admissionStore = {
+    ...realStore,
+    readOperation () {
+      counters.reads += 1
+      return storedOperation
+    },
+    startAndPersist () {
+      counters.starts += 1
+      throw new Error('unexpected_store_start')
+    },
+    reduceAndPersist () {
+      counters.reductions += 1
+      throw new Error('unexpected_store_mutation')
+    }
+  }
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-admission-snapshot-'))
+  try {
+    const runtime = new LauncherSupervisorRuntime({
+      repositoryRoot: ROOT,
+      workspaceRoot: ROOT,
+      privateRuntimeRoot: root,
+      authority: reducedAuthority,
+      store: admissionStore,
+      planCompiler: () => { throw new Error('unexpected_plan_compile') },
+      planReader: () => { throw new Error('unexpected_plan_read') },
+      planWriter: () => { throw new Error('unexpected_plan_write') },
+      planRemover: () => { throw new Error('unexpected_plan_remove') },
+      planObserver: () => { throw new Error('unexpected_plan_observe') },
+      workerFactory: () => {
+        counters.workers += 1
+        throw new Error('unexpected_worker_create')
+      },
+      diagnosticSink: (entry) => diagnostics.push(entry)
+    })
+    const trustedClient = {
+      private_secret: 'PRIVATE_CLIENT_SECRET_SENTINEL',
+      async execute () {
+        counters.dispatches += 1
+        throw new Error('unexpected_dispatch')
+      }
+    }
+    const trustedLease = {
+      operation_id: operation.operation_id,
+      supervisor_generation: operation.supervisor_generation,
+      private_path: 'PRIVATE_LEASE_PATH_SENTINEL'
+    }
+    const trustedLeaseBinding = {
+      operation_id: operation.operation_id,
+      supervisor_generation: operation.supervisor_generation,
+      authority_lease_proof: `lp_${'e'.repeat(64)}`
+    }
+    runtime.profileId = operation.profile_id
+    runtime.current = operation
+    runtime.client = trustedClient
+    runtime.supervisorLease = trustedLease
+    runtime.leaseBinding = trustedLeaseBinding
+
+    assert.equal(typeof runtime.turnAdmissionSnapshot, 'function')
+    const request = {
+      profileId: operation.profile_id,
+      effectiveConfigSha256: operation.effective_config_sha256,
+      requestChallenge: `tac_${'a'.repeat(32)}`,
+      nowMs
+    }
+    const before = JSON.stringify(operation)
+    const accepted = runtime.turnAdmissionSnapshot(request)
+    assert.equal(accepted.admission_class, 'admissible_at_evaluation_time')
+    assert.equal(accepted.request_challenge, request.requestChallenge)
+    assert.equal(accepted.long_lived_ready, false)
+    assert.equal(accepted.lease_or_reservation, false)
+    assert.equal(accepted.immune_from_later_stop, false)
+
+    runtime.client = null
+    const clientMissing = runtime.turnAdmissionSnapshot(request)
+    assert.equal(clientMissing.admission_class, 'unknown')
+    assert.equal(clientMissing.reason_class, 'supervisor_authority_unknown')
+
+    runtime.client = trustedClient
+    runtime.leaseBinding = { ...trustedLeaseBinding, supervisor_generation: operation.supervisor_generation + 1 }
+    const leaseMismatch = runtime.turnAdmissionSnapshot(request)
+    assert.equal(leaseMismatch.admission_class, 'unknown')
+    assert.equal(leaseMismatch.reason_class, 'supervisor_authority_unknown')
+
+    runtime.leaseBinding = trustedLeaseBinding
+    storedOperation = { ...operation, revision: operation.revision + 1 }
+    const storedMismatch = runtime.turnAdmissionSnapshot(request)
+    assert.equal(storedMismatch.admission_class, 'held')
+    assert.equal(storedMismatch.reason_class, 'identity_mismatch')
+
+    assert.equal(JSON.stringify(operation), before)
+    assert.deepEqual(counters, { reads: 4, starts: 0, reductions: 0, workers: 0, dispatches: 0 })
+    assert.equal(diagnostics.length, 4)
+    for (const diagnostic of diagnostics) {
+      assert.equal(diagnostic.owner_class, 'launcher_supervisor')
+      assert.equal(diagnostic.boundary_class, 'runtime_to_turn_admission')
+      assert.equal(diagnostic.retry_class, 'retry0')
+    }
+    const serialized = JSON.stringify({ accepted, clientMissing, leaseMismatch, storedMismatch, diagnostics })
+    for (const forbidden of [
+      'PRIVATE_CLIENT_SECRET_SENTINEL',
+      'PRIVATE_LEASE_PATH_SENTINEL',
+      'authority_lease_proof',
+      'private_plan_sha256',
+      'command',
+      'payload',
+      'token'
+    ]) assert.equal(serialized.includes(forbidden), false, forbidden)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
   }
 })

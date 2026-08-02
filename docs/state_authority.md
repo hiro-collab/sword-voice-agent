@@ -190,6 +190,15 @@ review.
 
 ## Turn Lifecycle
 
+For the non-selected reduced-route candidate, Launcher owns only a current-time
+turn-admission snapshot derived from its existing operation, client/lease
+lineage, and fresh probe facts. The snapshot is process-local observation, not
+persisted state or execution permission. `thought_core_watcher` owns fetching
+and validating that snapshot, but stays held and owns no lifecycle transition.
+It must not call Thought, write a result, narrate, or present until a later S5
+generation fence is reviewed. A later Stop can invalidate the snapshot
+immediately; no consumer may treat it as durable Ready or replay authority.
+
 ```text
 mic_enabled false
   -> no turn_id

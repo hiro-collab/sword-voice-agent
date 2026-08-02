@@ -373,6 +373,19 @@ auto-review, and closed-loop output off after environment hydration. Its public
 contract is `GET /api/reduced-route-contract`, which returns only opaque
 profile/config identity and fixed route/readiness/reason classes.
 
+The S4B candidate adds one private loopback-only, POST-only admission snapshot
+between the watcher and the existing Launcher runtime. An accepted snapshot
+means only that, at evaluation time, the exact reduced profile/config and the
+cached operation/generation/revision matched a current trusted client/lease and
+all four existing probe facts were fresh and Ready. It creates no lease,
+reservation, token, durable Ready, retry, store mutation, worker, or dispatch.
+The watcher validates a request-local challenge and the exact bounded response,
+records only fixed diagnostic classes, and remains held after both acceptance
+and rejection: Thought dispatch, result write, narration, and presentation stay
+zero. S5 must add the later generation fence before active admission can exist.
+The private endpoint and raw request, path, lease, client, and probe facts are
+not part of any public Launcher projection.
+
 AITuber HTTP reachability is not proof of message receiver, browser store,
 bubble application, or visible pixels. This candidate is not Parent-selected
 and proves no provider availability, turn, browser input, semantic Ready,

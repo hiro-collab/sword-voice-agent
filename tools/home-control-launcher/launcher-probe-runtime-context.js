@@ -26,6 +26,7 @@ const SAFE_CODES = new Set([
 const OPERATION_ID = /^lop_[a-z0-9]{8,64}$/u
 const DISPATCH_ID = /^ld_[a-z0-9]{16,64}$/u
 const SERVICE_ID = /^[a-z][a-z0-9_]{0,63}$/u
+const SHA256 = /^[a-f0-9]{64}$/u
 const ENDPOINT_REF = /^[a-z][a-z0-9_]{0,63}$/u
 const MAX_SECRET_BYTES = 4000
 const MAX_MODULE_STATUS_BYTES = 16 * 1024
@@ -407,6 +408,112 @@ const validatePendingProbe = (operation, serviceId, authority) => {
   return Object.freeze({ service, spec })
 }
 
+const TURN_ADMISSION_EXPECTED_KEYS = Object.freeze([
+  'profileId', 'effectiveConfigSha256', 'operationId', 'generation', 'revision'
+])
+const TURN_ADMISSION_PROBE_RESULT_KEYS = Object.freeze([
+  'schema_version', 'message_type', 'operation_id', 'supervisor_generation',
+  'dispatch_id', 'expected_revision', 'service_id', 'probe_id', 'graph_sha256',
+  'binding_sha256', 'descriptor_sha256', 'config_sha256', 'requested_at',
+  'observed_at', 'source_observed_at', 'freshness_class', 'semantic_class',
+  'reason_class', 'ready', 'proof_ceiling'
+])
+
+const turnAdmissionResult = ({ authority, operation, expected, admissionClass, reasonClass }) => Object.freeze({
+  admission_class: admissionClass,
+  reason_class: reasonClass,
+  owner_class: 'launcher_supervisor',
+  boundary_class: 'runtime_to_turn_admission',
+  profile_id: typeof expected?.profileId === 'string' ? expected.profileId : authority?.graph?.profile_id ?? null,
+  effective_config_sha256: typeof expected?.effectiveConfigSha256 === 'string' ? expected.effectiveConfigSha256 : null,
+  operation_ref: typeof expected?.operationId === 'string' ? expected.operationId : operation?.operation_id ?? null,
+  generation: Number.isSafeInteger(expected?.generation) ? expected.generation : operation?.supervisor_generation ?? null,
+  revision: Number.isSafeInteger(expected?.revision) ? expected.revision : operation?.revision ?? null,
+  terminal_proof_class: admissionClass === 'admissible_at_evaluation_time' ? 'ready' : 'unknown',
+  side_effect_certainty: 'not_attempted',
+  cleanup_certainty: operation?.cleanup === 'not_started' ? 'not_started' : 'unknown',
+  retry_class: 'retry0',
+  long_lived_ready: false,
+  lease_or_reservation: false,
+  immune_from_later_stop: false,
+  raw_private_publication_flags: false
+})
+
+const evaluateTurnAdmissionSnapshot = ({ authority, operation, expected, nowMs = Date.now() }) => {
+  try { assertAuthority(authority) } catch {
+    return turnAdmissionResult({ authority, operation, expected, admissionClass: 'unknown', reasonClass: 'probe_proof_unknown' })
+  }
+  const expectedShape = isPlainObject(expected) &&
+    Object.keys(expected).sort().join(',') === [...TURN_ADMISSION_EXPECTED_KEYS].sort().join(',')
+  const identityMatches = expectedShape && isPlainObject(operation) &&
+    expected.profileId === authority.graph.profile_id &&
+    typeof expected.effectiveConfigSha256 === 'string' && SHA256.test(expected.effectiveConfigSha256) &&
+    typeof expected.operationId === 'string' && OPERATION_ID.test(expected.operationId) &&
+    Number.isSafeInteger(expected.generation) && expected.generation >= 1 &&
+    Number.isSafeInteger(expected.revision) && expected.revision >= 0 &&
+    operation.graph_sha256 === authority.identities.graphSha256 &&
+    operation.binding_sha256 === authority.identities.bindingSha256 &&
+    operation.profile_id === expected.profileId &&
+    operation.effective_config_sha256 === expected.effectiveConfigSha256 &&
+    operation.operation_id === expected.operationId &&
+    operation.supervisor_generation === expected.generation &&
+    operation.revision === expected.revision
+  if (!identityMatches) {
+    return turnAdmissionResult({ authority, operation, expected, admissionClass: 'held', reasonClass: 'identity_mismatch' })
+  }
+  if (operation.phase !== 'ready') {
+    return turnAdmissionResult({ authority, operation, expected, admissionClass: 'held', reasonClass: 'operation_not_ready' })
+  }
+  if (operation.reason !== 'none' || operation.cleanup !== 'not_started' ||
+      operation.rollback_required !== false || operation.recovery_required !== false ||
+      !Number.isSafeInteger(nowMs) || nowMs < 0 || !SHA256.test(operation.probe_config_sha256 || '') ||
+      !Array.isArray(operation.services) || operation.services.length !== authority.graph.services.length) {
+    return turnAdmissionResult({ authority, operation, expected, admissionClass: 'unknown', reasonClass: 'probe_proof_unknown' })
+  }
+
+  let stale = false
+  const servicesById = new Map(operation.services.map((service) => [service?.service_id, service]))
+  if (servicesById.size !== authority.graph.services.length) {
+    return turnAdmissionResult({ authority, operation, expected, admissionClass: 'unknown', reasonClass: 'probe_proof_unknown' })
+  }
+  for (const spec of authority.graph.services) {
+    const service = servicesById.get(spec.service_id)
+    const descriptor = authority.probeDocument.descriptors.find((candidate) => (
+      candidate.service_id === spec.service_id && candidate.probe_id === spec.readiness.probe_id
+    ))
+    const result = service?.last_probe_result
+    const resultShape = isPlainObject(result) &&
+      Object.keys(result).sort().join(',') === [...TURN_ADMISSION_PROBE_RESULT_KEYS].sort().join(',')
+    if (!service || !descriptor || !resultShape || service.state !== 'ready' || service.probe_status !== 'ready' ||
+        result.schema_version !== 'launcher_probe_result.v1' || result.message_type !== 'result' ||
+        result.operation_id !== operation.operation_id || result.supervisor_generation !== operation.supervisor_generation ||
+        typeof result.dispatch_id !== 'string' || !DISPATCH_ID.test(result.dispatch_id) ||
+        !Number.isSafeInteger(result.expected_revision) || result.expected_revision < 0 ||
+        result.service_id !== spec.service_id || result.probe_id !== descriptor.probe_id ||
+        result.graph_sha256 !== authority.identities.graphSha256 ||
+        result.binding_sha256 !== authority.identities.bindingSha256 ||
+        result.descriptor_sha256 !== canonicalJsonSha256(descriptor) ||
+        result.config_sha256 !== operation.probe_config_sha256 ||
+        !timestamp(result.requested_at) || !timestamp(result.observed_at) || !timestamp(result.source_observed_at) ||
+        result.freshness_class !== 'fresh' || !descriptor.success_semantic_classes.includes(result.semantic_class) ||
+        result.reason_class !== 'none' || result.ready !== true || result.proof_ceiling !== descriptor.proof_ceiling) {
+      return turnAdmissionResult({ authority, operation, expected, admissionClass: 'unknown', reasonClass: 'probe_proof_unknown' })
+    }
+    const sourceObservedAt = Date.parse(result.source_observed_at)
+    if (sourceObservedAt > nowMs || nowMs - sourceObservedAt > descriptor.freshness_max_age_ms) stale = true
+  }
+  if (stale) {
+    return turnAdmissionResult({ authority, operation, expected, admissionClass: 'unknown', reasonClass: 'probe_proof_stale' })
+  }
+  return turnAdmissionResult({
+    authority,
+    operation,
+    expected,
+    admissionClass: 'admissible_at_evaluation_time',
+    reasonClass: 'none'
+  })
+}
+
 class LauncherProbeRuntimeContext {
   constructor ({ repositoryRoot, privateRuntimeRoot, compiled, authority, fetchImpl = globalThis.fetch, observers, clock = Date.now, monotonicClock }) {
     if (typeof repositoryRoot !== 'string' || typeof fetchImpl !== 'function' || typeof clock !== 'function' ||
@@ -486,5 +593,6 @@ module.exports = {
   LauncherProbeRuntimeContext,
   LauncherProbeRuntimeContextError,
   MAX_MODULE_STATUS_BYTES,
-  createDefaultModuleStatusObserver
+  createDefaultModuleStatusObserver,
+  evaluateTurnAdmissionSnapshot
 }

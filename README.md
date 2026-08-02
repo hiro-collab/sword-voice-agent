@@ -414,6 +414,18 @@ TouchDesigner本体のプロジェクトは system cell 側にあります。
 
 control plane の起動スクリプトは、TouchDesigner制御GUIとUDP送信側を起動します。TouchDesigner本体やプロジェクター出力設定は、実機側で手動確認します。
 
+## Reduced text/bubble candidate
+
+`core-rehearsal-text-bubble-v0` は、Parent未選択の候補契約です。既存の
+Launcher authority は、同じprocess内のtrusted client/lease、現在の
+operation/generation/revision、4サービスのfresh probeを、privateな
+loopback snapshotで同時点照合できます。これはその時点の
+`admissible_at_evaluation_time` だけを表し、長期Ready、予約、token、
+Stop後の有効性を表しません。watcherは照合後もheldのままで、Thought、
+結果保存、読み上げ、表示は0です。active化には後続S5のgeneration fenceが
+必要です。endpoint、raw wish、path、lease/client、private-plan情報はpublicに
+出しません。
+
 ## 変更するときの考え方
 
 - 大きなorgan repoを `control-plane/core` に吸収しない。

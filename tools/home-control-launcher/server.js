@@ -21,7 +21,8 @@ const {
   deriveEffectiveConfigIdentity
 } = require('./launcher-private-service-plan')
 const {
-  loadAuthority: loadLauncherAuthority
+  loadAuthority: loadLauncherAuthority,
+  validateTurnAdmissionRequest
 } = require('./launcher-supervisor-contract')
 
 const args = process.argv.slice(2)
@@ -55,6 +56,7 @@ const PORT = parseIntArg(
   '--port',
   Number(process.env.HOME_CONTROL_LAUNCHER_PORT || 8799)
 )
+const TURN_ADMISSION_PATH = '/api/turn-admission-snapshot'
 const ALLOW_REMOTE =
   args.includes('--allow-remote') ||
   process.env.HOME_CONTROL_LAUNCHER_ALLOW_REMOTE === 'true'
@@ -1014,13 +1016,21 @@ const rejectUntrustedRequest = (request, response) => {
   return false
 }
 
-const readBody = (request) =>
+const rejectUntrustedTurnAdmissionRequest = (request, response) => {
+  if (!isLoopbackAddress(getRemoteAddress(request))) {
+    sendJson(response, 403, { ok: false, error: 'local_access_required' })
+    return true
+  }
+  return false
+}
+
+const readBody = (request, maximumBytes = 1024 * 1024) =>
   new Promise((resolve, reject) => {
     const chunks = []
     let total = 0
     request.on('data', (chunk) => {
       total += chunk.length
-      if (total > 1024 * 1024) {
+      if (total > maximumBytes) {
         reject(new Error('request_body_too_large'))
         request.destroy()
         return
@@ -4194,6 +4204,28 @@ const serveStatic = (request, response, requestUrl) => {
 
 const handleApi = async (request, response, requestUrl) => {
   const includeLocalCameraSelection = isLoopbackAddress(getRemoteAddress(request))
+  if (requestUrl.pathname === TURN_ADMISSION_PATH) {
+    if (rejectUntrustedTurnAdmissionRequest(request, response)) return
+    if (request.method !== 'POST') {
+      sendJson(response, 405, { ok: false, error: 'method_not_allowed' })
+      return
+    }
+    let admissionRequest
+    try {
+      admissionRequest = validateTurnAdmissionRequest(await readBody(request, 512))
+    } catch {
+      sendJson(response, 400, { ok: false, error: 'turn_admission_request_invalid' })
+      return
+    }
+    const snapshot = launcherRuntime.turnAdmissionSnapshot({
+      profileId: admissionRequest.profile_id,
+      effectiveConfigSha256: admissionRequest.effective_config_sha256,
+      requestChallenge: admissionRequest.request_challenge,
+      nowMs: Date.now()
+    })
+    sendJson(response, 200, snapshot)
+    return
+  }
   if (request.method === 'OPTIONS') {
     const headers =
       requestUrl.pathname === '/api/status' ? launcherStatusCorsHeaders() : {}
@@ -4465,16 +4497,16 @@ const server = http.createServer(async (request, response) => {
     if (rejectUntrustedRequest(request, response)) {
       return
     }
+    if (requestUrl.pathname.startsWith('/api/')) {
+      await handleApi(request, response, requestUrl)
+      return
+    }
     if (request.method === 'OPTIONS') {
       const headers =
         requestUrl.pathname === ORDINARY_ROUTE_PUBLIC_SURFACES.status.path
           ? launcherStatusCorsHeaders()
           : {}
       sendJson(response, 204, {}, headers)
-      return
-    }
-    if (requestUrl.pathname.startsWith('/api/')) {
-      await handleApi(request, response, requestUrl)
       return
     }
     if (request.method === 'GET') {

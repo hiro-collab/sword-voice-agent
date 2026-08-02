@@ -420,6 +420,25 @@ Long running services write runtime status files when launched by integration sc
 The stack state directory is the compatibility root for `pids.json`, launcher
 state, per-module status directories, feedback JSONL, and service logs.
 
+## Reduced-route turn admission snapshot
+
+The S4B candidate embeds a private time-scoped check in the existing Launcher
+and watcher contracts. The watcher sends exactly the reduced profile ID,
+effective config hash, and a request-local challenge to a POST-only loopback
+endpoint. The Launcher may return `admissible_at_evaluation_time` only when its
+cached operation and stored operation match, the same client and supervisor
+lease lineage remain present, and the four reduced-route probe results are
+complete, correlated, successful, and within their existing freshness bounds.
+The response echoes the challenge and carries fixed identity/proof/certainty
+classes only. It is `no-store`, has no public CORS route, and publishes no raw
+path, lease proof, client secret, command, wish, payload, or private-plan fact.
+
+This snapshot is not a durable Ready signal, lease, reservation, bearer token,
+replay grant, or protection from a later Stop. The watcher remains held for
+accepted and rejected snapshots, with Thought/result/narration/presentation
+counts zero and retry zero. S5 owns the later post-admission generation fence;
+until then there is no active provider or presentation route claim.
+
 ## Security
 
 - Tokens and API keys are environment variables.

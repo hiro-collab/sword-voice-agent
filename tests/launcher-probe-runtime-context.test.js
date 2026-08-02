@@ -6,8 +6,9 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 
-const { loadAuthority } = require('../tools/home-control-launcher/launcher-supervisor-contract')
+const { canonicalJsonSha256, loadAuthority } = require('../tools/home-control-launcher/launcher-supervisor-contract')
 const { loadProbeAuthority } = require('../tools/home-control-launcher/launcher-probe-result-binding')
+const probeRuntimeContext = require('../tools/home-control-launcher/launcher-probe-runtime-context')
 const {
   LauncherProbeRuntimeContext,
   LauncherProbeRuntimeContextError,
@@ -509,4 +510,132 @@ test('bounded result and failures exclude raw secret, command and private path m
     }),
     (error) => error.code === 'probe_executor_target_resolution_invalid' && !String(error).includes('PRIVATE_')
   )
+})
+
+test('turn-admission snapshot accepts only exact fresh reduced-route READY proof at evaluation time', () => {
+  const evaluate = probeRuntimeContext.evaluateTurnAdmissionSnapshot
+  assert.equal(typeof evaluate, 'function')
+
+  const profileId = 'core-rehearsal-text-bubble-v0'
+  const reducedAuthority = loadAuthority(ROOT, { profileId })
+  const effectiveConfigSha256 = 'a'.repeat(64)
+  const probeConfigSha256 = 'b'.repeat(64)
+  const operationId = 'lop_admissionsnapshot0001'
+  const generation = 7
+  const revision = 51
+  const observedAt = new Date(BASE_MS - 1000).toISOString()
+  const operation = {
+    schema_version: 'launcher_operation.v2',
+    graph_sha256: reducedAuthority.identities.graphSha256,
+    binding_sha256: reducedAuthority.identities.bindingSha256,
+    profile_id: profileId,
+    effective_config_sha256: effectiveConfigSha256,
+    camera_policy: 'camera_excluded_by_profile',
+    private_plan_sha256: 'c'.repeat(64),
+    worker_executable_class: 'powershell_7_program_files',
+    worker_executable_sha256: 'd'.repeat(64),
+    probe_config_sha256: probeConfigSha256,
+    operation_id: operationId,
+    supervisor_generation: generation,
+    intent: 'start',
+    phase: 'ready',
+    reason: 'none',
+    cleanup: 'not_started',
+    primary_result: { class: 'none', responsible_id: null, action_certainty: 'observed' },
+    cleanup_result: { class: 'not_started', responsible_id: null },
+    revision,
+    joined_existing: false,
+    rollback_required: false,
+    recovery_required: false,
+    services: reducedAuthority.graph.services.map((service, index) => {
+      const descriptorDocument = reducedAuthority.probeDocument.descriptors.find((candidate) => candidate.service_id === service.service_id)
+      const descriptor = { ...descriptorDocument, descriptor_sha256: canonicalJsonSha256(descriptorDocument) }
+      return {
+        service_id: service.service_id,
+        state: 'ready',
+        attempt_sequence: 1,
+        pending_dispatch_id: null,
+        pending_action: null,
+        probe_status: 'ready',
+        probe_expected_revision: null,
+        last_probe_result: {
+          schema_version: 'launcher_probe_result.v1',
+          message_type: 'result',
+          operation_id: operationId,
+          supervisor_generation: generation,
+          dispatch_id: `ld_${String(index + 1).padStart(16, '0')}`,
+          expected_revision: revision - index - 1,
+          service_id: service.service_id,
+          probe_id: descriptor.probe_id,
+          graph_sha256: reducedAuthority.identities.graphSha256,
+          binding_sha256: reducedAuthority.identities.bindingSha256,
+          descriptor_sha256: descriptor.descriptor_sha256,
+          config_sha256: probeConfigSha256,
+          requested_at: observedAt,
+          observed_at: observedAt,
+          source_observed_at: observedAt,
+          freshness_class: 'fresh',
+          semantic_class: descriptor.success_semantic_classes[0],
+          reason_class: 'none',
+          ready: true,
+          proof_ceiling: descriptor.proof_ceiling
+        }
+      }
+    }),
+    residue_service_ids: []
+  }
+  const expected = {
+    profileId,
+    effectiveConfigSha256,
+    operationId,
+    generation,
+    revision
+  }
+  const before = JSON.stringify(operation)
+  const accepted = evaluate({
+    authority: reducedAuthority,
+    operation,
+    expected,
+    nowMs: BASE_MS
+  })
+  assert.deepEqual(accepted, {
+    admission_class: 'admissible_at_evaluation_time',
+    reason_class: 'none',
+    owner_class: 'launcher_supervisor',
+    boundary_class: 'runtime_to_turn_admission',
+    profile_id: profileId,
+    effective_config_sha256: effectiveConfigSha256,
+    operation_ref: operationId,
+    generation,
+    revision,
+    terminal_proof_class: 'ready',
+    side_effect_certainty: 'not_attempted',
+    cleanup_certainty: 'not_started',
+    retry_class: 'retry0',
+    long_lived_ready: false,
+    lease_or_reservation: false,
+    immune_from_later_stop: false,
+    raw_private_publication_flags: false
+  })
+  assert.equal(JSON.stringify(operation), before)
+
+  const cases = [
+    ['profile mismatch', { expected: { ...expected, profileId: 'thought-core-v0' } }, 'held', 'identity_mismatch'],
+    ['config mismatch', { expected: { ...expected, effectiveConfigSha256: 'f'.repeat(64) } }, 'held', 'identity_mismatch'],
+    ['generation mismatch', { expected: { ...expected, generation: generation + 1 } }, 'held', 'identity_mismatch'],
+    ['revision mismatch', { expected: { ...expected, revision: revision + 1 } }, 'held', 'identity_mismatch'],
+    ['operation not ready', { operation: { ...operation, phase: 'waiting_ready' } }, 'held', 'operation_not_ready'],
+    ['probe missing', { operation: { ...operation, services: operation.services.slice(1) } }, 'unknown', 'probe_proof_unknown'],
+    ['probe malformed', { operation: { ...operation, services: operation.services.map((service, index) => index === 0 ? { ...service, last_probe_result: { ...service.last_probe_result, ready: 'true' } } : service) } }, 'unknown', 'probe_proof_unknown'],
+    ['probe failed', { operation: { ...operation, services: operation.services.map((service, index) => index === 0 ? { ...service, probe_status: 'not_ready', state: 'failed', last_probe_result: { ...service.last_probe_result, ready: false, reason_class: 'probe_failed' } } : service) } }, 'unknown', 'probe_proof_unknown'],
+    ['probe unavailable', { operation: { ...operation, services: operation.services.map((service, index) => index === 0 ? { ...service, last_probe_result: null } : service) } }, 'unknown', 'probe_proof_unknown'],
+    ['probe stale', { nowMs: BASE_MS + 16001 }, 'unknown', 'probe_proof_stale']
+  ]
+  for (const [name, overrides, admissionClass, reasonClass] of cases) {
+    const result = evaluate({ authority: reducedAuthority, operation, expected, nowMs: BASE_MS, ...overrides })
+    assert.equal(result.admission_class, admissionClass, name)
+    assert.equal(result.reason_class, reasonClass, name)
+    assert.equal(result.retry_class, 'retry0', name)
+    assert.equal(result.raw_private_publication_flags, false, name)
+  }
 })

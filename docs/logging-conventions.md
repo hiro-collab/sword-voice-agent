@@ -109,3 +109,12 @@ process-locally by operation reference, revision, and observation class. Exact
 absence needs no failure record; a later class change may emit one new bounded
 record. Diagnostic dedupe never changes the persisted operation or cleanup
 authority.
+
+S4B turn-admission diagnostics reuse the same owner-scoped event surfaces.
+Launcher emits `launcher_supervisor / runtime_to_turn_admission`; watcher emits
+`thought_core_watcher / turn_admission_fetch`. Both retain only fixed
+admission/reason/proof/side-effect/cleanup/retry classes and opaque operation
+correlation where already allowed. The request-local challenge, raw wish,
+endpoint, request or response body, lease/client proof, and private-plan facts
+are never logged. Missing required events fail deterministic proof, while a log
+sink failure still cannot change lifecycle or admission truth.

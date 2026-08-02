@@ -19,6 +19,9 @@ param(
     [string]$LocalAckMode = "",
     [ValidateSet("active", "held")]
     [string]$AdmissionMode = "active",
+    [string]$LauncherAdmissionUrl = "",
+    [string]$LauncherAdmissionProfileId = "",
+    [string]$LauncherAdmissionConfigSha256 = "",
     [switch]$NoSkipExisting,
     [switch]$SendNoSpeech,
     [switch]$PrintEvents,
@@ -156,6 +159,21 @@ if ($AdmissionMode -cne "held") {
 }
 else {
     $command += "--no-auto-review-pending"
+    $hasAdmissionInput = -not [string]::IsNullOrWhiteSpace($LauncherAdmissionUrl) `
+        -or -not [string]::IsNullOrWhiteSpace($LauncherAdmissionProfileId) `
+        -or -not [string]::IsNullOrWhiteSpace($LauncherAdmissionConfigSha256)
+    if ($hasAdmissionInput) {
+        if ($LauncherAdmissionUrl -cne "http://127.0.0.1:8799/api/turn-admission-snapshot" `
+            -or $LauncherAdmissionProfileId -cne "core-rehearsal-text-bubble-v0" `
+            -or $LauncherAdmissionConfigSha256 -cnotmatch "^[a-f0-9]{64}$") {
+            throw "launcher admission binding invalid"
+        }
+        $command += @(
+            "--launcher-admission-url", $LauncherAdmissionUrl,
+            "--launcher-admission-profile-id", $LauncherAdmissionProfileId,
+            "--launcher-admission-config-sha256", $LauncherAdmissionConfigSha256
+        )
+    }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($SessionId)) {

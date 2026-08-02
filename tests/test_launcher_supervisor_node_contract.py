@@ -17,6 +17,12 @@ MODULES = (
 )
 
 
+def between(source: str, start: str, end: str) -> str:
+    start_index = source.index(start)
+    end_index = source.index(end, start_index)
+    return source[start_index:end_index]
+
+
 class LauncherSupervisorNodeContractTests(unittest.TestCase):
     def test_dependency_free_node_suite_passes(self) -> None:
         node = shutil.which("node")
@@ -170,6 +176,39 @@ class LauncherSupervisorNodeContractTests(unittest.TestCase):
         self.assertIn("launcher-supervisor-runtime.js` is the single side-effect coordinator", readme)
         self.assertIn("job_worker_service", readme)
         self.assertIn("Ubuntu", readme)
+
+    def test_private_turn_admission_endpoint_is_post_loopback_no_store_and_not_public_cors(self) -> None:
+        server = (ROOT / "tools" / "home-control-launcher" / "server.js").read_text(encoding="utf-8")
+        self.assertIn("const TURN_ADMISSION_PATH = '/api/turn-admission-snapshot'", server)
+        guard = between(
+            server,
+            "const rejectUntrustedTurnAdmissionRequest",
+            "const readBody",
+        )
+        route = between(
+            server,
+            "requestUrl.pathname === TURN_ADMISSION_PATH",
+            "requestUrl.pathname === '/api/start'",
+        )
+        self.assertIn("!isLoopbackAddress(getRemoteAddress(request))", guard)
+        self.assertNotIn("ALLOW_REMOTE", guard)
+        self.assertIn("request.method === 'POST'", route)
+        self.assertIn("validateTurnAdmissionRequest", route)
+        self.assertIn("launcherRuntime.turnAdmissionSnapshot", route)
+        self.assertIn("request_challenge", route)
+        self.assertNotIn("Access-Control-Allow-Origin", route)
+        self.assertNotIn("TURN_ADMISSION_PATH", between(server, "if (request.method === 'OPTIONS')", "if (requestUrl.pathname.startsWith('/api/'))"))
+        self.assertIn("'Cache-Control': 'no-store'", between(server, "const sendJson", "const resolvePublicFile"))
+        public_contract = between(server, "const publicReducedRouteContract", "const publicFixedStartDiagnostic")
+        self.assertNotIn("TURN_ADMISSION_PATH", public_contract)
+        for raw_name in (
+            "private_plan_sha256",
+            "authority_lease_proof",
+            "owner_nonce",
+            "worker_nonce",
+            "client_secret",
+        ):
+            self.assertNotIn(raw_name, route)
 
 
 if __name__ == "__main__":
