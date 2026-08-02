@@ -248,6 +248,16 @@ private-plan cleanup fact is persisted before a bounded recovery terminal
 event, and the final stop/rollback/recovery state is persisted only after that
 proof exists.
 
+For a repeated Stop of a persisted `stopped/clear` operation, the private-plan
+owner performs one metadata-only `lstat` of the exact plan artifact. Exact
+not-found remains `already_stopped`. A present regular file, reparse/non-file,
+or unavailable observation returns `terminal_unknown` and exposes only an
+ephemeral `stopped` view with `cleanup=unknown`; the persisted operation bytes
+and revision remain unchanged. This observation never reads plan content or
+starts removal, lease, worker, dispatch, takeover, or retry work. Its bounded
+`private_plan_adapter` diagnostic is deduplicated per operation, revision, and
+observation class and publishes no raw artifact identity.
+
 VOICEVOX is the only external service in this graph. The runtime sends it only
 `probe`; it never sends external `start` or `stop`, never fabricates
 `external_ready`, and reduces an honest readiness timeout/unavailable result

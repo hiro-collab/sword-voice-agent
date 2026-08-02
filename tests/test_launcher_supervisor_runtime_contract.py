@@ -202,6 +202,18 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
         self.assertIn("HomeAssistantBridgeHost", private_plan)
         self.assertNotIn("service_id: 'voicevox'", private_plan)
 
+    def test_stopped_clear_reobserves_private_plan_artifact_without_mutating_store(self) -> None:
+        runtime = read(RUNTIME)
+        private_plan = read(PRIVATE_PLAN)
+        stop = between(runtime, "  async stop ({ profileId })", "module.exports")
+
+        self.assertIn("observePrivateServicePlanArtifact", private_plan)
+        self.assertIn("observePrivateServicePlanArtifact", runtime)
+        self.assertIn("private_plan_artifact_present", stop)
+        self.assertIn("private_plan_artifact_invalid", stop)
+        self.assertIn("private_plan_artifact_unavailable", stop)
+        self.assertIn("private_plan_adapter", stop)
+
     def test_s3a_conflict_unknown_cancel_and_diagnostics_stay_inside_node_authority(self) -> None:
         runtime = read(RUNTIME)
         server = read(SERVER)

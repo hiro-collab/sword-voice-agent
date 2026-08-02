@@ -101,3 +101,11 @@ path, payload, local command, PID, port, secret, media, transcript, or provider
 payload. Sink failure is ignored by lifecycle authority; absence of the expected
 bounded record is a later failure-injection proof failure. Source/static tests
 do not establish live ACL, retention, or product-runtime reachability.
+
+Repeated-Stop artifact observation uses only the fixed reason classes
+`private_plan_artifact_present`, `private_plan_artifact_invalid`, and
+`private_plan_artifact_unavailable`. The owner deduplicates this diagnostic
+process-locally by operation reference, revision, and observation class. Exact
+absence needs no failure record; a later class change may emit one new bounded
+record. Diagnostic dedupe never changes the persisted operation or cleanup
+authority.

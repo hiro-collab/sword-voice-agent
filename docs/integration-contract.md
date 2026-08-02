@@ -107,6 +107,16 @@ environment, and private-plan content remain private. Older v2 rows without
 cleanup attempts cannot authorize terminal cleanup clear and are reported
 fail-visibly as unknown.
 
+A repeated Stop over a persisted `stopped/clear` record reobserves only the
+exact private-plan artifact metadata. `ENOENT` means `absent` and preserves the
+bounded `already_stopped` result. A regular file is `present`; reparse or
+non-file is `invalid`; access and all other observation errors are
+`unavailable`. The latter three return `terminal_unknown` and project
+`stopped/cleanup=unknown` without changing the persisted bytes or revision.
+They authorize no content read, removal, lease, worker, dispatch, takeover, or
+retry. Public and diagnostic surfaces expose only fixed classes and opaque
+operation correlation.
+
 ### Launcher Start conflict and cancellation
 
 S3A disables positive `joined_existing`. Repeated, concurrent, in-flight, and

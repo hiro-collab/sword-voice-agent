@@ -16,6 +16,7 @@ const {
   LauncherPrivatePlanError,
   compilePrivateServicePlan,
   deriveEffectiveConfigIdentity,
+  observePrivateServicePlanArtifact,
   validateClosedLoopJournalBinding,
   readPrivateServicePlan,
   removePrivateServicePlan,
@@ -248,6 +249,7 @@ class LauncherSupervisorRuntime {
     planReader = readPrivateServicePlan,
     planWriter = writePrivateServicePlan,
     planRemover = removePrivateServicePlan,
+    planObserver = observePrivateServicePlanArtifact,
     workerFactory = null,
     probeExecutor = null,
     probeExecutorFactory = null,
@@ -270,6 +272,7 @@ class LauncherSupervisorRuntime {
       typeof planReader !== 'function' ||
       typeof planWriter !== 'function' ||
       typeof planRemover !== 'function' ||
+      typeof planObserver !== 'function' ||
       typeof operationIdFactory !== 'function' ||
       typeof workerNonceFactory !== 'function' ||
       typeof dispatchIdFactory !== 'function' ||
@@ -289,6 +292,7 @@ class LauncherSupervisorRuntime {
     this.planReader = planReader
     this.planWriter = planWriter
     this.planRemover = planRemover
+    this.planObserver = planObserver
     this.workerFactory = workerFactory || (({ compiled, planPath, supervisorLease }) => new LauncherJobWorkerClient({
       authority: this.authority,
       supervisorLease,
@@ -317,6 +321,8 @@ class LauncherSupervisorRuntime {
     this.leaseBinding = null
     this.inflight = null
     this.startCancellation = null
+    this.privatePlanObservationDiagnosticScope = null
+    this.privatePlanObservationSeenClasses = new Set()
     this.profileId = 'thought-core-v0'
   }
 
@@ -347,7 +353,8 @@ class LauncherSupervisorRuntime {
 
   publicState () {
     try {
-      return publicOperation(this.readCurrent(), this.profileId)
+      const observed = this.observeStoppedPrivatePlan(this.readCurrent())
+      return publicOperation(observed.operation, this.profileId)
     } catch {
       this.current = null
       return publicOperationStoreFailure(this.profileId)
@@ -389,6 +396,38 @@ class LauncherSupervisorRuntime {
       terminalProofClass: result.result_class
     })
     return result
+  }
+
+  observeStoppedPrivatePlan (operation, diagnosticReasons = null, diagnosticBoundary = 'private_plan_adapter') {
+    if (!operation || operation.phase !== reducer.PHASE.STOPPED || operation.cleanup !== reducer.CLEANUP.CLEAR) {
+      return { artifactClass: null, operation }
+    }
+    let artifactClass
+    try { artifactClass = this.planObserver(this.privateRuntimeRoot) } catch { artifactClass = 'unavailable' }
+    if (!['absent', 'present', 'invalid', 'unavailable'].includes(artifactClass)) artifactClass = 'unavailable'
+    const diagnosticScope = `${operation.operation_id}:${operation.revision}`
+    if (this.privatePlanObservationDiagnosticScope !== diagnosticScope) {
+      this.privatePlanObservationDiagnosticScope = diagnosticScope
+      this.privatePlanObservationSeenClasses.clear()
+    }
+    if (artifactClass === 'absent') return { artifactClass, operation }
+    const observedOperation = {
+      ...operation,
+      reason: reducer.REASON.STOP_FAILED,
+      cleanup: reducer.CLEANUP.UNKNOWN,
+      recovery_required: true
+    }
+    if (!this.privatePlanObservationSeenClasses.has(artifactClass) &&
+        this.privatePlanObservationSeenClasses.size < 3) {
+      this.privatePlanObservationSeenClasses.add(artifactClass)
+      this.emitDiagnostic(diagnosticBoundary, {
+        operation: observedOperation,
+        reasonClass: diagnosticReasons?.[artifactClass] || `private_plan_artifact_${artifactClass}`,
+        terminalProofClass: 'terminal_unknown',
+        cleanupCertainty: reducer.CLEANUP.UNKNOWN
+      })
+    }
+    return { artifactClass, operation: observedOperation }
   }
 
   hasTrustedStartCancellationAuthority (cancellation = this.startCancellation) {
@@ -1186,6 +1225,20 @@ class LauncherSupervisorRuntime {
         }, 'command_rejected')
       }
       if (current.phase === reducer.PHASE.STOPPED) {
+        const observed = this.observeStoppedPrivatePlan(current, {
+          present: 'private_plan_artifact_present',
+          invalid: 'private_plan_artifact_invalid',
+          unavailable: 'private_plan_artifact_unavailable'
+        }, 'private_plan_adapter')
+        if (observed.artifactClass !== 'absent') {
+          return this.diagnosticResult({
+            ok: false,
+            resultClass: 'terminal_unknown',
+            operation: observed.operation,
+            profileId,
+            errorClass: 'supervisor_runtime_failed'
+          })
+        }
         return this.diagnosticResult({
           ok: true,
           resultClass: 'already_stopped',
