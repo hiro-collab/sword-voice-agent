@@ -1475,7 +1475,9 @@ const publicCommandPreview = (preview) => {
     return preview
   }
   const { command, options, ...publicFields } = preview
-  const publicOptions = withoutLocalCameraSelection(options)
+  const publicOptions = publicConfigOptions(options, {
+    includeLocalCameraSelection: false
+  })
   return {
     ...publicFields,
     options: publicOptions
@@ -1491,6 +1493,20 @@ const withoutLocalCameraSelection = (options) => {
   return publicOptions
 }
 
+const publicConfigOptions = (
+  options,
+  { includeLocalCameraSelection = true } = {}
+) => {
+  const cameraBoundOptions = includeLocalCameraSelection
+    ? { ...(options || {}) }
+    : withoutLocalCameraSelection(options)
+  const {
+    HomeControlConfigPath,
+    ...publicOptions
+  } = cameraBoundOptions
+  return publicOptions
+}
+
 const withPreservedLocalCameraSelection = (profileId, requestedOptions = {}) => {
   const saved = readLauncherConfig()
   const savedProfileId = saved.selectedProfileId || profileId || PRIMARY_PROFILE_ID
@@ -1499,6 +1515,20 @@ const withPreservedLocalCameraSelection = (profileId, requestedOptions = {}) => 
     ...(requestedOptions || {}),
     MediapipeCameraName: savedOptions.MediapipeCameraName,
     MediapipeCameraSelectionKey: savedOptions.MediapipeCameraSelectionKey
+  }
+}
+
+const withPreservedPrivateConfigAuthority = (profileId, requestedOptions = {}) => {
+  const saved = readLauncherConfig()
+  const savedProfileId = saved.selectedProfileId || profileId || PRIMARY_PROFILE_ID
+  const savedOptions = normalizeOptions(savedProfileId, saved.options || {})
+  const {
+    HomeControlConfigPath,
+    ...requestedPublicOptions
+  } = requestedOptions || {}
+  return {
+    ...requestedPublicOptions,
+    HomeControlConfigPath: savedOptions.HomeControlConfigPath
   }
 }
 
@@ -3967,7 +3997,6 @@ const getStatus = async () => {
   return {
     ok: true,
     timestamp: nowIso(),
-    workspaceRoot: WORKSPACE_ROOT,
     operation: supervisor,
     profileConfigState,
     services,
@@ -4016,15 +4045,12 @@ const getState = async ({ includeLocalCameraSelection = true } = {}) => {
   const demoSafeSettings = effectiveDemoSafeSettings()
   return {
     ok: true,
-    projectRoot: PROJECT_ROOT,
-    workspaceRoot: WORKSPACE_ROOT,
-    stateDir: STATE_DIR,
     portMode: PORT_MODE,
     profiles: readProfiles().filter((profile) => supervisorProfileIds().includes(profile.id)).map((profile) => ({
       ...profile,
-      options: includeLocalCameraSelection
-        ? profile.options
-        : withoutLocalCameraSelection(profile.options)
+      options: publicConfigOptions(profile.options, {
+        includeLocalCameraSelection
+      })
     })),
     config: {
       selectedProfileId,
@@ -4042,9 +4068,9 @@ const getState = async ({ includeLocalCameraSelection = true } = {}) => {
             camera_policy: config.cameraPolicy || null
           }
         : null,
-      options: includeLocalCameraSelection
-        ? options
-        : withoutLocalCameraSelection(options)
+      options: publicConfigOptions(options, {
+        includeLocalCameraSelection
+      })
     },
     launcherState: publicFixedStartDiagnostic(readLauncherState()),
     operation: operationState(),
@@ -4365,11 +4391,16 @@ const handleApi = async (request, response, requestUrl) => {
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/preview') {
     const body = await readBody(request)
+    const profileId = body.profileId || PRIMARY_PROFILE_ID
+    const requestedOptions = withPreservedPrivateConfigAuthority(
+      profileId,
+      body.options || {}
+    )
     sendJson(
       response,
       200,
       publicCommandPreview(
-        previewCommand(body.profileId || PRIMARY_PROFILE_ID, body.options || {})
+        previewCommand(profileId, requestedOptions)
       )
     )
     return
@@ -4387,9 +4418,13 @@ const handleApi = async (request, response, requestUrl) => {
       sendJson(response, 409, configLock)
       return
     }
-    const requestedOptions = includeLocalCameraSelection
+    const cameraBoundOptions = includeLocalCameraSelection
       ? body.options || {}
       : withPreservedLocalCameraSelection(profileId, body.options || {})
+    const requestedOptions = withPreservedPrivateConfigAuthority(
+      profileId,
+      cameraBoundOptions
+    )
     const options = normalizeOptions(profileId, requestedOptions)
     const saved = saveConfig(profileId, options)
     const demoSafeSettings = body.demoSettings
@@ -4399,9 +4434,9 @@ const handleApi = async (request, response, requestUrl) => {
       ok: true,
       profileId,
       configIdentity: saved.configIdentity,
-      options: includeLocalCameraSelection
-        ? options
-        : withoutLocalCameraSelection(options),
+      options: publicConfigOptions(options, {
+        includeLocalCameraSelection
+      }),
       demoSafeSettings
     })
     return

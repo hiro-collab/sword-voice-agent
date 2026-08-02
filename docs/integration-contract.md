@@ -107,6 +107,14 @@ environment, and private-plan content remain private. Older v2 rows without
 cleanup attempts cannot authorize terminal cleanup clear and are reported
 fail-visibly as unknown.
 
+Launcher configuration paths remain compiler/server-private. The saved or
+default `HomeControlConfigPath` may be used internally when compiling a private
+plan, but a request cannot replace that authority. Public
+`state`/`status`/`preview`/`save-config`/log responses expose only opaque config
+identity/revision and bounded `homeControlConfigState` classes; raw roots,
+paths, commands, and private identifiers are omitted. The browser has no
+custom-path input or serialization surface.
+
 A repeated Stop over a persisted `stopped/clear` record reobserves only the
 exact private-plan artifact metadata. `ENOENT` means `absent` and preserves the
 bounded `already_stopped` result. A regular file is `present`; reparse or

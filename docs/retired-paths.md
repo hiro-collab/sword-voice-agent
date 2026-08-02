@@ -15,6 +15,7 @@
 | pre-S2 terminal clear based on any historical private-plan clear row | LEGACY。`stopped/clear` と非preflight `failed/clear` は `sequence` 上の最終 private-plan row が `clear/none` の場合だけ有効。後続 failed/unattempted、欠落、recovery event より後付けの proof は clear authority に使わず、public も unknown に落とす。厳密な no-side-effect `preflight_failed` だけは空 ledger を許す。 |
 | pre-S3A positive `joined_existing` Start | LEGACY/disabled。現行S3Aは同一identityでも重複・並行・Ready Startをconflict/mutation0/dispatch0として扱い、public `joined_existing=false`。full prospective identityによるpositive joinは後続sliceまで実行経路に戻さない。 |
 | pre-S3C unconditional `already_stopped` from persisted `stopped/clear` | LEGACY/disabled。現行runtimeはexact private-plan artifactをmetadata-onlyで再観測する。`absent`だけが`already_stopped`を維持し、`present|invalid|unavailable`はpersisted bytes/revisionとside effectsを変えず`terminal_unknown`、public cleanup unknownへ落とす。artifact content/path/hashは公開しない。 |
+| Launcher browser/request `HomeControlConfigPath` override | LEGACY/disabled。private saved/default pathはNode Launcher server/compilerだけが所有する。browser custom-path input/binding/serializationとrequest overrideは0。public state/status/preview/save/logはopaque config identity/revisionと固定state classだけを出し、raw path/command/private identifierを公開しない。 |
 
 `archives/legacy-md/2026-05-07-doc-rebuild/` には剪定前のメモやレビューを残しています。通常の実装判断では読まなくても大丈夫です。
 

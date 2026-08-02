@@ -286,6 +286,14 @@ settings drawer. It is local state, not tracked source; fresh clones use the
 tracked defaults from `manifests/demo-safe-settings/defaults.json` and start
 with demo-safe candidates disabled.
 
+The saved/default `HomeControlConfigPath` is server-owned private
+configuration. Browser requests cannot replace it, and public
+state/status/preview/save/log projections omit it together with raw roots,
+paths, commands, and other private identifiers. The UI exposes no custom-path
+field; callers receive only the opaque config identity/revision and bounded
+`homeControlConfigState` classes. This is a privacy boundary, not proof that a
+Home action is enabled or successful.
+
 Tracked defaults may include all-appliance command-stimulus route metadata such
 as `action_ids`, proof ceiling, and configured wait estimates. The Launcher
 shows that metadata for planning only. Enabling a row does not call Home

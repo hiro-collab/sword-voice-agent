@@ -146,8 +146,7 @@ const translations = {
     'demoSafe.display': 'Display',
     'demoSafe.general': 'General',
     'advanced.title': 'Advanced overrides',
-    'advanced.subtitle': 'Paths and external services',
-    'advanced.actionBridgeConfigPath': 'Action bridge config path',
+    'advanced.subtitle': 'External services',
     'surface.control': 'CONTROL',
     'surface.read': 'READ',
     'services.title': 'Services',
@@ -392,8 +391,7 @@ const translations = {
     'demoSafe.display': '表示',
     'demoSafe.general': 'その他',
     'advanced.title': '詳細設定',
-    'advanced.subtitle': 'パスと外部接続',
-    'advanced.actionBridgeConfigPath': '家電操作ブリッジ設定パス',
+    'advanced.subtitle': '外部接続',
     'surface.control': '操作',
     'surface.read': '確認',
     'services.title': '機能の状態',
@@ -611,8 +609,7 @@ const corePortFields = [
 
 const textFields = [
   'MediapipeCameraInputCodec',
-  'VoicevoxUrl',
-  'HomeControlConfigPath'
+  'VoicevoxUrl'
 ]
 
 const serviceLabels = {
@@ -2268,9 +2265,7 @@ const refreshState = async () => {
   state.selectedProfileId = payload.config?.selectedProfileId || 'thought-core-v0'
   state.configIdentity = payload.config?.configIdentity || null
   state.options = payload.config?.options || {}
-  $('workspace-root').textContent = payload.portMode
-    ? `${payload.workspaceRoot} · ${payload.portMode}`
-    : payload.workspaceRoot
+  $('launcher-mode').textContent = payload.portMode || t('status.unknown')
   $('status-time').textContent = payload.status?.timestamp || t('status.unknown')
   state.latestStatusTimestamp = payload.status?.timestamp || ''
   state.latestServices = payload.status?.services || {}

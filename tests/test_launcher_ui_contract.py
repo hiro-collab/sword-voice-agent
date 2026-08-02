@@ -93,7 +93,240 @@ def extract_between(text: str, start: str, end: str) -> str:
     return text[start_index:end_index]
 
 
+def public_config_privacy_violations(
+    payload: object,
+    *,
+    forbidden_values: tuple[str, ...],
+) -> list[str]:
+    violations: list[str] = []
+    normalized_values = tuple(
+        value.replace("\\", "/").casefold()
+        for value in forbidden_values
+        if value
+    )
+
+    def visit(value: object, location: str) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                normalized_key = "".join(
+                    character
+                    for character in str(key).casefold()
+                    if character.isalnum()
+                )
+                if (
+                    normalized_key.endswith("path")
+                    or normalized_key.endswith("root")
+                    or normalized_key
+                    in {
+                        "arguments",
+                        "argv",
+                        "command",
+                        "commandargs",
+                        "commandline",
+                    }
+                ):
+                    violations.append(f"{location}.{key}:raw_key")
+                visit(child, f"{location}.{key}")
+            return
+        if isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f"{location}[{index}]")
+            return
+        if isinstance(value, str):
+            normalized_value = value.replace("\\", "/").casefold()
+            for forbidden in normalized_values:
+                if forbidden in normalized_value:
+                    violations.append(f"{location}:raw_value")
+                    break
+
+    visit(payload, "$")
+    return violations
+
+
 class LauncherUiContractTest(TestCase):
+    def test_s4c_public_config_payloads_are_raw0_and_request_path_is_not_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_root:
+            temporary_path = Path(temporary_root)
+            workspace_root = temporary_path / "workspace-root-sentinel"
+            state_dir = temporary_path / "state-root-sentinel"
+            workspace_root.mkdir()
+            default_private_config_path = (
+                workspace_root / "local" / "env" / "home-control.live.yaml"
+            )
+            default_private_config_path.parent.mkdir(parents=True)
+            default_private_config_path.write_text("profile: test\n", encoding="utf-8")
+            malicious_save_path = str(
+                temporary_path / "malicious-save-config-path-sentinel.yaml"
+            )
+            malicious_preview_path = str(
+                temporary_path / "malicious-preview-config-path-sentinel.yaml"
+            )
+            project_root_sentinel = str(ROOT)
+
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            probe.bind(("127.0.0.1", 0))
+            launcher_port = probe.getsockname()[1]
+            probe.close()
+            base_url = f"http://127.0.0.1:{launcher_port}"
+            env = os.environ.copy()
+            env["NODE_ENV"] = "test"
+            env["HOME_CONTROL_LAUNCHER_TEST_FAKE_SUPERVISOR"] = "deterministic_v1"
+            launcher = subprocess.Popen(
+                [
+                    "node",
+                    str(LAUNCHER_SERVER),
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(launcher_port),
+                    "--workspace",
+                    str(workspace_root),
+                    "--state-dir",
+                    str(state_dir),
+                ],
+                cwd=ROOT,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            def get_json(path: str) -> dict:
+                with urllib.request.urlopen(f"{base_url}{path}", timeout=5) as response:
+                    return json.loads(response.read().decode("utf-8"))
+
+            def post_json(path: str, payload: dict) -> dict:
+                request = urllib.request.Request(
+                    f"{base_url}{path}",
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    return json.loads(response.read().decode("utf-8"))
+
+            try:
+                deadline = time.monotonic() + 8
+                while True:
+                    try:
+                        get_json("/api/state")
+                        break
+                    except Exception:
+                        if time.monotonic() >= deadline:
+                            self.fail("launcher did not become reachable")
+                        time.sleep(0.05)
+
+                baseline_save = post_json(
+                    "/api/save-config",
+                    {"profileId": "thought-core-v0", "options": {}},
+                )
+                config_record_path = state_dir / "launcher-config.json"
+                baseline_record = json.loads(
+                    config_record_path.read_text(encoding="utf-8")
+                )
+                baseline_private_path = baseline_record["options"].get(
+                    "HomeControlConfigPath", ""
+                )
+                self.assertTrue(baseline_private_path)
+                self.assertEqual(
+                    str(default_private_config_path),
+                    baseline_private_path,
+                )
+
+                requested_save = post_json(
+                    "/api/save-config",
+                    {
+                        "profileId": "thought-core-v0",
+                        "options": {
+                            "HomeControlConfigPath": malicious_save_path,
+                        },
+                    },
+                )
+                requested_preview = post_json(
+                    "/api/preview",
+                    {
+                        "profileId": "thought-core-v0",
+                        "options": {
+                            "HomeControlConfigPath": malicious_preview_path,
+                        },
+                    },
+                )
+                public_payloads = {
+                    "state": get_json("/api/state"),
+                    "status": get_json("/api/status"),
+                    "preview": requested_preview,
+                    "save": requested_save,
+                    "diagnostic": get_json("/api/logs"),
+                }
+                requested_record = json.loads(
+                    config_record_path.read_text(encoding="utf-8")
+                )
+
+                identity = requested_save.get("configIdentity")
+                self.assertIsInstance(identity, dict)
+                self.assertRegex(
+                    identity.get("effective_config_sha256", ""),
+                    r"^[a-f0-9]{64}$",
+                )
+                self.assertEqual(
+                    public_payloads["status"]["homeControlConfigState"][
+                        "payload_policy"
+                    ],
+                    "compact_redacted",
+                )
+                self.assertEqual(
+                    public_payloads["state"]["config"]["configIdentity"],
+                    identity,
+                )
+
+                forbidden_values = (
+                    malicious_save_path,
+                    malicious_preview_path,
+                    project_root_sentinel,
+                    str(workspace_root),
+                    str(state_dir),
+                    baseline_private_path,
+                )
+                violations = {
+                    name: public_config_privacy_violations(
+                        payload,
+                        forbidden_values=forbidden_values,
+                    )
+                    for name, payload in public_payloads.items()
+                }
+                self.assertEqual(
+                    {
+                        "public_violations": {},
+                        "private_path_preserved": True,
+                        "request_path_persisted": False,
+                    },
+                    {
+                        "public_violations": {
+                            name: entries
+                            for name, entries in violations.items()
+                            if entries
+                        },
+                        "private_path_preserved": requested_record["options"].get(
+                            "HomeControlConfigPath", ""
+                        )
+                        == baseline_private_path,
+                        "request_path_persisted": any(
+                            malicious_path in json.dumps(requested_record)
+                            for malicious_path in (
+                                malicious_save_path,
+                                malicious_preview_path,
+                            )
+                        ),
+                    },
+                )
+                self.assertIn("effective_config_sha256", baseline_save["configIdentity"])
+            finally:
+                launcher.terminate()
+                try:
+                    launcher.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    launcher.kill()
+                    launcher.wait(timeout=5)
+
     def test_reduced_route_public_contract_is_raw0_and_http_is_not_bubble_ready(self) -> None:
         server = read_launcher_server()
 
@@ -2365,14 +2598,18 @@ assert.deepStrictEqual(previewSnapshots[2], {
         self.assertIn("'command.title': '起動コマンド確認'", app)
         self.assertIn("'log.title': 'ランチャー記録'", app)
 
-    def test_launcher_language_mode_preserves_technical_values(self) -> None:
+    def test_launcher_language_mode_preserves_technical_values_without_private_path_input(self) -> None:
         html = read_public("index.html")
         app = read_public("app.js")
 
         self.assertIn('data-i18n="port.expression">Expression</span><input id="AituberPort"', html)
         self.assertIn('data-i18n="port.thoughtCore">Thought Core</span><input id="ThoughtCorePort"', html)
         self.assertIn("<span>VOICEVOX URL</span>", html)
-        self.assertIn('id="HomeControlConfigPath"', html)
+        self.assertNotIn('id="HomeControlConfigPath"', html)
+        self.assertNotIn('id="workspace-root"', html)
+        self.assertNotIn("'HomeControlConfigPath'", app)
+        self.assertNotIn("advanced.actionBridgeConfigPath", app)
+        self.assertNotIn("payload.workspaceRoot", app)
         self.assertIn("$('command-preview').textContent = formatReviewCommandPreview(commandLine)", app)
 
     def test_launcher_japanese_copy_uses_meaning_first_labels(self) -> None:

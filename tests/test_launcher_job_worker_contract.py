@@ -17,6 +17,9 @@ PLAN = ROOT / "ops" / "scripts" / "home-control-stack" / "launcher-service-plan.
 WORKER = ROOT / "ops" / "scripts" / "home-control-stack" / "launcher-job-worker.ps1"
 RUNTIME = ROOT / "tools" / "home-control-launcher" / "launcher-supervisor-runtime.js"
 SERVER = ROOT / "tools" / "home-control-launcher" / "server.js"
+S4C_SERVER_IMPLEMENTED_SHA256 = (
+    "0634201d1218463e1f2cdfb0141e7e132a38c5cb6b7e91dfbeb84e1114d907d8"
+)
 
 FROZEN_N0 = {
     "contracts/launcher/launcher-operation.v1.schema.json": "a91b5d54d45d99e2e25adcef4319ed3c2bc7dd4bd564a261e796a8dc191c85e3",
@@ -28,7 +31,8 @@ FROZEN_N0 = {
     "tools/home-control-launcher/launcher-supervisor-contract.js": "ed4fb60d8f5062b0527be74e4667871c16c024670a74462b83ed2cb872485c34",
     "tools/home-control-launcher/launcher-supervisor-reducer.js": "d9bf6ad278fc818dec511ca68cac0faedb13abd1551508aee508deb91ac8b887",
     "tools/home-control-launcher/launcher-operation-store.js": "79c3a0e040244150807efc1a1a9de617f9c93e320aa9ae5baa6ff146cc3d41b1",
-    "tools/home-control-launcher/server.js": "01432e0543048e41bb36f7aa356283bbdc743f8c8c239aca4000aa39372f6145",
+    # S4C freezes the exact bounded public-config producer bytes.
+    "tools/home-control-launcher/server.js": S4C_SERVER_IMPLEMENTED_SHA256,
     "ops/scripts/home-control-stack/start-home-control-stack.ps1": "d5f1b2556e3a71520b5117eef8774326b70b05221064122dccc9c1296ac8d1ec",
     "ops/scripts/home-control-stack/stop-home-control-stack.ps1": "acdb237f13f76eabfd743f24619b8b5c90512a7f1149ab55232239d476e67619",
     "ops/scripts/home-control-stack/status-home-control-stack.ps1": "db2ed1f9e7f6e21785d4a081cc35db818d1fbbd4e9c2b7e88d40ddbb628eda44",
