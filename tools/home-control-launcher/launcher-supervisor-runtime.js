@@ -14,6 +14,7 @@ const {
   LauncherPrivatePlanError,
   compilePrivateServicePlan,
   deriveEffectiveConfigIdentity,
+  observePrivateServicePlanArtifact,
   validateClosedLoopJournalBinding,
   readPrivateServicePlan,
   removePrivateServicePlan,
@@ -177,6 +178,16 @@ const publicOperationStoreFailure = (profileId = 'thought-core-v0') => ({
   raw_private_publication_flags: false
 })
 
+const stoppedCleanupUnknown = (operation) => operation
+  ? {
+      ...operation,
+      phase: reducer.PHASE.STOPPED,
+      reason: 'stop_failed',
+      cleanup: 'unknown',
+      recovery_required: true
+    }
+  : null
+
 const resultClassFor = (operation) => {
   if (!operation) return 'idle'
   if (operation.phase === reducer.PHASE.READY) return 'ready'
@@ -212,6 +223,7 @@ class LauncherSupervisorRuntime {
     planReader = readPrivateServicePlan,
     planWriter = writePrivateServicePlan,
     planRemover = removePrivateServicePlan,
+    planObserver = observePrivateServicePlanArtifact,
     workerFactory = null,
     probeExecutor = null,
     probeExecutorFactory = null,
@@ -233,6 +245,7 @@ class LauncherSupervisorRuntime {
       typeof planReader !== 'function' ||
       typeof planWriter !== 'function' ||
       typeof planRemover !== 'function' ||
+      typeof planObserver !== 'function' ||
       typeof operationIdFactory !== 'function' ||
       typeof workerNonceFactory !== 'function' ||
       typeof dispatchIdFactory !== 'function' ||
@@ -251,6 +264,7 @@ class LauncherSupervisorRuntime {
     this.planReader = planReader
     this.planWriter = planWriter
     this.planRemover = planRemover
+    this.planObserver = planObserver
     this.workerFactory = workerFactory || (({ compiled, planPath, supervisorLease }) => new LauncherJobWorkerClient({
       authority: this.authority,
       supervisorLease,
@@ -507,6 +521,18 @@ class LauncherSupervisorRuntime {
       }
     }
     return clientClear && planClear
+  }
+
+  observeStoppedCleanup (operation) {
+    let artifactClass = 'unavailable'
+    try { artifactClass = this.planObserver(this.privateRuntimeRoot) } catch {}
+    const authorityClear = this.supervisorLease === null && this.leaseBinding === null
+    const processLocalClear = this.client === null && this.compiled === null
+    const clear = artifactClass === 'absent' && authorityClear && processLocalClear
+    return {
+      clear,
+      operation: clear ? operation : stoppedCleanupUnknown(operation)
+    }
   }
 
   probeExpectationFor (serviceId, dispatchId) {
@@ -946,11 +972,13 @@ class LauncherSupervisorRuntime {
     try {
       const current = this.readCurrent()
       if (!current) {
+        const observed = this.observeStoppedCleanup(null)
         return publicResult({
-          ok: true,
-          resultClass: 'already_stopped',
-          operation: null,
-          profileId
+          ok: observed.clear,
+          resultClass: observed.clear ? 'already_stopped' : 'failed',
+          operation: observed.operation,
+          profileId,
+          errorClass: observed.clear ? 'none' : 'supervisor_runtime_failed'
         })
       }
       if (profileId !== current.profile_id) {
@@ -963,13 +991,13 @@ class LauncherSupervisorRuntime {
         })
       }
       if (current.phase === reducer.PHASE.STOPPED) {
-        const closed = await this.closeClientAndPlan()
-        if (closed) this.releaseSupervisorLease()
+        const observed = this.observeStoppedCleanup(current)
         return publicResult({
-          ok: true,
-          resultClass: 'already_stopped',
-          operation: current,
-          profileId
+          ok: observed.clear,
+          resultClass: observed.clear ? 'already_stopped' : 'failed',
+          operation: observed.operation,
+          profileId,
+          errorClass: observed.clear ? 'none' : 'supervisor_runtime_failed'
         })
       }
       if (reducer.isClearTerminalFailure(current, this.authority)) {

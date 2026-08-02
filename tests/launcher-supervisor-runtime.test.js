@@ -19,6 +19,7 @@ const {
   compilePrivateServicePlan,
   deriveEffectiveConfigIdentity,
   expectedEventJournalDirectory,
+  observePrivateServicePlanArtifact,
   readPrivateServicePlan,
   serializePrivateServicePlan,
   verifyTrustedWindowsWorkerExecutable,
@@ -174,6 +175,7 @@ const makeHarness = ({
   planCompiler = null,
   planReader = null,
   planRemover = null,
+  planObserver = null,
   probeExecutor = undefined,
   probeExecutorFactory = null,
   storeOverrides = {}
@@ -249,6 +251,7 @@ const makeHarness = ({
       else events.push('plan:remove')
       planPresent = false
     },
+    ...(planObserver ? { planObserver } : {}),
     workerFactory: ({ supervisorLease }) => {
       events.push('worker:create')
       assert.ok(supervisorLease)
@@ -1446,6 +1449,254 @@ test('idle stop does not compile a private plan or create a worker', async () =>
     assert.equal(stopped.result_class, 'already_stopped')
     assert.equal(compileCalls, 0)
     assert.equal(harness.workers.length, 0)
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('private-plan cleanup observation is exact lstat-only and fail-closed', () => {
+  const cases = [
+    ['absent', 'absent', () => { throw Object.assign(new Error('not found'), { code: 'ENOENT' }) }],
+    ['present or stale regular file', 'present', () => ({ isFile: () => true, isSymbolicLink: () => false })],
+    ['reparse', 'invalid', () => ({ isFile: () => true, isSymbolicLink: () => true })],
+    ['non-file', 'invalid', () => ({ isFile: () => false, isSymbolicLink: () => false })],
+    ['access', 'unavailable', () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }) }],
+    ['other', 'unavailable', () => { throw Object.assign(new Error('unavailable'), { code: 'EIO' }) }]
+  ]
+  for (const [name, expected, observe] of cases) {
+    let lstatCalls = 0
+    let contentReads = 0
+    const result = observePrivateServicePlanArtifact(path.resolve(os.tmpdir()), {
+      lstatSync: () => {
+        lstatCalls += 1
+        return observe()
+      },
+      readFileSync: () => {
+        contentReads += 1
+        throw new Error('content read forbidden')
+      }
+    })
+    assert.equal(result, expected, name)
+    assert.equal(lstatCalls, 1, name)
+    assert.equal(contentReads, 0, name)
+  }
+})
+
+for (const artifactClass of ['absent', 'present', 'invalid', 'unavailable']) {
+  test(`repeated STOPPED Stop observes ${artifactClass} cleanup without side effects or persisted mutation`, async () => {
+    let observedClass = 'absent'
+    let observationCalls = 0
+    let closeCalls = 0
+    let executeCalls = 0
+    const harness = makeHarness({
+      planObserver: () => {
+        observationCalls += 1
+        return observedClass
+      }
+    })
+    try {
+      const started = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+      assert.equal(started.ok, true)
+      const firstStop = await harness.runtime.stop({ profileId: 'thought-core-v0' })
+      assert.equal(firstStop.ok, true)
+      assert.equal(firstStop.operation.cleanup, 'clear')
+
+      observedClass = artifactClass
+      observationCalls = 0
+      const recordPath = path.join(harness.root, realStore.STORE_DIRECTORY, realStore.RECORD_FILE)
+      const beforeBytes = fs.readFileSync(recordPath)
+      const beforeOperation = realStore.readOperation(authority, harness.root)
+      const beforeEvents = [...harness.events]
+      const beforeWorkerCount = harness.workers.length
+      const beforeRequestCount = harness.workers.reduce((count, worker) => count + worker.requests.length, 0)
+
+      if (artifactClass === 'absent') {
+        assert.equal(harness.runtime.client, null)
+        assert.equal(harness.runtime.compiled, null)
+        assert.equal(harness.runtime.supervisorLease, null)
+        assert.equal(harness.runtime.leaseBinding, null)
+      }
+
+      const repeated = await harness.runtime.stop({ profileId: 'thought-core-v0' })
+      const repeatedAgain = await harness.runtime.stop({ profileId: 'thought-core-v0' })
+
+      assert.equal(observationCalls, 2, artifactClass)
+      assert.deepEqual(fs.readFileSync(recordPath), beforeBytes, artifactClass)
+      assert.deepEqual(realStore.readOperation(authority, harness.root), beforeOperation, artifactClass)
+      assert.deepEqual(harness.events, beforeEvents, artifactClass)
+      assert.equal(harness.workers.length, beforeWorkerCount, artifactClass)
+      assert.equal(harness.workers.reduce((count, worker) => count + worker.requests.length, 0), beforeRequestCount, artifactClass)
+      assert.equal(closeCalls, 0, artifactClass)
+      assert.equal(executeCalls, 0, artifactClass)
+
+      if (artifactClass === 'absent') {
+        for (const result of [repeated, repeatedAgain]) {
+          assert.equal(result.ok, true)
+          assert.equal(result.result_class, 'already_stopped')
+          assert.equal(result.error_class, 'none')
+          assert.equal(result.operation.cleanup, 'clear')
+        }
+      } else {
+        for (const result of [repeated, repeatedAgain]) {
+          assert.equal(result.ok, false)
+          assert.equal(result.result_class, 'failed')
+          assert.equal(result.error_class, 'supervisor_runtime_failed')
+          assert.equal(result.operation.phase, 'stopped')
+          assert.equal(result.operation.reason, 'stop_failed')
+          assert.equal(result.operation.cleanup, 'unknown')
+          assert.equal(result.operation.recovery_required, true)
+          assert.equal(result.operation.revision, beforeOperation.revision)
+          assert.deepEqual(result.operation.residue_service_ids, beforeOperation.residue_service_ids)
+        }
+      }
+
+      const serialized = JSON.stringify({ repeated, repeatedAgain })
+      for (const forbidden of [harness.root, 'private_plan_sha256', 'command_line', 'working_directory', '"pid"', '"port"']) {
+        assert.equal(serialized.includes(forbidden), false, `${artifactClass}: ${forbidden}`)
+      }
+    } finally {
+      harness.cleanup()
+    }
+  })
+}
+
+test('repeated STOPPED Stop projects a retained timeout-adjacent client as failed without close or retry', async () => {
+  let closeCalls = 0
+  let executeCalls = 0
+  const harness = makeHarness({ planObserver: () => 'absent' })
+  try {
+    const started = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(started.ok, true)
+    const firstStop = await harness.runtime.stop({ profileId: 'thought-core-v0' })
+    assert.equal(firstStop.ok, true)
+    const recordPath = path.join(harness.root, realStore.STORE_DIRECTORY, realStore.RECORD_FILE)
+    const beforeBytes = fs.readFileSync(recordPath)
+    const beforeEvents = [...harness.events]
+    harness.runtime.client = {
+      async execute () {
+        executeCalls += 1
+        throw new LauncherJobWorkerError('worker_transport_timeout')
+      },
+      async close () {
+        closeCalls += 1
+        throw new Error('PRIVATE_CLIENT_CLOSE_FAILURE')
+      }
+    }
+
+    const result = await harness.runtime.stop({ profileId: 'thought-core-v0' })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.result_class, 'failed')
+    assert.equal(result.error_class, 'supervisor_runtime_failed')
+    assert.equal(result.operation.phase, 'stopped')
+    assert.equal(result.operation.reason, 'stop_failed')
+    assert.equal(result.operation.cleanup, 'unknown')
+    assert.equal(result.operation.recovery_required, true)
+    assert.equal(result.operation.revision, firstStop.operation.revision)
+    assert.deepEqual(result.operation.residue_service_ids, firstStop.operation.residue_service_ids)
+    assert.equal(executeCalls, 0)
+    assert.equal(closeCalls, 0)
+    assert.deepEqual(fs.readFileSync(recordPath), beforeBytes)
+    assert.deepEqual(harness.events, beforeEvents)
+    assert.equal(JSON.stringify(result).includes('PRIVATE_CLIENT_CLOSE_FAILURE'), false)
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('repeated STOPPED Stop rejects observer failure and retained lease without cleanup side effects', async () => {
+  let observerThrows = true
+  const harness = makeHarness({
+    planObserver: () => {
+      if (observerThrows) throw new Error('PRIVATE_OBSERVER_FAILURE')
+      return 'absent'
+    }
+  })
+  try {
+    const started = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(started.ok, true)
+    observerThrows = false
+    const firstStop = await harness.runtime.stop({ profileId: 'thought-core-v0' })
+    assert.equal(firstStop.ok, true)
+    const recordPath = path.join(harness.root, realStore.STORE_DIRECTORY, realStore.RECORD_FILE)
+    const beforeBytes = fs.readFileSync(recordPath)
+    const beforeEvents = [...harness.events]
+
+    observerThrows = true
+    const observerFailure = await harness.runtime.stop({ profileId: 'thought-core-v0' })
+    assert.equal(observerFailure.ok, false)
+    assert.equal(observerFailure.result_class, 'failed')
+    assert.equal(observerFailure.operation.cleanup, 'unknown')
+
+    observerThrows = false
+    const leaseUncertainResults = []
+    for (const [supervisorLease, leaseBinding] of [
+      [Object.freeze({ opaque: true }), null],
+      [null, Object.freeze({ opaque: true })],
+      [Object.freeze({ opaque: true }), Object.freeze({ opaque: true })]
+    ]) {
+      harness.runtime.supervisorLease = supervisorLease
+      harness.runtime.leaseBinding = leaseBinding
+      const leaseUncertain = await harness.runtime.stop({ profileId: 'thought-core-v0' })
+      assert.equal(leaseUncertain.ok, false)
+      assert.equal(leaseUncertain.result_class, 'failed')
+      assert.equal(leaseUncertain.operation.cleanup, 'unknown')
+      leaseUncertainResults.push(leaseUncertain)
+    }
+    assert.deepEqual(fs.readFileSync(recordPath), beforeBytes)
+    assert.deepEqual(harness.events, beforeEvents)
+    assert.equal(JSON.stringify({ observerFailure, leaseUncertainResults }).includes('PRIVATE_OBSERVER_FAILURE'), false)
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('no-operation Stop fails closed for a present artifact with process-local state clear', async () => {
+  const harness = makeHarness({ planObserver: () => 'present' })
+  try {
+    assert.equal(harness.runtime.client, null)
+    assert.equal(harness.runtime.compiled, null)
+    assert.equal(harness.runtime.supervisorLease, null)
+    assert.equal(harness.runtime.leaseBinding, null)
+    const result = await harness.runtime.stop({ profileId: 'thought-core-v0' })
+    assert.equal(result.ok, false)
+    assert.equal(result.result_class, 'failed')
+    assert.equal(result.error_class, 'supervisor_runtime_failed')
+    assert.equal(result.operation.operation_id, null)
+    assert.equal(harness.events.length, 0)
+    assert.equal(harness.workers.length, 0)
+    assert.equal(fs.existsSync(path.join(harness.root, realStore.STORE_DIRECTORY, realStore.RECORD_FILE)), false)
+    assert.equal(harness.runtime.client, null)
+    assert.equal(harness.runtime.compiled, null)
+    assert.equal(harness.runtime.supervisorLease, null)
+    assert.equal(harness.runtime.leaseBinding, null)
+    assert.equal(harness.events.some((event) => /plan:remove|store:|worker:|signal/u.test(event)), false)
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('no-operation Stop fails closed for retained compiled state with the artifact absent', async () => {
+  const harness = makeHarness({ planObserver: () => 'absent' })
+  const retainedCompiled = Object.freeze({ stale: true })
+  try {
+    harness.runtime.compiled = retainedCompiled
+    assert.equal(harness.runtime.client, null)
+    assert.equal(harness.runtime.supervisorLease, null)
+    assert.equal(harness.runtime.leaseBinding, null)
+    const result = await harness.runtime.stop({ profileId: 'thought-core-v0' })
+    assert.equal(result.ok, false)
+    assert.equal(result.result_class, 'failed')
+    assert.equal(result.error_class, 'supervisor_runtime_failed')
+    assert.equal(result.operation.operation_id, null)
+    assert.equal(harness.events.length, 0)
+    assert.equal(harness.workers.length, 0)
+    assert.equal(fs.existsSync(path.join(harness.root, realStore.STORE_DIRECTORY, realStore.RECORD_FILE)), false)
+    assert.equal(harness.runtime.client, null)
+    assert.equal(harness.runtime.compiled, retainedCompiled)
+    assert.equal(harness.runtime.supervisorLease, null)
+    assert.equal(harness.runtime.leaseBinding, null)
+    assert.equal(harness.events.some((event) => /plan:remove|store:|worker:|signal/u.test(event)), false)
   } finally {
     harness.cleanup()
   }

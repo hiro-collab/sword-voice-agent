@@ -762,6 +762,19 @@ const resolvePlanPaths = (privateRuntimeRoot) => {
   }
 }
 
+const observePrivateServicePlanArtifact = (privateRuntimeRoot, io = {}) => {
+  const { planPath } = resolvePlanPaths(privateRuntimeRoot)
+  const lstatSync = io.lstatSync || fs.lstatSync
+  try {
+    const stat = lstatSync(planPath)
+    if (!stat || typeof stat.isFile !== 'function' || typeof stat.isSymbolicLink !== 'function' ||
+        stat.isSymbolicLink() || !stat.isFile()) return 'invalid'
+    return 'present'
+  } catch (error) {
+    return error?.code === 'ENOENT' ? 'absent' : 'unavailable'
+  }
+}
+
 const boundedStringArray = (value, { maximumItems = 128, maximumLength = 4096, pattern = null } = {}) => {
   if (!Array.isArray(value) || value.length > maximumItems) fail('private_plan_config_invalid')
   const result = value.map((item) => {
@@ -946,6 +959,7 @@ module.exports = {
   compilePrivateServicePlan,
   deriveEffectiveConfigIdentity,
   expectedEventJournalDirectory,
+  observePrivateServicePlanArtifact,
   readPrivateServicePlan,
   removePrivateServicePlan,
   resolvePlanPaths,
