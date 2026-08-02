@@ -508,3 +508,13 @@ are forced off after environment hydration. This source/static contract proves
 neither provider availability nor a user-visible bubble, semantic Ready,
 Stop/residue0, Parent selection, `CORE_REHEARSAL_CLEAR`, or the standard/full
 route.
+
+The watcher source also contains the S5 reduced-turn contract for later
+activation: one accepted precheck, one buffered provider exchange, and one
+postcheck of the same profile/config/operation/generation/revision. Exactly one
+correlated `agentic.decision`, `assistant.message`, and `turn.completed` may
+yield one process-local semantic candidate count; action/tool decisions,
+duplicates, missing or mismatched evidence, provider failure, privacy failure,
+and drift yield zero candidates and bounded unknown/hold with retry zero. Raw
+wish and provider response are not written or presented. This does not change
+the compiled held mode or authorize S6 presentation.

@@ -231,7 +231,700 @@ class CandidateThoughtCoreClient:
         )
 
 
+S5_PROFILE_ID = "core-rehearsal-text-bubble-v0"
+S5_CONFIG_SHA256 = "a" * 64
+S5_OPERATION_REF = "lop_s5reducedtext0001"
+S5_PROVIDER_RESPONSE_SENTINEL = "PRIVATE_S5_ASSISTANT_RESPONSE"
+S5_PROVIDER_PAYLOAD_SENTINEL = "PRIVATE_S5_PROVIDER_PAYLOAD"
+S5_OVERFLOW_PAYLOAD_SENTINEL = "PRIVATE_S5_OVERFLOW_PAYLOAD"
+S5_CONVERSATION_ATTEMPT_REF = (
+    "m4.prepared_sample_attempt:" + ("a" * 32)
+)
+
+
+def s5_snapshot(
+    *,
+    admission_class: str = "admissible_at_evaluation_time",
+    reason_class: str = "none",
+    profile_id: str = S5_PROFILE_ID,
+    config_sha256: str = S5_CONFIG_SHA256,
+    operation_ref: str = S5_OPERATION_REF,
+    generation: int = 7,
+    revision: int = 51,
+    challenge_suffix: str = "1",
+) -> dict[str, object]:
+    if admission_class != "admissible_at_evaluation_time":
+        return {
+            "admission_class": admission_class,
+            "reason_class": reason_class,
+            "owner_class": "thought_core_watcher",
+            "boundary_class": "turn_admission_fetch",
+            "retry_class": "retry0",
+            "raw_private_publication_flags": False,
+        }
+    return {
+        "admission_class": admission_class,
+        "reason_class": reason_class,
+        "owner_class": "launcher_supervisor",
+        "boundary_class": "runtime_to_turn_admission",
+        "profile_id": profile_id,
+        "effective_config_sha256": config_sha256,
+        "operation_ref": operation_ref,
+        "generation": generation,
+        "revision": revision,
+        "request_challenge": "tac_" + (challenge_suffix * 32),
+        "terminal_proof_class": "ready",
+        "side_effect_certainty": "not_attempted",
+        "cleanup_certainty": "not_started",
+        "retry_class": "retry0",
+        "long_lived_ready": False,
+        "lease_or_reservation": False,
+        "immune_from_later_stop": False,
+        "raw_private_publication_flags": False,
+    }
+
+
+class S5ReducedTextThoughtCoreClient:
+    def __init__(
+        self,
+        variant: str = "valid",
+        *,
+        semantic_kind: str = "conversation",
+    ) -> None:
+        self.variant = variant
+        self.semantic_kind = semantic_kind
+        self.turn_payloads: list[dict[str, object]] = []
+        self.event_batches: list[list[ThoughtCoreStreamEvent]] = []
+
+    def send_turn_streaming(self, turn_payload, *, on_event=None):  # type: ignore[no-untyped-def]
+        self.turn_payloads.append(json.loads(json.dumps(turn_payload)))
+        if self.variant == "unavailable":
+            raise RuntimeError("PRIVATE_S5_PROVIDER_FAILURE")
+
+        turn_id = str(turn_payload["turn_id"])
+        session_id = str(turn_payload["session_id"])
+        context_refs = turn_payload.get("context_refs")
+        attempt_ref = (
+            str(context_refs.get("conversation_attempt_ref") or "")
+            if isinstance(context_refs, dict)
+            else ""
+        )
+        events = [
+            ThoughtCoreStreamEvent(
+                event_type="agentic.decision",
+                turn_id=turn_id,
+                session_id=session_id,
+                seq=1,
+                event_id="evt_s5_decision_001",
+                data={
+                    "status": "accepted",
+                    "kind": self.semantic_kind,
+                    "capability_present": False,
+                    "semantic_authority": "agentic_provider",
+                },
+            ),
+            ThoughtCoreStreamEvent(
+                event_type="assistant.speech_delta",
+                turn_id=turn_id,
+                session_id=session_id,
+                seq=2,
+                event_id="evt_s5_delta_001",
+                data={
+                    "assistant_message_id": "msg_s5_001",
+                    "conversation_attempt_ref": attempt_ref,
+                    "delta": S5_PROVIDER_RESPONSE_SENTINEL,
+                },
+            ),
+            ThoughtCoreStreamEvent(
+                event_type="assistant.message",
+                turn_id=turn_id,
+                session_id=session_id,
+                seq=3,
+                event_id="evt_s5_message_001",
+                data={
+                    "assistant_message_id": "msg_s5_001",
+                    "conversation_attempt_ref": attempt_ref,
+                    "speech": S5_PROVIDER_RESPONSE_SENTINEL,
+                },
+            ),
+            ThoughtCoreStreamEvent(
+                event_type="turn.completed",
+                turn_id=turn_id,
+                session_id=session_id,
+                seq=4,
+                event_id="evt_s5_completed_001",
+                data={
+                    "status": self.semantic_kind,
+                    "semantic_authority": "agentic_provider",
+                    "capability_executed": False,
+                },
+            ),
+        ]
+
+        if self.variant == "duplicate_message":
+            events.append(
+                ThoughtCoreStreamEvent(
+                    event_type="assistant.message",
+                    turn_id=turn_id,
+                    session_id=session_id,
+                    seq=5,
+                    event_id="evt_s5_message_duplicate_001",
+                    data=events[2].data,
+                )
+            )
+        elif self.variant == "duplicate_completion":
+            events.append(
+                ThoughtCoreStreamEvent(
+                    event_type="turn.completed",
+                    turn_id=turn_id,
+                    session_id=session_id,
+                    seq=5,
+                    event_id="evt_s5_completed_duplicate_001",
+                    data=events[3].data,
+                )
+            )
+        elif self.variant == "unexpected_late_event":
+            events.append(
+                ThoughtCoreStreamEvent(
+                    event_type="provider.late_event",
+                    turn_id=turn_id,
+                    session_id=session_id,
+                    seq=5,
+                    event_id="evt_s5_late_001",
+                    data={"payload": S5_OVERFLOW_PAYLOAD_SENTINEL},
+                )
+            )
+        elif self.variant == "missing_message":
+            events = [events[0], events[1], events[3]]
+        elif self.variant == "missing_completion":
+            events = events[:3]
+        elif self.variant == "wrong_turn_ref":
+            events[2] = ThoughtCoreStreamEvent(
+                event_type="assistant.message",
+                turn_id="turn_foreign_s5",
+                session_id=session_id,
+                seq=3,
+                data=events[2].data,
+            )
+        elif self.variant == "wrong_session_ref":
+            events[3] = ThoughtCoreStreamEvent(
+                event_type="turn.completed",
+                turn_id=turn_id,
+                session_id="session_foreign_s5",
+                seq=4,
+                data=events[3].data,
+            )
+        elif self.variant == "wrong_attempt_ref":
+            events[2] = ThoughtCoreStreamEvent(
+                event_type="assistant.message",
+                turn_id=turn_id,
+                session_id=session_id,
+                seq=3,
+                data={
+                    **events[2].data,
+                    "conversation_attempt_ref": (
+                        "m4.prepared_sample_attempt:" + ("f" * 32)
+                    ),
+                },
+            )
+        elif self.variant == "attempt_ref_on_decision":
+            events[0] = ThoughtCoreStreamEvent(
+                event_type="agentic.decision",
+                turn_id=turn_id,
+                session_id=session_id,
+                seq=1,
+                data={
+                    **events[0].data,
+                    "conversation_attempt_ref": attempt_ref,
+                },
+            )
+        elif self.variant == "attempt_ref_on_completion":
+            events[3] = ThoughtCoreStreamEvent(
+                event_type="turn.completed",
+                turn_id=turn_id,
+                session_id=session_id,
+                seq=4,
+                data={
+                    **events[3].data,
+                    "conversation_attempt_ref": attempt_ref,
+                },
+            )
+        elif self.variant == "nonmonotonic_sequence":
+            events[3] = ThoughtCoreStreamEvent(
+                event_type="turn.completed",
+                turn_id=turn_id,
+                session_id=session_id,
+                seq=3,
+                data=events[3].data,
+            )
+        elif self.variant in {"eof_only", "http_only", "submitted_only", "enqueued_only"}:
+            proof_type = {
+                "eof_only": "transport.eof",
+                "http_only": "http.completed",
+                "submitted_only": "turn.submitted",
+                "enqueued_only": "turn.enqueued",
+            }[self.variant]
+            events = [
+                ThoughtCoreStreamEvent(
+                    event_type=proof_type,
+                    turn_id=turn_id,
+                    session_id=session_id,
+                    seq=1,
+                    data={"status": "accepted"},
+                )
+            ]
+        elif self.variant == "unauthorized_action":
+            events[0] = ThoughtCoreStreamEvent(
+                event_type="agentic.decision",
+                turn_id=turn_id,
+                session_id=session_id,
+                seq=1,
+                data={
+                    "status": "accepted",
+                    "kind": "capability",
+                    "capability_present": True,
+                    "semantic_authority": "agentic_provider",
+                },
+            )
+        elif self.variant == "privacy_blocked":
+            events[3] = ThoughtCoreStreamEvent(
+                event_type="turn.completed",
+                turn_id=turn_id,
+                session_id=session_id,
+                seq=4,
+                data={
+                    "status": "privacy_blocked",
+                    "semantic_authority": "agentic_provider",
+                    "capability_executed": False,
+                },
+            )
+        elif self.variant == "provider_degraded_hold":
+            hold_data = {
+                "status": "held",
+                "reason": "agentic_provider_unavailable",
+                "reason_code": "provider_unavailable",
+                "semantic_authority": "agentic_provider",
+                "degraded": True,
+            }
+            events[0] = ThoughtCoreStreamEvent(
+                event_type="agentic.decision",
+                turn_id=turn_id,
+                session_id=session_id,
+                seq=1,
+                data=hold_data,
+            )
+            events[3] = ThoughtCoreStreamEvent(
+                event_type="turn.completed",
+                turn_id=turn_id,
+                session_id=session_id,
+                seq=4,
+                data=hold_data,
+            )
+        elif self.variant == "internal_canned_fallback":
+            events = []
+
+        self.event_batches.append(list(events))
+        for event in events:
+            if on_event is not None:
+                on_event(event)
+        return AgentResponse(
+            text=(
+                "INTERNAL_CANNED_SUCCESS"
+                if self.variant == "internal_canned_fallback"
+                else S5_PROVIDER_RESPONSE_SENTINEL
+            ),
+            conversation_id=turn_id,
+            raw={
+                "status": "success",
+                "provider_payload": S5_PROVIDER_PAYLOAD_SENTINEL,
+                "token": "PRIVATE_TOKEN_SENTINEL",
+            },
+        )
+
+
+def build_s5_args(root: Path, status_dir: Path):
+    return build_parser().parse_args(
+        [
+            "--ai-talk-core-root",
+            str(root),
+            "--once",
+            "--status-dir",
+            str(status_dir),
+            "--admission-mode",
+            "active",
+            "--launcher-admission-url",
+            "http://127.0.0.1:8799/api/turn-admission-snapshot",
+            "--launcher-admission-profile-id",
+            S5_PROFILE_ID,
+            "--launcher-admission-config-sha256",
+            S5_CONFIG_SHA256,
+            "--context-ref",
+            f"conversation_attempt_ref={S5_CONVERSATION_ATTEMPT_REF}",
+            "--output-json",
+            str(root / "candidate-output.json"),
+            "--output-text",
+            str(root / "candidate-output.txt"),
+        ]
+    )
+
+
 class WatchHandoffToThoughtCoreTest(TestCase):
+    def _run_s5_case(
+        self,
+        *,
+        variant: str = "valid",
+        semantic_kind: str = "conversation",
+        snapshots: list[dict[str, object] | None] | None = None,
+        legacy_facts: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            status_dir = root / "status"
+            cache_dir = write_handoff(
+                root,
+                command="PRIVATE_S5_WISH_SENTINEL",
+                turn_id="turn_s5_reduced_text_001",
+            )
+            if legacy_facts:
+                handoff_path = cache_dir / "web_latest.json"
+                payload = json.loads(handoff_path.read_text(encoding="utf-8"))
+                payload.update(legacy_facts)
+                handoff_path.write_text(json.dumps(payload), encoding="utf-8")
+            args = build_s5_args(root, status_dir)
+            client = S5ReducedTextThoughtCoreClient(
+                variant,
+                semantic_kind=semantic_kind,
+            )
+            snapshot_values = list(snapshots or [s5_snapshot(), s5_snapshot()])
+            with patch.object(
+                watcher_app,
+                "fetch_turn_admission_snapshot",
+                side_effect=snapshot_values,
+            ) as fetch_snapshot, patch("builtins.print") as printed:
+                try:
+                    result: object = run_once(args, client=client)
+                    raised: Exception | None = None
+                except Exception as exc:  # intended RED must become bounded terminal truth
+                    result = {}
+                    raised = exc
+            output_payloads: list[str] = []
+            for path in (root / "candidate-output.json", root / "candidate-output.txt"):
+                if path.exists():
+                    output_payloads.append(path.read_text(encoding="utf-8"))
+            events = StatusStore(status_dir).read_events() if status_dir.exists() else []
+            return {
+                "result": result,
+                "raised": raised,
+                "client": client,
+                "fetch_count": fetch_snapshot.call_count,
+                "events": events,
+                "outputs": output_payloads,
+                "console": [call.args for call in printed.call_args_list],
+            }
+
+    def _assert_s5_no_output_side_effects(self, case: dict[str, object]) -> None:
+        result = case["result"]
+        self.assertIsInstance(result, dict)
+        assert isinstance(result, dict)
+        self.assertEqual(result.get("result_write_count"), 0)
+        self.assertEqual(result.get("narration_count"), 0)
+        self.assertEqual(result.get("presentation_dispatch_count"), 0)
+        self.assertEqual(result.get("retry_count"), 0)
+        self.assertEqual(result.get("action_count"), 0)
+        self.assertFalse(result.get("raw_private_publication_flags", True))
+        self.assertEqual(case["outputs"], [])
+
+    def test_s5_precheck_rejects_missing_unknown_stale_and_identity_mismatch_before_provider(
+        self,
+    ) -> None:
+        cases = {
+            "missing": [None],
+            "unknown": [s5_snapshot(admission_class="unknown", reason_class="probe_unknown")],
+            "stale": [s5_snapshot(admission_class="held", reason_class="probe_stale")],
+            "profile": [s5_snapshot(profile_id="foreign-profile")],
+            "config": [s5_snapshot(config_sha256="b" * 64)],
+            "operation": [s5_snapshot(operation_ref="invalid")],
+            "generation": [s5_snapshot(generation=0)],
+            "revision": [s5_snapshot(revision=0)],
+        }
+        for reason, snapshots in cases.items():
+            with self.subTest(reason=reason):
+                case = self._run_s5_case(snapshots=snapshots)
+                self.assertIsNone(case["raised"])
+                self.assertEqual(case["fetch_count"], 1)
+                self.assertEqual(len(case["client"].turn_payloads), 0)
+                self._assert_s5_no_output_side_effects(case)
+                result = case["result"]
+                assert isinstance(result, dict)
+                self.assertIn(result.get("terminal_class"), {"held", "terminal_unknown"})
+                diagnostics = [
+                    event
+                    for event in case["events"]
+                    if event.get("payload", {}).get("boundary_class") == "reduced_text_turn"
+                ]
+                self.assertEqual(len(diagnostics), 1)
+
+    def test_s5_postcheck_identity_change_suppresses_late_provider_output(self) -> None:
+        postconditions = {
+            "stop": s5_snapshot(admission_class="held", reason_class="stop_requested"),
+            "generation": s5_snapshot(generation=8, challenge_suffix="2"),
+            "revision": s5_snapshot(revision=52, challenge_suffix="2"),
+            "supersession": s5_snapshot(operation_ref="lop_superseding", challenge_suffix="2"),
+        }
+        for reason, after in postconditions.items():
+            with self.subTest(reason=reason):
+                case = self._run_s5_case(snapshots=[s5_snapshot(), after])
+                self.assertIsNone(case["raised"])
+                self.assertEqual(case["fetch_count"], 2)
+                self.assertEqual(len(case["client"].turn_payloads), 1)
+                self._assert_s5_no_output_side_effects(case)
+                result = case["result"]
+                assert isinstance(result, dict)
+                self.assertIn(result.get("terminal_class"), {"cancelled", "terminal_unknown"})
+                self.assertEqual(result.get("side_effect_certainty"), "may_have_occurred")
+
+    def test_s5_exact_pre_post_identity_and_terminal_cardinality_yields_one_private_candidate(
+        self,
+    ) -> None:
+        case = self._run_s5_case()
+        self.assertIsNone(case["raised"])
+        self.assertEqual(case["fetch_count"], 2)
+        self.assertEqual(len(case["client"].turn_payloads), 1)
+        result = case["result"]
+        self.assertIsInstance(result, dict)
+        assert isinstance(result, dict)
+        self.assertEqual(result.get("terminal_class"), "terminal_success")
+        self.assertEqual(result.get("thought_dispatch_count"), 1)
+        self.assertEqual(result.get("private_semantic_candidate_count"), 1)
+        self.assertEqual(result.get("result_write_count"), 0)
+        self.assertEqual(result.get("narration_count"), 0)
+        self.assertEqual(result.get("presentation_dispatch_count"), 0)
+        self.assertEqual(result.get("action_count"), 0)
+        self.assertEqual(result.get("retry_count"), 0)
+        self.assertFalse(result.get("raw_private_publication_flags", True))
+
+    def test_s5_current_producer_contract_semantic_kinds_yield_one_private_candidate(
+        self,
+    ) -> None:
+        for semantic_kind in ("conversation", "clarification", "hold"):
+            with self.subTest(semantic_kind=semantic_kind):
+                case = self._run_s5_case(semantic_kind=semantic_kind)
+                self.assertIsNone(case["raised"])
+                result = case["result"]
+                self.assertIsInstance(result, dict)
+                assert isinstance(result, dict)
+                self.assertEqual(result.get("terminal_class"), "terminal_success")
+                self.assertEqual(result.get("private_semantic_candidate_count"), 1)
+                self.assertEqual(len(case["client"].turn_payloads), 1)
+                context_refs = case["client"].turn_payloads[0].get("context_refs")
+                self.assertIsInstance(context_refs, dict)
+                assert isinstance(context_refs, dict)
+                self.assertEqual(
+                    context_refs.get("conversation_attempt_ref"),
+                    S5_CONVERSATION_ATTEMPT_REF,
+                )
+                emitted = {
+                    event.event_type: event.data
+                    for event in case["client"].event_batches[0]
+                }
+                self.assertNotIn(
+                    "conversation_attempt_ref",
+                    emitted["agentic.decision"],
+                )
+                self.assertEqual(
+                    emitted["assistant.message"].get("conversation_attempt_ref"),
+                    S5_CONVERSATION_ATTEMPT_REF,
+                )
+                self.assertNotIn(
+                    "conversation_attempt_ref",
+                    emitted["turn.completed"],
+                )
+                shared = json.dumps(
+                    {
+                        "result": result,
+                        "events": case["events"],
+                        "outputs": case["outputs"],
+                        "console": case["console"],
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
+                self.assertNotIn(S5_CONVERSATION_ATTEMPT_REF, shared)
+                self.assertNotIn("conversation_attempt_ref", shared)
+
+    def test_s5_provider_event_overflow_fails_closed_without_retaining_late_payload(
+        self,
+    ) -> None:
+        for variant in (
+            "duplicate_message",
+            "duplicate_completion",
+            "unexpected_late_event",
+        ):
+            with self.subTest(variant=variant):
+                case = self._run_s5_case(variant=variant)
+                self.assertIsNone(case["raised"])
+                result = case["result"]
+                self.assertIsInstance(result, dict)
+                assert isinstance(result, dict)
+                self.assertEqual(result.get("terminal_class"), "terminal_unknown")
+                self.assertEqual(result.get("reason_class"), "provider_event_overflow")
+                self.assertEqual(result.get("private_semantic_candidate_count"), 0)
+                self._assert_s5_no_output_side_effects(case)
+                diagnostics = [
+                    event
+                    for event in case["events"]
+                    if event.get("payload", {}).get("boundary_class")
+                    == "reduced_text_turn"
+                ]
+                self.assertEqual(len(diagnostics), 1)
+                diagnostic = diagnostics[0]["payload"]
+                self.assertEqual(diagnostic.get("owner_class"), "thought_core_watcher")
+                self.assertEqual(
+                    diagnostic.get("reason_class"),
+                    "provider_event_overflow",
+                )
+                shared = json.dumps(
+                    {
+                        "result": result,
+                        "events": case["events"],
+                        "outputs": case["outputs"],
+                        "console": case["console"],
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
+                for sentinel in (
+                    S5_OVERFLOW_PAYLOAD_SENTINEL,
+                    S5_PROVIDER_RESPONSE_SENTINEL,
+                    S5_PROVIDER_PAYLOAD_SENTINEL,
+                    S5_CONVERSATION_ATTEMPT_REF,
+                ):
+                    self.assertNotIn(sentinel, shared)
+
+    def test_s5_incomplete_duplicate_or_mismatched_terminal_events_remain_unknown(self) -> None:
+        for variant in (
+            "duplicate_message",
+            "missing_message",
+            "missing_completion",
+            "wrong_turn_ref",
+            "wrong_session_ref",
+            "wrong_attempt_ref",
+            "attempt_ref_on_decision",
+            "attempt_ref_on_completion",
+            "nonmonotonic_sequence",
+            "eof_only",
+            "http_only",
+            "submitted_only",
+            "enqueued_only",
+        ):
+            with self.subTest(variant=variant):
+                case = self._run_s5_case(variant=variant)
+                self.assertIsNone(case["raised"])
+                result = case["result"]
+                self.assertIsInstance(result, dict)
+                assert isinstance(result, dict)
+                self.assertEqual(result.get("terminal_class"), "terminal_unknown")
+                self.assertEqual(result.get("private_semantic_candidate_count"), 0)
+                self.assertEqual(result.get("result_write_count"), 0)
+                self.assertEqual(result.get("presentation_dispatch_count"), 0)
+                self.assertEqual(result.get("retry_count"), 0)
+
+    def test_s5_provider_failure_privacy_action_and_canned_fallback_do_not_promote(self) -> None:
+        for variant in (
+            "unavailable",
+            "privacy_blocked",
+            "unauthorized_action",
+            "provider_degraded_hold",
+            "internal_canned_fallback",
+        ):
+            with self.subTest(variant=variant):
+                case = self._run_s5_case(variant=variant)
+                self.assertIsNone(case["raised"])
+                self._assert_s5_no_output_side_effects(case)
+                result = case["result"]
+                assert isinstance(result, dict)
+                self.assertIn(result.get("terminal_class"), {"held", "terminal_unknown"})
+                self.assertEqual(result.get("private_semantic_candidate_count"), 0)
+                self.assertNotIn("INTERNAL_CANNED_SUCCESS", json.dumps(result))
+
+    def test_s5_legacy_memory_journal_history_facts_have_zero_current_authority(self) -> None:
+        case = self._run_s5_case(
+            variant="missing_completion",
+            legacy_facts={
+                "memory_status": "success",
+                "journal_status": "executed",
+                "current_history_status": "accepted",
+                "retry_status": "retrying",
+                "legacy_response": "INTERNAL_CANNED_SUCCESS",
+            },
+        )
+        self.assertIsNone(case["raised"])
+        result = case["result"]
+        self.assertIsInstance(result, dict)
+        assert isinstance(result, dict)
+        self.assertEqual(result.get("terminal_class"), "terminal_unknown")
+        self.assertEqual(result.get("legacy_influence_count"), 0)
+        self.assertEqual(result.get("action_count"), 0)
+        self.assertEqual(result.get("retry_count"), 0)
+        self.assertEqual(result.get("private_semantic_candidate_count"), 0)
+
+    def test_s5_raw_private_sentinels_never_reach_status_outputs_console_or_diagnostics(self) -> None:
+        case = self._run_s5_case()
+        serialized = json.dumps(
+            {
+                "result": case["result"],
+                "events": case["events"],
+                "outputs": case["outputs"],
+                "console": case["console"],
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+        for sentinel in (
+            "PRIVATE_S5_WISH_SENTINEL",
+            S5_PROVIDER_RESPONSE_SENTINEL,
+            S5_PROVIDER_PAYLOAD_SENTINEL,
+            S5_CONVERSATION_ATTEMPT_REF,
+            "conversation_attempt_ref",
+            "PRIVATE_TOKEN_SENTINEL",
+            "PRIVATE_ENTITY_SENTINEL",
+            "http://",
+            "candidate-output",
+            "command",
+            "transcript",
+        ):
+            self.assertNotIn(sentinel, serialized)
+        result = case["result"]
+        assert isinstance(result, dict)
+        self.assertFalse(result.get("raw_private_publication_flags", True))
+
+    def test_s5_required_owner_boundary_terminal_diagnostic_is_mandatory_and_bounded(self) -> None:
+        case = self._run_s5_case(variant="missing_completion")
+        diagnostics = [
+            event
+            for event in case["events"]
+            if event.get("payload", {}).get("boundary_class") == "reduced_text_turn"
+        ]
+        self.assertGreaterEqual(len(diagnostics), 1)
+        for event in diagnostics:
+            payload = event["payload"]
+            self.assertEqual(payload.get("owner_class"), "thought_core_watcher")
+            for required in (
+                "phase_class",
+                "reason_class",
+                "terminal_proof_class",
+                "side_effect_certainty",
+                "cleanup_certainty",
+                "retry_class",
+                "operation_ref",
+                "supervisor_generation",
+                "revision",
+                "raw_private_publication_flags",
+            ):
+                self.assertIn(required, payload)
+            self.assertNotIn("reset_epoch", payload)
+            self.assertFalse(payload["raw_private_publication_flags"])
+
     def test_reduced_route_held_admission_overrides_all_output_switches(self) -> None:
         with workspace_tempdir() as tmp:
             root = Path(tmp)

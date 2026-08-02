@@ -118,3 +118,11 @@ correlation where already allowed. The request-local challenge, raw wish,
 endpoint, request or response body, lease/client proof, and private-plan facts
 are never logged. Missing required events fail deterministic proof, while a log
 sink failure still cannot change lifecycle or admission truth.
+
+The S5 reduced-turn candidate emits one mandatory bounded terminal diagnostic
+as `thought_core_watcher / reduced_text_turn`. Its allowlist is owner, boundary,
+phase, reason, terminal-proof class, side-effect certainty, cleanup certainty,
+retry class, opaque operation reference, supervisor generation, and revision.
+The diagnostic never includes the raw wish, assistant response, provider body,
+endpoint, token, path, command, capability arguments, or event payload. It is
+operational attribution only; provider events remain process-local.

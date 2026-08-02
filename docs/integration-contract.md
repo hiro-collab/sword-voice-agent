@@ -442,10 +442,20 @@ classes only. It is `no-store`, has no public CORS route, and publishes no raw
 path, lease proof, client secret, command, wish, payload, or private-plan fact.
 
 This snapshot is not a durable Ready signal, lease, reservation, bearer token,
-replay grant, or protection from a later Stop. The watcher remains held for
-accepted and rejected snapshots, with Thought/result/narration/presentation
-counts zero and retry zero. S5 owns the later post-admission generation fence;
-until then there is no active provider or presentation route claim.
+replay grant, or protection from a later Stop. The S5 source candidate adds a
+watcher-local pre/post snapshot fence for a reduced conversation turn. Provider
+events stay process-local and buffered. A private semantic response candidate
+is counted only when operation, generation, revision, profile, config, turn,
+session, conversation-attempt, sequence, decision, message, and completion
+proof remain exact. Drift or incomplete proof returns bounded
+`cancelled|terminal_unknown`, retry zero, and output zero after a provider may
+have run. Raw wish, response, provider payload, endpoint, path, token, and
+command are neither returned on this boundary nor written to result files.
+
+The compiled watcher plan still uses `--admission-mode held`; active provider,
+narration, TTS, AIT dispatch, browser presentation, and S6 remain disabled.
+Source/static and deterministic tests therefore establish the S5 contract but
+not an active product turn or user-visible bubble.
 
 ## Security
 

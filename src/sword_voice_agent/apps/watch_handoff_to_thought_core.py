@@ -480,6 +480,305 @@ def fetch_turn_admission_snapshot(
         return _unknown_turn_admission("turn_admission_response_mismatch")
 
 
+def _reduced_text_snapshot_identity(
+    args: argparse.Namespace,
+    snapshot: object,
+) -> tuple[str, str, str, int, int] | None:
+    if not isinstance(snapshot, dict):
+        return None
+    operation_ref = snapshot.get("operation_ref")
+    generation = snapshot.get("generation")
+    revision = snapshot.get("revision")
+    if (
+        snapshot.get("admission_class") != "admissible_at_evaluation_time"
+        or snapshot.get("reason_class") != "none"
+        or snapshot.get("owner_class") != "launcher_supervisor"
+        or snapshot.get("boundary_class") != "runtime_to_turn_admission"
+        or snapshot.get("profile_id") != args.launcher_admission_profile_id
+        or snapshot.get("effective_config_sha256")
+        != args.launcher_admission_config_sha256
+        or not isinstance(operation_ref, str)
+        or not re.fullmatch(r"lop_[a-z0-9]{8,64}", operation_ref)
+        or not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation < 1
+        or not isinstance(revision, int)
+        or isinstance(revision, bool)
+        or revision < 1
+        or snapshot.get("terminal_proof_class") != "ready"
+        or snapshot.get("side_effect_certainty") != "not_attempted"
+        or snapshot.get("cleanup_certainty") != "not_started"
+        or snapshot.get("retry_class") != "retry0"
+        or snapshot.get("long_lived_ready") is not False
+        or snapshot.get("lease_or_reservation") is not False
+        or snapshot.get("immune_from_later_stop") is not False
+        or snapshot.get("raw_private_publication_flags") is not False
+    ):
+        return None
+    return (
+        str(snapshot["profile_id"]),
+        str(snapshot["effective_config_sha256"]),
+        operation_ref,
+        generation,
+        revision,
+    )
+
+
+def _reduced_text_result(
+    *,
+    terminal_class: str,
+    reason_class: str,
+    identity: tuple[str, str, str, int, int] | None,
+    thought_dispatch_count: int,
+    private_semantic_candidate_count: int,
+    side_effect_certainty: str,
+) -> dict[str, object]:
+    operation_ref = identity[2] if identity is not None else ""
+    generation = identity[3] if identity is not None else 0
+    revision = identity[4] if identity is not None else 0
+    return {
+        "schema_version": "thought-core-watcher-reduced-text.v0",
+        "terminal_class": terminal_class,
+        "reason_class": reason_class,
+        "operation_ref": operation_ref,
+        "supervisor_generation": generation,
+        "revision": revision,
+        "thought_dispatch_count": thought_dispatch_count,
+        "private_semantic_candidate_count": private_semantic_candidate_count,
+        "result_write_count": 0,
+        "narration_count": 0,
+        "presentation_dispatch_count": 0,
+        "action_count": 0,
+        "retry_count": 0,
+        "legacy_influence_count": 0,
+        "side_effect_certainty": side_effect_certainty,
+        "cleanup_certainty": "not_applicable",
+        "raw_private_publication_flags": False,
+    }
+
+
+def _append_reduced_text_diagnostic(
+    args: argparse.Namespace,
+    result: dict[str, object],
+) -> None:
+    if not args.status_dir:
+        raise ValueError("reduced_text_diagnostic_store_required")
+    terminal_class = str(result["terminal_class"])
+    StatusStore(args.status_dir).append_event(
+        "reduced_text.turn",
+        source="thought_core_watcher",
+        payload={
+            "owner_class": "thought_core_watcher",
+            "boundary_class": "reduced_text_turn",
+            "phase_class": "terminal",
+            "reason_class": result["reason_class"],
+            "terminal_proof_class": (
+                "correlated_terminal_events"
+                if terminal_class == "terminal_success"
+                else terminal_class
+            ),
+            "side_effect_certainty": result["side_effect_certainty"],
+            "cleanup_certainty": result["cleanup_certainty"],
+            "retry_class": "retry0",
+            "operation_ref": result["operation_ref"],
+            "supervisor_generation": result["supervisor_generation"],
+            "revision": result["revision"],
+            "raw_private_publication_flags": False,
+        },
+    )
+
+
+def _reduced_text_semantic_candidate_count(
+    events: list[ThoughtCoreStreamEvent],
+    response: object,
+    *,
+    turn_id: str,
+    session_id: str,
+    conversation_attempt_ref: str,
+) -> int:
+    expected_types = ("agentic.decision", "assistant.message", "turn.completed")
+    allowed_orders = (
+        expected_types,
+        (
+            "agentic.decision",
+            "assistant.speech_delta",
+            "assistant.message",
+            "turn.completed",
+        ),
+    )
+    selected: dict[str, ThoughtCoreStreamEvent] = {}
+    event_types = tuple(event.event_type for event in events)
+    if event_types not in allowed_orders:
+        return 0
+    for event in events:
+        if event.turn_id != turn_id or event.session_id != session_id:
+            return 0
+        if event.event_type in expected_types:
+            if event.event_type in selected:
+                return 0
+            selected[event.event_type] = event
+    if set(selected) != set(expected_types):
+        return 0
+    sequences = [event.seq for event in events]
+    if (
+        any(not isinstance(seq, int) or isinstance(seq, bool) for seq in sequences)
+        or sequences != sorted(sequences)
+        or len(set(sequences)) != len(sequences)
+    ):
+        return 0
+    if not conversation_attempt_ref:
+        return 0
+    decision = selected["agentic.decision"].data
+    message = selected["assistant.message"].data
+    completed = selected["turn.completed"].data
+    semantic_kind = decision.get("kind") if isinstance(decision, dict) else None
+    if (
+        not isinstance(decision, dict)
+        or decision.get("status") != "accepted"
+        or semantic_kind not in {"conversation", "clarification", "hold"}
+        or decision.get("semantic_authority") != "agentic_provider"
+        or decision.get("capability_present") is not False
+        or any(key in decision for key in ("capability", "capability_call", "action"))
+        or "conversation_attempt" in decision
+        or "conversation_attempt_ref" in decision
+        or not isinstance(message, dict)
+        or not isinstance(message.get("assistant_message_id"), str)
+        or not message.get("assistant_message_id")
+        or message.get("conversation_attempt_ref") != conversation_attempt_ref
+        or "conversation_attempt" in message
+        or not isinstance(completed, dict)
+        or completed.get("status") != semantic_kind
+        or completed.get("semantic_authority") != "agentic_provider"
+        or completed.get("capability_executed") is not False
+        or "conversation_attempt" in completed
+        or "conversation_attempt_ref" in completed
+        or not hasattr(response, "conversation_id")
+        or response.conversation_id != turn_id
+    ):
+        return 0
+    return 1
+
+
+def _run_reduced_text_turn(
+    args: argparse.Namespace,
+    private_result: dict[str, Any],
+    *,
+    client: ThoughtCoreClient | None,
+    admission_challenge_factory: Callable[[], str] | None,
+) -> dict[str, object]:
+    pre_snapshot = fetch_turn_admission_snapshot(
+        args,
+        challenge_factory=admission_challenge_factory,
+    )
+    pre_identity = _reduced_text_snapshot_identity(args, pre_snapshot)
+    if pre_identity is None:
+        result = _reduced_text_result(
+            terminal_class="held",
+            reason_class="turn_admission_precheck_failed",
+            identity=None,
+            thought_dispatch_count=0,
+            private_semantic_candidate_count=0,
+            side_effect_certainty="not_attempted",
+        )
+        _append_reduced_text_diagnostic(args, result)
+        return result
+
+    thought_core = client or ThoughtCoreClient.from_env()
+    buffered_events: list[ThoughtCoreStreamEvent] = []
+    provider_event_overflow_observed = False
+
+    def buffer_event(event: ThoughtCoreStreamEvent) -> None:
+        nonlocal provider_event_overflow_observed
+        if len(buffered_events) < 4:
+            buffered_events.append(event)
+        else:
+            provider_event_overflow_observed = True
+
+    try:
+        response = thought_core.send_turn_streaming(
+            private_result["turn_payload"],
+            on_event=buffer_event,
+        )
+    except Exception:
+        result = _reduced_text_result(
+            terminal_class="terminal_unknown",
+            reason_class=(
+                "provider_event_overflow"
+                if provider_event_overflow_observed
+                else "provider_unavailable"
+            ),
+            identity=pre_identity,
+            thought_dispatch_count=1,
+            private_semantic_candidate_count=0,
+            side_effect_certainty="may_have_occurred",
+        )
+        _append_reduced_text_diagnostic(args, result)
+        return result
+
+    if provider_event_overflow_observed:
+        result = _reduced_text_result(
+            terminal_class="terminal_unknown",
+            reason_class="provider_event_overflow",
+            identity=pre_identity,
+            thought_dispatch_count=1,
+            private_semantic_candidate_count=0,
+            side_effect_certainty="may_have_occurred",
+        )
+        _append_reduced_text_diagnostic(args, result)
+        return result
+
+    post_snapshot = fetch_turn_admission_snapshot(
+        args,
+        challenge_factory=admission_challenge_factory,
+    )
+    post_identity = _reduced_text_snapshot_identity(args, post_snapshot)
+    if post_identity != pre_identity:
+        post_reason = (
+            str(post_snapshot.get("reason_class") or "")
+            if isinstance(post_snapshot, dict)
+            else ""
+        )
+        result = _reduced_text_result(
+            terminal_class=("cancelled" if post_reason == "stop_requested" else "terminal_unknown"),
+            reason_class=(post_reason or "turn_admission_postcheck_failed"),
+            identity=pre_identity,
+            thought_dispatch_count=1,
+            private_semantic_candidate_count=0,
+            side_effect_certainty="may_have_occurred",
+        )
+        _append_reduced_text_diagnostic(args, result)
+        return result
+
+    turn_id = turn_id_from_result(private_result) or ""
+    session_id = session_id_from_result(private_result) or ""
+    turn_payload = private_result.get("turn_payload")
+    context_refs = (
+        turn_payload.get("context_refs") if isinstance(turn_payload, dict) else None
+    )
+    conversation_attempt_ref = (
+        str(context_refs.get("conversation_attempt_ref") or "")
+        if isinstance(context_refs, dict)
+        else ""
+    )
+    candidate_count = _reduced_text_semantic_candidate_count(
+        buffered_events,
+        response,
+        turn_id=turn_id,
+        session_id=session_id,
+        conversation_attempt_ref=conversation_attempt_ref,
+    )
+    result = _reduced_text_result(
+        terminal_class=("terminal_success" if candidate_count == 1 else "terminal_unknown"),
+        reason_class=("none" if candidate_count == 1 else "terminal_event_proof_incomplete"),
+        identity=pre_identity,
+        thought_dispatch_count=1,
+        private_semantic_candidate_count=candidate_count,
+        side_effect_certainty="may_have_occurred",
+    )
+    _append_reduced_text_diagnostic(args, result)
+    return result
+
+
 def run_once(
     args: argparse.Namespace,
     *,
@@ -527,6 +826,18 @@ def run_once(
             "retry_count": 0,
             "raw_private_publication_flags": False,
         }
+    if (
+        getattr(args, "admission_mode", "held") == "active"
+        and getattr(args, "launcher_admission_profile_id", "")
+        == "core-rehearsal-text-bubble-v0"
+        and getattr(args, "launcher_admission_url", "")
+    ):
+        return _run_reduced_text_turn(
+            args,
+            result,
+            client=client,
+            admission_challenge_factory=admission_challenge_factory,
+        )
     status_store = StatusStore(args.status_dir) if args.status_dir else None
     turn_id = turn_id_from_result(result)
     session_id = session_id_from_result(result)

@@ -195,10 +195,19 @@ For the non-selected reduced-route candidate, Launcher owns only a current-time
 turn-admission snapshot derived from its existing operation, client/lease
 lineage, and fresh probe facts. The snapshot is process-local observation, not
 persisted state or execution permission. `thought_core_watcher` owns fetching
-and validating that snapshot, but stays held and owns no lifecycle transition.
-It must not call Thought, write a result, narrate, or present until a later S5
-generation fence is reviewed. A later Stop can invalidate the snapshot
-immediately; no consumer may treat it as durable Ready or replay authority.
+and validating it. The S5 source candidate may call the provider only after an
+accepted precheck and retains at most four canonical provider payload events
+process-locally. Fifth or later callbacks are observed only as opaque overflow;
+on overflow it fails `terminal_unknown` without retaining or logging the
+additional payload. It rechecks the same profile/config/operation/generation/
+revision before releasing one private semantic candidate count. Drift or
+incomplete terminal proof owns only bounded `cancelled|terminal_unknown`; it
+cannot write, narrate, present, retry, or act.
+A later Stop can invalidate the snapshot immediately, and no consumer may
+treat it as durable Ready or replay authority.
+
+The compiled watcher remains held, so this source contract is not active
+product authority. S6 separately owns any later presentation release.
 
 ```text
 mic_enabled false

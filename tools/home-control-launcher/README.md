@@ -387,12 +387,18 @@ means only that, at evaluation time, the exact reduced profile/config and the
 cached operation/generation/revision matched a current trusted client/lease and
 all four existing probe facts were fresh and Ready. It creates no lease,
 reservation, token, durable Ready, retry, store mutation, worker, or dispatch.
-The watcher validates a request-local challenge and the exact bounded response,
-records only fixed diagnostic classes, and remains held after both acceptance
-and rejection: Thought dispatch, result write, narration, and presentation stay
-zero. S5 must add the later generation fence before active admission can exist.
-The private endpoint and raw request, path, lease, client, and probe facts are
-not part of any public Launcher projection.
+The watcher validates a request-local challenge and the exact bounded response.
+The S5 source candidate adds a second snapshot after the buffered provider
+exchange and releases one private semantic candidate count only when
+profile/config/operation/generation/revision and terminal event correlation
+remain exact. Stop, supersession, drift, provider failure, action/tool choice,
+or incomplete proof yields bounded cancelled/unknown, retry zero, and no result
+write, narration, or presentation. Diagnostics contain fixed classes and opaque
+correlation only; raw wish, provider response, endpoint, path, lease, client,
+command, and probe facts remain private.
+
+The compiled watcher plan remains `held`, so the S5 source path is not activated
+and no active provider or S6/browser presentation claim follows from it.
 
 AITuber HTTP reachability is not proof of message receiver, browser store,
 bubble application, or visible pixels. This candidate is not Parent-selected
