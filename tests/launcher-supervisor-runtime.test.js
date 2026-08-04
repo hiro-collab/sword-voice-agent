@@ -370,6 +370,7 @@ test('preflight is persisted before exchange; Node orders, finalizes, and keeps 
     const started = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
     assert.equal(started.ok, true)
     assert.equal(started.result_class, 'ready')
+    assert.equal(started.error_class, 'none')
     assert.equal(started.operation.phase, 'ready')
     const firstExchange = harness.events.findIndex((event) => event.startsWith('exchange:'))
     assert.ok(harness.events.indexOf('plan:compile') < harness.events.indexOf('store:start'))
@@ -1228,6 +1229,55 @@ test('worker crash enters recovery and a fresh cleanup worker leaves a bounded f
     assert.equal(realStore.readOperation(authority, harness.root).phase, 'failed')
   } finally {
     harness.cleanup()
+  }
+})
+
+test('AIT probe worker failures expose only bounded invocation-local error classes', async () => {
+  const privateSentinel = 'PRIVATE_AIT_WORKER_FAILURE_DETAIL'
+  const cases = [
+    ['worker_transport_failed', 'worker_transport_failed', 'supervisor_crash'],
+    ['worker_response_invalid', 'worker_response_invalid', 'supervisor_crash'],
+    ['worker_response_mismatch', 'worker_response_mismatch', 'supervisor_crash'],
+    ['worker_response_oversized', 'worker_response_oversized', 'supervisor_crash'],
+    ['worker_transport_timeout', 'none', 'readiness_timeout'],
+    [null, 'supervisor_runtime_failed', 'supervisor_crash']
+  ]
+  for (const [index, [workerCode, errorClass, reason]] of cases.entries()) {
+    const failure = workerCode === null
+      ? Object.assign(new Error(privateSentinel), { code: privateSentinel })
+      : Object.assign(new LauncherJobWorkerError(workerCode), { private_detail: privateSentinel })
+    const harness = makeHarness({
+      operationPrefix: `workerclass${index}`,
+      workerBuilders: [
+        ({ events }) => new FakeWorker({
+          events,
+          responses: { 'aituber_kit:probe': failure }
+        }),
+        ({ events }) => new FakeWorker({ events })
+      ]
+    })
+    try {
+      const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+      const aituberRequests = harness.workers.flatMap((worker) => worker.requests)
+        .filter((request) => request.service_id === 'aituber_kit')
+      const attempts = aituberRequests.filter((request) => request.action !== 'stop').map((request) => request.action)
+      const cleanupActions = aituberRequests.filter((request) => request.action === 'stop').map((request) => request.action)
+      const stored = realStore.readOperation(authority, harness.root)
+      assert.equal(result.error_class, errorClass, workerCode)
+      assert.equal(result.operation.reason, reason, workerCode)
+      assert.equal(result.operation.cleanup, 'clear', workerCode)
+      assert.equal(harness.runtime.current.primary_result.responsible_id, 'aituber_kit', workerCode)
+      assert.deepEqual(attempts, ['start', 'probe'], workerCode)
+      assert.equal(attempts.length, 2, workerCode)
+      assert.deepEqual(cleanupActions, ['stop'], workerCode)
+      assert.deepEqual(result.operation.residue_service_ids, [], workerCode)
+      assert.equal(result.raw_private_publication_flags, false, workerCode)
+      assert.equal(result.operation.raw_private_publication_flags, false, workerCode)
+      assert.equal(JSON.stringify({ result, stored }).includes(privateSentinel), false, workerCode)
+      if (errorClass !== 'none') assert.equal(JSON.stringify(stored).includes(errorClass), false, workerCode)
+    } finally {
+      harness.cleanup()
+    }
   }
 })
 

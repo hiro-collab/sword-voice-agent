@@ -576,8 +576,8 @@ test('worker-shaped results map only to transport readiness before a correlated 
   assert.deepEqual(externalService.last_probe_result, voicevoxProbeResult)
 
   let stopping = stoppingLifecycle()
-  stopping = reducer.reduce(stopping, event('stop_dispatch_requested', 'home_assistant_bridge'), authority)
-  const stopRequest = { ...requestFor('home_assistant_bridge', 'stop', stopping.revision), supervisor_generation: stopping.supervisor_generation, dispatch_id: stopping.services.find((service) => service.service_id === 'home_assistant_bridge').pending_dispatch_id }
+  stopping = reducer.reduce(stopping, event('stop_dispatch_requested', 'thought_core_api'), authority)
+  const stopRequest = { ...requestFor('thought_core_api', 'stop', stopping.revision), supervisor_generation: stopping.supervisor_generation, dispatch_id: stopping.services.find((service) => service.service_id === 'thought_core_api').pending_dispatch_id }
   const stopped = resultFor(stopRequest, { result_class: 'stopped', descendant_class: 'owned_clear' })
   const stoppedEvent = reducer.workerResultToEvent(stopped, stopping, stopRequest, authority)
   assert.equal(stoppedEvent.event_type, 'service_stopped')

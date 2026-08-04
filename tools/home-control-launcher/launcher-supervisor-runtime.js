@@ -97,7 +97,9 @@ const samePlanIdentity = (operation, identity) => Boolean(operation) &&
 const SHA256 = /^[a-f0-9]{64}$/u
 
 const safeResultClass = (value) => PUBLIC_RESULT_CLASSES.has(value) ? value : 'failed'
-const safeErrorClass = (value) => PUBLIC_ERROR_CLASSES.has(value) ? value : 'supervisor_runtime_failed'
+const safeErrorClass = (value) => (
+  PUBLIC_ERROR_CLASSES.has(value) || new LauncherJobWorkerError(value).code === value
+) ? value : 'supervisor_runtime_failed'
 const sameConfigIdentity = (left, right) => Boolean(left) && Boolean(right) &&
   left.profile_id === right.profile_id &&
   left.effective_config_sha256 === right.effective_config_sha256 &&
@@ -861,6 +863,7 @@ class LauncherSupervisorRuntime {
       this.apply('start_requested')
 
       const included = new Set(compiled.included_service_ids)
+      let serviceLoopErrorClass = null
       for (const serviceId of this.authority.bindingDocument.binding.service_order) {
         const spec = this.authority.graph.services.find((service) => service.service_id === serviceId)
         if (spec.ownership === 'external' && options.SkipVoicevoxCheck) {
@@ -878,9 +881,14 @@ class LauncherSupervisorRuntime {
             if (error instanceof LauncherJobWorkerError && error.code === 'worker_transport_timeout') {
               const dispatchId = this.pendingDispatchId(serviceId, 'probe')
               this.apply('readiness_timeout', serviceId, dispatchId ? { dispatch_id: dispatchId } : {})
-            } else this.apply('supervisor_crashed', null, {
-              responsible_id: serviceLoopFailureResponsibleId(error, serviceId)
-            })
+            } else {
+              serviceLoopErrorClass ||= error instanceof LauncherJobWorkerError
+                ? error.code
+                : 'supervisor_runtime_failed'
+              this.apply('supervisor_crashed', null, {
+                responsible_id: serviceLoopFailureResponsibleId(error, serviceId)
+              })
+            }
           }
         } else if (spec.requirement === 'optional' && !included.has(serviceId)) {
           const dispatchId = this.dispatchIdFactory()
@@ -900,9 +908,14 @@ class LauncherSupervisorRuntime {
             if (error instanceof LauncherJobWorkerError && error.code === 'worker_transport_timeout') {
               const dispatchId = this.pendingDispatchId(serviceId, 'probe')
               this.apply('readiness_timeout', serviceId, dispatchId ? { dispatch_id: dispatchId } : {})
-            } else this.apply('supervisor_crashed', null, {
-              responsible_id: serviceLoopFailureResponsibleId(error, serviceId)
-            })
+            } else {
+              serviceLoopErrorClass ||= error instanceof LauncherJobWorkerError
+                ? error.code
+                : 'supervisor_runtime_failed'
+              this.apply('supervisor_crashed', null, {
+                responsible_id: serviceLoopFailureResponsibleId(error, serviceId)
+              })
+            }
           }
         }
         if ([reducer.PHASE.ROLLING_BACK, reducer.PHASE.RECOVERING, reducer.PHASE.RESIDUE, reducer.PHASE.FAILED].includes(this.current.phase)) break
@@ -915,7 +928,8 @@ class LauncherSupervisorRuntime {
         ok: resultClass === 'ready',
         resultClass,
         operation: this.current,
-        profileId
+        profileId,
+        errorClass: serviceLoopErrorClass || 'none'
       })
     } catch {
       if (this.current && ACTIVE_PHASES.has(this.current.phase)) {
