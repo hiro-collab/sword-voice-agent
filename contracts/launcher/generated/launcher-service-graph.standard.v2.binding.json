@@ -1,5 +1,5 @@
 {
-  "binding_sha256": "85c097673903a78191bc7483a60fe64ec5e8afa0b3b4661389b8a6d17a960dcd",
+  "binding_sha256": "c5ad0661129b2561d28a31d98da402ef4ae0ba2e9c381800bbb6a9b341e393ad",
   "binding": {
     "binding_version": "launcher_service_graph.binding.v2",
     "text_hash_mode": "utf8_lf_v1",
@@ -10,7 +10,7 @@
     "worker_schema_sha256": "801efc3bbf58b940dd2f157eba0ebab632ea0638795f268f9596463bd9ae996c",
     "reducer_vectors_sha256": "a615610293e5eb6c820e4a96d701179b27194627b9d0119afa75fbb288899602",
     "probe_schema_sha256": "7c00d0857fe990af779e4809fa6f3427a10dc7b76c1df07ec4baf361d76c8a13",
-    "probe_document_sha256": "1f004b8e7ed5e632221d98fec3a84a86d13cc09c52c93beb30a81f85dd8349af",
+    "probe_document_sha256": "d86f4c13097a48eb1b64cf73571fa14dfedad4965e46415bb0c6126aebdf295c",
     "service_order": [
       "aituber_kit",
       "home_assistant_bridge",

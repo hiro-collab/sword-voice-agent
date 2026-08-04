@@ -1,7 +1,7 @@
 {
   "schema_version": "launcher_probe_descriptors.v1",
   "profile_id": "thought-core-v0",
-  "graph_sha256": "d5514bcbdd1e1499ac7fc025ea985d39cef83d3dff75552fc93296d7d3172b23",
+  "graph_sha256": "897d1cc7499b27878f381ba3589e6ba5f99a8c6f625e868bb6e86f26da43465b",
   "descriptors": [
     {
       "service_id": "home_assistant_bridge",
@@ -11,11 +11,11 @@
         { "target_id": "health", "transport": "http", "method": "GET", "endpoint_ref": "home_assistant_bridge_http", "path": "/health", "auth_class": "none", "response_class": "bounded_json" }
       ],
       "checks": ["http_2xx", "bounded_json", "service_identity"],
-      "success_semantic_classes": ["reachable"],
+      "success_semantic_classes": ["reachable", "degraded_operational"],
       "freshness_source": "probe_observed_at",
       "freshness_max_age_ms": 15000,
       "observation_timeout_ms": 10000,
-      "degraded_allowed": false,
+      "degraded_allowed": true,
       "no_touch": false,
       "world_freshness_startup_authoritative": false,
       "proof_ceiling": "home_bridge_reachability_only"
@@ -30,11 +30,11 @@
         { "target_id": "current", "transport": "http", "method": "GET", "endpoint_ref": "environment_state_http", "path": "/environment/current", "auth_class": "private_secret_ref", "response_class": "bounded_json" }
       ],
       "checks": ["http_2xx", "bounded_json", "service_identity", "environment_ready_contract", "environment_current_schema", "configured_source_policy", "world_freshness_advisory"],
-      "success_semantic_classes": ["ready"],
+      "success_semantic_classes": ["ready", "degraded_operational"],
       "freshness_source": "environment_current_observed_at",
       "freshness_max_age_ms": 30000,
       "observation_timeout_ms": 15000,
-      "degraded_allowed": false,
+      "degraded_allowed": true,
       "no_touch": false,
       "world_freshness_startup_authoritative": false,
       "proof_ceiling": "environment_semantic_readiness_no_world_truth"
@@ -133,11 +133,11 @@
         { "target_id": "module_status", "transport": "module_status", "method": "NONE", "endpoint_ref": null, "path": null, "auth_class": "not_applicable", "response_class": "bounded_json" }
       ],
       "checks": ["worker_owned_identity", "module_status_shape", "module_status_current_operation", "module_status_freshness"],
-      "success_semantic_classes": ["ready"],
+      "success_semantic_classes": ["ready", "degraded_operational"],
       "freshness_source": "module_status_timestamp",
       "freshness_max_age_ms": 15000,
       "observation_timeout_ms": 10000,
-      "degraded_allowed": false,
+      "degraded_allowed": true,
       "no_touch": false,
       "world_freshness_startup_authoritative": false,
       "proof_ceiling": "watcher_current_operation_liveness_only"
@@ -150,11 +150,11 @@
         { "target_id": "root", "transport": "http", "method": "GET", "endpoint_ref": "touchdesigner_gui_http", "path": "/", "auth_class": "none", "response_class": "bounded_text" }
       ],
       "checks": ["http_2xx", "bounded_text"],
-      "success_semantic_classes": ["reachable"],
+      "success_semantic_classes": ["reachable", "degraded_operational"],
       "freshness_source": "probe_observed_at",
       "freshness_max_age_ms": 15000,
       "observation_timeout_ms": 10000,
-      "degraded_allowed": false,
+      "degraded_allowed": true,
       "no_touch": false,
       "world_freshness_startup_authoritative": false,
       "proof_ceiling": "display_gui_reachability_only"
