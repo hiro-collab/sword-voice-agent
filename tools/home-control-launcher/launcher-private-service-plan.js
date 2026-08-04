@@ -313,19 +313,14 @@ const requireCanonicalOptions = (options, authority) => {
   if (
     !voicevoxSpec ||
     !camera ||
-    Number(options.VoicevoxReadyTimeoutSeconds) * 1000 !== Number(voicevoxSpec.ready_deadline_ms) ||
+    (!options.SkipVoicevoxCheck && Number(options.VoicevoxReadyTimeoutSeconds) * 1000 !== Number(voicevoxSpec.ready_deadline_ms)) ||
     Number(options.MediapipeReadyTimeoutSeconds) * 1000 !== Number(camera.ready_deadline_ms)
   ) {
     fail('private_plan_config_invalid')
   }
   if (
-    options.SkipHomeAssistantBridge ||
-    options.SkipEnvironmentState ||
     options.SkipAituber ||
-    options.SkipTouchDesignerGui ||
     !options.EnableThoughtCore ||
-    !options.EnableThoughtCoreWatch ||
-    options.SkipVoicevoxCheck ||
     options.ThoughtCoreLlmProvider !== 'sword-openai-broker' ||
     options.MediapipeMode !== 'mediamtx'
   ) {
@@ -341,15 +336,17 @@ const requireCanonicalOptions = (options, authority) => {
       fail('private_plan_config_invalid')
     }
   }
-  const rawVoicevox = String(options.VoicevoxUrl || 'http://127.0.0.1:50021')
-  let voicevox
-  try { voicevox = new URL(rawVoicevox) } catch { fail('private_plan_config_invalid') }
-  if (
-    voicevox.protocol !== 'http:' ||
-    !['127.0.0.1', 'localhost'].includes(voicevox.hostname.toLowerCase()) ||
-    Number(voicevox.port || 80) !== 50021
-  ) {
-    fail('private_plan_config_invalid')
+  if (!options.SkipVoicevoxCheck) {
+    const rawVoicevox = String(options.VoicevoxUrl || 'http://127.0.0.1:50021')
+    let voicevox
+    try { voicevox = new URL(rawVoicevox) } catch { fail('private_plan_config_invalid') }
+    if (
+      voicevox.protocol !== 'http:' ||
+      !['127.0.0.1', 'localhost'].includes(voicevox.hostname.toLowerCase()) ||
+      Number(voicevox.port || 80) !== 50021
+    ) {
+      fail('private_plan_config_invalid')
+    }
   }
 }
 
@@ -466,25 +463,36 @@ const compilePrivateServicePlan = ({
     display: path.join(workspace, 'organs', 'display', 'touchdesigner-ai-controller'),
     speech: path.join(workspace, 'organs', 'speech-input', 'ai-talk-core')
   }
+  const homeEnabled = !options.SkipHomeAssistantBridge
+  const environmentEnabled = !options.SkipEnvironmentState
+  const watcherEnabled = options.EnableThoughtCoreWatch
+  const displayEnabled = !options.SkipTouchDesignerGui
   for (const [name, root] of Object.entries(roots)) {
-    if ((name === 'vision' && (options.SkipVisionSnapshotProcessor || options.SkipMediapipe)) ||
-        (name === 'mediapipe' && options.SkipMediapipe)) continue
+    if ((name === 'home' && !homeEnabled && !environmentEnabled) ||
+        (name === 'environment' && !environmentEnabled) ||
+        (name === 'vision' && (options.SkipVisionSnapshotProcessor || options.SkipMediapipe)) ||
+        (name === 'mediapipe' && options.SkipMediapipe) ||
+        (name === 'display' && !displayEnabled) ||
+        (name === 'speech' && !watcherEnabled)) continue
     roots[name] = exactAbsoluteDirectory(root, effectiveIo)
   }
 
-  const configCandidate = String(options.HomeControlConfigPath || path.join(roots.home, 'config', 'home-control.yaml'))
-  const configPath = exactAbsoluteFile(
-    path.isAbsolute(configCandidate) ? configCandidate : path.join(workspace, configCandidate),
-    effectiveIo
-  )
-  const localLiveConfig = path.join(workspace, 'local', 'env', 'home-control.live.yaml')
-  const configText = String(readFileSync(configPath, 'utf8'))
-  if (
-    effectiveIo.existsSync(localLiveConfig) &&
-    path.resolve(configPath).toLowerCase() !== path.resolve(localLiveConfig).toLowerCase() &&
-    /script\.demo_light_(?:on|off)/u.test(configText)
-  ) {
-    fail('private_plan_config_invalid')
+  let configPath = ''
+  if (homeEnabled) {
+    const configCandidate = String(options.HomeControlConfigPath || path.join(roots.home, 'config', 'home-control.yaml'))
+    configPath = exactAbsoluteFile(
+      path.isAbsolute(configCandidate) ? configCandidate : path.join(workspace, configCandidate),
+      effectiveIo
+    )
+    const localLiveConfig = path.join(workspace, 'local', 'env', 'home-control.live.yaml')
+    const configText = String(readFileSync(configPath, 'utf8'))
+    if (
+      effectiveIo.existsSync(localLiveConfig) &&
+      path.resolve(configPath).toLowerCase() !== path.resolve(localLiveConfig).toLowerCase() &&
+      /script\.demo_light_(?:on|off)/u.test(configText)
+    ) {
+      fail('private_plan_config_invalid')
+    }
   }
 
   const uv = validatedExecutable('uv', resolveExecutable, effectiveIo)
@@ -504,14 +512,16 @@ const compilePrivateServicePlan = ({
     effectiveIo
   )
   const baseline = inheritedRuntimeEnvironment(processEnvironment)
-  const homeEnvPath = exactAbsoluteFile(path.join(roots.home, '.env'), effectiveIo)
-  const homeDotEnv = readDotEnv(homeEnvPath, readFileSync)
+  const homeDotEnv = homeEnabled || environmentEnabled
+    ? readDotEnv(exactAbsoluteFile(path.join(roots.home, '.env'), effectiveIo), readFileSync)
+    : {}
   const thoughtDotEnv = readDotEnv(path.join(repo, '.env'), readFileSync)
   const homeToken = processEnvironment.HOME_CONTROL_API_TOKEN || homeDotEnv.HOME_CONTROL_API_TOKEN || ''
   const environmentToken = processEnvironment.ENVIRONMENT_API_TOKEN || homeDotEnv.ENVIRONMENT_API_TOKEN || homeToken
   const homeBridgeSecrets = selectedEnvironment(HOME_BRIDGE_ENVIRONMENT_NAMES, processEnvironment, homeDotEnv)
-  if (homeToken.length < 16 || environmentToken.length < 16 ||
-      typeof homeBridgeSecrets.HOME_ASSISTANT_TOKEN !== 'string' || homeBridgeSecrets.HOME_ASSISTANT_TOKEN.length < 16) {
+  if ((homeEnabled && (homeToken.length < 16 || typeof homeBridgeSecrets.HOME_ASSISTANT_TOKEN !== 'string' ||
+      homeBridgeSecrets.HOME_ASSISTANT_TOKEN.length < 16)) ||
+      (environmentEnabled && (homeToken.length < 16 || environmentToken.length < 16))) {
     fail('private_plan_config_invalid')
   }
 
@@ -555,16 +565,19 @@ const compilePrivateServicePlan = ({
     HOME_CONTROL_API_TOKEN: homeToken,
     ENVIRONMENT_API_TOKEN: environmentToken
   }
-  const plans = [
-    ownedPlan({
+  const plans = []
+  if (homeEnabled) {
+    plans.push(ownedPlan({
       serviceId: 'home_assistant_bridge',
       filePath: uv,
       args: ['run', 'python', '-m', 'uvicorn', 'home_control_bridge.main:app', '--host', options.HomeAssistantBridgeHost, '--port', options.HomeAssistantBridgePort],
       cwd: roots.home,
       environment: homeEnvironment,
       listenerPort: options.HomeAssistantBridgePort
-    }),
-    ownedPlan({
+    }))
+  }
+  if (environmentEnabled) {
+    plans.push(ownedPlan({
       serviceId: 'environment_state_server',
       filePath: uv,
       args: [
@@ -585,7 +598,9 @@ const compilePrivateServicePlan = ({
       cwd: roots.environment,
       environment: environmentStateEnvironment,
       listenerPort: options.EnvironmentStatePort
-    }),
+    }))
+  }
+  plans.push(
     ownedPlan({
       serviceId: 'openai_provider_broker',
       filePath: uv,
@@ -636,8 +651,10 @@ const compilePrivateServicePlan = ({
         NEXT_PUBLIC_GESTURE_VOICE_BRIDGE_ENABLED: options.SkipMediapipe ? 'false' : 'true'
       },
       listenerPort: options.AituberPort
-    }),
-    ownedPlan({
+    })
+  )
+  if (watcherEnabled) {
+    plans.push(ownedPlan({
       serviceId: 'thought_core_watcher',
       filePath: powershell,
       args: [
@@ -654,8 +671,10 @@ const compilePrivateServicePlan = ({
       cwd: repo,
       environment: { ...baseline, THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED: feedbackEnabled },
       listenerPort: 0
-    }),
-    ownedPlan({
+    }))
+  }
+  if (displayEnabled) {
+    plans.push(ownedPlan({
       serviceId: 'touchdesigner_control_gui',
       filePath: node,
       args: [
@@ -673,8 +692,8 @@ const compilePrivateServicePlan = ({
       cwd: exactAbsoluteDirectory(path.join(roots.display, 'tools'), effectiveIo),
       environment: { ...baseline, THOUGHT_CORE_TOOLS_ADAPTER: 'home_control' },
       listenerPort: options.TouchDesignerGuiPort
-    })
-  ]
+    }))
+  }
 
   if (!options.SkipMediapipe) {
     plans.push(ownedPlan({

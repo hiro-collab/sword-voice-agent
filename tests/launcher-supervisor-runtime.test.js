@@ -168,6 +168,7 @@ class FakeWorker {
 
 const makeHarness = ({
   includedServiceIds = allOwnedIds,
+  configIdentity = CONFIG_IDENTITY,
   workerBuilders = [],
   responses = {},
   operationPrefix = 'runtime',
@@ -190,9 +191,9 @@ const makeHarness = ({
       schema_version: 'launcher_private_service_plans.v1',
       graph_sha256: authority.identities.graphSha256,
       binding_sha256: authority.identities.bindingSha256,
-      profile_id: CONFIG_IDENTITY.profile_id,
-      effective_config_sha256: CONFIG_IDENTITY.effective_config_sha256,
-      camera_policy: CONFIG_IDENTITY.camera_policy,
+      profile_id: configIdentity.profile_id,
+      effective_config_sha256: configIdentity.effective_config_sha256,
+      camera_policy: configIdentity.camera_policy,
       worker_file_path: process.execPath,
       services: [{
         service_id: 'thought_core_api',
@@ -288,7 +289,7 @@ const makeHarness = ({
   const startWithIdentity = runtime.start.bind(runtime)
   runtime.start = (request) => startWithIdentity({
     ...request,
-    configIdentity: request?.configIdentity || CONFIG_IDENTITY
+    configIdentity: request?.configIdentity || configIdentity
   })
   return {
     root,
@@ -329,6 +330,17 @@ const canonicalOptions = {
   EnableThoughtCoreWatch: true,
   SkipVoicevoxCheck: false,
   MediapipeMode: 'mediamtx'
+}
+const exact3Options = {
+  ...canonicalOptions,
+  VoicevoxUrl: 'configuration-excluded',
+  SkipHomeAssistantBridge: true,
+  SkipEnvironmentState: true,
+  SkipMediapipe: true,
+  SkipVisionSnapshotProcessor: true,
+  SkipTouchDesignerGui: true,
+  EnableThoughtCoreWatch: false,
+  SkipVoicevoxCheck: true
 }
 const configIdentityFor = (options) => deriveEffectiveConfigIdentity({
   profileId: authority.graph.profile_id,
@@ -1161,18 +1173,29 @@ test('unknown supervisor crash attribution remains launcher_supervisor', () => {
   assert.equal(JSON.stringify(operation).includes('PRIVATE_UNKNOWN_SENTINEL'), false)
 })
 
-test('optional camera plans may be absent without worker exchange', async () => {
-  const harness = makeHarness({ includedServiceIds: requiredOwnedIds })
+test('exact3 reaches Ready without optional owned services or configuration-excluded VOICEVOX exchange', async () => {
+  const exact3Identity = configIdentityFor(exact3Options)
+  const harness = makeHarness({
+    includedServiceIds: requiredOwnedIds,
+    configIdentity: exact3Identity
+  })
   try {
-    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    const result = await harness.runtime.start({ profileId: 'thought-core-v0', options: exact3Options })
     assert.equal(result.result_class, 'ready')
+    assert.equal(result.operation.effective_config_sha256, exact3Identity.effective_config_sha256)
     const states = new Map(result.operation.services.map((service) => [service.service_id, service.state]))
-    assert.equal(states.get('mediapipe_camera_hub_stack'), 'optional_absent')
-    assert.equal(states.get('vision_snapshot_processor'), 'optional_absent')
-    const optionalRequests = harness.workers[0].requests.filter((request) =>
-      ['mediapipe_camera_hub_stack', 'vision_snapshot_processor'].includes(request.service_id)
+    const absentIds = authority.graph.services
+      .filter((service) => !(service.ownership === 'owned' && service.requirement === 'required'))
+      .map((service) => service.service_id)
+    for (const serviceId of absentIds) assert.equal(states.get(serviceId), 'optional_absent', serviceId)
+    assert.deepEqual(
+      harness.workers[0].requests.filter((request) => absentIds.includes(request.service_id)),
+      []
     )
-    assert.deepEqual(optionalRequests, [])
+    assert.deepEqual(
+      [...new Set(harness.workers[0].requests.map((request) => request.service_id))].sort(),
+      [...requiredOwnedIds].sort()
+    )
   } finally {
     harness.cleanup()
   }
@@ -1739,6 +1762,39 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
       compiled.included_service_ids,
       [...compiled.included_service_ids].sort()
     )
+    const exact3EffectiveOptions = {
+      ...exact3Options,
+      HomeControlConfigPath: 'configuration-excluded'
+    }
+    const exact3Compiled = compilePrivateServicePlan({
+      repositoryRoot: ROOT,
+      workspaceRoot: workspace,
+      privateRuntimeRoot: path.join(workspace, 'state-exact3'),
+      profileId: 'thought-core-v0',
+      options: exact3EffectiveOptions,
+      configIdentity: configIdentityFor(exact3EffectiveOptions),
+      authority,
+      processEnvironment: {
+        PATH: executableRoot,
+        SYSTEMROOT: 'C:\\Windows',
+        TEMP: workspace,
+        TMP: workspace
+      },
+      resolveExecutable: (name) => executables[name],
+      verifyWorkerExecutable: verifyTestWorkerExecutable,
+      nonceFactory: () => '11223344556677889900aabbccddeeff'
+    })
+    assert.deepEqual(
+      exact3Compiled.document.services.map((service) => service.service_id),
+      ['openai_provider_broker', 'thought_core_api', 'aituber_kit']
+    )
+    assert.deepEqual(exact3Compiled.included_service_ids, [...requiredOwnedIds].sort())
+    const exact3Serialized = serializePrivateServicePlan(exact3Compiled.document)
+    for (const excluded of [
+      'home_assistant_bridge', 'environment_state_server', 'thought_core_watcher',
+      'touchdesigner_control_gui', 'mediapipe_camera_hub_stack',
+      'vision_snapshot_processor', 'voicevox', 'direct_send'
+    ]) assert.equal(exact3Serialized.includes(excluded), false, excluded)
     assert.throws(
       () => compilePrivateServicePlan({
         repositoryRoot: ROOT,

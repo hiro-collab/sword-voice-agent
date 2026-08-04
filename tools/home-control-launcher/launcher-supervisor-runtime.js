@@ -863,7 +863,11 @@ class LauncherSupervisorRuntime {
       const included = new Set(compiled.included_service_ids)
       for (const serviceId of this.authority.bindingDocument.binding.service_order) {
         const spec = this.authority.graph.services.find((service) => service.service_id === serviceId)
-        if (spec.ownership === 'external') {
+        if (spec.ownership === 'external' && options.SkipVoicevoxCheck) {
+          const dispatchId = this.dispatchIdFactory()
+          this.apply('probe_requested', serviceId, { dispatch_id: dispatchId, action: 'probe' })
+          this.apply('optional_absent', serviceId, { dispatch_id: dispatchId })
+        } else if (spec.ownership === 'external') {
           try {
             const workerEvent = await this.exchange(serviceId, 'probe')
             this.applyPersistedEvent(workerEvent.event_type, serviceId, { dispatch_id: workerEvent.dispatch_id })

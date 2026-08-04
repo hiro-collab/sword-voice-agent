@@ -285,8 +285,9 @@ const validateGraph = (graph, serviceIdPattern) => {
     if (service.requirement === 'required') {
       if (service.start.absent_behavior !== 'fail' || service.readiness.degraded_allowed) fail('graph_required_semantics_invalid')
     } else if (service.requirement === 'optional') {
-      if (service.start.absent_behavior !== 'optional_absent' || !service.readiness.degraded_allowed ||
-          service.readiness.success !== 'owned_identity_and_probe' || noPort) fail('graph_optional_semantics_invalid')
+      if (service.start.absent_behavior !== 'optional_absent' || !service.readiness.degraded_allowed) {
+        fail('graph_optional_semantics_invalid')
+      }
     } else {
       fail('graph_requirement_invalid')
     }

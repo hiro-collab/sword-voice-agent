@@ -239,10 +239,28 @@ const fullReady = () => {
 test('authority is canonical, hash-bound, drift-checked, and LF-stable', () => {
   assert.equal(authority.bindingDocument.binding.text_hash_mode, 'utf8_lf_v1')
   assert.equal(authority.identities.bindingSha256, authority.bindingDocument.binding_sha256)
+  assert.deepEqual(authority.bindingDocument.binding.required_service_ids, [
+    'aituber_kit', 'openai_provider_broker', 'thought_core_api'
+  ])
+  assert.deepEqual(authority.bindingDocument.binding.optional_service_ids, [
+    'environment_state_server', 'home_assistant_bridge', 'mediapipe_camera_hub_stack',
+    'thought_core_watcher', 'touchdesigner_control_gui', 'vision_snapshot_processor'
+  ])
   const sample = '{\r\n  "ok": true\r\n}\r\n'
   assert.equal(contract.canonicalLfSha256(sample), contract.canonicalLfSha256(sample.replaceAll('\r\n', '\n')))
   const rendered = contract.renderBindingDocument({ graph: authority.graph, identities: authority.identities })
   assert.deepEqual(JSON.parse(rendered), authority.bindingDocument)
+})
+
+test('configuration-excluded external dependency uses optional_absent without fake Ready', () => {
+  let operation = startLifecycle()
+  operation = reducer.reduce(operation, event('probe_requested', 'voicevox'), authority)
+  operation = reducer.reduce(operation, event('optional_absent', 'voicevox'), authority)
+  rawReducer.validateSnapshot(operation, authority)
+  const voicevox = operation.services.find((service) => service.service_id === 'voicevox')
+  assert.equal(voicevox.state, 'optional_absent')
+  assert.equal(voicevox.pending_dispatch_id, null)
+  assert.notEqual(operation.phase, 'ready')
 })
 
 test('operation schema is the single service-id and revision authority', () => {
@@ -549,10 +567,10 @@ test('rollback and recovery persist one correlated stop dispatch before cleanup 
   let recovery = fullReady()
   recovery = reducer.reduce(recovery, event('supervisor_crashed'), authority)
   assert.equal(recovery.phase, 'recovering')
-  const recoveryDispatch = dispatchId('home_assistant_bridge', 'stop', 3)
-  recovery = reducer.reduce(recovery, event('stop_dispatch_requested', 'home_assistant_bridge', OPERATION_ID, recoveryDispatch), authority)
-  recovery = reducer.reduce(recovery, event('service_stopped', 'home_assistant_bridge', OPERATION_ID, recoveryDispatch), authority)
-  const recoveredService = recovery.services.find((service) => service.service_id === 'home_assistant_bridge')
+  const recoveryDispatch = dispatchId('thought_core_api', 'stop', 3)
+  recovery = reducer.reduce(recovery, event('stop_dispatch_requested', 'thought_core_api', OPERATION_ID, recoveryDispatch), authority)
+  recovery = reducer.reduce(recovery, event('service_stopped', 'thought_core_api', OPERATION_ID, recoveryDispatch), authority)
+  const recoveredService = recovery.services.find((service) => service.service_id === 'thought_core_api')
   assert.equal(recoveredService.pending_dispatch_id, null)
   assert.equal(recoveredService.state, 'stopped')
   reducer.validateSnapshot(recovery, authority)
