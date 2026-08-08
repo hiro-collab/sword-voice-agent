@@ -23,8 +23,10 @@ from .agentic_turn_provider import (
     AgenticTurnProvider,
     AgenticTurnProviderDecisionInvalid,
     AgenticTurnProviderRequest,
+    AgenticTurnProviderResult,
     AgenticTurnProviderUnavailable,
     UnavailableAgenticTurnProvider,
+    validate_agentic_provider_attempt_receipt,
 )
 from .capability_catalog import (
     MAX_CAPABILITY_DESCRIPTION_CHARS,
@@ -35,6 +37,7 @@ from .responders import (
     OpenAICompatibleStructuredCompletion,
     StructuredCompletion,
     StructuredCompletionInvalid,
+    StructuredCompletionResult,
     StructuredCompletionUnavailable,
     is_loopback_http_url,
 )
@@ -196,6 +199,7 @@ class OpenAICompatibleAgenticTurnProvider:
     """Translate bounded turn and receipt facts into structured completions."""
 
     __slots__ = ("_completion",)
+    requires_provider_attempt_receipt = False
 
     def __init__(self, completion: StructuredCompletion) -> None:
         self._completion = completion
@@ -203,13 +207,44 @@ class OpenAICompatibleAgenticTurnProvider:
     def decide(self, request: AgenticTurnProviderRequest) -> object:
         try:
             payload = _decision_input_payload(request)
-            candidate = self._completion.complete_json(
+            completion_result = self._completion.complete_json(
                 system_prompt=_DECISION_SYSTEM_PROMPT,
                 input_payload=payload,
                 max_tokens=DECISION_MAX_TOKENS,
                 response_format=_agentic_turn_provider_response_format(),
+                decision_event_id=(
+                    request.decision_event_id
+                    if self.requires_provider_attempt_receipt
+                    else None
+                ),
+            )
+            if self.requires_provider_attempt_receipt:
+                if type(completion_result) is not StructuredCompletionResult:
+                    raise AgenticTurnProviderDecisionInvalid(
+                        "provider_content_invalid"
+                    )
+                receipt = validate_agentic_provider_attempt_receipt(
+                    completion_result.provider_attempt_receipt,
+                    decision_event_id=request.decision_event_id,
+                )
+                if receipt is None:
+                    raise AgenticTurnProviderDecisionInvalid(
+                        "provider_content_invalid"
+                    )
+                return AgenticTurnProviderResult(
+                    candidate=_normalize_agentic_turn_provider_output(
+                        completion_result.value
+                    ),
+                    provider_attempt_receipt=receipt,
+                )
+            candidate = (
+                completion_result.value
+                if type(completion_result) is StructuredCompletionResult
+                else completion_result
             )
             return _normalize_agentic_turn_provider_output(candidate)
+        except AgenticTurnProviderDecisionInvalid:
+            raise
         except StructuredCompletionUnavailable:
             raise AgenticTurnProviderUnavailable(
                 "agentic_provider_unavailable"
@@ -327,6 +362,7 @@ class SwordOpenAIBrokerAgenticTurnProvider(OpenAICompatibleAgenticTurnProvider):
 
     __slots__ = ()
     provider_name = SWORD_OPENAI_BROKER_PROVIDER
+    requires_provider_attempt_receipt = True
 
 
 def build_agentic_turn_provider_from_env() -> AgenticTurnProvider | None:

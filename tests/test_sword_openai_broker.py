@@ -10,13 +10,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from email.message import Message
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib import request
 
 from sword_voice_agent.adapters.openai_broker import (
     ALLOWED_PORTS,
     DECISION_MAX_TOKENS,
+    DECISION_EVENT_ID_HEADER,
     DEFAULT_SECRET_FILE,
     FIXED_MODEL,
     ISOLATED_PORT,
@@ -27,6 +29,9 @@ from sword_voice_agent.adapters.openai_broker import (
     MAX_UPSTREAM_BYTES,
     MAX_USER_BYTES,
     RECEIPT_MAX_TOKENS,
+    PROVIDER_ATTEMPT_RECEIPT_CLASS,
+    PROVIDER_ATTEMPT_RECEIPT_KEY,
+    PROVIDER_ATTEMPT_TERMINAL_CLASS,
     SECRET_SOURCE_CLASS,
     STANDARD_PORT,
     UPSTREAM_URL,
@@ -46,9 +51,11 @@ from sword_voice_agent.apps.openai_broker import (
     _body_error_response,
     _read_exact_body,
     _validated_content_length,
+    _validated_decision_event_id,
 )
 
 PRIVATE_SENTINEL = "SYNTHETIC_PRIVATE_BROKER_SENTINEL"
+DECISION_EVENT_ID = "evt_" + ("a" * 32)
 
 
 class _Response:
@@ -176,8 +183,24 @@ class BrokerConfigTests(unittest.TestCase):
 class BrokerForwardingTests(unittest.TestCase):
     def test_only_fixed_destination_and_single_authorization_header_leave_boundary(self) -> None:
         broker, opener = _broker()
-        result = broker.complete(json.dumps(_payload()).encode("utf-8"))
-        self.assertEqual(result, {"choices": [{"message": {"content": '{"kind":"hold"}'}}]})
+        result = broker.complete(
+            json.dumps(_payload()).encode("utf-8"),
+            decision_event_id=DECISION_EVENT_ID,
+        )
+        self.assertEqual(
+            result,
+            {
+                "choices": [{"message": {"content": '{"kind":"hold"}'}}],
+                PROVIDER_ATTEMPT_RECEIPT_KEY: {
+                    "receipt_class": PROVIDER_ATTEMPT_RECEIPT_CLASS,
+                    "decision_event_id": DECISION_EVENT_ID,
+                    "upstream_attempt_count": 1,
+                    "retry_count": 0,
+                    "fallback_count": 0,
+                    "attempt_terminal_class": PROVIDER_ATTEMPT_TERMINAL_CLASS,
+                },
+            },
+        )
         self.assertEqual(len(opener.calls), 1)
         outbound, timeout = opener.calls[0]
         self.assertEqual(outbound.full_url, UPSTREAM_URL)
@@ -186,6 +209,8 @@ class BrokerForwardingTests(unittest.TestCase):
         headers = dict(outbound.header_items())
         self.assertEqual(sum(name.lower() == "authorization" for name in headers), 1)
         self.assertEqual(headers["Authorization"], f"Bearer {PRIVATE_SENTINEL}")
+        self.assertNotIn(DECISION_EVENT_ID_HEADER.lower(), {name.lower() for name in headers})
+        self.assertNotIn(DECISION_EVENT_ID, outbound.data.decode("utf-8"))
         self.assertNotIn(PRIVATE_SENTINEL, json.dumps(result))
         self.assertNotIn(PRIVATE_SENTINEL, outbound.data.decode("utf-8"))
         outbound_body = json.loads(outbound.data.decode("utf-8"))
@@ -195,12 +220,76 @@ class BrokerForwardingTests(unittest.TestCase):
     def test_both_output_budgets_and_one_attempt_only(self) -> None:
         for max_tokens in (DECISION_MAX_TOKENS, RECEIPT_MAX_TOKENS):
             broker, opener = _broker()
-            broker.complete(json.dumps(_payload(max_tokens)).encode("utf-8"))
+            result = broker.complete(
+                json.dumps(_payload(max_tokens)).encode("utf-8"),
+                decision_event_id=(
+                    DECISION_EVENT_ID
+                    if max_tokens == DECISION_MAX_TOKENS
+                    else None
+                ),
+            )
             self.assertEqual(len(opener.calls), 1)
+            self.assertEqual(
+                PROVIDER_ATTEMPT_RECEIPT_KEY in result,
+                max_tokens == DECISION_MAX_TOKENS,
+            )
         broker, opener = _broker(failure=OSError("synthetic transport failure"))
         with self.assertRaisesRegex(BrokerError, "upstream_unavailable"):
-            broker.complete(json.dumps(_payload()).encode("utf-8"))
+            broker.complete(
+                json.dumps(_payload()).encode("utf-8"),
+                decision_event_id=DECISION_EVENT_ID,
+            )
         self.assertEqual(len(opener.calls), 1)
+
+    def test_decision_correlation_is_per_call_and_not_process_budget_state(self) -> None:
+        broker, opener = _broker(request_budget=2)
+        event_ids = (DECISION_EVENT_ID, "evt_" + ("b" * 32))
+        receipts = []
+        for event_id in event_ids:
+            result = broker.complete(
+                json.dumps(_payload()).encode("utf-8"),
+                decision_event_id=event_id,
+            )
+            receipts.append(result[PROVIDER_ATTEMPT_RECEIPT_KEY])
+
+        self.assertEqual(len(opener.calls), 2)
+        self.assertEqual(broker._request_count, 2)
+        for event_id, receipt in zip(event_ids, receipts, strict=True):
+            self.assertEqual(
+                receipt,
+                {
+                    "receipt_class": PROVIDER_ATTEMPT_RECEIPT_CLASS,
+                    "decision_event_id": event_id,
+                    "upstream_attempt_count": 1,
+                    "retry_count": 0,
+                    "fallback_count": 0,
+                    "attempt_terminal_class": PROVIDER_ATTEMPT_TERMINAL_CLASS,
+                },
+            )
+
+    def test_missing_malformed_and_wrong_call_correlation_fail_before_boundary(self) -> None:
+        for max_tokens, decision_event_id in (
+            (DECISION_MAX_TOKENS, None),
+            (DECISION_MAX_TOKENS, "evt_" + ("A" * 32)),
+            (DECISION_MAX_TOKENS, DECISION_EVENT_ID + "," + DECISION_EVENT_ID),
+            (RECEIPT_MAX_TOKENS, DECISION_EVENT_ID),
+        ):
+            with self.subTest(max_tokens=max_tokens, decision_event_id=decision_event_id):
+                secret_reads: list[Path] = []
+                opener = _Opener()
+                broker = OpenAIBroker(
+                    BrokerConfig(secret_file=Path("synthetic.env")),
+                    secret_loader=lambda path: secret_reads.append(path) or PRIVATE_SENTINEL,
+                    opener_factory=lambda: opener,
+                )
+                with self.assertRaisesRegex(BrokerError, "invalid_request"):
+                    broker.complete(
+                        json.dumps(_payload(max_tokens)).encode("utf-8"),
+                        decision_event_id=decision_event_id,
+                    )
+                self.assertEqual(secret_reads, [])
+                self.assertEqual(opener.calls, [])
+                self.assertEqual(broker._request_count, 0)
 
     def test_invalid_payloads_and_bounds_fail_before_secret_or_transport(self) -> None:
         mutated_strict = json.loads(
@@ -243,33 +332,39 @@ class BrokerForwardingTests(unittest.TestCase):
                 opener_factory=lambda: opener,
             )
             with self.assertRaisesRegex(BrokerError, "invalid_request"):
-                broker.complete(json.dumps(payload).encode("utf-8"))
+                broker.complete(
+                    json.dumps(payload).encode("utf-8"),
+                    decision_event_id=DECISION_EVENT_ID,
+                )
             self.assertEqual(secret_reads, [])
             self.assertEqual(opener.calls, [])
         broker, opener = _broker()
         with self.assertRaisesRegex(BrokerError, "invalid_request"):
-            broker.complete(b"x" * (MAX_BODY_BYTES + 1))
+            broker.complete(
+                b"x" * (MAX_BODY_BYTES + 1),
+                decision_event_id=DECISION_EVENT_ID,
+            )
         self.assertEqual(opener.calls, [])
 
     def test_request_budget_concurrency_and_upstream_shape_are_fail_closed(self) -> None:
         raw = json.dumps(_payload()).encode("utf-8")
         broker, opener = _broker(request_budget=1)
-        broker.complete(raw)
+        broker.complete(raw, decision_event_id=DECISION_EVENT_ID)
         with self.assertRaisesRegex(BrokerError, "request_budget_exhausted"):
-            broker.complete(raw)
+            broker.complete(raw, decision_event_id=DECISION_EVENT_ID)
         self.assertEqual(len(opener.calls), 1)
         broker, opener = _broker()
         self.assertTrue(broker._lock.acquire(blocking=False))
         try:
             with self.assertRaisesRegex(BrokerError, "capacity_exhausted"):
-                broker.complete(raw)
+                broker.complete(raw, decision_event_id=DECISION_EVENT_ID)
         finally:
             broker._lock.release()
         self.assertEqual(opener.calls, [])
         for body in (b"{}", b'{"choices":[]}', b'x' * (MAX_UPSTREAM_BYTES + 1)):
             broker, _ = _broker(body=body)
             with self.assertRaisesRegex(BrokerError, "upstream_invalid"):
-                broker.complete(raw)
+                broker.complete(raw, decision_event_id=DECISION_EVENT_ID)
 
 
 class BrokerSecretAndSurfaceTests(unittest.TestCase):
@@ -356,6 +451,72 @@ class BrokerSecretAndSurfaceTests(unittest.TestCase):
         self.assertIn("self.close_connection = True", app_source)
         self.assertIn("reader.read1", app_source)
 
+    def test_internal_decision_header_is_exact_and_ingress_rejects_before_body_or_broker(self) -> None:
+        self.assertIsNone(_validated_decision_event_id(None))
+        self.assertEqual(
+            _validated_decision_event_id([DECISION_EVENT_ID]),
+            DECISION_EVENT_ID,
+        )
+        invalid_values: tuple[list[object], ...] = (
+            [],
+            [""],
+            [" " + DECISION_EVENT_ID],
+            [DECISION_EVENT_ID + " "],
+            ["evt_" + ("A" * 32)],
+            [DECISION_EVENT_ID + "," + DECISION_EVENT_ID],
+            ["C:/private/path"],
+            [DECISION_EVENT_ID + "\r\nInjected: value"],
+            [DECISION_EVENT_ID, DECISION_EVENT_ID],
+            [True],
+        )
+        for values in invalid_values:
+            with self.subTest(values=values), self.assertRaisesRegex(
+                BrokerError,
+                "invalid_request",
+            ):
+                _validated_decision_event_id(values)  # type: ignore[arg-type]
+
+        broker = Mock(spec=OpenAIBroker)
+        with patch(
+            "sword_voice_agent.apps.openai_broker.SingleAdmissionHTTPServer"
+        ) as server_type:
+            create_server(broker, BrokerConfig())
+        handler_type = server_type.call_args.args[1]
+        for values in (
+            [DECISION_EVENT_ID, DECISION_EVENT_ID],
+            [DECISION_EVENT_ID + "," + DECISION_EVENT_ID],
+            ["evt_" + ("A" * 32)],
+            ["C:/private/path"],
+        ):
+            with self.subTest(ingress_values=values):
+                headers = Message()
+                headers["Content-Type"] = "application/json"
+                headers["Content-Length"] = "1"
+                for value in values:
+                    headers[DECISION_EVENT_ID_HEADER] = value
+                handler = object.__new__(handler_type)
+                handler.path = COMPLETIONS_PATH
+                handler.headers = headers
+                handler.rfile = Mock()
+                handler.rfile.read1.side_effect = AssertionError(
+                    "body_must_not_be_read"
+                )
+                handler.connection = Mock()
+                responses: list[tuple[int, object]] = []
+                handler._send = lambda status, payload: responses.append(  # type: ignore[method-assign]
+                    (status, payload)
+                )
+                broker.reset_mock()
+
+                handler.do_POST()
+
+                self.assertEqual(
+                    responses,
+                    [(400, {"error": {"code": "invalid_request"}})],
+                )
+                handler.rfile.read1.assert_not_called()
+                broker.complete.assert_not_called()
+
     def test_incremental_trickle_cannot_extend_total_deadline(self) -> None:
         clock = _FakeClock()
         reader = _TrickleReader(
@@ -384,7 +545,10 @@ class BrokerSecretAndSurfaceTests(unittest.TestCase):
         self.assertNotIn("requests", source)
         broker, _ = _broker()
         with self.assertRaisesRegex(BrokerError, "invalid_request") as captured:
-            broker.complete((PRIVATE_SENTINEL + "{").encode("utf-8"))
+            broker.complete(
+                (PRIVATE_SENTINEL + "{").encode("utf-8"),
+                decision_event_id=DECISION_EVENT_ID,
+            )
         self.assertNotIn(PRIVATE_SENTINEL, repr(captured.exception))
 
 

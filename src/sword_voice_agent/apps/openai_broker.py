@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from sword_voice_agent.adapters.openai_broker import (
     COMPLETIONS_PATH,
+    DECISION_EVENT_ID_HEADER,
     LOOPBACK_HOST,
     MAX_BODY_BYTES,
     MAX_TIMEOUT_S,
@@ -42,6 +43,22 @@ def _validated_content_length(
     if length > MAX_BODY_BYTES:
         raise BrokerError("invalid_request")
     return length
+
+
+def _validated_decision_event_id(values: list[str] | None) -> str | None:
+    if values is None:
+        return None
+    if len(values) != 1:
+        raise BrokerError("invalid_request")
+    value = values[0]
+    if (
+        type(value) is not str
+        or len(value) != 36
+        or not value.startswith("evt_")
+        or any(character not in "0123456789abcdef" for character in value[4:])
+    ):
+        raise BrokerError("invalid_request")
+    return value
 
 
 def _read_exact_body(
@@ -111,6 +128,9 @@ def create_server(broker: OpenAIBroker, config: BrokerConfig) -> SingleAdmission
                 self._send(400, {"error": {"code": "invalid_request"}})
                 return
             try:
+                decision_event_id = _validated_decision_event_id(
+                    self.headers.get_all(DECISION_EVENT_ID_HEADER)
+                )
                 length = _validated_content_length(
                     self.headers.get_all("Content-Length"),
                     self.headers.get("Transfer-Encoding"),
@@ -126,7 +146,10 @@ def create_server(broker: OpenAIBroker, config: BrokerConfig) -> SingleAdmission
                 self._send(status, payload)
                 return
             try:
-                result = broker.complete(body)
+                result = broker.complete(
+                    body,
+                    decision_event_id=decision_event_id,
+                )
             except BrokerError as failure:
                 status = 503 if failure.code in {
                     "secret_unavailable",

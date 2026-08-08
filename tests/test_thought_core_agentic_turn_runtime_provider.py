@@ -16,6 +16,8 @@ THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core" / "src"
 sys.path.insert(0, str(THOUGHT_CORE_ROOT))
 
 from thought_core.agentic_turn_provider import (  # noqa: E402
+    PROVIDER_ATTEMPT_RECEIPT_CLASS,
+    PROVIDER_ATTEMPT_TERMINAL_CLASS,
     AgenticActionReceipt,
     AgenticCapabilityView,
     AgenticCapabilityViewEntry,
@@ -23,6 +25,7 @@ from thought_core.agentic_turn_provider import (  # noqa: E402
     AgenticPredecisionContextSection,
     AgenticTurnProviderRequest,
     AgenticTurnProviderDecisionInvalid,
+    AgenticTurnProviderResult,
     UnavailableAgenticTurnProvider,
 )
 from thought_core.agentic_turn_runtime_provider import (  # noqa: E402
@@ -46,12 +49,31 @@ from thought_core.reasoning import LocalActionReasoner  # noqa: E402
 from thought_core.responders import (  # noqa: E402
     LocalFallbackResponder,
     OpenAICompatibleStructuredCompletion,
+    SWORD_DECISION_EVENT_ID_HEADER,
+    SWORD_PROVIDER_ATTEMPT_RECEIPT_KEY,
     StructuredCompletionInvalid,
+    StructuredCompletionResult,
     StructuredCompletionUnavailable,
     _RejectAllRedirects,
 )
 from thought_core.server import _build_default_thought_loop, create_server  # noqa: E402
 from thought_core.tools import HomeControlHttpTools  # noqa: E402
+
+
+DECISION_EVENT_ID = "evt_" + ("c" * 32)
+
+
+def _provider_attempt_receipt(
+    decision_event_id: str = DECISION_EVENT_ID,
+) -> dict[str, object]:
+    return {
+        "receipt_class": PROVIDER_ATTEMPT_RECEIPT_CLASS,
+        "decision_event_id": decision_event_id,
+        "upstream_attempt_count": 1,
+        "retry_count": 0,
+        "fallback_count": 0,
+        "attempt_terminal_class": PROVIDER_ATTEMPT_TERMINAL_CLASS,
+    }
 
 
 class _CapturingCompletion:
@@ -66,6 +88,7 @@ class _CapturingCompletion:
         input_payload: Mapping[str, object],
         max_tokens: int,
         response_format: Mapping[str, object] | None = None,
+        decision_event_id: str | None = None,
     ) -> object:
         self.calls.append(
             {
@@ -73,6 +96,7 @@ class _CapturingCompletion:
                 "input_payload": input_payload,
                 "max_tokens": max_tokens,
                 "response_format": response_format,
+                "decision_event_id": decision_event_id,
             }
         )
         result = self.results.pop(0)
@@ -89,12 +113,14 @@ class _MutatingResponseFormatCompletion(_CapturingCompletion):
         input_payload: Mapping[str, object],
         max_tokens: int,
         response_format: Mapping[str, object] | None = None,
+        decision_event_id: str | None = None,
     ) -> object:
         result = super().complete_json(
             system_prompt=system_prompt,
             input_payload=input_payload,
             max_tokens=max_tokens,
             response_format=response_format,
+            decision_event_id=decision_event_id,
         )
         if len(self.calls) == 1:
             if type(response_format) is not dict:
@@ -788,16 +814,20 @@ class AgenticTurnRuntimeProviderTest(TestCase):
 
     def test_sword_broker_provider_preserves_decision_and_receipt_token_caps(self) -> None:
         completion = _CapturingCompletion(
-            self._conversation_candidate(),
+            StructuredCompletionResult(
+                value=self._conversation_candidate(),
+                provider_attempt_receipt=_provider_attempt_receipt(),
+            ),
             {"speech": "receipt", "display": "receipt"},
         )
         provider = SwordOpenAIBrokerAgenticTurnProvider(completion)
-        provider.decide(
+        result = provider.decide(
             self._provider_request(
                 human_wish="synthetic wish",
                 context_refs=MappingProxyType({}),
             )
         )
+        self.assertIsInstance(result, AgenticTurnProviderResult)
         provider.respond_to_receipt(
             AgenticActionReceipt(
                 decision_ref="evt_receipt_token_cap",
@@ -820,6 +850,54 @@ class AgenticTurnRuntimeProviderTest(TestCase):
             [call["max_tokens"] for call in completion.calls],
             [720, 240],
         )
+        self.assertEqual(
+            [call["decision_event_id"] for call in completion.calls],
+            [DECISION_EVENT_ID, None],
+        )
+
+    def test_sword_broker_provider_rejects_missing_wrong_or_replayed_receipt(self) -> None:
+        valid = _provider_attempt_receipt()
+        cases: list[tuple[str, object]] = [
+            ("missing", self._conversation_candidate()),
+            (
+                "wrong_id",
+                {**valid, "decision_event_id": "evt_" + ("d" * 32)},
+            ),
+            ("extra", {**valid, "extra": "PRIVATE_RECEIPT_SENTINEL"}),
+            ("wrong_class", {**valid, "receipt_class": "wrong"}),
+            ("wrong_terminal", {**valid, "attempt_terminal_class": "wrong"}),
+            ("attempt_zero", {**valid, "upstream_attempt_count": 0}),
+            ("attempt_two", {**valid, "upstream_attempt_count": 2}),
+            ("attempt_bool", {**valid, "upstream_attempt_count": True}),
+            ("retry_string", {**valid, "retry_count": "0"}),
+            ("fallback_bool", {**valid, "fallback_count": False}),
+        ]
+        for name, receipt in cases:
+            result = (
+                receipt
+                if name == "missing"
+                else StructuredCompletionResult(
+                    value=self._conversation_candidate(),
+                    provider_attempt_receipt=receipt,
+                )
+            )
+            completion = _CapturingCompletion(result)
+            provider = SwordOpenAIBrokerAgenticTurnProvider(completion)
+            with self.subTest(name=name), self.assertRaisesRegex(
+                AgenticTurnProviderDecisionInvalid,
+                "agentic_decision_invalid",
+            ) as captured:
+                provider.decide(
+                    self._provider_request(
+                        human_wish="synthetic wish",
+                        context_refs=MappingProxyType({}),
+                    )
+                )
+            self.assertEqual(
+                captured.exception.validation_subcode,
+                "provider_content_invalid",
+            )
+            self.assertNotIn("PRIVATE_RECEIPT_SENTINEL", repr(captured.exception))
 
     def test_broker_example_is_credential_free_and_exact(self) -> None:
         example = (REPO_ROOT / "services" / "thought-core" / ".env.example").read_text(
@@ -1001,6 +1079,7 @@ class AgenticTurnRuntimeProviderTest(TestCase):
 
         self.assertEqual(provider.decide(request), candidate)
         call = completion.calls[0]
+        self.assertIsNone(call["decision_event_id"])
         payload = call["input_payload"]
         self.assertEqual(
             set(payload),  # type: ignore[arg-type]
@@ -1711,6 +1790,87 @@ class AgenticTurnRuntimeProviderTest(TestCase):
         )
         self.assertFalse(outbound_request.has_header("Authorization"))
 
+    def test_structured_completion_carries_exact_loopback_receipt_without_secret_header(self) -> None:
+        candidate = self._conversation_candidate()
+        response_payload = {
+            "choices": [
+                {"message": {"content": json.dumps(candidate, ensure_ascii=False)}}
+            ],
+            SWORD_PROVIDER_ATTEMPT_RECEIPT_KEY: _provider_attempt_receipt(),
+        }
+        opener = _FakeOpener(_FakeHttpResponse(response_payload))
+        completion = OpenAICompatibleStructuredCompletion(
+            base_url="http://127.0.0.1:18786/v1",
+            model="gpt-4o-mini",
+            opener=opener,
+        )
+
+        observed = completion.complete_json(
+            system_prompt="Return JSON.",
+            input_payload={"human_wish": "synthetic"},
+            max_tokens=720,
+            decision_event_id=DECISION_EVENT_ID,
+        )
+
+        self.assertEqual(
+            observed,
+            StructuredCompletionResult(
+                value=candidate,
+                provider_attempt_receipt=_provider_attempt_receipt(),
+            ),
+        )
+        outbound_request = opener.calls[0][0]
+        headers = {name.lower(): value for name, value in outbound_request.header_items()}
+        self.assertEqual(
+            headers[SWORD_DECISION_EVENT_ID_HEADER.lower()],
+            DECISION_EVENT_ID,
+        )
+        self.assertNotIn("authorization", headers)
+
+        missing_receipt = OpenAICompatibleStructuredCompletion(
+            base_url="http://127.0.0.1:18786/v1",
+            model="gpt-4o-mini",
+            opener=_FakeOpener(
+                _FakeHttpResponse(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": json.dumps(candidate)
+                                }
+                            }
+                        ]
+                    }
+                )
+            ),
+        )
+        with self.assertRaisesRegex(
+            StructuredCompletionInvalid,
+            "structured_completion_response_invalid",
+        ):
+            missing_receipt.complete_json(
+                system_prompt="Return JSON.",
+                input_payload={"human_wish": "synthetic"},
+                max_tokens=720,
+                decision_event_id=DECISION_EVENT_ID,
+            )
+
+        for invalid_event_id in (
+            "evt_" + ("A" * 32),
+            DECISION_EVENT_ID + "," + DECISION_EVENT_ID,
+            True,
+        ):
+            with self.subTest(invalid_event_id=invalid_event_id), self.assertRaisesRegex(
+                StructuredCompletionInvalid,
+                "structured_completion_input_invalid",
+            ):
+                completion.complete_json(
+                    system_prompt="Return JSON.",
+                    input_payload={"human_wish": "synthetic"},
+                    max_tokens=720,
+                    decision_event_id=invalid_event_id,  # type: ignore[arg-type]
+                )
+
     def test_credential_configuration_holds_without_header_or_sentinel_publication(
         self,
     ) -> None:
@@ -1922,10 +2082,12 @@ class AgenticTurnRuntimeProviderTest(TestCase):
         human_wish: str,
         context_refs: Mapping[str, object],
         predecision_context: AgenticPredecisionContext | None = None,
+        decision_event_id: str = DECISION_EVENT_ID,
     ) -> AgenticTurnProviderRequest:
         values: dict[str, object] = {
             "human_wish": human_wish,
             "context_refs": context_refs,
+            "decision_event_id": decision_event_id,
             "capability_view": AgenticCapabilityView(
                 catalog_id="catalog-test",
                 catalog_version="catalog-test.v1",

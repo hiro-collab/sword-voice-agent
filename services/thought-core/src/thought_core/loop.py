@@ -16,14 +16,19 @@ from typing import Any, Callable, Mapping
 from .agentic_turn_decision import validate_agentic_turn_decision
 from .agentic_turn_provider import (
     AGENTIC_DECISION_VALIDATION_SUBCODES,
+    PROVIDER_AUTHORSHIP_CLASS,
+    PROVIDER_AUTHORSHIP_EVIDENCE_CLASS,
     AgenticActionReceipt,
+    AgenticProviderAttemptReceipt,
     AgenticPredecisionContext,
     AgenticPredecisionContextSection,
     AgenticTurnProvider,
     AgenticTurnProviderDecisionInvalid,
     AgenticTurnProviderRequest,
+    AgenticTurnProviderResult,
     AgenticTurnProviderUnavailable,
     UnavailableAgenticTurnProvider,
+    validate_agentic_provider_attempt_receipt,
     validate_agentic_receipt_response,
 )
 from .capability_catalog import (
@@ -2002,10 +2007,12 @@ class ThoughtLoop:
                 reason="agentic_context_refs_invalid",
             )
             return True, None
+        decision_event_id = factory.reserve_event_id()
         request = AgenticTurnProviderRequest(
             human_wish=turn_input.text,
             context_refs=context_refs,
             capability_view=catalog.capability_view,
+            decision_event_id=decision_event_id,
             agent_context=MappingProxyType(
                 {
                     "bounded_wish_refs": (),
@@ -2049,6 +2056,22 @@ class ThoughtLoop:
             )
             return True, None
 
+        provider_attempt_receipt: AgenticProviderAttemptReceipt | None = None
+        if type(candidate) is AgenticTurnProviderResult:
+            provider_attempt_receipt = validate_agentic_provider_attempt_receipt(
+                candidate.provider_attempt_receipt,
+                decision_event_id=decision_event_id,
+            )
+            if provider_attempt_receipt is None:
+                self._emit_agentic_hold(
+                    events,
+                    factory,
+                    reason="agentic_decision_invalid",
+                    validation_subcode="provider_content_invalid",
+                )
+                return True, None
+            candidate = candidate.candidate
+
         result = validate_agentic_turn_decision(
             candidate,
             capability_catalog_validator=catalog.authorizes,
@@ -2063,7 +2086,8 @@ class ThoughtLoop:
             return True, None
 
         decision = result.decision
-        decision_event = factory.emit(
+        decision_event = factory.emit_reserved(
+            decision_event_id,
             "agentic.decision",
             {
                 "status": "accepted",
@@ -2074,7 +2098,16 @@ class ThoughtLoop:
         )
         events.append(decision_event)
         if decision.kind != "capability" or decision.capability is None:
-            self._emit_message(
+            phrase_generation_override = None
+            if provider_attempt_receipt is not None:
+                phrase_generation_override = {
+                    "enabled": True,
+                    "used_llm": True,
+                    "status": "agentic_provider_decision_response",
+                    "speech": decision.response.speech,
+                    "display": decision.response.display,
+                }
+            message_event = self._emit_message(
                 events,
                 factory,
                 speech=decision.response.speech,
@@ -2082,15 +2115,34 @@ class ThoughtLoop:
                 emotion="neutral",
                 motion="small_nod",
                 priority="normal",
+                phrase_generation_override=phrase_generation_override,
             )
+            completion_data: dict[str, object] = {
+                "status": decision.kind,
+                "semantic_authority": "agentic_provider",
+                "capability_executed": False,
+            }
+            if provider_attempt_receipt is not None and message_event is not None:
+                completion_data["provider_attempt_evidence"] = {
+                    "evidence_class": PROVIDER_AUTHORSHIP_EVIDENCE_CLASS,
+                    "decision_event_id": decision_event.event_id,
+                    "assistant_message_id": message_event.data[
+                        "assistant_message_id"
+                    ],
+                    "upstream_attempt_count": (
+                        provider_attempt_receipt.upstream_attempt_count
+                    ),
+                    "retry_count": provider_attempt_receipt.retry_count,
+                    "fallback_count": provider_attempt_receipt.fallback_count,
+                    "attempt_terminal_class": (
+                        provider_attempt_receipt.attempt_terminal_class
+                    ),
+                    "authorship_class": PROVIDER_AUTHORSHIP_CLASS,
+                }
             events.append(
                 factory.emit(
                     "turn.completed",
-                    {
-                        "status": decision.kind,
-                        "semantic_authority": "agentic_provider",
-                        "capability_executed": False,
-                    },
+                    completion_data,
                 )
             )
             return True, None
@@ -8197,7 +8249,7 @@ class ThoughtLoop:
         priority: str,
         reflex: bool = False,
         phrase_generation_override: Mapping[str, Any] | None = None,
-    ) -> None:
+    ) -> ThoughtEvent | None:
         phrase_generation = (
             dict(phrase_generation_override)
             if phrase_generation_override is not None
@@ -8224,7 +8276,7 @@ class ThoughtLoop:
                     },
                 )
             )
-            return
+            return None
         if phrase_generation.get("used_llm"):
             speech = str(phrase_generation.get("speech") or speech)
             display = str(phrase_generation.get("display") or speech)
@@ -8232,7 +8284,7 @@ class ThoughtLoop:
         previous_fragment = self._last_spoken_fragment(events) or self._last_issue_fragment()
         speech = self._coherent_stream_speech(events, speech)
         if not speech:
-            return
+            return None
         display_matches_speech = display == original_speech
         if display == original_speech:
             display = speech
@@ -8264,28 +8316,28 @@ class ThoughtLoop:
                 },
             )
         )
-        events.append(
-            factory.emit(
-                "assistant.message",
-                {
-                    "assistant_message_id": message_id,
-                    "message_id": message_id,
-                    "speech": speech,
-                    "display": display,
-                    "emotion": emotion,
-                    "motion": motion,
-                    "priority": priority,
-                    "phrase_generation": self._speech_generation_metadata(
-                        phrase_generation
-                    ),
-                    "speech_context": {
-                        "previous_fragment": previous_fragment,
-                        "issue_key": self._active_issue_key,
-                    },
+        message_event = factory.emit(
+            "assistant.message",
+            {
+                "assistant_message_id": message_id,
+                "message_id": message_id,
+                "speech": speech,
+                "display": display,
+                "emotion": emotion,
+                "motion": motion,
+                "priority": priority,
+                "phrase_generation": self._speech_generation_metadata(
+                    phrase_generation
+                ),
+                "speech_context": {
+                    "previous_fragment": previous_fragment,
+                    "issue_key": self._active_issue_key,
                 },
-            )
+            },
         )
+        events.append(message_event)
         self._remember_stream_speech(speech)
+        return message_event
 
     def _generate_visible_phrase(
         self,

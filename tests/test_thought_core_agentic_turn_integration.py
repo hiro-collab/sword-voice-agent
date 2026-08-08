@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -14,8 +14,14 @@ from thought_core.agentic_turn_provider import (  # noqa: E402
     MAX_CAPABILITY_VIEW_COUNT,
     MAX_CATALOG_ID_LENGTH,
     MAX_CATALOG_VERSION_LENGTH,
+    PROVIDER_ATTEMPT_RECEIPT_CLASS,
+    PROVIDER_ATTEMPT_TERMINAL_CLASS,
+    PROVIDER_AUTHORSHIP_CLASS,
+    PROVIDER_AUTHORSHIP_EVIDENCE_CLASS,
+    AgenticProviderAttemptReceipt,
     AgenticTurnProviderUnavailable,
     AgenticTurnProviderRequest,
+    AgenticTurnProviderResult,
     StaticAgenticTurnProvider,
     UnavailableAgenticTurnProvider,
 )
@@ -90,6 +96,36 @@ class _CapturingConversationProvider:
     def decide(self, request: AgenticTurnProviderRequest) -> object:
         self.requests.append(request)
         return self.candidate
+
+
+class _ReceiptBackedConversationProvider(_CapturingConversationProvider):
+    def decide(self, request: AgenticTurnProviderRequest) -> object:
+        self.requests.append(request)
+        return AgenticTurnProviderResult(
+            candidate=self.candidate,
+            provider_attempt_receipt=AgenticProviderAttemptReceipt(
+                receipt_class=PROVIDER_ATTEMPT_RECEIPT_CLASS,
+                decision_event_id=request.decision_event_id,
+                upstream_attempt_count=1,
+                retry_count=0,
+                fallback_count=0,
+                attempt_terminal_class=PROVIDER_ATTEMPT_TERMINAL_CLASS,
+            ),
+        )
+
+
+class _NeverCalledVisibleResponder:
+    adapter_kind = "must_not_run"
+    provider = "must_not_run"
+    model = "must_not_run"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def respond(self, turn, *, response_context=None):  # type: ignore[no-untyped-def]
+        del turn, response_context
+        self.calls += 1
+        raise AssertionError("second_visible_ai_call_must_not_run")
 
 
 class _CapturingUnavailableProvider:
@@ -236,6 +272,41 @@ class _CountingInputUnderstanding:
 
 
 class AgenticTurnIntegrationTest(TestCase):
+    def test_event_factory_reserved_ids_are_factory_local_single_use_and_gap_free(self) -> None:
+        factory = EventFactory("turn_reservation", "session_reservation")
+        reserved = factory.reserve_event_id()
+        abandoned = factory.reserve_event_id()
+        first = factory.emit("synthetic.first")
+        second = factory.emit_reserved(reserved, "synthetic.reserved")
+        third = factory.emit("synthetic.third")
+
+        self.assertRegex(reserved, r"^evt_[0-9a-f]{32}$")
+        self.assertEqual([first.seq, second.seq, third.seq], [1, 2, 3])
+        self.assertEqual(second.event_id, reserved)
+        self.assertNotEqual(abandoned, reserved)
+        with self.assertRaisesRegex(ValueError, "reserved_event_id_invalid"):
+            factory.emit_reserved(reserved, "synthetic.replay")
+        with self.assertRaisesRegex(ValueError, "reserved_event_id_invalid"):
+            factory.emit_reserved("evt_" + ("A" * 32), "synthetic.malformed")
+        foreign = EventFactory("turn_foreign", "session_foreign")
+        with self.assertRaisesRegex(ValueError, "reserved_event_id_invalid"):
+            foreign.emit_reserved(abandoned, "synthetic.foreign")
+        self.assertEqual(factory.emit("synthetic.after_abandon").seq, 4)
+
+        with patch(
+            "thought_core.events.uuid4",
+            side_effect=(
+                Mock(hex="1" * 32),
+                Mock(hex="1" * 32),
+                Mock(hex="2" * 32),
+            ),
+        ):
+            collision_factory = EventFactory("turn_collision", "session_collision")
+            collision_reserved = collision_factory.reserve_event_id()
+            collision_emitted = collision_factory.emit("synthetic.after_collision")
+        self.assertEqual(collision_reserved, "evt_" + ("1" * 32))
+        self.assertEqual(collision_emitted.event_id, "evt_" + ("2" * 32))
+
     def test_capability_decision_is_paraphrase_independent_and_uses_direct_preview(self) -> None:
         candidate = self._capability("light_on")
         observed_actions = []
@@ -618,6 +689,146 @@ class AgenticTurnIntegrationTest(TestCase):
         )
         self.assertEqual(tools.direct_preview_calls, [])
         self.assertEqual(tools.execute_calls, [])
+
+    def test_receipt_backed_noncapability_terminal_join_is_exact_and_skips_second_ai(self) -> None:
+        for index, kind in enumerate(("conversation", "clarification", "hold")):
+            expected_speech = f"provider speech {index}"
+            expected_display = f"provider display {index}"
+            turn_id = f"receipt_join_{index}"
+            candidate = {
+                "schemaVersion": 1,
+                "kind": kind,
+                "response": {
+                    "speech": expected_speech,
+                    "display": expected_display,
+                },
+            }
+            provider = _ReceiptBackedConversationProvider(candidate)
+            responder = _NeverCalledVisibleResponder()
+            events = ThoughtLoop(
+                tools=_DirectOnlyTools(),
+                responder=responder,
+                agentic_turn_provider=provider,
+                llm_visible_speech=True,
+                require_llm_visible_speech=True,
+            ).run_dicts(
+                self._turn(
+                    f"synthetic wish {index}",
+                    turn_id=turn_id,
+                )
+            )
+
+            with self.subTest(kind=kind):
+                self.assertEqual(responder.calls, 0)
+                self.assertEqual(
+                    [
+                        event["type"]
+                        for event in events
+                        if event["type"].startswith("assistant.")
+                    ],
+                    ["assistant.speech_delta", "assistant.message"],
+                )
+                self.assertEqual(
+                    [event["type"] for event in events[-4:]],
+                    [
+                        "agentic.decision",
+                        "assistant.speech_delta",
+                        "assistant.message",
+                        "turn.completed",
+                    ],
+                )
+                decision, speech_delta, message, completed = events[-4:]
+                self.assertEqual(decision["data"]["status"], "accepted")
+                self.assertEqual(decision["data"]["kind"], kind)
+                self.assertEqual(
+                    decision["data"]["semantic_authority"],
+                    "agentic_provider",
+                )
+                self.assertIs(decision["data"]["capability_present"], False)
+                self.assertEqual(completed["data"]["status"], kind)
+                self.assertEqual(
+                    completed["data"]["semantic_authority"],
+                    "agentic_provider",
+                )
+                self.assertIs(completed["data"]["capability_executed"], False)
+                self.assertEqual(
+                    [
+                        (event["source"], event["session_id"], event["turn_id"])
+                        for event in events[-4:]
+                    ],
+                    [
+                        ("thought-core", "agentic_integration_session", turn_id),
+                    ]
+                    * 4,
+                )
+                self.assertEqual(
+                    provider.requests[0].decision_event_id,
+                    decision["event_id"],
+                )
+                assistant_message_id = message["data"]["assistant_message_id"]
+                self.assertEqual(
+                    speech_delta["data"]["assistant_message_id"],
+                    assistant_message_id,
+                )
+                self.assertEqual(speech_delta["data"]["delta"], expected_speech)
+                self.assertEqual(message["data"]["speech"], expected_speech)
+                self.assertEqual(message["data"]["display"], expected_display)
+                self.assertEqual(
+                    speech_delta["data"]["phrase_generation"],
+                    {
+                        "enabled": True,
+                        "used_llm": True,
+                        "status": "agentic_provider_decision_response",
+                    },
+                )
+                self.assertEqual(
+                    message["data"]["phrase_generation"],
+                    {
+                        "enabled": True,
+                        "used_llm": True,
+                        "status": "agentic_provider_decision_response",
+                    },
+                )
+                self.assertEqual(
+                    completed["data"]["provider_attempt_evidence"],
+                    {
+                        "evidence_class": PROVIDER_AUTHORSHIP_EVIDENCE_CLASS,
+                        "decision_event_id": decision["event_id"],
+                        "assistant_message_id": assistant_message_id,
+                        "upstream_attempt_count": 1,
+                        "retry_count": 0,
+                        "fallback_count": 0,
+                        "attempt_terminal_class": PROVIDER_ATTEMPT_TERMINAL_CLASS,
+                        "authorship_class": PROVIDER_AUTHORSHIP_CLASS,
+                    },
+                )
+                self.assertEqual(
+                    [event["seq"] for event in events],
+                    list(range(1, len(events) + 1)),
+                )
+                self.assertEqual(
+                    len({event["event_id"] for event in events}),
+                    len(events),
+                )
+                serialized = json.dumps(events, ensure_ascii=False).lower()
+                for forbidden in (
+                    "x-sword-agentic-decision-event-id",
+                    "https://api.openai.com",
+                    "gpt-4o-mini",
+                    "response_sha256",
+                    "provider_request_id",
+                ):
+                    self.assertNotIn(forbidden, serialized)
+
+    def test_receipt_backed_capability_does_not_carry_conversation_authorship_evidence(self) -> None:
+        provider = _ReceiptBackedConversationProvider(self._capability("light_on"))
+        events = ThoughtLoop(
+            tools=_NoopDirectTools(),
+            agentic_turn_provider=provider,
+        ).run_dicts(self._turn("少し明るくして。", turn_id="receipt_capability"))
+
+        self.assertIn("agentic.decision", [event["type"] for event in events])
+        self.assertNotIn("provider_attempt_evidence", json.dumps(events))
 
     def test_unavailable_or_invalid_capability_holds_without_compatibility_fallback(self) -> None:
         cases = (

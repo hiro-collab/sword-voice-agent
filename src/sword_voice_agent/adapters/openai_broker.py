@@ -8,6 +8,7 @@ header, response, or secret after a request completes.
 from __future__ import annotations
 
 import json
+import re
 import ssl
 import threading
 from collections.abc import Callable
@@ -26,6 +27,11 @@ FIXED_MODEL = "gpt-4o-mini"
 SECRET_SOURCE_CLASS = "thought-core-existing-env-v1"
 DECISION_MAX_TOKENS = 720
 RECEIPT_MAX_TOKENS = 240
+DECISION_EVENT_ID_HEADER = "X-Sword-Agentic-Decision-Event-Id"
+PROVIDER_ATTEMPT_RECEIPT_KEY = "sword_provider_attempt_receipt"
+PROVIDER_ATTEMPT_RECEIPT_CLASS = "sword.openai_broker.provider_attempt_receipt.v1"
+PROVIDER_ATTEMPT_TERMINAL_CLASS = "upstream_response_accepted"
+CANONICAL_EVENT_ID_PATTERN = re.compile(r"^evt_[0-9a-f]{32}$")
 ALLOWED_MAX_TOKENS = frozenset({DECISION_MAX_TOKENS, RECEIPT_MAX_TOKENS})
 MAX_BODY_BYTES = 32 * 1024
 MAX_SYSTEM_BYTES = 12 * 1024
@@ -230,7 +236,12 @@ class OpenAIBroker:
         self._request_count = 0
         self._lock = threading.Lock()
 
-    def complete(self, raw_body: bytes) -> dict[str, object]:
+    def complete(
+        self,
+        raw_body: bytes,
+        *,
+        decision_event_id: str | None = None,
+    ) -> dict[str, object]:
         if type(raw_body) is not bytes or len(raw_body) > MAX_BODY_BYTES:
             raise BrokerError("invalid_request")
         try:
@@ -238,13 +249,32 @@ class OpenAIBroker:
         except (UnicodeError, json.JSONDecodeError):
             raise BrokerError("invalid_request") from None
         safe_payload = validate_chat_payload(payload)
+        decision_request = safe_payload["max_tokens"] == DECISION_MAX_TOKENS
+        if decision_request:
+            if (
+                type(decision_event_id) is not str
+                or CANONICAL_EVENT_ID_PATTERN.fullmatch(decision_event_id) is None
+            ):
+                raise BrokerError("invalid_request")
+        elif decision_event_id is not None:
+            raise BrokerError("invalid_request")
         if not self._lock.acquire(blocking=False):
             raise BrokerError("capacity_exhausted")
         try:
             if self._request_count >= self._config.request_budget:
                 raise BrokerError("request_budget_exhausted")
             self._request_count += 1
-            return self._forward(safe_payload)
+            result = self._forward(safe_payload)
+            if decision_event_id is not None:
+                result[PROVIDER_ATTEMPT_RECEIPT_KEY] = {
+                    "receipt_class": PROVIDER_ATTEMPT_RECEIPT_CLASS,
+                    "decision_event_id": decision_event_id,
+                    "upstream_attempt_count": 1,
+                    "retry_count": 0,
+                    "fallback_count": 0,
+                    "attempt_terminal_class": PROVIDER_ATTEMPT_TERMINAL_CLASS,
+                }
+            return result
         finally:
             self._lock.release()
 

@@ -298,6 +298,37 @@ remain byte-for-byte intact.
 | Bounds | Inbound <=32 KiB; system <=12 KiB; user <=16 KiB; upstream <=64 KiB; timeout <=12 seconds; concurrency one; queue zero; retry zero |
 | HTTP admission | One synchronous handler with one queued connection; incremental bounded one-raw-read `read1` chunks under a monotonic total body deadline <=12 seconds; reject `Transfer-Encoding`, duplicate/ambiguous `Content-Length`, and incomplete bodies |
 
+Canonical agentic-decision calls add exactly one internal
+`X-Sword-Agentic-Decision-Event-Id` header. Its value is the Thought-Core-reserved
+`evt_[0-9a-f]{32}` ID for the decision event. Decision calls (`max_tokens=720`)
+require the header; post-action receipt-response calls (`max_tokens=240`) reject
+it. Missing, duplicate, comma-combined, whitespace-normalized, or otherwise
+noncanonical values are rejected before secret access, request-budget mutation,
+or upstream I/O. The broker rebuilds the external request from an allowlist and
+never forwards this internal header or ID upstream.
+
+After one successful decision upstream response has passed the existing bounded
+content validation, the broker adds an ephemeral top-level
+`sword_provider_attempt_receipt`. Its exact fields are `receipt_class`,
+`decision_event_id`, `upstream_attempt_count=1`, `retry_count=0`,
+`fallback_count=0`, and `attempt_terminal_class=upstream_response_accepted`.
+These counts describe only that call; the process request-budget counter is not
+evidence. Failed, rejected, malformed, receipt-response, compatibility, and
+generic local calls produce no positive provider-attempt receipt.
+
+For an accepted receipt-backed non-capability decision, Thought Core emits the
+reserved decision ID and the exact terminal suffix `agentic.decision`,
+`assistant.speech_delta`, `assistant.message`, `turn.completed`. The completion
+status equals the accepted decision kind (`conversation`, `clarification`, or
+`hold`). `turn.completed.data.provider_attempt_evidence` joins the decision and
+assistant message IDs with the fixed per-call counts and the class
+`official_broker_decision_response_deterministic_presentation`. This branch
+presents the decision response through existing deterministic persona handling
+without a second visible-phrase AI call. It does not claim byte equality with
+raw upstream output, and it does not carry this evidence into capability/action
+or post-action paths. Raw response, hash, model, URL, provider request ID,
+header, and error detail are excluded.
+
 The broker alone owns source class `thought-core-existing-env-v1`: it resolves
 the existing ignored `services/thought-core/.env` file and accepts exactly one
 non-empty `OPENAI_API_KEY`. The key never enters Thought Core, Launcher, a child

@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal, Protocol
 
+from .events import is_canonical_event_id
+
 
 # V1 keeps a compact, fixed-cost provider view: 24 entries leave nine slots
 # above the current 15-row catalog without adding pagination or dynamic growth.
@@ -14,6 +16,22 @@ MAX_CAPABILITY_VIEW_COUNT = 24
 MAX_CATALOG_ID_LENGTH = 96
 MAX_CATALOG_VERSION_LENGTH = 96
 MAX_RECEIPT_RESPONSE_LENGTH = 600
+PROVIDER_ATTEMPT_RECEIPT_CLASS = "sword.openai_broker.provider_attempt_receipt.v1"
+PROVIDER_ATTEMPT_TERMINAL_CLASS = "upstream_response_accepted"
+PROVIDER_AUTHORSHIP_EVIDENCE_CLASS = "sword.thought_core.provider_authorship.v1"
+PROVIDER_AUTHORSHIP_CLASS = (
+    "official_broker_decision_response_deterministic_presentation"
+)
+PROVIDER_ATTEMPT_RECEIPT_KEYS = frozenset(
+    {
+        "receipt_class",
+        "decision_event_id",
+        "upstream_attempt_count",
+        "retry_count",
+        "fallback_count",
+        "attempt_terminal_class",
+    }
+)
 AGENTIC_PREDECISION_CONTEXT_SCHEMA_VERSION = "agentic-predecision-context.v1"
 AGENTIC_PREDECISION_CONTEXT_SECTION_NAMES = (
     "environment_state",
@@ -164,6 +182,7 @@ class AgenticTurnProviderRequest:
     human_wish: str
     context_refs: Mapping[str, object]
     capability_view: AgenticCapabilityView
+    decision_event_id: str = ""
     agent_context: Mapping[str, object] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -175,6 +194,22 @@ class AgenticTurnProviderRequest:
 class AgenticTurnProvider(Protocol):
     def decide(self, request: AgenticTurnProviderRequest) -> object:
         """Return one untrusted AgenticTurnDecision candidate."""
+
+
+@dataclass(frozen=True)
+class AgenticProviderAttemptReceipt:
+    receipt_class: str
+    decision_event_id: str
+    upstream_attempt_count: int
+    retry_count: int
+    fallback_count: int
+    attempt_terminal_class: str
+
+
+@dataclass(frozen=True)
+class AgenticTurnProviderResult:
+    candidate: object
+    provider_attempt_receipt: AgenticProviderAttemptReceipt
 
 
 class AgenticReceiptResponseProvider(Protocol):
@@ -208,6 +243,50 @@ class UnavailableAgenticTurnProvider:
     def decide(self, request: AgenticTurnProviderRequest) -> object:
         del request
         raise AgenticTurnProviderUnavailable(self.reason)
+
+
+def validate_agentic_provider_attempt_receipt(
+    candidate: object,
+    *,
+    decision_event_id: str,
+) -> AgenticProviderAttemptReceipt | None:
+    if not is_canonical_event_id(decision_event_id):
+        return None
+    if type(candidate) is AgenticProviderAttemptReceipt:
+        values = {
+            "receipt_class": candidate.receipt_class,
+            "decision_event_id": candidate.decision_event_id,
+            "upstream_attempt_count": candidate.upstream_attempt_count,
+            "retry_count": candidate.retry_count,
+            "fallback_count": candidate.fallback_count,
+            "attempt_terminal_class": candidate.attempt_terminal_class,
+        }
+    elif type(candidate) is dict:
+        if set(candidate) != PROVIDER_ATTEMPT_RECEIPT_KEYS:
+            return None
+        values = candidate
+    else:
+        return None
+    if (
+        values.get("receipt_class") != PROVIDER_ATTEMPT_RECEIPT_CLASS
+        or values.get("decision_event_id") != decision_event_id
+        or type(values.get("upstream_attempt_count")) is not int
+        or values.get("upstream_attempt_count") != 1
+        or type(values.get("retry_count")) is not int
+        or values.get("retry_count") != 0
+        or type(values.get("fallback_count")) is not int
+        or values.get("fallback_count") != 0
+        or values.get("attempt_terminal_class") != PROVIDER_ATTEMPT_TERMINAL_CLASS
+    ):
+        return None
+    return AgenticProviderAttemptReceipt(
+        receipt_class=PROVIDER_ATTEMPT_RECEIPT_CLASS,
+        decision_event_id=decision_event_id,
+        upstream_attempt_count=1,
+        retry_count=0,
+        fallback_count=0,
+        attempt_terminal_class=PROVIDER_ATTEMPT_TERMINAL_CLASS,
+    )
 
 
 def validate_agentic_receipt_response(candidate: object) -> AgenticReceiptResponse | None:

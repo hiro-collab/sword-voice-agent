@@ -31,6 +31,8 @@ TURN_RESPONDER_BOUNDARY = "thought-core.turn_responder.v0"
 STRUCTURED_COMPLETION_BOUNDARY = "thought-core.structured_completion.v0"
 TRUSTED_LOCAL_HISTORY_CAPABILITY = "trusted_local_response_only_4x600_v0"
 MAX_STRUCTURED_COMPLETION_RESPONSE_BYTES = 64 * 1024
+SWORD_DECISION_EVENT_ID_HEADER = "X-Sword-Agentic-Decision-Event-Id"
+SWORD_PROVIDER_ATTEMPT_RECEIPT_KEY = "sword_provider_attempt_receipt"
 
 
 @dataclass(frozen=True)
@@ -76,8 +78,15 @@ class StructuredCompletion(Protocol):
         input_payload: Mapping[str, object],
         max_tokens: int,
         response_format: Mapping[str, object] | None = None,
+        decision_event_id: str | None = None,
     ) -> object:
         """Return one untrusted JSON value without a local fallback."""
+
+
+@dataclass(frozen=True)
+class StructuredCompletionResult:
+    value: object
+    provider_attempt_receipt: object
 
 
 class _RejectAllRedirects(request.HTTPRedirectHandler):
@@ -149,6 +158,7 @@ class OpenAICompatibleStructuredCompletion:
         input_payload: Mapping[str, object],
         max_tokens: int,
         response_format: Mapping[str, object] | None = None,
+        decision_event_id: str | None = None,
     ) -> object:
         """Request and parse one JSON object without retaining raw content."""
 
@@ -158,6 +168,13 @@ class OpenAICompatibleStructuredCompletion:
             or not isinstance(input_payload, Mapping)
             or type(max_tokens) is not int
             or max_tokens <= 0
+            or (
+                decision_event_id is not None
+                and (
+                    type(decision_event_id) is not str
+                    or re.fullmatch(r"evt_[0-9a-f]{32}", decision_event_id) is None
+                )
+            )
             or (
                 response_format is not None
                 and type(response_format) is not dict
@@ -205,6 +222,8 @@ class OpenAICompatibleStructuredCompletion:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+        if decision_event_id is not None:
+            headers[SWORD_DECISION_EVENT_ID_HEADER] = decision_event_id
         completion_request = request.Request(
             f"{self.base_url}/chat/completions",
             data=body,
@@ -236,7 +255,20 @@ class OpenAICompatibleStructuredCompletion:
             content = _extract_chat_completion_text(response_payload)
             if not content:
                 raise ValueError
-            return json.loads(content)
+            value = json.loads(content)
+            if decision_event_id is None:
+                return value
+            if set(response_payload) != {
+                "choices",
+                SWORD_PROVIDER_ATTEMPT_RECEIPT_KEY,
+            }:
+                raise ValueError
+            return StructuredCompletionResult(
+                value=value,
+                provider_attempt_receipt=response_payload[
+                    SWORD_PROVIDER_ATTEMPT_RECEIPT_KEY
+                ],
+            )
         except (UnicodeError, TypeError, ValueError, json.JSONDecodeError):
             raise StructuredCompletionInvalid(
                 "structured_completion_response_invalid"

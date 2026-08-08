@@ -33,6 +33,9 @@
 | Thought Core answer and turn metadata | Thought Core | status projection | `answer`, `turn_id`, `event_count` |
 | closed-loop `assistant_message_id` | Thought Core | turn events, output payloads, Event Journal v1 | `event_id` とは別 identity。`message_id` は同じ値を運ぶ legacy alias としてのみ残す |
 | closed-loop `event_id` | Thought Core | `closed-loop-correlation-feedback.v1` event | output adapter は発行せず、`POST /feedback/closed-loop` で Thought Core が発行する |
+| reserved agentic decision `event_id` | Thought Core `EventFactory` | process-local reservation, then the existing Thought event envelope | reservation does not consume `seq`; only one same-factory `emit_reserved` consumes it. Abandoned IDs create no event or sequence gap |
+| same-call provider attempt facts | OpenAI Broker | ephemeral `sword_provider_attempt_receipt` in the local broker response | exactly one successful canonical decision call owns attempt1/retry0/fallback0; the process request-budget counter is not evidence and the internal correlation header never leaves loopback |
+| provider authorship terminal join | Thought Core | `turn.completed.data.provider_attempt_evidence` | joins the broker receipt to the emitted decision and assistant IDs for one non-capability turn; it is not raw-output byte identity, browser visibility, durable Memory, or live-provider proof |
 | `journal_entry_id` / `ingest_offset` | Thought Core Event Journal | append-only local JSONL | durable append order。raw text、media、secret、provider payload、private path は保存しない |
 | active operation / recent output feedback projection | Operation/Output Projection | process-local derived state | Event Journal v1 から同じ reducer で live/replay 生成し、削除・再構築可能。外部 state authority や durable memory ではない |
 | semantic intent / capability selection / structured action proposal | Thought Core AI agent | turn events and validated proposal boundary | conversation, capability schemas, Environment State, memory, and optional Self Mirror are reasoning inputs; this is not execution permission |
@@ -96,6 +99,12 @@ Every v1 envelope/detail string crosses the same fixed secret-like matcher
 before the Journal boundary. Secret-like caller identifiers or detail values
 are rejected without mutation, append, projection, replay, or provider-context
 change. Accepted identifiers retain their exact value.
+
+The provider-attempt terminal join is an ephemeral turn-event contract. The
+current Event Journal summary does not persist its nested receipt value, so it
+must not be described as a durable provider receipt. A browser/API consumer may
+validate and project the fixed join for the active request, but it may not mint
+replacement IDs or upgrade source/fake-transport evidence to live authorship.
 
 ## Launcher Demo-Safe Settings
 
