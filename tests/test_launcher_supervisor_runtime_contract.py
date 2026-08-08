@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import TestCase
+import urllib.request
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -422,6 +426,164 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
                     combined,
                 )
 
+    def test_actual_launcher_saved_hash_matches_successful_operation_identity(self) -> None:
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "node_not_found")
+        temporary = tempfile.TemporaryDirectory()
+        temporary_root = Path(temporary.name)
+        state_dir = temporary_root / "state"
+        journal_dir = state_dir / "event-journal"
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.bind(("127.0.0.1", 0))
+        launcher_port = probe.getsockname()[1]
+        probe.close()
+        base_url = f"http://127.0.0.1:{launcher_port}"
+        environment = os.environ.copy()
+        environment["NODE_ENV"] = "test"
+        environment["HOME_CONTROL_LAUNCHER_TEST_FAKE_SUPERVISOR"] = (
+            "deterministic_v1"
+        )
+        environment.pop("HOME_CONTROL_LAUNCHER_TEST_FAKE_FAILURE", None)
+        environment.pop("HOME_CONTROL_LAUNCHER_ALLOW_REMOTE", None)
+        environment.pop("HOME_CONTROL_LAUNCHER_OPEN_BROWSER", None)
+        environment.pop("SWORD_LAUNCHER_N1_ACTUAL_TEST", None)
+        self.assertNotIn("HOME_CONTROL_LAUNCHER_ALLOW_REMOTE", environment)
+        self.assertNotIn("HOME_CONTROL_LAUNCHER_OPEN_BROWSER", environment)
+        launcher: subprocess.Popen[bytes] | None = None
+        operation_started = False
+        stop_response: dict[str, object] | None = None
+        stop_error: Exception | None = None
+        saved: dict[str, object] | None = None
+        started: dict[str, object] | None = None
+
+        def post_json(path: str, body: dict[str, object]) -> dict[str, object]:
+            request = urllib.request.Request(
+                f"{base_url}{path}",
+                data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=8) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        try:
+            launcher = subprocess.Popen(
+                [
+                    str(node),
+                    str(SERVER),
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(launcher_port),
+                    "--workspace",
+                    str(temporary_root),
+                    "--state-dir",
+                    str(state_dir),
+                ],
+                cwd=ROOT,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            listening = False
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                if launcher.poll() is not None:
+                    break
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
+                    client.settimeout(1)
+                    if client.connect_ex(("127.0.0.1", launcher_port)) == 0:
+                        listening = True
+                        break
+                time.sleep(0.05)
+            self.assertTrue(listening, "launcher_loopback_not_ready")
+
+            saved = post_json(
+                "/api/save-config",
+                {"profileId": PROFILE_ID, "options": {}},
+            )
+            saved_hash = saved["configIdentity"]["effective_config_sha256"]
+            started = post_json(
+                "/api/start",
+                {
+                    "profileId": PROFILE_ID,
+                    "expectedConfigSha256": saved_hash,
+                },
+            )
+            operation_started = started.get("result_class") == "ready"
+        finally:
+            if operation_started and launcher is not None and launcher.poll() is None:
+                try:
+                    stop_response = post_json(
+                        "/api/stop", {"profileId": PROFILE_ID}
+                    )
+                except Exception as error:
+                    stop_error = error
+            if launcher is not None and launcher.poll() is None:
+                launcher.terminate()
+                try:
+                    launcher.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    launcher.kill()
+                    launcher.wait(timeout=5)
+            temporary.cleanup()
+
+        self.assertIsNotNone(saved)
+        self.assertIsNotNone(started)
+        saved_hash = saved["configIdentity"]["effective_config_sha256"]
+        operation_hash = started["operation"]["effective_config_sha256"]
+        self.assertIsInstance(saved_hash, str)
+        self.assertIsNotNone(re.fullmatch(r"[a-f0-9]{64}", saved_hash))
+        self.assertEqual(started["result_class"], "ready")
+        self.assertEqual(operation_hash.encode("utf-8"), saved_hash.encode("utf-8"))
+        self.assertIsNone(stop_error, "launcher_stop_failed")
+        self.assertIsNotNone(stop_response)
+        self.assertEqual(stop_response["result_class"], "stopped")
+
+        serialized_responses = [
+            json.dumps(response, sort_keys=True, separators=(",", ":"))
+            for response in (saved, started, stop_response)
+        ]
+        path_fragments = {
+            str(temporary_root),
+            json.dumps(str(temporary_root))[1:-1],
+            str(journal_dir),
+            json.dumps(str(journal_dir))[1:-1],
+        }
+        environment_fragments = {
+            "THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED",
+            "THOUGHT_CORE_EVENT_JOURNAL_ENABLED",
+            "THOUGHT_CORE_EVENT_JOURNAL_DIR",
+            '"THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED":"1"',
+            '"THOUGHT_CORE_EVENT_JOURNAL_ENABLED":"1"',
+            (
+                '"THOUGHT_CORE_EVENT_JOURNAL_DIR":'
+                f'{json.dumps(str(journal_dir))}'
+            ),
+        }
+        private_fragments = {
+            '"environment"',
+            '"file_path"',
+            '"working_directory"',
+            '"arguments"',
+            '"powershell_path"',
+            '"private_plan"',
+            '"private_plan_sha256"',
+            '"commandLine"',
+            '"command_line"',
+            "test-private-plan",
+        }
+        for serialized in serialized_responses:
+            for fragment in path_fragments | environment_fragments | private_fragments:
+                self.assertNotIn(fragment, serialized)
+
+        if launcher is not None:
+            self.assertIsNotNone(launcher.poll(), "launcher_process_residue")
+        self.assertFalse(temporary_root.exists(), "launcher_temp_root_residue")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as rebound:
+            rebound.bind(("127.0.0.1", launcher_port))
+
     def test_private_plan_and_public_projection_keep_private_values_separate(self) -> None:
         runtime = read(RUNTIME)
         private_plan = read(PRIVATE_PLAN)
@@ -489,8 +651,28 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
         self.assertIn("...expected", probe)
         self.assertIn("descriptor.success_semantic_classes[0]", probe)
         self.assertIn("ready: true", probe)
+        fake_plan = between(fake_options, "services: [", "powershell_path:")
+        fake_environment = between(fake_plan, "environment: {", "}")
+        self.assertEqual(fake_plan.count("service_id: 'thought_core_api'"), 1)
+        self.assertEqual(fake_plan.count("service_id:"), 1)
+        self.assertEqual(
+            set(re.findall(r"^\s+([A-Z0-9_]+):", fake_environment, re.MULTILINE)),
+            {
+                "THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED",
+                "THOUGHT_CORE_EVENT_JOURNAL_ENABLED",
+                "THOUGHT_CORE_EVENT_JOURNAL_DIR",
+            },
+        )
+        self.assertIn(
+            "THOUGHT_CORE_EVENT_JOURNAL_DIR: expectedEventJournalDirectory(STATE_DIR)",
+            fake_environment,
+        )
+        self.assertNotIn("THOUGHT_CORE_EVENT_JOURNAL_PATH", fake_plan)
+        self.assertIn("expectedEventJournalDirectory", server)
+        self.assertIn("included_service_ids: authority.graph.services", fake_options)
         self.assertIn("probeExecutor: deterministicTestProbeExecutor", fake_options)
         self.assertIn("probeExecutorFactory: null", fake_options)
+        self.assertIn("operationIdFactory: (() =>", fake_options)
 
     def test_server_injects_probe_context_from_the_runtime_compiled_plan(self) -> None:
         server = read(SERVER)

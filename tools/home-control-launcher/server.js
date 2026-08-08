@@ -18,7 +18,8 @@ const {
   LauncherProbeRuntimeContext
 } = require('./launcher-probe-runtime-context')
 const {
-  deriveEffectiveConfigIdentity
+  deriveEffectiveConfigIdentity,
+  expectedEventJournalDirectory
 } = require('./launcher-private-service-plan')
 
 const args = process.argv.slice(2)
@@ -216,7 +217,14 @@ if (TEST_FAKE_SUPERVISOR) {
         profile_id: configIdentity.profile_id,
         effective_config_sha256: configIdentity.effective_config_sha256,
         camera_policy: configIdentity.camera_policy,
-        services: []
+        services: [{
+          service_id: 'thought_core_api',
+          environment: {
+            THOUGHT_CORE_CLOSED_LOOP_FEEDBACK_V1_ENABLED: '1',
+            THOUGHT_CORE_EVENT_JOURNAL_ENABLED: '1',
+            THOUGHT_CORE_EVENT_JOURNAL_DIR: expectedEventJournalDirectory(STATE_DIR)
+          }
+        }]
       },
       powershell_path: process.execPath,
       private_plan_sha256: '1'.repeat(64),
