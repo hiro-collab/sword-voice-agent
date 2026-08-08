@@ -294,6 +294,11 @@ const selectedEnvironment = (names, processEnvironment, dotEnv) => {
 
 const requireCanonicalOptions = (options, authority) => {
   if (!isPlainObject(options)) fail('private_plan_config_invalid')
+  if (typeof options.OpenAIBrokerRequestBudget !== 'number' ||
+      !Number.isSafeInteger(options.OpenAIBrokerRequestBudget) ||
+      options.OpenAIBrokerRequestBudget < 1 || options.OpenAIBrokerRequestBudget > 64) {
+    fail('private_plan_config_invalid')
+  }
   const fixedPorts = {
     HomeAssistantBridgePort: 'home_assistant_bridge',
     EnvironmentStatePort: 'environment_state_server',
@@ -360,6 +365,17 @@ const ownedPlan = ({ serviceId, filePath, args, cwd, environment, listenerPort, 
   clear_inherited_environment: true,
   listener_port: listenerPort
 })
+
+const assertOpenAIBrokerArguments = ({ arguments: args, listener_port: listenerPort }, expectedBudget = null) => {
+  if (!Array.isArray(args) || args.length !== 8 ||
+      args[0] !== 'run' || args[1] !== 'python' || args[2] !== '-m' ||
+      args[3] !== 'sword_voice_agent.apps.openai_broker' ||
+      args[4] !== '--port' || args[5] !== String(listenerPort) ||
+      args[6] !== '--request-budget' || !/^(?:[1-9]|[1-5][0-9]|6[0-4])$/u.test(args[7]) ||
+      (expectedBudget !== null && args[7] !== String(expectedBudget))) {
+    fail('private_plan_config_invalid')
+  }
+}
 
 const expectedEventJournalDirectory = (privateRuntimeRoot) => {
   if (typeof privateRuntimeRoot !== 'string' || !path.isAbsolute(privateRuntimeRoot) || privateRuntimeRoot.includes('\u0000')) {
@@ -600,16 +616,22 @@ const compilePrivateServicePlan = ({
       listenerPort: options.EnvironmentStatePort
     }))
   }
-  plans.push(
-    ownedPlan({
+  const openAIBrokerPlan = ownedPlan({
       serviceId: 'openai_provider_broker',
       filePath: uv,
-      args: ['run', 'python', '-m', 'sword_voice_agent.apps.openai_broker', '--port', options.OpenAIBrokerPort],
+      args: [
+        'run', 'python', '-m', 'sword_voice_agent.apps.openai_broker',
+        '--port', options.OpenAIBrokerPort,
+        '--request-budget', options.OpenAIBrokerRequestBudget
+      ],
       cwd: repo,
       environment: baseline,
       removeEnvironment: PROVIDER_ENVIRONMENT_NAMES,
       listenerPort: options.OpenAIBrokerPort
-    }),
+    })
+  assertOpenAIBrokerArguments(openAIBrokerPlan, options.OpenAIBrokerRequestBudget)
+  plans.push(
+    openAIBrokerPlan,
     ownedPlan({
       serviceId: 'thought_core_api',
       filePath: powershell,
@@ -835,6 +857,7 @@ const validatePersistedPlanDocument = ({ document, privateRuntimeRoot, configIde
         plan.listener_port !== Number(spec.port.loopback_port || 0)) {
       fail('private_plan_config_invalid')
     }
+    if (plan.service_id === 'openai_provider_broker') assertOpenAIBrokerArguments(plan)
     planIds.add(plan.service_id)
   }
   for (const spec of authority.graph.services) {

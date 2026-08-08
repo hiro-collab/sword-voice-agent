@@ -24,11 +24,6 @@ FROZEN_N0 = {
     "contracts/launcher/launcher-worker.v1.schema.json": "928b94669baa7ea9311d02fdc59ae73fb4727429138ee4f93e8fb657b76202c4",
     "contracts/launcher/launcher-reducer-vectors.v1.json": "379fc9998a943b98a56857bc494f5840c2662cfdce7ab5bfb270b678d78ccf1c",
     "contracts/launcher/generated/launcher-service-graph.standard.v1.binding.json": "3a74d2c620f55c8203b6a1e9cc66c631c1867d131d69362743fe73e300bd9229",
-    "ops/manifests/launcher-service-graph.standard.v1.json": "dc548b8ddd9528af3a6d10325f868af200fe3d85d1e88182cdcf32407506ea77",
-    "tools/home-control-launcher/launcher-supervisor-contract.js": "eed1faaa0d3b75c068f608ac6dd83ae26ffbcf997e0395d914b3de25b36a68f8",
-    "tools/home-control-launcher/launcher-supervisor-reducer.js": "4188cddeab48b712655c26efe0b8bd5d20c126fcd0df47d477ffdf3cd7562615",
-    "tools/home-control-launcher/launcher-operation-store.js": "fd4854c4696205142e366021b37bbbd6f8bf096ac31a8a3144010fb9f76d6d3c",
-    "tools/home-control-launcher/server.js": "2f9d6ca281374951241b69e7bd73a1bca1a250793ab7b2af5bd58978a514f219",
     "ops/scripts/home-control-stack/start-home-control-stack.ps1": "d5f1b2556e3a71520b5117eef8774326b70b05221064122dccc9c1296ac8d1ec",
     "ops/scripts/home-control-stack/stop-home-control-stack.ps1": "acdb237f13f76eabfd743f24619b8b5c90512a7f1149ab55232239d476e67619",
     "ops/scripts/home-control-stack/status-home-control-stack.ps1": "db2ed1f9e7f6e21785d4a081cc35db818d1fbbd4e9c2b7e88d40ddbb628eda44",
@@ -118,6 +113,9 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
         marker = '$SeenDispatches[[string]$request.dispatch_id] = $true'
         resolve = worker.index('$plan = Resolve-LauncherServicePlan `')
         latch = worker.index('$ActiveSupervisorGeneration = [long]$request.supervisor_generation')
+        plan_load = worker.index("$PlanSet = Read-LauncherPrivateServicePlans")
+        request_loop = worker.index("while ($true)")
+        self.assertLess(plan_load, request_loop)
         self.assertLess(resolve, latch)
         self.assertLess(latch, worker.index(marker))
 
@@ -226,7 +224,20 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
             services.append({
                 "service_id": service["service_id"],
                 "file_path": f"C:\\N1\\{executable_by_service[service['service_id']]}",
-                "arguments": [],
+                "arguments": (
+                    [
+                        "run",
+                        "python",
+                        "-m",
+                        "sword_voice_agent.apps.openai_broker",
+                        "--port",
+                        str(service["port"]["loopback_port"]),
+                        "--request-budget",
+                        "2",
+                    ]
+                    if service["service_id"] == "openai_provider_broker"
+                    else []
+                ),
                 "working_directory": "C:\\N1",
                 "environment": {},
                 "remove_environment": [],
@@ -291,6 +302,46 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
                 )
 
             self.assertEqual(run_reader(valid_command).returncode, 0)
+
+            broker_plan = next(
+                service
+                for service in services
+                if service["service_id"] == "openai_provider_broker"
+            )
+            valid_broker_arguments = list(broker_plan["arguments"])
+            invalid_broker_arguments = (
+                valid_broker_arguments[:-2],
+                valid_broker_arguments + ["--request-budget", "2"],
+                [
+                    "run", "python", "-m", "sword_voice_agent.apps.openai_broker",
+                    "--request-budget", "2", "--port", "18786",
+                ],
+                [
+                    "run", "python", "-m", "other.module", "--port", "18786",
+                    "--request-budget", "2",
+                ],
+                [
+                    "run", "python", "-m", "sword_voice_agent.apps.openai_broker",
+                    "--port", "018786", "--request-budget", "2",
+                ],
+                *(
+                    [
+                        "run", "python", "-m", "sword_voice_agent.apps.openai_broker",
+                        "--port", "18786", "--request-budget", budget,
+                    ]
+                    for budget in ("02", "+2", " 2", "2 ", "0", "65")
+                ),
+                valid_broker_arguments + ["--extra"],
+            )
+            for invalid_arguments in invalid_broker_arguments:
+                broker_plan["arguments"] = invalid_arguments
+                self.assertEqual(run_reader(reject_command).returncode, 0)
+            broker_plan["arguments"] = [
+                "run", "python", "-m", "sword_voice_agent.apps.openai_broker",
+                "--port", "18786", "--request-budget", "3",
+            ]
+            self.assertEqual(run_reader(valid_command).returncode, 0)
+            broker_plan["arguments"] = valid_broker_arguments
 
             document["services"][0]["clear_inherited_environment"] = False
             self.assertEqual(run_reader(reject_command).returncode, 0)

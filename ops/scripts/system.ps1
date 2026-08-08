@@ -20,6 +20,8 @@ param(
     [int]$ThoughtCorePort = 18787,
     [ValidateSet(18786, 18886)]
     [int]$OpenAIBrokerPort = 18786,
+    [ValidateRange(1, 64)]
+    [int]$OpenAIBrokerRequestBudget = 64,
     [ValidateSet("configured", "openai-compatible", "sword-openai-broker", "codex-cli", "codex-cli-luna")]
     [string]$ThoughtCoreLlmProvider = "configured",
     [string]$ThoughtCoreWatchAituberHttpTimeout = "",
@@ -164,6 +166,7 @@ $options = [ordered]@{
     ThoughtCoreHost = $ThoughtCoreHost
     ThoughtCorePort = $ThoughtCorePort
     OpenAIBrokerPort = $OpenAIBrokerPort
+    OpenAIBrokerRequestBudget = $OpenAIBrokerRequestBudget
     ThoughtCoreLlmProvider = $effectiveThoughtCoreProvider
     VoicevoxUrl = $VoicevoxUrl
     VoicevoxReadyTimeoutSeconds = $VoicevoxReadyTimeoutSeconds

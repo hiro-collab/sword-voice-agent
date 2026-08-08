@@ -934,6 +934,182 @@ $cases = @(
         self.assertIn("@device_(?:pnp|cm)_", server)
         self.assertIn("redactCameraSelectionInCommandText", server)
 
+    def test_openai_broker_request_budget_is_strict_saved_and_identity_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_root:
+            state_dir = Path(temporary_root) / "state"
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            probe.bind(("127.0.0.1", 0))
+            launcher_port = probe.getsockname()[1]
+            probe.close()
+            env = os.environ.copy()
+            env["NODE_ENV"] = "test"
+            env["HOME_CONTROL_LAUNCHER_TEST_FAKE_SUPERVISOR"] = (
+                "deterministic_v1"
+            )
+            env.pop("HOME_CONTROL_LAUNCHER_ALLOW_REMOTE", None)
+            env.pop("HOME_CONTROL_LAUNCHER_OPEN_BROWSER", None)
+            launcher = subprocess.Popen(
+                [
+                    "node",
+                    str(LAUNCHER_SERVER),
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(launcher_port),
+                    "--workspace",
+                    str(temporary_root),
+                    "--state-dir",
+                    str(state_dir),
+                ],
+                cwd=ROOT,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            base_url = f"http://127.0.0.1:{launcher_port}"
+
+            def get_state() -> dict:
+                with urllib.request.urlopen(f"{base_url}/api/state", timeout=5) as response:
+                    return json.loads(response.read().decode("utf-8"))
+
+            def post(path: str, body: dict) -> tuple[int, dict]:
+                request = urllib.request.Request(
+                    f"{base_url}{path}",
+                    data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        return response.status, json.loads(
+                            response.read().decode("utf-8")
+                        )
+                except HTTPError as error:
+                    return error.code, json.loads(error.read().decode("utf-8"))
+
+            try:
+                deadline = time.monotonic() + 8
+                state = None
+                while time.monotonic() < deadline:
+                    try:
+                        state = get_state()
+                        break
+                    except Exception:
+                        time.sleep(0.05)
+                self.assertIsNotNone(state)
+                self.assertEqual(
+                    state["config"]["options"]["OpenAIBrokerRequestBudget"], 64
+                )
+
+                hashes: dict[int, str] = {}
+                for budget in (64, 1, 2):
+                    options = {} if budget == 64 and not hashes else {
+                        "OpenAIBrokerRequestBudget": budget
+                    }
+                    status, saved = post(
+                        "/api/save-config",
+                        {"profileId": "thought-core-v0", "options": options},
+                    )
+                    self.assertEqual(status, 200)
+                    self.assertIs(
+                        type(saved["options"]["OpenAIBrokerRequestBudget"]), int
+                    )
+                    self.assertEqual(
+                        saved["options"]["OpenAIBrokerRequestBudget"], budget
+                    )
+                    hashes[budget] = saved["configIdentity"][
+                        "effective_config_sha256"
+                    ]
+                self.assertNotEqual(hashes[2], hashes[64])
+
+                config_path = state_dir / "launcher-config.json"
+                stable_bytes = config_path.read_bytes()
+                stable_record = json.loads(stable_bytes.decode("utf-8"))
+                self.assertEqual(
+                    stable_record["options"]["OpenAIBrokerRequestBudget"], 2
+                )
+                invalid_values = (
+                    "2",
+                    None,
+                    True,
+                    False,
+                    2.5,
+                    [],
+                    {},
+                    0,
+                    -1,
+                    65,
+                )
+                for invalid in invalid_values:
+                    with self.subTest(value=invalid):
+                        status, rejected = post(
+                            "/api/save-config",
+                            {
+                                "profileId": "thought-core-v0",
+                                "options": {
+                                    "OpenAIBrokerRequestBudget": invalid,
+                                },
+                            },
+                        )
+                        self.assertEqual(status, 400)
+                        self.assertEqual(
+                            rejected,
+                            {"error": "invalid_openai_broker_request_budget"},
+                        )
+                        self.assertEqual(config_path.read_bytes(), stable_bytes)
+                        current = get_state()
+                        self.assertEqual(
+                            current["config"]["options"][
+                                "OpenAIBrokerRequestBudget"
+                            ],
+                            2,
+                        )
+                        self.assertEqual(
+                            current["config"]["configIdentity"][
+                                "effective_config_sha256"
+                            ],
+                            hashes[2],
+                        )
+                        self.assertFalse(
+                            (state_dir / "launcher-private-plan.v1").exists()
+                        )
+                        self.assertFalse((state_dir / "pids.json").exists())
+                        self.assertFalse((state_dir / "launcher-state.json").exists())
+
+                for tampered_budget, expected_error in (
+                    ("2", "saved_config_identity_invalid"),
+                    (3, "saved_config_identity_mismatch"),
+                ):
+                    tampered = json.loads(stable_bytes.decode("utf-8"))
+                    tampered["options"]["OpenAIBrokerRequestBudget"] = tampered_budget
+                    config_path.write_text(json.dumps(tampered), encoding="utf-8")
+                    status, rejected = post(
+                        "/api/start",
+                        {
+                            "profileId": "thought-core-v0",
+                            "expectedConfigSha256": hashes[2],
+                        },
+                    )
+                    self.assertEqual(status, 409)
+                    self.assertEqual(rejected["error_class"], expected_error)
+                    self.assertFalse(
+                        (state_dir / "launcher-private-plan.v1").exists()
+                    )
+                    self.assertFalse((state_dir / "pids.json").exists())
+                    config_path.write_bytes(stable_bytes)
+            finally:
+                if launcher.poll() is None:
+                    launcher.terminate()
+                    try:
+                        launcher.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        launcher.kill()
+                        launcher.wait(timeout=5)
+                self.assertIsNotNone(launcher.poll())
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as rebound:
+                    rebound.bind(("127.0.0.1", launcher_port))
+
     def test_new_launcher_exposes_only_its_graph_profile_and_locks_active_config(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_root:
             state_dir = Path(temporary_root) / "state"

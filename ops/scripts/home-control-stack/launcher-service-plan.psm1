@@ -171,6 +171,26 @@ function Assert-LauncherAituberPlan {
     }
 }
 
+function Assert-LauncherOpenAIBrokerPlan {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][int]$ListenerPort
+    )
+    if (
+        $Arguments.Count -ne 8 -or
+        $Arguments[0] -cne "run" -or
+        $Arguments[1] -cne "python" -or
+        $Arguments[2] -cne "-m" -or
+        $Arguments[3] -cne "sword_voice_agent.apps.openai_broker" -or
+        $Arguments[4] -cne "--port" -or
+        $Arguments[5] -cne [string]$ListenerPort -or
+        $Arguments[6] -cne "--request-budget" -or
+        $Arguments[7] -cnotmatch "^(?:[1-9]|[1-5][0-9]|6[0-4])$"
+    ) {
+        throw "launcher_private_plan_invalid"
+    }
+}
+
 function ConvertTo-LauncherOwnedPlan {
     param(
         [Parameter(Mandatory = $true)][object]$Value,
@@ -211,6 +231,11 @@ function ConvertTo-LauncherOwnedPlan {
             -FilePath $filePath `
             -Arguments $arguments `
             -WorkingDirectory $workingDirectory `
+            -ListenerPort ([int]$listenerPort)
+    }
+    elseif ($serviceId -ceq "openai_provider_broker") {
+        Assert-LauncherOpenAIBrokerPlan `
+            -Arguments $arguments `
             -ListenerPort ([int]$listenerPort)
     }
     return [pscustomobject]@{

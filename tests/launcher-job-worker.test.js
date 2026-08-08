@@ -1012,7 +1012,16 @@ test('actual PowerShell worker fail-closes invalid plans and handles every route
     thought_core_watcher: powershellPath,
     touchdesigner_control_gui: process.execPath
   }
-  const writePlan = (name, excludedRequiredServiceId = null, includedOptionalServiceId = null) => {
+  const canonicalBrokerArguments = [
+    'run', 'python', '-m', 'sword_voice_agent.apps.openai_broker',
+    '--port', '18786', '--request-budget', '2'
+  ]
+  const writePlan = (
+    name,
+    excludedRequiredServiceId = null,
+    includedOptionalServiceId = null,
+    brokerArguments = canonicalBrokerArguments
+  ) => {
     const services = authority.graph.services
       .filter((service) => service.ownership === 'owned' && (
         (service.requirement === 'required' && service.service_id !== excludedRequiredServiceId) ||
@@ -1021,9 +1030,11 @@ test('actual PowerShell worker fail-closes invalid plans and handles every route
       .map((service) => ({
         service_id: service.service_id,
         file_path: executableByService[service.service_id],
-        arguments: service.service_id === 'aituber_kit'
-          ? [nextEntrypoint, 'dev', '--hostname', '127.0.0.1', '--port', String(service.port.loopback_port)]
-          : [],
+        arguments: service.service_id === 'openai_provider_broker'
+          ? brokerArguments
+          : service.service_id === 'aituber_kit'
+            ? [nextEntrypoint, 'dev', '--hostname', '127.0.0.1', '--port', String(service.port.loopback_port)]
+            : [],
         working_directory: service.service_id === 'aituber_kit' ? aituberRoot : root,
         environment: {},
         remove_environment: [],
@@ -1065,6 +1076,23 @@ test('actual PowerShell worker fail-closes invalid plans and handles every route
   }
   let afterPortOwners = null
   try {
+    const invalidBrokerTransport = makeTransport(writePlan(
+      'invalid-broker-plan',
+      null,
+      null,
+      canonicalBrokerArguments.slice(0, 6)
+    ))
+    const invalidBrokerClient = new LauncherJobWorkerClient({
+      authority,
+      transport: invalidBrokerTransport
+    })
+    await assert.rejects(
+      invalidBrokerClient.execute(requestFor('openai_provider_broker', 'start')),
+      (error) => error instanceof LauncherJobWorkerError && error.code === 'worker_transport_failed'
+    )
+    rememberWorkerPid(invalidBrokerTransport)
+    await invalidBrokerClient.close()
+
     const wrongAdapterByAction = {
       start: 'job_worker_job_close',
       probe: 'external_probe_only',
@@ -1146,7 +1174,7 @@ test('actual PowerShell worker fail-closes invalid plans and handles every route
     afterPortOwners = snapshotPortOwners()
     fs.rmSync(root, { recursive: true, force: true })
   }
-  assert.equal(ownedWorkerPids.length, 8)
+  assert.equal(ownedWorkerPids.length, 9)
   const exitedWorkerCount = ownedWorkerPids.filter((workerPid) => !pidAlive(workerPid)).length
   assert.equal(exitedWorkerCount, ownedWorkerPids.length)
   assert.deepEqual(afterPortOwners, beforePortOwners)
@@ -1221,7 +1249,9 @@ test('actual Windows Job worker contains descendants, survives foreign listeners
         file_path: service.service_id === 'touchdesigner_control_gui'
           ? process.execPath
           : path.join(root, executableByService[service.service_id]),
-        arguments: service.service_id === 'touchdesigner_control_gui' ? [targetScript] : [],
+        arguments: service.service_id === 'openai_provider_broker'
+          ? ['run', 'python', '-m', 'sword_voice_agent.apps.openai_broker', '--port', '18786', '--request-budget', '2']
+          : service.service_id === 'touchdesigner_control_gui' ? [targetScript] : [],
         working_directory: root,
         environment: explicitEnvironment,
         remove_environment: [],

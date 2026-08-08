@@ -242,17 +242,54 @@ class BrokerForwardingTests(unittest.TestCase):
         self.assertEqual(len(opener.calls), 1)
 
     def test_decision_correlation_is_per_call_and_not_process_budget_state(self) -> None:
-        broker, opener = _broker(request_budget=2)
+        secret_reads: list[Path] = []
+        opener = _Opener()
+        broker = OpenAIBroker(
+            BrokerConfig(secret_file=Path("synthetic.env"), request_budget=2),
+            secret_loader=lambda path: secret_reads.append(path) or PRIVATE_SENTINEL,
+            opener_factory=lambda: opener,
+        )
         event_ids = (DECISION_EVENT_ID, "evt_" + ("b" * 32))
         receipts = []
-        for event_id in event_ids:
-            result = broker.complete(
-                json.dumps(_payload()).encode("utf-8"),
-                decision_event_id=event_id,
+        raw = json.dumps(_payload(), separators=(",", ":")).encode("utf-8")
+        with patch(
+            "sword_voice_agent.apps.openai_broker.SingleAdmissionHTTPServer"
+        ) as server_type:
+            create_server(broker, BrokerConfig(request_budget=2))
+        handler_type = server_type.call_args.args[1]
+
+        def invoke(event_id: str) -> tuple[int, dict[str, object]]:
+            headers = Message()
+            headers["Content-Type"] = "application/json"
+            headers["Content-Length"] = str(len(raw))
+            headers[DECISION_EVENT_ID_HEADER] = event_id
+            handler = object.__new__(handler_type)
+            handler.path = COMPLETIONS_PATH
+            handler.headers = headers
+            handler.rfile = _BodyReader(raw)
+            handler.connection = Mock()
+            responses: list[tuple[int, dict[str, object]]] = []
+            handler._send = lambda status, payload: responses.append(  # type: ignore[method-assign]
+                (status, dict(payload))
             )
+            handler.do_POST()
+            self.assertEqual(len(responses), 1)
+            return responses[0]
+
+        for event_id in event_ids:
+            status, result = invoke(event_id)
+            self.assertEqual(status, 200)
             receipts.append(result[PROVIDER_ATTEMPT_RECEIPT_KEY])
 
+        exhausted_status, exhausted = invoke("evt_" + ("c" * 32))
+        self.assertEqual(exhausted_status, 503)
+        self.assertEqual(
+            exhausted, {"error": {"code": "request_budget_exhausted"}}
+        )
+        self.assertNotIn(PROVIDER_ATTEMPT_RECEIPT_KEY, exhausted)
+
         self.assertEqual(len(opener.calls), 2)
+        self.assertEqual(len(secret_reads), 2)
         self.assertEqual(broker._request_count, 2)
         for event_id, receipt in zip(event_ids, receipts, strict=True):
             self.assertEqual(

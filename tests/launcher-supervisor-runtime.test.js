@@ -316,6 +316,7 @@ const canonicalOptions = {
   ThoughtCoreHost: '127.0.0.1',
   ThoughtCorePort: 18787,
   OpenAIBrokerPort: 18786,
+  OpenAIBrokerRequestBudget: 64,
   ThoughtCoreLlmProvider: 'sword-openai-broker',
   VoicevoxUrl: 'http://127.0.0.1:50021',
   VoicevoxReadyTimeoutSeconds: 45,
@@ -1636,13 +1637,13 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
     fs.mkdirSync(executableRoot, { recursive: true })
     const executables = Object.fromEntries(['uv', 'node', 'pwsh'].map((name) => [name, makeFile(`bin/${name}.exe`)]))
     const effectiveOptions = { ...canonicalOptions, HomeControlConfigPath: liveConfig }
-    const compiled = compilePrivateServicePlan({
+    const compileForOptions = (options, privateRuntimeRoot = path.join(workspace, 'state')) => compilePrivateServicePlan({
       repositoryRoot: ROOT,
       workspaceRoot: workspace,
-      privateRuntimeRoot: path.join(workspace, 'state'),
+      privateRuntimeRoot,
       profileId: 'thought-core-v0',
-      options: effectiveOptions,
-      configIdentity: configIdentityFor(effectiveOptions),
+      options,
+      configIdentity: configIdentityFor(options),
       authority,
       processEnvironment: {
         PATH: executableRoot,
@@ -1661,6 +1662,12 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
       verifyWorkerExecutable: verifyTestWorkerExecutable,
       nonceFactory: () => '00112233445566778899aabbccddeeff'
     })
+    const compiled = compileForOptions(effectiveOptions)
+    const budget2Options = { ...effectiveOptions, OpenAIBrokerRequestBudget: 2 }
+    const budget2Compiled = compileForOptions(budget2Options)
+    const budget3Options = { ...effectiveOptions, OpenAIBrokerRequestBudget: 3 }
+    const budget3RuntimeRoot = path.join(workspace, 'state-budget3')
+    const budget3Compiled = compileForOptions(budget3Options, budget3RuntimeRoot)
     const privateRuntimeRoot = path.join(workspace, 'state')
     const planPath = writePrivateServicePlan(compiled, privateRuntimeRoot)
     const recovered = readPrivateServicePlan({
@@ -1681,6 +1688,106 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
     const canonicalBytes = fs.readFileSync(planPath)
     assert.equal(canonicalBytes.toString('utf8'), serializePrivateServicePlan(compiled.document))
     assert.equal(crypto.createHash('sha256').update(canonicalBytes).digest('hex'), compiled.private_plan_sha256)
+    const brokerPlan = compiled.document.services.find((service) => service.service_id === 'openai_provider_broker')
+    assert.deepEqual(brokerPlan.arguments, [
+      'run', 'python', '-m', 'sword_voice_agent.apps.openai_broker',
+      '--port', '18786', '--request-budget', '64'
+    ])
+    assert.deepEqual(
+      budget2Compiled.document.services.find((service) => service.service_id === 'openai_provider_broker').arguments,
+      ['run', 'python', '-m', 'sword_voice_agent.apps.openai_broker', '--port', '18786', '--request-budget', '2']
+    )
+    assert.deepEqual(
+      budget3Compiled.document.services.find((service) => service.service_id === 'openai_provider_broker').arguments,
+      ['run', 'python', '-m', 'sword_voice_agent.apps.openai_broker', '--port', '18786', '--request-budget', '3']
+    )
+    assert.notEqual(
+      configIdentityFor(budget2Options).effective_config_sha256,
+      configIdentityFor(effectiveOptions).effective_config_sha256
+    )
+    assert.notEqual(budget2Compiled.private_plan_sha256, compiled.private_plan_sha256)
+    assert.equal(
+      budget3Compiled.document.effective_config_sha256,
+      configIdentityFor(budget3Options).effective_config_sha256
+    )
+    assert.throws(
+      () => compilePrivateServicePlan({
+        repositoryRoot: ROOT,
+        workspaceRoot: workspace,
+        privateRuntimeRoot: path.join(workspace, 'state'),
+        profileId: 'thought-core-v0',
+        options: budget3Options,
+        configIdentity: configIdentityFor(budget2Options),
+        authority,
+        processEnvironment: {
+          PATH: executableRoot,
+          SYSTEMROOT: 'C:\\Windows',
+          TEMP: workspace,
+          TMP: workspace,
+          HOME_CONTROL_API_TOKEN: '0123456789abcdef',
+          ENVIRONMENT_API_TOKEN: 'fedcba9876543210'
+        },
+        resolveExecutable: (name) => executables[name],
+        verifyWorkerExecutable: verifyTestWorkerExecutable,
+        nonceFactory: () => '00112233445566778899aabbccddeeff'
+      }),
+      (error) => error?.code === 'private_plan_config_invalid'
+    )
+    writePrivateServicePlan(budget3Compiled, budget3RuntimeRoot)
+    const recoveredBudget3 = readPrivateServicePlan({
+      privateRuntimeRoot: budget3RuntimeRoot,
+      configIdentity: configIdentityFor(budget3Options),
+      planIdentity: {
+        private_plan_sha256: budget3Compiled.private_plan_sha256,
+        worker_executable_class: budget3Compiled.worker_executable_class,
+        worker_executable_sha256: budget3Compiled.worker_executable_sha256
+      },
+      verifyWorkerExecutable: verifyTestWorkerExecutable,
+      authority
+    })
+    assert.deepEqual(
+      recoveredBudget3.document.services.find((service) => service.service_id === 'openai_provider_broker').arguments,
+      ['run', 'python', '-m', 'sword_voice_agent.apps.openai_broker', '--port', '18786', '--request-budget', '3']
+    )
+    for (const invalidBudget of ['2', null, true, false, 2.5, [], {}, 0, -1, 65]) {
+      assert.throws(
+        () => configIdentityFor({ ...effectiveOptions, OpenAIBrokerRequestBudget: invalidBudget }),
+        (error) => error?.code === 'private_plan_config_invalid'
+      )
+    }
+    const invalidBrokerArguments = [
+      ['run', 'python', '-m', 'sword_voice_agent.apps.openai_broker', '--port', '18786'],
+      [...brokerPlan.arguments, '--request-budget', '64'],
+      ['run', 'python', '-m', 'sword_voice_agent.apps.openai_broker', '--request-budget', '64', '--port', '18786'],
+      ['run', 'python', '-m', 'other.module', '--port', '18786', '--request-budget', '64'],
+      ['run', 'python', '-m', 'sword_voice_agent.apps.openai_broker', '--port', '018786', '--request-budget', '64'],
+      ...['02', '+2', ' 2', '2 ', '0', '65'].map((budget) => [
+        'run', 'python', '-m', 'sword_voice_agent.apps.openai_broker',
+        '--port', '18786', '--request-budget', budget
+      ]),
+      [...brokerPlan.arguments, '--extra']
+    ]
+    for (const argumentsValue of invalidBrokerArguments) {
+      const invalidDocument = JSON.parse(JSON.stringify(compiled.document))
+      invalidDocument.services.find((service) => service.service_id === 'openai_provider_broker').arguments = argumentsValue
+      const invalidBytes = Buffer.from(serializePrivateServicePlan(invalidDocument), 'utf8')
+      fs.writeFileSync(planPath, invalidBytes)
+      assert.throws(
+        () => readPrivateServicePlan({
+          privateRuntimeRoot,
+          configIdentity: configIdentityFor(effectiveOptions),
+          planIdentity: {
+            private_plan_sha256: crypto.createHash('sha256').update(invalidBytes).digest('hex'),
+            worker_executable_class: compiled.worker_executable_class,
+            worker_executable_sha256: compiled.worker_executable_sha256
+          },
+          verifyWorkerExecutable: verifyTestWorkerExecutable,
+          authority
+        }),
+        (error) => error?.code === 'private_plan_config_invalid'
+      )
+    }
+    fs.writeFileSync(planPath, canonicalBytes)
     const driftedPlan = JSON.parse(fs.readFileSync(planPath, 'utf8'))
     driftedPlan.effective_config_sha256 = 'f'.repeat(64)
     fs.writeFileSync(planPath, `${JSON.stringify(driftedPlan)}\n`, 'utf8')

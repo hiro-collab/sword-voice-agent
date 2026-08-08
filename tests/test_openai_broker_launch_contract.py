@@ -14,6 +14,8 @@ STACK_STOP = ROOT / "ops" / "scripts" / "home-control-stack" / "stop-home-contro
 SYSTEM = ROOT / "ops" / "scripts" / "system.ps1"
 THOUGHT_CORE_START = ROOT / "scripts" / "start-thought-core.ps1"
 LAUNCHER = ROOT / "tools" / "home-control-launcher" / "server.js"
+PRIVATE_PLAN = ROOT / "tools" / "home-control-launcher" / "launcher-private-service-plan.js"
+PLAN_READER = ROOT / "ops" / "scripts" / "home-control-stack" / "launcher-service-plan.psm1"
 
 
 class OpenAIBrokerLaunchContractTest(TestCase):
@@ -115,13 +117,17 @@ try {
         system = SYSTEM.read_text(encoding="utf-8")
         self.assertIn("'sword-openai-broker'", launcher)
         self.assertIn('"sword-openai-broker"', system)
-        self.assertIn('"-ThoughtCoreLlmProvider"', system)
-        self.assertIn('Invoke-StackScript -ScriptName "start-home-control-stack.ps1"', system)
+        self.assertIn('"$baseUrl/api/save-config"', system)
+        self.assertIn('"$baseUrl/api/start"', system)
+        self.assertIn("expectedConfigSha256 = $expectedConfigSha256", system)
+        self.assertNotIn("Invoke-StackScript", system)
+        self.assertNotIn("start-home-control-stack.ps1", system)
 
     def test_broker_port_is_mode_derived_and_propagated_end_to_end(self) -> None:
         launcher = LAUNCHER.read_text(encoding="utf-8")
         system = SYSTEM.read_text(encoding="utf-8")
-        stack = STACK_START.read_text(encoding="utf-8")
+        private_plan = PRIVATE_PLAN.read_text(encoding="utf-8")
+        plan_reader = PLAN_READER.read_text(encoding="utf-8")
 
         self.assertIn("const OPENAI_BROKER_PORT_BY_MODE = {", launcher)
         self.assertIn("manifest_default: 18786", launcher)
@@ -139,29 +145,22 @@ try {
         self.assertIn("options: persistedOptions", launcher)
         self.assertLess(
             launcher.index("invalid_openai_broker_port"),
-            launcher.index("const buildSystemStartArgs"),
+            launcher.index("const saveConfig"),
         )
-        self.assertIn(
-            "addSupportedParam(SYSTEM_SCRIPT, stackArgs, 'OpenAIBrokerPort', options.OpenAIBrokerPort)",
-            launcher,
-        )
-
         self.assertIn("[ValidateSet(18786, 18886)]", system)
         self.assertIn("[int]$OpenAIBrokerPort = 18786", system)
-        self.assertIn('"-OpenAIBrokerPort"', system)
-        self.assertIn("[ValidateSet(18786, 18886)]", stack)
-        self.assertIn("[int]$OpenAIBrokerPort = 18786", stack)
+        self.assertIn("OpenAIBrokerPort = $OpenAIBrokerPort", system)
+        self.assertIn("[ValidateRange(1, 64)]", system)
+        self.assertIn("[int]$OpenAIBrokerRequestBudget = 64", system)
         self.assertIn(
-            '$OpenAIBrokerBaseUrl = "http://{0}:{1}/v1" -f $OpenAIBrokerHost, $OpenAIBrokerPort',
-            stack,
+            "OpenAIBrokerRequestBudget = $OpenAIBrokerRequestBudget", system
         )
-        self.assertIn(
-            '$OpenAIBrokerHealthUrl = "http://{0}:{1}/health" -f $OpenAIBrokerHost, $OpenAIBrokerPort',
-            stack,
-        )
-        self.assertIn("Port = $OpenAIBrokerPort", stack)
-        self.assertIn('"--port", [string]$OpenAIBrokerPort', stack)
-        self.assertIn("Get-ListeningPortOwner -Port $OpenAIBrokerPort", stack)
+        self.assertIn("OpenAIBrokerRequestBudget: 64", launcher)
+        self.assertIn("invalid_openai_broker_request_budget", launcher)
+        self.assertIn("'--request-budget', options.OpenAIBrokerRequestBudget", private_plan)
+        self.assertIn("args.length !== 8", private_plan)
+        self.assertIn('$Arguments.Count -ne 8', plan_reader)
+        self.assertIn('$Arguments[6] -cne "--request-budget"', plan_reader)
 
         broker_ports = {
             mode: int(port)
@@ -190,7 +189,7 @@ try {
         validation_index = launcher.index(validation)
         self.assertLess(validation_index, launcher.index("const OPENAI_BROKER_PORT ="))
         self.assertLess(validation_index, launcher.index("const DEFAULT_OPTIONS"))
-        self.assertLess(validation_index, launcher.index("const buildSystemStartArgs"))
+        self.assertLess(validation_index, launcher.index("const normalizeOptions"))
         self.assertLess(validation_index, launcher.index("server.listen"))
 
         for mode_source in ("cli", "environment"):

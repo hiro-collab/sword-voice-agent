@@ -320,6 +320,7 @@ const DEFAULT_OPTIONS = {
   ThoughtCoreHost: '127.0.0.1',
   ThoughtCorePort: 18787,
   OpenAIBrokerPort: OPENAI_BROKER_PORT,
+  OpenAIBrokerRequestBudget: 64,
   ThoughtCoreLlmProvider: 'configured',
   VoicevoxReadyTimeoutSeconds: 45,
   MediapipeReadyTimeoutSeconds: 90,
@@ -374,6 +375,7 @@ const NUMBER_FIELDS = new Set([
   'TouchDesignerGuiPort',
   'ThoughtCorePort',
   'OpenAIBrokerPort',
+  'OpenAIBrokerRequestBudget',
   'VoicevoxReadyTimeoutSeconds',
   'MediapipeReadyTimeoutSeconds',
   'MediapipeCameraWidth',
@@ -396,6 +398,7 @@ const STRING_FIELDS = new Set([
 ])
 
 const NUMBER_LIMITS = {
+  OpenAIBrokerRequestBudget: { min: 1, max: 64 },
   MediapipeCameraWidth: { min: 160, max: 3840 },
   MediapipeCameraHeight: { min: 120, max: 2160 },
   MediapipeCameraFps: { min: 1, max: 120 }
@@ -1055,6 +1058,13 @@ const normalizeOptions = (profileId, overrides = {}) => {
   for (const [key, defaultValue] of Object.entries(DEFAULT_OPTIONS)) {
     const value = base[key]
     if (NUMBER_FIELDS.has(key)) {
+      if (key === 'OpenAIBrokerRequestBudget') {
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 64) {
+          throw new Error('invalid_openai_broker_request_budget')
+        }
+        normalized[key] = value
+        continue
+      }
       const numberValue = Number(value)
       const limits = NUMBER_LIMITS[key]
       const withinLimits = !limits || (
@@ -1557,7 +1567,12 @@ const resolveSavedStartConfig = (profileId, expectedConfigSha256) => {
       !['required', 'camera_excluded_by_profile'].includes(saved.cameraPolicy)) {
     return { ok: false, error_class: 'saved_config_identity_invalid' }
   }
-  const effectiveOptions = normalizeOptions(profileId, saved.options || {})
+  let effectiveOptions
+  try {
+    effectiveOptions = normalizeOptions(profileId, saved.options || {})
+  } catch {
+    return { ok: false, error_class: 'saved_config_identity_invalid' }
+  }
   let configIdentity
   try {
     configIdentity = deriveEffectiveConfigIdentity({
@@ -4322,10 +4337,19 @@ const handleApi = async (request, response, requestUrl) => {
       sendJson(response, 409, configLock)
       return
     }
-    const requestedOptions = includeLocalCameraSelection
-      ? body.options || {}
-      : withPreservedLocalCameraSelection(profileId, body.options || {})
-    const options = normalizeOptions(profileId, requestedOptions)
+    let options
+    try {
+      const requestedOptions = includeLocalCameraSelection
+        ? body.options || {}
+        : withPreservedLocalCameraSelection(profileId, body.options || {})
+      options = normalizeOptions(profileId, requestedOptions)
+    } catch (error) {
+      if (error?.message === 'invalid_openai_broker_request_budget') {
+        sendJson(response, 400, { error: 'invalid_openai_broker_request_budget' })
+        return
+      }
+      throw error
+    }
     const saved = saveConfig(profileId, options)
     const demoSafeSettings = body.demoSettings
       ? saveDemoSafeSettings(body.demoSettings)

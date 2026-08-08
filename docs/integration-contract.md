@@ -74,6 +74,16 @@ the caller must forward the returned hash unchanged and must not resend options,
 recompute the hash, or fall back when the saved identity is invalid. The
 `system.ps1 status` and `system.ps1 stop` request contracts are unchanged.
 
+`options.OpenAIBrokerRequestBudget` is an integer-only canonical option in the
+range `1..64`; boolean, string, null, fractional, aggregate, zero, negative, and
+larger values are rejected without coercion. Missing input defaults to numeric
+`64`, while bounded Checkpoint A uses explicit numeric `2`. The normalized value
+is persisted and included in `effective_config_sha256`. Invalid save attempts
+return HTTP 400 with only
+`{"error":"invalid_openai_broker_request_budget"}` and do not replace the saved
+configuration, identity, private plan, or worker state. `/api/start` continues
+to accept only `{profileId, expectedConfigSha256}`.
+
 The Launcher persists only normalized local override fields into its gitignored
 state directory. It ignores unknown demo row ids and re-normalizes values
 against tracked defaults. API consumers must treat `demoSafeSettings` as local
@@ -296,6 +306,7 @@ remain byte-for-byte intact.
 | Model | Fixed `gpt-4o-mini` for the first connectivity proof |
 | Input | Exactly system and user messages, `temperature: 0`, `response_format: {"type":"json_object"}`, and `max_tokens` exactly `720` or `240` |
 | Bounds | Inbound <=32 KiB; system <=12 KiB; user <=16 KiB; upstream <=64 KiB; timeout <=12 seconds; concurrency one; queue zero; retry zero |
+| Request budget | The canonical Launcher option defaults to `64`; the private broker plan passes exact `--request-budget <1..64>`. Checkpoint A selects `2`. The third valid request under budget two fails with safe HTTP 503 `request_budget_exhausted` before secret loading or upstream I/O. This cumulative process counter is never provider-authorship evidence. |
 | HTTP admission | One synchronous handler with one queued connection; incremental bounded one-raw-read `read1` chunks under a monotonic total body deadline <=12 seconds; reject `Transfer-Encoding`, duplicate/ambiguous `Content-Length`, and incomplete bodies |
 
 Canonical agentic-decision calls add exactly one internal

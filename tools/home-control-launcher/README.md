@@ -81,6 +81,13 @@ for that already-running Launcher API. It does not execute or fall back to the
 legacy start/status/stop scripts. Those scripts remain tracked as unreachable
 reference until their separately reviewed retirement.
 
+The saved canonical option `OpenAIBrokerRequestBudget` is numeric-only `1..64`
+and defaults to `64`. `system.ps1` sends that JSON number during `save-config`;
+Checkpoint A explicitly selects `2`. Invalid values return the fixed safe HTTP
+400 payload and leave saved config, hashes, private plan, and worker state
+unchanged. The option participates in the effective config hash, while Start
+still carries only the saved hash.
+
 ## Launcher Supervisor Node N0
 
 The repository now also contains the dependency-free Node contract/reducer
@@ -163,6 +170,11 @@ cutting the current Launcher over to it:
   VOICEVOX remains external probe-only. Owned children receive only the
   per-service environment explicitly present in that private plan; broad
   inheritance from the Launcher process is rejected.
+  The OpenAI broker plan is additionally sealed as exactly
+  `run python -m sword_voice_agent.apps.openai_broker --port <canonical-port>
+  --request-budget <canonical-1..64>`. Both the persisted-plan JavaScript reader
+  and the PowerShell reader reject missing, duplicate, reordered, extra, or
+  noncanonical tokens before child creation.
 - `launcher-job-worker.ps1` is a dumb Windows OS adapter. It creates each owned
   process suspended, assigns it to a per-service Job Object configured with
   `KILL_ON_JOB_CLOSE`, and only then resumes the process. Listener readiness is

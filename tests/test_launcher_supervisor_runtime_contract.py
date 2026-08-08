@@ -40,7 +40,9 @@ def between(source: str, start: str, end: str) -> str:
 
 class LauncherSupervisorRuntimeContractTest(TestCase):
     def run_system_start(
-        self, save_response: object
+        self,
+        save_response: object,
+        request_budget: int | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], list[dict[str, object]]]:
         powershell = shutil.which("pwsh")
         self.assertIsNotNone(powershell, "pwsh_not_found")
@@ -109,6 +111,10 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
                 "-MediapipeCameraName",
                 PRIVATE_OPTION_SENTINEL,
             ]
+            if request_budget is not None:
+                command.extend(
+                    ["-OpenAIBrokerRequestBudget", str(request_budget)]
+                )
             environment = os.environ.copy()
             environment.pop("SWORD_LAUNCHER_COMPAT_CLIENT_ACTIVE", None)
             process = subprocess.Popen(
@@ -279,6 +285,11 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
         self.assertIn('"$baseUrl/api/save-config"', system)
         self.assertIn("expectedConfigSha256 = $expectedConfigSha256", system)
         self.assertIn("saved_config_identity_invalid", system)
+        self.assertIn("[ValidateRange(1, 64)]", system)
+        self.assertIn("[int]$OpenAIBrokerRequestBudget = 64", system)
+        self.assertIn(
+            "OpenAIBrokerRequestBudget = $OpenAIBrokerRequestBudget", system
+        )
         self.assertIn("SWORD_LAUNCHER_COMPAT_CLIENT_ACTIVE", system)
         self.assertIn("launcher_api_unavailable", system)
         self.assertIn('$baseUri.Scheme -cne "http"', system)
@@ -306,6 +317,8 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
         self.assertEqual(set(save_body), {"profileId", "options"})
         self.assertEqual(save_body["profileId"], PROFILE_ID)
         self.assertTrue(save_body["options"]["SkipTouchDesignerGui"])
+        self.assertIs(type(save_body["options"]["OpenAIBrokerRequestBudget"]), int)
+        self.assertEqual(save_body["options"]["OpenAIBrokerRequestBudget"], 64)
         self.assertEqual(
             save_body["options"]["MediapipeCameraName"], PRIVATE_OPTION_SENTINEL
         )
@@ -327,6 +340,33 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
         self.assertNotIn(
             json.dumps(save_body, separators=(",", ":")), combined
         )
+
+    def test_system_start_sends_explicit_numeric_budget_and_rejects_out_of_range_before_http(
+        self,
+    ) -> None:
+        completed, requests = self.run_system_start(
+            self.valid_save_response(), request_budget=2
+        )
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(
+            [request["path"] for request in requests],
+            ["/api/save-config", "/api/start"],
+        )
+        budget = requests[0]["body"]["options"]["OpenAIBrokerRequestBudget"]
+        self.assertIs(type(budget), int)
+        self.assertEqual(budget, 2)
+        self.assertEqual(
+            set(requests[1]["body"]), {"profileId", "expectedConfigSha256"}
+        )
+
+        for invalid_budget in (0, 65):
+            with self.subTest(budget=invalid_budget):
+                rejected, rejected_requests = self.run_system_start(
+                    self.valid_save_response(), request_budget=invalid_budget
+                )
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertEqual(rejected_requests, [])
+                self.assertNotIn(PRIVATE_OPTION_SENTINEL, rejected.stdout + rejected.stderr)
 
     def test_system_start_rejects_invalid_saved_config_identity_before_start(self) -> None:
         missing = object()
