@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict')
 const crypto = require('node:crypto')
-const { spawn: spawnChild } = require('node:child_process')
+const { spawn: spawnChild, spawnSync } = require('node:child_process')
 const { EventEmitter } = require('node:events')
 const fs = require('node:fs')
 const net = require('node:net')
@@ -497,9 +497,10 @@ test('lease-bound client rejects old generation unknown service and forged same-
 test('PowerShell worker resolves service membership and adapter before latching its generation lease fence', () => {
   const source = fs.readFileSync(path.join(ROOT, 'ops', 'scripts', 'home-control-stack', 'launcher-job-worker.ps1'), 'utf8')
   const resolveIndex = source.indexOf('$plan = Resolve-LauncherServicePlan')
+  const adapterIndex = source.indexOf('if (-not (Test-LauncherResolvedAdapter', resolveIndex)
   const latchIndex = source.indexOf('$ActiveSupervisorGeneration = [long]$request.supervisor_generation')
   const dispatchIndex = source.indexOf('$SeenDispatches[[string]$request.dispatch_id] = $true')
-  assert.ok(resolveIndex > 0 && latchIndex > resolveIndex && dispatchIndex > latchIndex)
+  assert.ok(resolveIndex > 0 && adapterIndex > resolveIndex && latchIndex > adapterIndex && dispatchIndex > latchIndex)
   assert.match(source, /SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF/u)
   assert.match(source, /\[string\]\$Request\.authority_lease_proof -cne \$ExpectedAuthorityLeaseProof/u)
 })
@@ -923,6 +924,242 @@ test('stdin callback error and synchronous write failure terminalize the worker 
   }
 })
 
+test('PowerShell launcher descriptors match every canonical graph and binding field', (context) => {
+  if (process.platform !== 'win32') return context.skip('windows_worker_only')
+  const powershellPath = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
+  const planModulePath = path.join(ROOT, 'ops', 'scripts', 'home-control-stack', 'launcher-service-plan.psm1')
+  const command = 'Import-Module $args[0] -Force;ConvertTo-Json -InputObject @(Get-LauncherServiceIds | ForEach-Object { Get-LauncherServiceDescriptor -ServiceId $_ }) -Compress'
+  const completed = spawnSync(powershellPath, [
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-CommandWithArgs', command, planModulePath
+  ], { cwd: ROOT, encoding: 'utf8', windowsHide: true, timeout: 30000 })
+  assert.equal(completed.status, 0, 'launcher_descriptor_query_failed')
+  const descriptors = JSON.parse(completed.stdout.trim())
+  assert.equal(descriptors.length, authority.graph.services.length)
+  const descriptorsById = new Map(descriptors.map((descriptor) => [descriptor.ServiceId, descriptor]))
+  for (const service of authority.graph.services) {
+    const descriptor = descriptorsById.get(service.service_id)
+    assert.ok(descriptor)
+    assert.deepEqual({
+      service_id: descriptor.ServiceId,
+      requirement: descriptor.Requirement,
+      ownership: descriptor.Ownership,
+      port: descriptor.DefaultListenerPort
+    }, {
+      service_id: service.service_id,
+      requirement: service.requirement,
+      ownership: service.ownership,
+      port: service.port.loopback_port || 0
+    })
+  }
+  for (const requirement of ['required', 'optional', 'external']) {
+    const bindingIds = [...authority.bindingDocument.binding[`${requirement}_service_ids`]].sort()
+    const graphIds = authority.graph.services
+      .filter((service) => service.requirement === requirement)
+      .map((service) => service.service_id)
+      .sort()
+    assert.deepEqual(bindingIds, graphIds)
+  }
+})
+
+test('actual PowerShell worker fail-closes invalid plans and handles every routed optional null plan without service children', { timeout: 60000 }, async (context) => {
+  if (process.platform !== 'win32') return context.skip('windows_worker_only')
+  const powershellPath = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
+  assert.equal(fs.existsSync(powershellPath), true)
+  const powershellSha256 = crypto.createHash('sha256').update(fs.readFileSync(powershellPath)).digest('hex')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-job-worker-null-plan-'))
+  const aituberRoot = path.join(root, 'aituber-kit')
+  const nextEntrypoint = path.join(aituberRoot, 'node_modules', 'next', 'dist', 'bin', 'next')
+  fs.mkdirSync(path.dirname(nextEntrypoint), { recursive: true })
+  fs.writeFileSync(nextEntrypoint, '', 'utf8')
+  const transports = []
+  const ownedWorkerPids = []
+  const routedOptionalServiceIds = [
+    'home_assistant_bridge',
+    'environment_state_server',
+    'thought_core_watcher',
+    'touchdesigner_control_gui'
+  ]
+  for (const serviceId of routedOptionalServiceIds) {
+    const service = authority.graph.services.find((candidate) => candidate.service_id === serviceId)
+    assert.ok(service)
+    assert.equal(service.requirement, 'optional')
+    assert.equal(service.ownership, 'owned')
+  }
+  const relevantPorts = [...new Set(authority.graph.services
+    .filter((service) => service.ownership === 'owned' && Number.isInteger(service.port.loopback_port) && service.port.loopback_port > 0)
+    .map((service) => service.port.loopback_port))].sort((left, right) => left - right)
+  const snapshotPortOwners = () => {
+    const command = '$rows=@(foreach($portText in $args){$port=[int]$portText;$owners=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | Sort-Object);[pscustomobject]@{port=$port;owner_pids=$owners}});ConvertTo-Json -InputObject $rows -Compress'
+    const completed = spawnSync(powershellPath, [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-CommandWithArgs', command,
+      ...relevantPorts.map(String)
+    ], { cwd: ROOT, encoding: 'utf8', windowsHide: true, timeout: 30000 })
+    assert.equal(completed.status, 0, 'bounded_port_owner_snapshot_failed')
+    return Object.fromEntries(JSON.parse(completed.stdout.trim()).map((row) => {
+      const ownerPids = Array.isArray(row.owner_pids)
+        ? row.owner_pids
+        : row.owner_pids === null ? [] : [row.owner_pids]
+      return [String(row.port), ownerPids.map(Number).sort((left, right) => left - right)]
+    }))
+  }
+  const beforePortOwners = snapshotPortOwners()
+  const executableByService = {
+    home_assistant_bridge: path.join(root, 'uv.exe'),
+    environment_state_server: path.join(root, 'uv.exe'),
+    openai_provider_broker: path.join(root, 'uv.exe'),
+    thought_core_api: powershellPath,
+    aituber_kit: process.execPath,
+    thought_core_watcher: powershellPath,
+    touchdesigner_control_gui: process.execPath
+  }
+  const writePlan = (name, excludedRequiredServiceId = null, includedOptionalServiceId = null) => {
+    const services = authority.graph.services
+      .filter((service) => service.ownership === 'owned' && (
+        (service.requirement === 'required' && service.service_id !== excludedRequiredServiceId) ||
+        (service.requirement === 'optional' && service.service_id === includedOptionalServiceId)
+      ))
+      .map((service) => ({
+        service_id: service.service_id,
+        file_path: executableByService[service.service_id],
+        arguments: service.service_id === 'aituber_kit'
+          ? [nextEntrypoint, 'dev', '--hostname', '127.0.0.1', '--port', String(service.port.loopback_port)]
+          : [],
+        working_directory: service.service_id === 'aituber_kit' ? aituberRoot : root,
+        environment: {},
+        remove_environment: [],
+        clear_inherited_environment: true,
+        listener_port: service.port.loopback_port || 0
+      }))
+    const planPath = path.join(root, `${name}.json`)
+    fs.writeFileSync(planPath, JSON.stringify({
+      schema_version: 'launcher_private_service_plans.v1',
+      graph_sha256: authority.identities.graphSha256,
+      binding_sha256: authority.identities.bindingSha256,
+      profile_id: CONFIG_IDENTITY.profile_id,
+      effective_config_sha256: CONFIG_IDENTITY.effective_config_sha256,
+      camera_policy: CONFIG_IDENTITY.camera_policy,
+      worker_file_path: powershellPath,
+      services
+    }), { encoding: 'utf8', mode: 0o600 })
+    return planPath
+  }
+  const makeTransport = (planPath) => {
+    const transport = new PowerShellJsonLineTransport({
+      repositoryRoot: ROOT,
+      privatePlanPath: planPath,
+      powershellPath,
+      workerExecutableClass: 'powershell_7_program_files',
+      workerExecutableSha256: powershellSha256,
+      workerExecutableVerifier: verifyTrustedWindowsWorkerExecutable,
+      responseGraceMs: 1000,
+      closeTimeoutMs: 5000
+    })
+    transports.push(transport)
+    return transport
+  }
+  const exchangeRaw = async (transport, request) => JSON.parse(await transport.exchange(JSON.stringify(request), request.deadline_ms))
+  const rememberWorkerPid = (transport) => {
+    assert.ok(transport.child)
+    assert.equal(Number.isSafeInteger(transport.child.pid) && transport.child.pid > 0, true)
+    ownedWorkerPids.push(transport.child.pid)
+  }
+  let afterPortOwners = null
+  try {
+    const wrongAdapterByAction = {
+      start: 'job_worker_job_close',
+      probe: 'external_probe_only',
+      stop: 'job_worker_service'
+    }
+    const expectedByAction = {
+      start: ['spawn_failed', 'not_applicable', 'owned_clear'],
+      probe: ['optional_absent', 'not_applicable', 'owned_clear'],
+      stop: ['stopped', 'matched', 'owned_clear']
+    }
+    for (const [index, action] of ['start', 'probe', 'stop'].entries()) {
+      const transport = makeTransport(writePlan(`adapter-${action}`))
+      const client = new LauncherJobWorkerClient({ authority, transport })
+      const correctRequest = requestFor('home_assistant_bridge', action, index + 1)
+      const wrongRequest = {
+        ...correctRequest,
+        supervisor_generation: LEASE_BINDING.supervisor_generation + index + 1,
+        adapter_class: wrongAdapterByAction[action]
+      }
+      const invalid = await exchangeRaw(transport, wrongRequest)
+      rememberWorkerPid(transport)
+      assert.equal(invalid.result_class, 'invalid_request')
+      assert.equal(invalid.descendant_class, 'unknown')
+      const corrected = await client.execute(correctRequest)
+      assert.deepEqual([
+        corrected.result_class,
+        corrected.ownership_class,
+        corrected.descendant_class
+      ], expectedByAction[action])
+      await client.close()
+    }
+
+    const transport = makeTransport(writePlan('all-routed-optionals'))
+    const client = new LauncherJobWorkerClient({ authority, transport })
+    for (const serviceId of routedOptionalServiceIds) {
+      for (const action of ['probe', 'stop', 'start']) {
+        const result = await client.execute(requestFor(serviceId, action))
+        assert.deepEqual([
+          result.result_class,
+          result.ownership_class,
+          result.descendant_class
+        ], expectedByAction[action])
+      }
+    }
+    rememberWorkerPid(transport)
+    for (const request of [
+      { ...requestFor('home_assistant_bridge', 'probe'), service_id: 'unknown_optional_service' },
+      { ...requestFor('home_assistant_bridge', 'probe'), graph_sha256: 'f'.repeat(64) },
+      { ...requestFor('home_assistant_bridge', 'probe'), binding_sha256: 'f'.repeat(64) }
+    ]) {
+      const result = await exchangeRaw(transport, request)
+      assert.equal(result.result_class, 'invalid_request')
+      assert.equal(result.descendant_class, 'unknown')
+    }
+    await client.close()
+
+    const positiveTransport = makeTransport(writePlan('optional-positive-plan', null, 'home_assistant_bridge'))
+    const positiveClient = new LauncherJobWorkerClient({ authority, transport: positiveTransport })
+    const positiveProbe = await positiveClient.execute(requestFor('home_assistant_bridge', 'probe'))
+    rememberWorkerPid(positiveTransport)
+    assert.equal(positiveProbe.result_class, 'early_exit')
+    assert.equal(positiveProbe.descendant_class, 'owned_clear')
+    await positiveClient.close()
+
+    for (const serviceId of ['openai_provider_broker', 'thought_core_api', 'aituber_kit']) {
+      const missingTransport = makeTransport(writePlan(`missing-${serviceId}`, serviceId))
+      const missingClient = new LauncherJobWorkerClient({ authority, transport: missingTransport })
+      await assert.rejects(missingClient.execute(requestFor('home_assistant_bridge', 'probe')), (error) => (
+        error instanceof LauncherJobWorkerError && error.code === 'worker_transport_failed'
+      ))
+      rememberWorkerPid(missingTransport)
+      await missingClient.close()
+    }
+  } finally {
+    for (const transport of transports) {
+      try { await transport.close() } catch {}
+    }
+    for (const workerPid of ownedWorkerPids) await waitForPidExit(workerPid)
+    afterPortOwners = snapshotPortOwners()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+  assert.equal(ownedWorkerPids.length, 8)
+  const exitedWorkerCount = ownedWorkerPids.filter((workerPid) => !pidAlive(workerPid)).length
+  assert.equal(exitedWorkerCount, ownedWorkerPids.length)
+  assert.deepEqual(afterPortOwners, beforePortOwners)
+  assert.equal(fs.existsSync(root), false)
+  context.diagnostic(`bounded_residue=${JSON.stringify({
+    owned_worker_pids_observed: ownedWorkerPids.length,
+    owned_worker_pids_exited: exitedWorkerCount,
+    qa_temp_root_removed: true,
+    selected_port_owner_counts: Object.fromEntries(Object.entries(beforePortOwners).map(([port, ownerPids]) => [port, ownerPids.length])),
+    selected_port_owner_sets_unchanged: true
+  })}`)
+})
+
 test('actual Windows Job worker contains descendants, survives foreign listeners, and cleans ten cycles', { timeout: 120000 }, async (context) => {
   if (process.platform !== 'win32') return context.skip('windows_job_object_only')
   if (process.env.SWORD_LAUNCHER_N1_ACTUAL_TEST !== '1') return context.skip('explicit_normal_user_gate_required')
@@ -976,7 +1213,9 @@ test('actual Windows Job worker contains descendants, survives foreign listeners
   }
   const writePlan = (name, targetScript) => {
     const services = authority.graph.services
-      .filter((service) => service.ownership === 'owned' && service.requirement === 'required')
+      .filter((service) => service.ownership === 'owned' && (
+        service.requirement === 'required' || service.service_id === 'touchdesigner_control_gui'
+      ))
       .map((service) => ({
         service_id: service.service_id,
         file_path: service.service_id === 'touchdesigner_control_gui'

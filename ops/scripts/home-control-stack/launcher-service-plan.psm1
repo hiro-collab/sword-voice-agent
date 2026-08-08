@@ -11,11 +11,11 @@ $script:ReservedEnvironmentNames = @(
 )
 $script:Descriptors = [ordered]@{
     home_assistant_bridge = [pscustomobject]@{
-        ServiceId = "home_assistant_bridge"; Requirement = "required"; Ownership = "owned"
+        ServiceId = "home_assistant_bridge"; Requirement = "optional"; Ownership = "owned"
         ExecutableNames = @("uv"); DefaultListenerPort = 8787
     }
     environment_state_server = [pscustomobject]@{
-        ServiceId = "environment_state_server"; Requirement = "required"; Ownership = "owned"
+        ServiceId = "environment_state_server"; Requirement = "optional"; Ownership = "owned"
         ExecutableNames = @("uv"); DefaultListenerPort = 8790
     }
     openai_provider_broker = [pscustomobject]@{
@@ -39,11 +39,11 @@ $script:Descriptors = [ordered]@{
         ExecutableNames = @("node"); DefaultListenerPort = 3000
     }
     thought_core_watcher = [pscustomobject]@{
-        ServiceId = "thought_core_watcher"; Requirement = "required"; Ownership = "owned"
+        ServiceId = "thought_core_watcher"; Requirement = "optional"; Ownership = "owned"
         ExecutableNames = @("pwsh", "powershell"); DefaultListenerPort = 0
     }
     touchdesigner_control_gui = [pscustomobject]@{
-        ServiceId = "touchdesigner_control_gui"; Requirement = "required"; Ownership = "owned"
+        ServiceId = "touchdesigner_control_gui"; Requirement = "optional"; Ownership = "owned"
         ExecutableNames = @("node"); DefaultListenerPort = 8788
     }
     voicevox = [pscustomobject]@{

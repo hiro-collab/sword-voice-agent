@@ -452,8 +452,15 @@ function Test-LauncherWorkerRequest {
 }
 
 function Test-LauncherResolvedAdapter {
-    param([Parameter(Mandatory = $true)][object]$Request, [Parameter(Mandatory = $true)][object]$Plan)
-    $external = [string]$Plan.Ownership -ceq "external"
+    param([Parameter(Mandatory = $true)][object]$Request, [Parameter(Mandatory = $true)][AllowNull()][object]$Plan)
+    if ($null -eq $Plan) {
+        $descriptor = Get-LauncherServiceDescriptor -ServiceId ([string]$Request.service_id)
+        if ($descriptor.Ownership -cne "owned" -or $descriptor.Requirement -cne "optional") { return $false }
+        $external = $false
+    }
+    else {
+        $external = [string]$Plan.Ownership -ceq "external"
+    }
     $allowedAdapter = switch ([string]$Request.action) {
         "start" { if ($external) { return $false } else { "job_worker_service" } }
         "stop" { if ($external) { "external_noop" } else { "job_worker_job_close" } }
