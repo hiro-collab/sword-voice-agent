@@ -64,6 +64,16 @@ also include:
 }
 ```
 
+For `system.ps1 start`, the compatibility facade performs one ordered Launcher
+operation: it first sends `POST /api/save-config` with `{profileId, options}`,
+strictly validates the returned successful profile and
+`configIdentity.effective_config_sha256`, and then sends `POST /api/start` with
+only `{profileId, expectedConfigSha256}`. The Launcher server is the sole
+authority that normalizes the saved options and derives this lowercase SHA-256;
+the caller must forward the returned hash unchanged and must not resend options,
+recompute the hash, or fall back when the saved identity is invalid. The
+`system.ps1 status` and `system.ps1 stop` request contracts are unchanged.
+
 The Launcher persists only normalized local override fields into its gitignored
 state directory. It ignores unknown demo row ids and re-normalizes values
 against tracked defaults. API consumers must treat `demoSafeSettings` as local

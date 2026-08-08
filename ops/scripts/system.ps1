@@ -204,32 +204,110 @@ $previousRecursionGuard = [Environment]::GetEnvironmentVariable(
     [EnvironmentVariableTarget]::Process
 )
 try {
-    if ($Command -ceq "status") {
-        $result = Invoke-RestMethod `
-            -Uri "$baseUrl/api/status" `
-            -Method Get `
-            -TimeoutSec 10 `
-            -ErrorAction Stop
-    }
-    else {
-        $body = if ($Command -ceq "start") {
-            [ordered]@{ profileId = $Profile; options = $options }
+    if ($Command -ceq "start") {
+        $saveBody = [ordered]@{ profileId = $Profile; options = $options }
+        try {
+            $savedConfig = Invoke-RestMethod `
+                -Uri "$baseUrl/api/save-config" `
+                -Method Post `
+                -ContentType "application/json; charset=utf-8" `
+                -Body ($saveBody | ConvertTo-Json -Depth 8 -Compress) `
+                -TimeoutSec 600 `
+                -ErrorAction Stop
+        }
+        catch {
+            throw "launcher_api_unavailable"
+        }
+
+        $savedProperties = if ($savedConfig -is [pscustomobject]) {
+            @($savedConfig.PSObject.Properties)
         }
         else {
-            [ordered]@{ profileId = $Profile }
+            @()
         }
-        $timeoutSeconds = if ($Command -ceq "start") { 600 } else { 180 }
-        $result = Invoke-RestMethod `
-            -Uri "$baseUrl/api/$Command" `
-            -Method Post `
-            -ContentType "application/json; charset=utf-8" `
-            -Body ($body | ConvertTo-Json -Depth 8 -Compress) `
-            -TimeoutSec $timeoutSeconds `
-            -ErrorAction Stop
+        $okProperty = @($savedProperties | Where-Object { $_.Name -ceq "ok" })
+        $profileProperty = @($savedProperties | Where-Object { $_.Name -ceq "profileId" })
+        $identityProperty = @($savedProperties | Where-Object { $_.Name -ceq "configIdentity" })
+        $configIdentity = if ($identityProperty.Count -eq 1) {
+            $identityProperty[0].Value
+        }
+        else {
+            $null
+        }
+        $identityProperties = if ($configIdentity -is [pscustomobject]) {
+            @($configIdentity.PSObject.Properties)
+        }
+        else {
+            @()
+        }
+        $hashProperty = @(
+            $identityProperties |
+                Where-Object { $_.Name -ceq "effective_config_sha256" }
+        )
+        $expectedConfigSha256 = if ($hashProperty.Count -eq 1) {
+            $hashProperty[0].Value
+        }
+        else {
+            $null
+        }
+        $savedIdentityIsValid = (
+            $okProperty.Count -eq 1 -and
+            $okProperty[0].Value -is [bool] -and
+            $okProperty[0].Value -eq $true -and
+            $profileProperty.Count -eq 1 -and
+            $profileProperty[0].Value -is [string] -and
+            $profileProperty[0].Value -ceq $Profile -and
+            $configIdentity -is [pscustomobject] -and
+            $hashProperty.Count -eq 1 -and
+            $expectedConfigSha256 -is [string] -and
+            $expectedConfigSha256.Length -eq 64 -and
+            $expectedConfigSha256 -cmatch '^[a-f0-9]{64}$'
+        )
+        if (-not $savedIdentityIsValid) {
+            throw "saved_config_identity_invalid"
+        }
+
+        $startBody = [ordered]@{
+            profileId = $Profile
+            expectedConfigSha256 = $expectedConfigSha256
+        }
+        try {
+            $result = Invoke-RestMethod `
+                -Uri "$baseUrl/api/start" `
+                -Method Post `
+                -ContentType "application/json; charset=utf-8" `
+                -Body ($startBody | ConvertTo-Json -Depth 8 -Compress) `
+                -TimeoutSec 600 `
+                -ErrorAction Stop
+        }
+        catch {
+            throw "launcher_api_unavailable"
+        }
     }
-}
-catch {
-    throw "launcher_api_unavailable"
+    else {
+        try {
+            if ($Command -ceq "status") {
+                $result = Invoke-RestMethod `
+                    -Uri "$baseUrl/api/status" `
+                    -Method Get `
+                    -TimeoutSec 10 `
+                    -ErrorAction Stop
+            }
+            else {
+                $body = [ordered]@{ profileId = $Profile }
+                $result = Invoke-RestMethod `
+                    -Uri "$baseUrl/api/stop" `
+                    -Method Post `
+                    -ContentType "application/json; charset=utf-8" `
+                    -Body ($body | ConvertTo-Json -Depth 8 -Compress) `
+                    -TimeoutSec 180 `
+                    -ErrorAction Stop
+            }
+        }
+        catch {
+            throw "launcher_api_unavailable"
+        }
+    }
 }
 finally {
     [Environment]::SetEnvironmentVariable(

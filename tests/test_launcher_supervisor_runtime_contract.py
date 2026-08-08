@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
+import shutil
+import socket
+import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import TestCase
 
 
@@ -11,6 +18,10 @@ RUNTIME = LAUNCHER / "launcher-supervisor-runtime.js"
 PRIVATE_PLAN = LAUNCHER / "launcher-private-service-plan.js"
 README = LAUNCHER / "README.md"
 SYSTEM = ROOT / "ops" / "scripts" / "system.ps1"
+PROFILE_ID = "thought-core-v0"
+VALID_CONFIG_SHA256 = "0123456789abcdef" * 4
+PRIVATE_OPTION_SENTINEL = r"C:\qa-private\camera-option-value-sentinel"
+RAW_SAVE_RESPONSE_SENTINEL = "raw-save-response-must-not-be-printed"
 
 
 def read(path: Path) -> str:
@@ -24,6 +35,134 @@ def between(source: str, start: str, end: str) -> str:
 
 
 class LauncherSupervisorRuntimeContractTest(TestCase):
+    def run_system_start(
+        self, save_response: object
+    ) -> tuple[subprocess.CompletedProcess[str], list[dict[str, object]]]:
+        powershell = shutil.which("pwsh")
+        self.assertIsNotNone(powershell, "pwsh_not_found")
+        requests: list[dict[str, object]] = []
+        request_lock = threading.Lock()
+
+        class LauncherStubHandler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                content_length = int(self.headers.get("Content-Length", "0"))
+                raw_body = self.rfile.read(content_length)
+                body = json.loads(raw_body.decode("utf-8"))
+                with request_lock:
+                    requests.append(
+                        {"path": self.path, "body": body, "raw_body": raw_body}
+                    )
+                if self.path == "/api/save-config":
+                    response_body = save_response
+                    status = 200
+                elif self.path == "/api/start":
+                    response_body = {"ok": True, "result": "test_stub_started"}
+                    status = 200
+                else:
+                    response_body = {"ok": False, "error": "not_found"}
+                    status = 404
+                encoded = json.dumps(response_body, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(encoded)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), LauncherStubHandler)
+        server.daemon_threads = True
+        server.timeout = 1
+        listener_host, listener_port = server.server_address
+        self.assertEqual(listener_host, "127.0.0.1")
+        listener = threading.Thread(target=server.serve_forever, daemon=True)
+        process: subprocess.Popen[str] | None = None
+        stdout = ""
+        stderr = ""
+        returncode = -1
+        command: list[str] = []
+        try:
+            listener.start()
+            command = [
+                str(powershell),
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(SYSTEM),
+                "start",
+                "-Profile",
+                PROFILE_ID,
+                "-LauncherUrl",
+                f"http://127.0.0.1:{listener_port}",
+                "-SkipTouchDesignerGui",
+                "-MediapipeCameraName",
+                PRIVATE_OPTION_SENTINEL,
+            ]
+            environment = os.environ.copy()
+            environment.pop("SWORD_LAUNCHER_COMPAT_CLIENT_ACTIVE", None)
+            process = subprocess.Popen(
+                command,
+                cwd=ROOT,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            try:
+                stdout, stderr = process.communicate(timeout=20)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    stdout, stderr = process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    stdout, stderr = process.communicate(timeout=5)
+                self.fail("system_ps1_timeout")
+            returncode = process.returncode
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            server.shutdown()
+            server.server_close()
+            listener.join(timeout=5)
+
+        self.assertFalse(listener.is_alive(), "loopback_listener_thread_residue")
+        if process is not None:
+            self.assertIsNotNone(process.poll(), "system_ps1_process_residue")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as rebound:
+            rebound.bind(("127.0.0.1", listener_port))
+
+        completed = subprocess.CompletedProcess(command, returncode, stdout, stderr)
+        with request_lock:
+            recorded_requests = list(requests)
+        return completed, recorded_requests
+
+    @staticmethod
+    def valid_save_response() -> dict[str, object]:
+        return {
+            "ok": True,
+            "profileId": PROFILE_ID,
+            "configIdentity": {
+                "effective_config_sha256": VALID_CONFIG_SHA256,
+            },
+            "qaPrivateResponseSentinel": RAW_SAVE_RESPONSE_SENTINEL,
+        }
+
     def test_preflight_is_persisted_before_first_worker_exchange(self) -> None:
         runtime = read(RUNTIME)
         start = between(runtime, "  async start ({ profileId, options, configIdentity })", "  async stop ({ profileId })")
@@ -133,6 +272,9 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
 
         self.assertIn("Invoke-RestMethod", system)
         self.assertIn('"http://127.0.0.1:$LauncherPort"', system)
+        self.assertIn('"$baseUrl/api/save-config"', system)
+        self.assertIn("expectedConfigSha256 = $expectedConfigSha256", system)
+        self.assertIn("saved_config_identity_invalid", system)
         self.assertIn("SWORD_LAUNCHER_COMPAT_CLIENT_ACTIVE", system)
         self.assertIn("launcher_api_unavailable", system)
         self.assertIn('$baseUri.Scheme -cne "http"', system)
@@ -142,6 +284,143 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
             "stop-home-control-stack.ps1",
         ):
             self.assertNotIn(retired_name, system)
+
+    def test_system_start_saves_then_starts_with_byte_identical_identity(self) -> None:
+        completed, requests = self.run_system_start(self.valid_save_response())
+        combined = completed.stdout + completed.stderr
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(
+            [request["path"] for request in requests],
+            ["/api/save-config", "/api/start"],
+        )
+        self.assertEqual(len(requests), 2)
+        save_body = requests[0]["body"]
+        start_body = requests[1]["body"]
+        self.assertIsInstance(save_body, dict)
+        self.assertIsInstance(start_body, dict)
+        self.assertEqual(set(save_body), {"profileId", "options"})
+        self.assertEqual(save_body["profileId"], PROFILE_ID)
+        self.assertTrue(save_body["options"]["SkipTouchDesignerGui"])
+        self.assertEqual(
+            save_body["options"]["MediapipeCameraName"], PRIVATE_OPTION_SENTINEL
+        )
+        self.assertEqual(
+            set(start_body), {"profileId", "expectedConfigSha256"}
+        )
+        self.assertEqual(start_body["profileId"], PROFILE_ID)
+        self.assertEqual(start_body["expectedConfigSha256"], VALID_CONFIG_SHA256)
+        self.assertEqual(
+            start_body["expectedConfigSha256"].encode("utf-8"),
+            VALID_CONFIG_SHA256.encode("utf-8"),
+        )
+        self.assertIn(VALID_CONFIG_SHA256.encode("utf-8"), requests[1]["raw_body"])
+        self.assertNotIn("options", start_body)
+        self.assertNotIn(PRIVATE_OPTION_SENTINEL, combined)
+        self.assertNotIn(RAW_SAVE_RESPONSE_SENTINEL, combined)
+        self.assertNotIn("MediapipeCameraName", combined)
+        self.assertNotIn(subprocess.list2cmdline(completed.args), combined)
+        self.assertNotIn(
+            json.dumps(save_body, separators=(",", ":")), combined
+        )
+
+    def test_system_start_rejects_invalid_saved_config_identity_before_start(self) -> None:
+        missing = object()
+
+        def response(
+            *,
+            ok: object = True,
+            profile_id: object = PROFILE_ID,
+            config_identity: object = missing,
+        ) -> dict[str, object]:
+            payload: dict[str, object] = {
+                "qaPrivateResponseSentinel": RAW_SAVE_RESPONSE_SENTINEL
+            }
+            if ok is not missing:
+                payload["ok"] = ok
+            if profile_id is not missing:
+                payload["profileId"] = profile_id
+            if config_identity is missing:
+                config_identity = {
+                    "effective_config_sha256": VALID_CONFIG_SHA256
+                }
+            if config_identity is not None:
+                payload["configIdentity"] = config_identity
+            return payload
+
+        invalid_rows = (
+            ("ok_missing", response(ok=missing)),
+            ("ok_false", response(ok=False)),
+            ("ok_string", response(ok="true")),
+            ("identity_missing", response(config_identity=None)),
+            ("identity_non_object", response(config_identity="not-an-object")),
+            ("hash_missing", response(config_identity={})),
+            (
+                "hash_non_string",
+                response(config_identity={"effective_config_sha256": 64}),
+            ),
+            (
+                "hash_uppercase",
+                response(
+                    config_identity={
+                        "effective_config_sha256": VALID_CONFIG_SHA256.upper()
+                    }
+                ),
+            ),
+            (
+                "hash_leading_whitespace",
+                response(
+                    config_identity={
+                        "effective_config_sha256": f" {VALID_CONFIG_SHA256}"
+                    }
+                ),
+            ),
+            (
+                "hash_trailing_whitespace",
+                response(
+                    config_identity={
+                        "effective_config_sha256": f"{VALID_CONFIG_SHA256} "
+                    }
+                ),
+            ),
+            (
+                "hash_wrong_length",
+                response(
+                    config_identity={
+                        "effective_config_sha256": VALID_CONFIG_SHA256[:-1]
+                    }
+                ),
+            ),
+            (
+                "hash_lowercase_non_hex",
+                response(config_identity={"effective_config_sha256": "g" * 64}),
+            ),
+            ("profile_missing", response(profile_id=missing)),
+            ("profile_non_string", response(profile_id=7)),
+            ("profile_mismatch", response(profile_id="aituber-only")),
+            ("profile_case_mismatch", response(profile_id="Thought-core-v0")),
+        )
+
+        for case_name, save_response in invalid_rows:
+            with self.subTest(case=case_name):
+                completed, requests = self.run_system_start(save_response)
+                combined = completed.stdout + completed.stderr
+                paths = [request["path"] for request in requests]
+
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertEqual(paths.count("/api/save-config"), 1)
+                self.assertEqual(paths.count("/api/start"), 0)
+                self.assertEqual(paths, ["/api/save-config"])
+                self.assertIn("saved_config_identity_invalid", combined)
+                self.assertNotIn("launcher_api_unavailable", combined)
+                self.assertNotIn(PRIVATE_OPTION_SENTINEL, combined)
+                self.assertNotIn(RAW_SAVE_RESPONSE_SENTINEL, combined)
+                self.assertNotIn("MediapipeCameraName", combined)
+                self.assertNotIn(subprocess.list2cmdline(completed.args), combined)
+                self.assertNotIn(
+                    json.dumps(requests[0]["body"], separators=(",", ":")),
+                    combined,
+                )
 
     def test_private_plan_and_public_projection_keep_private_values_separate(self) -> None:
         runtime = read(RUNTIME)
