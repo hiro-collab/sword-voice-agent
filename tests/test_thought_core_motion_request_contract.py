@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -10,6 +11,16 @@ from unittest import TestCase
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 THOUGHT_CORE_ROOT = REPO_ROOT / "services" / "thought-core" / "src"
+LOCAL_MOTION_SCHEMA_PATH = (
+    REPO_ROOT / "contracts" / "motion-stimulus" / "motion-stimulus.v0.schema.json"
+)
+CANONICAL_MOTION_SCHEMA_LF_SHA256 = (
+    "c5e8987cb66a346f6587bd425eaa2fdc056916919a4694d875378d84df632bc7"
+)
+DEFAULT_EXPRESSION_PROFILE_REF = "motion.runtime.vrm_expression_weights.v0"
+FULL_RELAXED_EXPRESSION_PROFILE_REF = (
+    "motion.runtime.vrm_expression_weights.full_relaxed.v0"
+)
 SHARED_DANCE_VECTOR_ENV = "SWORD_M4_DANCE_LIFECYCLE_VECTOR_PATH"
 MAX_SHARED_DANCE_VECTOR_BYTES = 128 * 1024
 SHARED_DANCE_CASE_ORDER = [
@@ -351,17 +362,66 @@ class ThoughtCoreMotionRequestContractTest(TestCase):
         self.assertEqual(payload["safety"]["raw_user_text_shared"], False)
         self.assert_no_home_action(events, tools)
 
-    def test_motion_payloads_match_local_and_root_contract_schemas(self) -> None:
-        schema_paths = [
-            REPO_ROOT
-            / "contracts"
-            / "motion-stimulus"
-            / "motion-stimulus.v0.schema.json",
-            REPO_ROOT.parent.parent
-            / "contracts"
-            / "motion_stimulus"
-            / "motion_stimulus.v0.schema.json",
+    def test_local_motion_schema_is_canonical_checked_in_projection(self) -> None:
+        raw = LOCAL_MOTION_SCHEMA_PATH.read_bytes()
+        self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
+        text = raw.decode("utf-8")
+        canonical_lf = text.replace("\r\n", "\n")
+        self.assertNotIn("\r", canonical_lf)
+        self.assertTrue(canonical_lf.endswith("\n"))
+        self.assertEqual(
+            hashlib.sha256(canonical_lf.encode("utf-8")).hexdigest(),
+            CANONICAL_MOTION_SCHEMA_LF_SHA256,
+        )
+
+        schema = json.loads(canonical_lf)
+        profile_schema = schema["properties"]["requirements"]["properties"][
+            "expression_profile_ref"
         ]
+        self.assertEqual(
+            profile_schema["enum"],
+            [DEFAULT_EXPRESSION_PROFILE_REF, FULL_RELAXED_EXPRESSION_PROFILE_REF],
+        )
+        self.assertIn(
+            "full_relaxed profile is a bounded diagnostic option",
+            profile_schema["description"],
+        )
+
+    def test_local_motion_schema_accepts_bounded_profiles_and_unknown_model(self) -> None:
+        schema = json.loads(LOCAL_MOTION_SCHEMA_PATH.read_text(encoding="utf-8"))
+        events, _tools = self._run("うれしそうに動いて")
+        payload = self._motion_payload(events)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(
+            payload["requirements"]["expression_profile_ref"],
+            DEFAULT_EXPRESSION_PROFILE_REF,
+        )
+        self.assertEqual(_validate_schema(payload, schema), [])
+
+        full_relaxed_payload = json.loads(json.dumps(payload))
+        full_relaxed_payload["requirements"]["expression_profile_ref"] = (
+            FULL_RELAXED_EXPRESSION_PROFILE_REF
+        )
+        self.assertEqual(_validate_schema(full_relaxed_payload, schema), [])
+
+        unknown_profile_payload = json.loads(json.dumps(payload))
+        unknown_profile_payload["requirements"]["expression_profile_ref"] = (
+            "motion.runtime.vrm_expression_weights.unknown.v0"
+        )
+        self.assertNotEqual(_validate_schema(unknown_profile_payload, schema), [])
+
+        unknown_model_payload = json.loads(json.dumps(payload))
+        unknown_model_payload["target_model_type"] = "unknown"
+        self.assertEqual(_validate_schema(unknown_model_payload, schema), [])
+
+        unexpected_property_payload = json.loads(json.dumps(payload))
+        unexpected_property_payload["unexpected_authority"] = True
+        self.assertNotEqual(_validate_schema(unexpected_property_payload, schema), [])
+
+    def test_motion_payloads_match_local_contract_schema(self) -> None:
+        schema = json.loads(LOCAL_MOTION_SCHEMA_PATH.read_text(encoding="utf-8"))
         for text in (
             "踊って",
             "うれしそうに動いて",
@@ -379,10 +439,8 @@ class ThoughtCoreMotionRequestContractTest(TestCase):
 
             self.assertIsNotNone(payload)
             assert payload is not None
-            for schema_path in schema_paths:
-                with self.subTest(text=text, schema_path=str(schema_path)):
-                    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-                    self.assertEqual(_validate_schema(payload, schema), [])
+            with self.subTest(text=text):
+                self.assertEqual(_validate_schema(payload, schema), [])
 
     def test_home_action_does_not_emit_motion_request(self) -> None:
         events, tools = self._run("電気をつけて")

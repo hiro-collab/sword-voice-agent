@@ -250,9 +250,11 @@
           "type": "boolean"
         },
         "expression_profile_ref": {
+          "description": "Contract-visible expression profile requested by Thought Core, Reflex, or composite stimulus consumers. The default profile remains motion.runtime.vrm_expression_weights.v0; the full_relaxed profile is a bounded diagnostic option and is not proof of visible motion by itself.",
           "type": "string",
           "enum": [
-            "motion.runtime.vrm_expression_weights.v0"
+            "motion.runtime.vrm_expression_weights.v0",
+            "motion.runtime.vrm_expression_weights.full_relaxed.v0"
           ]
         },
         "expected_visible_change": {
