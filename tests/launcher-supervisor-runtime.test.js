@@ -177,6 +177,7 @@ const makeHarness = ({
   planRemover = null,
   probeExecutor = undefined,
   probeExecutorFactory = null,
+  ownerLivenessObserver = undefined,
   storeOverrides = {}
 } = {}) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-runtime-'))
@@ -260,6 +261,7 @@ const makeHarness = ({
       workers.push(worker)
       return worker
     },
+    ...(ownerLivenessObserver ? { ownerLivenessObserver } : {}),
     ...(probeExecutorFactory
       ? { probeExecutorFactory }
       : {
@@ -447,6 +449,24 @@ test('a fresh runtime stops from the immutable start plan without recompiling dr
     for (const privateMarker of ['file_path', 'working_directory', '"arguments":', '"environment":']) {
       assert.equal(JSON.stringify(stopped).includes(privateMarker), false)
     }
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('a fresh runtime reclaims an abandoned supervisor lease before Stop', async () => {
+  const harness = makeHarness({ ownerLivenessObserver: () => 'absent' })
+  try {
+    const started = await harness.runtime.start({ profileId: 'thought-core-v0', options: canonicalOptions })
+    assert.equal(started.result_class, 'ready')
+
+    const replacement = harness.createRuntime()
+    const stopped = await replacement.stop({ profileId: 'thought-core-v0' })
+
+    assert.equal(stopped.ok, true)
+    assert.equal(stopped.result_class, 'stopped')
+    assert.equal(stopped.operation.cleanup, 'clear')
+    assert.equal(replacement.supervisorLease, null)
   } finally {
     harness.cleanup()
   }

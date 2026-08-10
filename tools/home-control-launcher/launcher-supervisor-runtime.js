@@ -8,7 +8,8 @@ const reducer = require('./launcher-supervisor-reducer')
 const {
   LauncherJobWorkerClient,
   LauncherJobWorkerError,
-  PowerShellJsonLineTransport
+  PowerShellJsonLineTransport,
+  createOwnerLivenessObserver
 } = require('./launcher-job-worker-client')
 const {
   LauncherPrivatePlanError,
@@ -22,6 +23,19 @@ const {
 const { LauncherProbeExecutorError } = require('./launcher-probe-executor')
 const { LauncherProbeContractError } = require('./launcher-probe-result-binding')
 const { LauncherProbeRuntimeContextError } = require('./launcher-probe-runtime-context')
+
+const inspectLocalProcess = (pid) => {
+  try {
+    process.kill(pid, 0)
+    return { status: 'alive', creation_time_ms: 0 }
+  } catch (error) {
+    if (error?.code === 'ESRCH') return { status: 'absent' }
+    if (error?.code === 'EPERM') return { status: 'access_denied' }
+    return { status: 'unknown' }
+  }
+}
+
+const defaultOwnerLivenessObserver = createOwnerLivenessObserver({ inspectProcess: inspectLocalProcess })
 
 class LauncherOperationStorePersistenceError extends Error {
   constructor () {
@@ -217,6 +231,7 @@ class LauncherSupervisorRuntime {
     workerFactory = null,
     probeExecutor = null,
     probeExecutorFactory = null,
+    ownerLivenessObserver = defaultOwnerLivenessObserver,
     operationIdFactory = () => `lop_${crypto.randomBytes(16).toString('hex')}`,
     workerNonceFactory = () => `lw_${crypto.randomBytes(16).toString('hex')}`,
     dispatchIdFactory = () => `ld_${crypto.randomBytes(16).toString('hex')}`
@@ -238,6 +253,7 @@ class LauncherSupervisorRuntime {
       typeof operationIdFactory !== 'function' ||
       typeof workerNonceFactory !== 'function' ||
       typeof dispatchIdFactory !== 'function' ||
+      typeof ownerLivenessObserver !== 'function' ||
       !(probeExecutor === null || (probeExecutor && typeof probeExecutor.execute === 'function' &&
         typeof probeExecutor.configSha256 === 'string' && SHA256.test(probeExecutor.configSha256))) ||
       !(probeExecutorFactory === null || typeof probeExecutorFactory === 'function') ||
@@ -269,6 +285,7 @@ class LauncherSupervisorRuntime {
     }))
     this.probeExecutor = probeExecutor
     this.probeExecutorFactory = probeExecutorFactory
+    this.ownerLivenessObserver = ownerLivenessObserver
     this.generatedProbeExecutor = false
     this.operationIdFactory = operationIdFactory
     this.workerNonceFactory = workerNonceFactory
@@ -284,7 +301,7 @@ class LauncherSupervisorRuntime {
 
   readStoredOperation () {
     try {
-      return this.store.readOperation(this.authority, this.privateRuntimeRoot)
+      return this.store.readOperation(this.authority, this.privateRuntimeRoot, this.ownerLivenessObserver)
     } catch (error) {
       if (error instanceof LauncherContractError && error.code === 'operation_store_record_missing') {
         return null
@@ -340,7 +357,8 @@ class LauncherSupervisorRuntime {
       this.current,
       eventFor(this.current, eventType, serviceId, fields),
       this.authority,
-      this.privateRuntimeRoot
+      this.privateRuntimeRoot,
+      this.ownerLivenessObserver
     )
     return this.current
   }
@@ -575,7 +593,7 @@ class LauncherSupervisorRuntime {
     if (!this.supervisorLease) return true
     const lease = this.supervisorLease
     try {
-      this.store.releaseSupervisorLease(lease, this.authority)
+      this.store.releaseSupervisorLease(lease, this.authority, this.ownerLivenessObserver)
       this.supervisorLease = null
       this.leaseBinding = null
       return true
@@ -591,7 +609,8 @@ class LauncherSupervisorRuntime {
       operationId: this.current.operation_id,
       supervisorGeneration: this.current.supervisor_generation,
       authority: this.authority,
-      authorizedPrivateRuntimeRoot: this.privateRuntimeRoot
+      authorizedPrivateRuntimeRoot: this.privateRuntimeRoot,
+      ownerLivenessObserver: this.ownerLivenessObserver
     })
     this.bindSupervisorLease(lease)
   }
@@ -784,7 +803,8 @@ class LauncherSupervisorRuntime {
         compiledPlanIdentity,
         this.probeExecutor.configSha256,
         this.authority,
-        this.privateRuntimeRoot
+        this.privateRuntimeRoot,
+        this.ownerLivenessObserver
       )
       this.current = decision.operation
       this.bindSupervisorLease(decision.supervisorLease)
@@ -833,7 +853,8 @@ class LauncherSupervisorRuntime {
           compiledPlanIdentity,
           this.probeExecutor.configSha256,
           this.authority,
-          this.privateRuntimeRoot
+          this.privateRuntimeRoot,
+          this.ownerLivenessObserver
         )
         this.current = decision.operation
         this.bindSupervisorLease(decision.supervisorLease)
