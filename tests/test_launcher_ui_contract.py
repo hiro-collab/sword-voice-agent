@@ -28,6 +28,9 @@ PRODUCT_ROOT = next(
 )
 PUBLIC = ROOT / "tools" / "home-control-launcher" / "public"
 LAUNCHER_SERVER = ROOT / "tools" / "home-control-launcher" / "server.js"
+LAUNCHER_PUBLIC_STATUS_PROJECTION = (
+    ROOT / "tools" / "home-control-launcher" / "launcher-public-status-projection.js"
+)
 LAUNCHER_SURFACE_CATALOG = ROOT / "tools" / "home-control-launcher" / "launcher-surface-catalog.js"
 LAUNCHER_PROFILES = ROOT / "tools" / "home-control-launcher" / "config" / "default-profiles.json"
 TIMING_COLLECTOR = ROOT / "tools" / "home-control-launcher" / "scripts" / "collect-demo-timing.mjs"
@@ -46,6 +49,10 @@ def read_public(name: str) -> str:
 
 def read_launcher_server() -> str:
     return LAUNCHER_SERVER.read_text(encoding="utf-8")
+
+
+def read_launcher_public_status_projection() -> str:
+    return LAUNCHER_PUBLIC_STATUS_PROJECTION.read_text(encoding="utf-8")
 
 
 def read_launcher_surface_catalog() -> str:
@@ -252,7 +259,7 @@ $cases = @(
     def test_launcher_routes_lifecycle_only_through_node_supervisor(self) -> None:
         server = read_launcher_server()
         system = read_system_script()
-        start_stack = extract_between(server, "const startStack", "const runScriptAndCollect")
+        start_stack = extract_between(server, "const startStack", "const runPowerShellInlineAndCollect")
         stop_stack = extract_between(server, "const stopStack", "const reclaimManagedPortsFromLauncher")
         status_route = extract_between(
             server,
@@ -2166,6 +2173,7 @@ $cases = @(
         html = read_public("index.html")
         app = read_public("app.js")
         server = read_launcher_server()
+        public_status_projection = read_launcher_public_status_projection()
         surface_catalog = read_launcher_surface_catalog()
 
         self.assertIn('id="startup-timing-list"', html)
@@ -2193,24 +2201,19 @@ $cases = @(
         self.assertNotIn('id="MediapipeReadyTimeoutSeconds"', html)
         self.assertIn("numericOptionFields", app)
 
-        self.assertIn("launcher_startup_timing.v0", server)
-        self.assertIn("timelineEvents", server)
-        self.assertIn("startupTimingEvents", server)
-        self.assertIn("launcher_start_accepted", server)
-        self.assertIn("service_first_ready", server)
-        self.assertIn("service_first_operational_degraded", server)
-        self.assertIn("service_waiting", server)
-        self.assertIn("startup_expected_services_operational_with_degraded", server)
-        self.assertIn("operationalServiceIds", server)
-        self.assertIn("degradedServiceIds", server)
-        self.assertIn("startup.degraded", app)
+        self.assertIn("launcher_startup_timing.v1", public_status_projection)
+        self.assertIn("expectedServiceIds: [...enabledIds]", public_status_projection)
+        self.assertIn("readyServiceIds", public_status_projection)
+        self.assertIn("operational: supervisor.phase === 'ready'", public_status_projection)
+        self.assertIn("readiness_authority: 'node_supervisor'", public_status_projection)
+        self.assertIn("raw_private_publication_flags: false", public_status_projection)
+        self.assertIn("projectLauncherServiceStatus", server)
+        self.assertIn("startupTiming: projectedStatus.startupTiming", server)
+        self.assertNotIn("launcher_startup_timing.v0", server)
+        self.assertNotIn("updateStartupTimingSummary", server)
+        self.assertNotIn("startupTimingEvents", server)
+        self.assertNotIn("timelineEvents", server)
         self.assertIn("startup.operational", app)
-        self.assertIn("firstOperationalElapsedMs", app)
-        self.assertIn("criticalPathServiceId", server)
-        self.assertIn("startupReadyTimeoutMsForService", server)
-        self.assertIn("readyTimeoutMs", server)
-        self.assertIn("explicit_service_ready_timeout", server)
-        self.assertIn("no_explicit_service_ready_timeout", server)
         self.assertIn("diagnosticSurfacesSummary", server)
         self.assertIn("getStartupTimingPayload", server)
         self.assertIn("getDiagnosticSurfacesPayload", server)
@@ -2251,8 +2254,6 @@ $cases = @(
         self.assertIn("MediapipeReadyTimeoutSeconds", readme)
         self.assertIn("8-second wait", readme)
         self.assertIn("GET /api/startup-timing", readme)
-        self.assertIn("launcher_startup_timing.v0", readme)
-        self.assertIn("timeline events", readme)
         self.assertIn("GET /api/diagnostic-surfaces", readme)
         self.assertIn("GET /api/demo-timed-action-readiness", readme)
         self.assertIn("first-feedback/first-action readiness", readme)
@@ -2985,7 +2986,7 @@ assert.deepStrictEqual(previewSnapshots[2], {
             "const FIXED_START_FAILURE_CLASSES",
             "const startStack",
         )
-        start_stack = extract_between(server, "const startStack", "const runScriptAndCollect")
+        start_stack = extract_between(server, "const startStack", "const runPowerShellInlineAndCollect")
 
         classes = (
             "camera_selection_missing",
@@ -3218,7 +3219,7 @@ function Test-ServiceChildEnvironment {
         start_stack = extract_between(
             server,
             "const startStack",
-            "const runScriptAndCollect",
+            "const runPowerShellInlineAndCollect",
         )
         self.assertIn("FIXED_START_MAX_PARTIAL_BYTES = 96", collector)
         self.assertIn("FIXED_START_MAX_CAPTURE_BYTES = 192", collector)

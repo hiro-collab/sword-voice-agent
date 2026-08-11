@@ -552,9 +552,9 @@ const validateLegacyDrift = (repositoryRoot, graph) => {
   if (!voicevoxPort || Number(voicevoxPort[1]) !== voicevox.port.loopback_port) fail('drift_voicevox_port')
   const projectionStart = server.indexOf('const buildPublicReadinessProjection')
   const functionStart = server.indexOf('const expectedServicesForOptions', projectionStart)
-  const functionEnd = server.indexOf('const startupReadyTimeoutMsForService', functionStart)
+  const functionEnd = server.indexOf('const serviceIsReady', functionStart)
   const statusStart = server.indexOf('const getStatus = async', functionEnd)
-  const statusEnd = server.indexOf('const readTextTail', statusStart)
+  const statusEnd = server.indexOf('const getState = async', statusStart)
   if (projectionStart < 0 || functionStart <= projectionStart || functionEnd <= functionStart ||
       statusStart <= functionEnd || statusEnd <= statusStart) fail('drift_launcher_function_missing')
   const projection = server.slice(projectionStart, functionStart)

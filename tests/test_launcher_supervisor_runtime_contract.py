@@ -219,7 +219,7 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
 
     def test_launcher_routes_cannot_reach_legacy_supervisor_or_independent_kill(self) -> None:
         server = read(SERVER)
-        start = between(server, "const startStack", "const runScriptAndCollect")
+        start = between(server, "const startStack", "const runPowerShellInlineAndCollect")
         stop = between(server, "const stopStack", "const reclaimManagedPortsFromLauncher")
         reclaim = between(server, "const reclaimManagedPortsFromLauncher", "const isProcessAlive")
         status_route = between(
@@ -235,6 +235,19 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
 
         self.assertIn("await launcherRuntime.start", start)
         self.assertIn("launcherRuntime.stop", stop)
+        for dormant_declaration in (
+            "const buildPowerShellCommand",
+            "const runScriptAndCollect",
+            "const startupReadyTimeoutMsForService",
+            "const serviceIsOperationalForStartup",
+            "const dateMs",
+            "const elapsedMs",
+            "const startupTimingEvents",
+            "const updateStartupTimingSummary",
+            "const pidMap",
+            "const readTextTail",
+        ):
+            self.assertNotIn(dormant_declaration, server)
         for route in (start, stop, reclaim, status_route):
             self.assertNotIn("runScriptAndCollect", route)
             self.assertNotIn("stopProcessById", route)
