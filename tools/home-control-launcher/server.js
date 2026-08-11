@@ -2911,32 +2911,6 @@ const checkWebSocketHandshake = (port, host = '127.0.0.1', timeoutMs = 1200) =>
     socket.connect(port, host)
   })
 
-const serviceState = ({ entry, tcp, http, requireHttp = false, processOnly = false }) => {
-  const processAlive = entry ? isProcessAlive(entry.pid) : false
-  const tcpOk = Boolean(tcp && tcp.ok)
-  const httpOk = Boolean(http && http.ok)
-  let state = 'DOWN'
-  if (processOnly && processAlive) {
-    state = 'OK'
-  } else if (processAlive && (tcpOk || httpOk)) {
-    state = requireHttp && !httpOk ? 'DEGRADED' : 'OK'
-  } else if (httpOk || tcpOk) {
-    state = entry ? 'DEGRADED' : 'OK_EXTERNAL'
-  } else if (processAlive) {
-    state = 'STARTING'
-  }
-  return {
-    state,
-    processAlive,
-    pid: entry ? entry.pid : null,
-    command: entry ? entry.command || '' : '',
-    workingDirectory: entry ? entry.working_directory || '' : '',
-    tcp: tcp || { ok: false, detail: '-' },
-    http: http || { ok: false, detail: '-' },
-    startedAt: entry ? entry.started_at || null : null
-  }
-}
-
 // N0 parse-only drift anchor for the frozen external graph port:
 // let voicevoxPort = 50021
 const buildPublicReadinessProjection = (graphServices) => {
