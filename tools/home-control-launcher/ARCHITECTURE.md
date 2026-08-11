@@ -211,7 +211,7 @@ Effectをoperatorにも受信させると、二つのreceiverが同じintentを�
 - `POST /api/save-config`: 正規化した設定とidentityを保存
 - `POST /api/start`: 保存済みidentityを使って一回のStart
 - `POST /api/stop`: 現operationのStop
-- `POST /api/reclaim-managed-ports`: ownershipが証明された管理対象だけを回収
+- `POST /api/reclaim-managed-ports`: 互換のため残した廃止済み応答。`independent_reclaim_retired`と`kill_authority: false`を返し、processを終了しない
 - `POST /api/shutdown`: Stop成功後にLauncher自身を終了
 
 `/api/start`、`/api/stop`、`/api/reclaim-managed-ports`は同時実行されません。
@@ -228,7 +228,8 @@ Effectをoperatorにも受信させると、二つのreceiverが同じintentを�
 | service状態やstartup timingの公開変換を変える | [`launcher-public-status-projection.js`](./launcher-public-status-projection.js) | [`server.js`](./server.js)の`getStatus`、focused projection test |
 | UIを変える | [`public/app.js`](./public/app.js) / [`index.html`](./public/index.html) | `/api/state`の公開schema |
 | Camera選択を変える | [`server.js`](./server.js)のcamera section | privacy/redaction tests |
-| process回収を変える | [`server.js`](./server.js)のmanaged-port section | ownership/lineage tests |
+| process停止・cleanupを変える | [`launcher-supervisor-runtime.js`](./launcher-supervisor-runtime.js) | worker/reducer、ownership/lineage tests |
+| 廃止済みport回収APIの返答を変える | [`server.js`](./server.js)の`reclaimManagedPortsFromLauncher` | managed-port cutover test |
 
 ## 10. 現在の複雑さと、次の安全な分離順
 
@@ -237,8 +238,8 @@ Effectをoperatorにも受信させると、二つのreceiverが同じintentを�
 
 1. **完了**: 画面URL一覧を `launcher-surface-catalog.js` へ抽出。
 2. **完了**: status aggregationを `launcher-public-status-projection.js` へ読み取り専用で抽出。
-3. 次: camera enumeration/redactionを独立moduleへ抽出。
-4. 次: managed-port ownership/reclaimを独立moduleへ抽出。
+3. **完了**: 到達不能だった旧managed-port強制回収実装を削除。互換APIはkill権限なしの廃止応答だけを返す。
+4. 次: camera enumeration/redactionを独立moduleへ抽出。
 5. 最後: HTTP route tableを薄いrouterへ抽出。
 
 各段階で既存テストを維持し、Start/Stopの意味を変更しません。
