@@ -548,19 +548,30 @@ const validateLegacyDrift = (repositoryRoot, graph) => {
   const voicevoxPort = /let\s+voicevoxPort\s*=\s*(\d+)/u.exec(server)
   const voicevox = graph.services.find((service) => service.service_id === 'voicevox')
   if (!voicevoxPort || Number(voicevoxPort[1]) !== voicevox.port.loopback_port) fail('drift_voicevox_port')
-  const projectionStart = server.indexOf('const publicReadinessIdsForServiceIds')
+  const projectionStart = server.indexOf('const buildPublicReadinessProjection')
   const functionStart = server.indexOf('const expectedServicesForOptions', projectionStart)
   const functionEnd = server.indexOf('const startupReadyTimeoutMsForService', functionStart)
-  if (projectionStart < 0 || functionStart <= projectionStart || functionEnd <= functionStart) fail('drift_launcher_function_missing')
+  const statusStart = server.indexOf('const getStatus = async', functionEnd)
+  const statusEnd = server.indexOf('const readTextTail', statusStart)
+  if (projectionStart < 0 || functionStart <= projectionStart || functionEnd <= functionStart ||
+      statusStart <= functionEnd || statusEnd <= statusStart) fail('drift_launcher_function_missing')
   const projection = server.slice(projectionStart, functionStart)
   const selection = server.slice(functionStart, functionEnd)
-  if (!/const\s+publicReadinessIdsForServiceIds\s*=\s*\(serviceIds\)\s*=>\s*\{/u.test(projection) ||
-      !/launcherRuntime\.authority\.graph\.services/u.test(projection) ||
-      !/graphServices\.filter\(\(service\)\s*=>\s*service\.service_id\s*===\s*serviceId\)/u.test(projection) ||
-      !/matches\[0\]\.public_readiness_id/u.test(projection) ||
-      !/launcher_service_graph_selection_invalid/u.test(projection) ||
-      !/launcher_public_readiness_id_missing/u.test(projection) ||
-      !/launcher_public_readiness_id_duplicate/u.test(projection) ||
+  const status = server.slice(statusStart, statusEnd)
+  if (!/const\s+buildPublicReadinessProjection\s*=\s*\(graphServices\)\s*=>\s*\{/u.test(projection) ||
+      !/const\s+publicIdsByServiceId\s*=\s*new\s+Map\(\)/u.test(projection) ||
+      !/const\s+serviceIdsByPublicId\s*=\s*new\s+Map\(\)/u.test(projection) ||
+      !/publicIdsByServiceId\.set\(serviceId,\s*publicId\)/u.test(projection) ||
+      !/serviceIdsByPublicId\.set\(publicId,\s*serviceId\)/u.test(projection) ||
+      !/publicIdForServiceId:\s*\(serviceId\)\s*=>\s*requiredProjectionValue\(publicIdsByServiceId,\s*serviceId\)/u.test(projection) ||
+      !/serviceIdForPublicId:\s*\(publicId\)\s*=>\s*requiredProjectionValue\(serviceIdsByPublicId,\s*publicId\)/u.test(projection) ||
+      !/return\s+Object\.freeze\(\{/u.test(projection) ||
+      !/buildPublicReadinessProjection\(\s*launcherRuntime\.authority\.graph\.services\s*\)/u.test(projection) ||
+      !/launcherPublicReadinessProjection\.publicIdForServiceId\(serviceId\)/u.test(projection) ||
+      !/launcherPublicReadinessProjection\.serviceIdForPublicId\(serviceId\)/u.test(status) ||
+      !/launcher_public_readiness_projection_invalid/u.test(projection) ||
+      !/launcher_public_readiness_projection_duplicate/u.test(projection) ||
+      !/launcher_public_readiness_projection_unmapped/u.test(projection) ||
       !/return\s+publicReadinessIdsForServiceIds\(serviceIds\)/u.test(selection)) {
     fail('drift_launcher_readiness_projection')
   }

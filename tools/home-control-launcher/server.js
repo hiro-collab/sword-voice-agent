@@ -3542,21 +3542,47 @@ const cameraHubServiceState = ({ entry, tcp, cameraState }) => {
 
 // N0 parse-only drift anchor for the frozen external graph port:
 // let voicevoxPort = 50021
-const publicReadinessIdsForServiceIds = (serviceIds) => {
-  const graphServices = launcherRuntime.authority.graph.services
-  const publicIds = serviceIds.map((serviceId) => {
-    const matches = graphServices.filter((service) => service.service_id === serviceId)
-    if (matches.length !== 1) {
-      throw new Error('launcher_service_graph_selection_invalid')
+const buildPublicReadinessProjection = (graphServices) => {
+  const publicIdsByServiceId = new Map()
+  const serviceIdsByPublicId = new Map()
+  for (const spec of graphServices) {
+    const publicId = spec.public_readiness_id
+    if (publicId === null) {
+      continue
     }
-    const publicId = matches[0].public_readiness_id
-    if (typeof publicId !== 'string' || !publicId) {
-      throw new Error('launcher_public_readiness_id_missing')
+    const serviceId = spec.service_id
+    if (typeof serviceId !== 'string' || !serviceId || typeof publicId !== 'string' || !publicId) {
+      throw new Error('launcher_public_readiness_projection_invalid')
     }
-    return publicId
+    if (publicIdsByServiceId.has(serviceId) || serviceIdsByPublicId.has(publicId)) {
+      throw new Error('launcher_public_readiness_projection_duplicate')
+    }
+    publicIdsByServiceId.set(serviceId, publicId)
+    serviceIdsByPublicId.set(publicId, serviceId)
+  }
+  const requiredProjectionValue = (map, key) => {
+    const value = map.get(key)
+    if (!value) {
+      throw new Error('launcher_public_readiness_projection_unmapped')
+    }
+    return value
+  }
+  return Object.freeze({
+    publicIdForServiceId: (serviceId) => requiredProjectionValue(publicIdsByServiceId, serviceId),
+    serviceIdForPublicId: (publicId) => requiredProjectionValue(serviceIdsByPublicId, publicId)
   })
+}
+
+const launcherPublicReadinessProjection = buildPublicReadinessProjection(
+  launcherRuntime.authority.graph.services
+)
+
+const publicReadinessIdsForServiceIds = (serviceIds) => {
+  const publicIds = serviceIds.map((serviceId) =>
+    launcherPublicReadinessProjection.publicIdForServiceId(serviceId)
+  )
   if (new Set(publicIds).size !== publicIds.length) {
-    throw new Error('launcher_public_readiness_id_duplicate')
+    throw new Error('launcher_public_readiness_projection_duplicate')
   }
   return publicIds
 }
@@ -3820,23 +3846,6 @@ const getStatus = async () => {
   const serviceStates = new Map(
     (supervisor.services || []).map((service) => [service.service_id, service.state])
   )
-  const serviceIdsByPublicReadinessId = new Map()
-  for (const spec of launcherRuntime.authority.graph.services) {
-    if (!Object.prototype.hasOwnProperty.call(spec, 'public_readiness_id')) {
-      throw new Error('launcher_public_readiness_id_missing')
-    }
-    const publicId = spec.public_readiness_id
-    if (publicId === null) {
-      continue
-    }
-    if (typeof publicId !== 'string' || !publicId) {
-      throw new Error('launcher_public_readiness_id_invalid')
-    }
-    if (serviceIdsByPublicReadinessId.has(publicId)) {
-      throw new Error('launcher_public_readiness_id_duplicate')
-    }
-    serviceIdsByPublicReadinessId.set(publicId, spec.service_id)
-  }
   const enabledIds = new Set(expectedServicesForOptions(options))
   const services = {}
   for (const spec of launcherRuntime.authority.graph.services) {
@@ -3867,10 +3876,7 @@ const getStatus = async () => {
     }
   }
   const readyServiceIds = [...enabledIds].filter((serviceId) => {
-    const graphId = serviceIdsByPublicReadinessId.get(serviceId)
-    if (!graphId) {
-      throw new Error('launcher_public_readiness_id_unmapped')
-    }
+    const graphId = launcherPublicReadinessProjection.serviceIdForPublicId(serviceId)
     return ['ready', 'external_ready', 'optional_absent'].includes(serviceStates.get(graphId))
   })
   const startupTiming = {
