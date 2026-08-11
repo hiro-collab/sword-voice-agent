@@ -1,0 +1,17 @@
+{
+  "profile_id": "full-system-v0",
+  "layer": "ops",
+  "description": "Full current system cell with conversation, action, environment, reflex, vision, watcher, expression, and display services.",
+  "lifecycle_profile_id": "thought-core-v0",
+  "services": [
+    "home_assistant_bridge",
+    "environment_state_server",
+    "openai_provider_broker",
+    "thought_core_api",
+    "mediapipe_camera_hub_stack",
+    "vision_snapshot_processor",
+    "aituber_kit",
+    "thought_core_watcher",
+    "touchdesigner_control_gui"
+  ]
+}

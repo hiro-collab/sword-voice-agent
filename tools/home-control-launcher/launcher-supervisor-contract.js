@@ -9,6 +9,7 @@
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
+const { validateProfileRecords } = require('./launcher-service-selection')
 
 const AUTHORITY_TOKEN = Symbol('launcher_authority_v2')
 const ID = /^[a-z][a-z0-9_-]{0,63}$/u
@@ -525,10 +526,30 @@ const validateLegacyDrift = (repositoryRoot, graph) => {
     }
   }
 
-  const profile = readContract(path.join(repositoryRoot, 'ops', 'manifests', 'profiles', `${graph.profile_id}.json`), 'drift_profile_missing').value
-  const actualProfile = [...profile.services].sort()
-  const expectedProfile = graph.services.filter((service) => service.legacy_profile_member).map((service) => service.service_id).sort()
-  if (JSON.stringify(actualProfile) !== JSON.stringify(expectedProfile)) fail('drift_legacy_profile_membership')
+  const defaultProfiles = readContract(
+    path.join(repositoryRoot, 'tools', 'home-control-launcher', 'config', 'default-profiles.json'),
+    'drift_profile_missing'
+  ).value
+  if (!Array.isArray(defaultProfiles)) fail('drift_profile_membership')
+  const profileManifests = []
+  for (const profile of defaultProfiles) {
+    const profileId = profile && profile.id
+    if (typeof profileId !== 'string' || !ID.test(profileId)) fail('drift_profile_membership')
+    const profilePath = path.join(repositoryRoot, 'ops', 'manifests', 'profiles', `${profileId}.json`)
+    if (fs.existsSync(profilePath)) {
+      profileManifests.push(readContract(profilePath, 'drift_profile_missing').value)
+    }
+  }
+  try {
+    validateProfileRecords({
+      graphProfileId: graph.profile_id,
+      graphServices: graph.services,
+      defaultProfiles,
+      profileManifests
+    })
+  } catch {
+    fail('drift_profile_membership')
+  }
 
   const route = readContract(path.join(repositoryRoot, 'contracts', 'turn', 'ordinary-standard-route.v1.json'), 'drift_route_missing').value
   const actualReady = [...route.readiness.expected_service_ids].sort()
@@ -538,10 +559,12 @@ const validateLegacyDrift = (repositoryRoot, graph) => {
   let server
   let stack
   let publicStatusProjection
+  let serviceSelection
   try {
     server = readBoundedUtf8Text(path.join(repositoryRoot, 'tools', 'home-control-launcher', 'server.js'), MAX_LEGACY_SOURCE_BYTES, 'drift_legacy_source_missing', 'drift_legacy_source_oversized')
     stack = readBoundedUtf8Text(path.join(repositoryRoot, 'ops', 'scripts', 'home-control-stack', 'start-home-control-stack.ps1'), MAX_LEGACY_SOURCE_BYTES, 'drift_legacy_source_missing', 'drift_legacy_source_oversized')
     publicStatusProjection = readBoundedUtf8Text(path.join(repositoryRoot, 'tools', 'home-control-launcher', 'launcher-public-status-projection.js'), MAX_LEGACY_SOURCE_BYTES, 'drift_legacy_source_missing', 'drift_legacy_source_oversized')
+    serviceSelection = readBoundedUtf8Text(path.join(repositoryRoot, 'tools', 'home-control-launcher', 'launcher-service-selection.js'), MAX_LEGACY_SOURCE_BYTES, 'drift_legacy_source_missing', 'drift_legacy_source_oversized')
   } catch (error) {
     if (error instanceof LauncherContractError) throw error
     fail('drift_legacy_source_missing')
@@ -572,7 +595,11 @@ const validateLegacyDrift = (repositoryRoot, graph) => {
       !/launcher_public_readiness_projection_invalid/u.test(projection) ||
       !/launcher_public_readiness_projection_duplicate/u.test(projection) ||
       !/launcher_public_readiness_projection_unmapped/u.test(projection) ||
-      !/return\s+publicReadinessIdsForServiceIds\(serviceIds\)/u.test(selection)) {
+      !/const\s+selectedPublicIds\s*=\s*new\s+Set\(publicReadinessIdsForServiceIds\(serviceIds\)\)/u.test(selection) ||
+      !/ORDINARY_ROUTE_CONTRACT\.readiness\.expected_service_ids\.filter/u.test(selection) ||
+      !/publicIds\.length\s*!==\s*selectedPublicIds\.size/u.test(selection) ||
+      !/launcher_public_readiness_projection_unmapped/u.test(selection) ||
+      !/return\s+publicIds/u.test(selection)) {
     fail('drift_launcher_readiness_projection')
   }
   if (!/require\('\.\/launcher-public-status-projection'\)/u.test(server) ||
@@ -595,9 +622,27 @@ const validateLegacyDrift = (repositoryRoot, graph) => {
       /(?:read|write)File/u.test(publicStatusProjection)) {
     fail('drift_launcher_status_projection')
   }
-  const launcherServiceIds = [...selection.matchAll(/serviceIds\.push\('([^']+)'\)/gu)].map((match) => match[1]).sort()
+  if (!/require\('\.\/launcher-service-selection'\)/u.test(server) ||
+      !/selectedServiceIdsForOptions\(\{/u.test(selection) ||
+      !/validateProfileRecords\(\{/u.test(server) ||
+      /legacy_profile_member/u.test(server) ||
+      /requirement\s*===\s*'required'/u.test(server) ||
+      !/const\s+readBoundedJsonFile\s*=\s*\(filePath,\s*fallback\s*=\s*null\)/u.test(server) ||
+      !/bytes\.length\s*>\s*MAX_PROFILE_BYTES/u.test(server) ||
+      !/new\s+TextDecoder\('utf-8',\s*\{\s*fatal:\s*true\s*\}\)/u.test(server) ||
+      !/readProfiles\s*=\s*\(\)\s*=>\s*readBoundedJsonFile\(PROFILE_FILE,\s*\[\]\)/u.test(server) ||
+      !/readBoundedJsonFile\(path\.join\(PROFILE_MANIFEST_DIR/u.test(server) ||
+      !/membershipOptionDefaults/u.test(serviceSelection) ||
+      !/selectedServiceIdsForOptions/u.test(serviceSelection) ||
+      !/validateProfileRecords/u.test(serviceSelection) ||
+      !/launcher_required_service_missing/u.test(serviceSelection)) fail('drift_launcher_service_selection')
+  const launcherServiceIds = [...serviceSelection.matchAll(/case\s+'([^']+)'/gu)].map((match) => match[1])
+  if (/serviceId\s*===\s*'voicevox'/u.test(serviceSelection)) launcherServiceIds.push('voicevox')
+  const publicLauncherServiceIds = launcherServiceIds
+    .filter((serviceId) => graph.services.find((service) => service.service_id === serviceId)?.public_readiness_id !== null)
+    .sort()
   const expectedLauncherServiceIds = graph.services.filter((service) => service.public_readiness_id !== null).map((service) => service.service_id).sort()
-  if (JSON.stringify(launcherServiceIds) !== JSON.stringify(expectedLauncherServiceIds)) fail('drift_launcher_readiness_list')
+  if (JSON.stringify(publicLauncherServiceIds) !== JSON.stringify(expectedLauncherServiceIds)) fail('drift_launcher_readiness_list')
   const stackIds = [...stack.matchAll(/\$specs\s*\+=\s*New-ServiceSpec[\s\S]{0,400}?-Name\s+"([^"]+)"/gu)].map((match) => match[1])
   const expectedStack = [...new Set(graph.services.flatMap((service) => service.start.legacy_spec_ids))].sort()
   if (JSON.stringify([...new Set(stackIds)].sort()) !== JSON.stringify(expectedStack)) fail('drift_stack_service_list')

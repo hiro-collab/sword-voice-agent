@@ -5,8 +5,10 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,7 +37,10 @@ LAUNCHER_PUBLIC_STATUS_PROJECTION = (
     ROOT / "tools" / "home-control-launcher" / "launcher-public-status-projection.js"
 )
 LAUNCHER_SURFACE_CATALOG = ROOT / "tools" / "home-control-launcher" / "launcher-surface-catalog.js"
+LAUNCHER_SERVICE_SELECTION = ROOT / "tools" / "home-control-launcher" / "launcher-service-selection.js"
 LAUNCHER_PROFILES = ROOT / "tools" / "home-control-launcher" / "config" / "default-profiles.json"
+PROFILE_MANIFEST_DIR = ROOT / "ops" / "manifests" / "profiles"
+SERVICE_GRAPH = ROOT / "ops" / "manifests" / "launcher-service-graph.standard.v1.json"
 TIMING_COLLECTOR = ROOT / "tools" / "home-control-launcher" / "scripts" / "collect-demo-timing.mjs"
 DEMO_SAFE_DEFAULTS = PRODUCT_ROOT / "manifests" / "demo-safe-settings" / "defaults.json"
 STACK_START_SCRIPT = ROOT / "ops" / "scripts" / "home-control-stack" / "start-home-control-stack.ps1"
@@ -286,7 +291,11 @@ $cases = @(
             stop_stack.index("const activeOperation = operationState()"),
             stop_stack.index("const config = readLauncherConfig()"),
         )
-        self.assertIn("return launcherRuntime.stop({ profileId })", stop_stack)
+        self.assertIn("return launcherRuntime.stop({ profileId: activeProfileId })", stop_stack)
+        self.assertIn(
+            "return launcherRuntime.stop({ profileId: activeProfileId || lifecycleProfileId })",
+            stop_stack,
+        )
         self.assertNotIn("childProcess.spawn", start_stack)
         self.assertNotIn("childProcess.spawnSync", start_stack)
         self.assertIn("status_script_execution: false", status_route)
@@ -295,12 +304,175 @@ $cases = @(
         self.assertIn("Invoke-RestMethod", system)
         self.assertIn('"http://127.0.0.1:$LauncherPort"', system)
         self.assertIn("launcher_compatibility_recursion_rejected", system)
+        self.assertNotIn("$primaryProfile", system)
+        initial_options = extract_between(
+            system,
+            "$options = [ordered]@{",
+            'if ($PSBoundParameters.ContainsKey("ThoughtCoreLlmProvider"))',
+        )
+        for delegated_option in (
+            "ThoughtCoreLlmProvider",
+            "MediapipeMode",
+            "MediapipeOpenBrowser",
+            "MediapipeNoBrowser",
+            "SkipHomeAssistantBridge",
+            "SkipEnvironmentState",
+            "SkipMediapipe",
+            "SkipVisionSnapshotProcessor",
+            "SkipAituber",
+            "SkipTouchDesignerGui",
+            "EnableThoughtCore",
+            "EnableThoughtCoreWatch",
+            "StopExisting",
+        ):
+            self.assertNotIn(f"{delegated_option} =", initial_options)
         for retired_name in (
             "start-home-control-stack.ps1",
             "status-home-control-stack.ps1",
             "stop-home-control-stack.ps1",
         ):
             self.assertNotIn(retired_name, system)
+
+    def test_system_client_sends_mode_identity_without_reauthoring_membership(self) -> None:
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        if not powershell:
+            self.skipTest("PowerShell is required for the compatibility-client contract")
+
+        captured: list[tuple[str, dict]] = []
+        effective_hash = "a" * 64
+
+        class LauncherApiStub(BaseHTTPRequestHandler):
+            def log_message(self, _format: str, *args: object) -> None:
+                return
+
+            def do_POST(self) -> None:
+                content_length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                captured.append((self.path, body))
+                if self.path == "/api/save-config":
+                    response = {
+                        "ok": True,
+                        "profileId": body["profileId"],
+                        "configIdentity": {
+                            "profile_id": "thought-core-v0",
+                            "effective_config_sha256": effective_hash,
+                        },
+                    }
+                else:
+                    response = {
+                        "ok": True,
+                        "result_class": "stopped" if self.path == "/api/stop" else "ready",
+                        "operation": {"profile_id": "thought-core-v0"},
+                    }
+                payload = json.dumps(response, separators=(",", ":")).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        api = ThreadingHTTPServer(("127.0.0.1", 0), LauncherApiStub)
+        api_thread = threading.Thread(target=api.serve_forever, daemon=True)
+        api_thread.start()
+        base_url = f"http://127.0.0.1:{api.server_address[1]}"
+
+        def run_system(command: str, profile_id: str, *extra: str) -> dict:
+            result = subprocess.run(
+                [
+                    powershell,
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-File",
+                    str(SYSTEM_SCRIPT),
+                    command,
+                    "-Profile",
+                    profile_id,
+                    "-LauncherUrl",
+                    base_url,
+                    *extra,
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+
+        try:
+            supported_modes = (
+                "thought-core-v0",
+                "visual-effects-v0",
+                "full-system-v0",
+            )
+            for mode_id in supported_modes:
+                started = run_system("start", mode_id)
+                self.assertEqual(started["operation"]["profile_id"], "thought-core-v0")
+                stopped = run_system("stop", mode_id)
+                self.assertEqual(stopped["operation"]["profile_id"], "thought-core-v0")
+
+            run_system(
+                "start",
+                "full-system-v0",
+                "-SkipMediapipe",
+                "-SkipVisionSnapshotProcessor",
+                "-ThoughtCoreLlmProvider",
+                "sword-openai-broker",
+            )
+        finally:
+            api.shutdown()
+            api.server_close()
+            api_thread.join(timeout=5)
+
+        save_requests = [body for path, body in captured if path == "/api/save-config"]
+        start_requests = [body for path, body in captured if path == "/api/start"]
+        stop_requests = [body for path, body in captured if path == "/api/stop"]
+        self.assertEqual(
+            [body["profileId"] for body in save_requests[:3]],
+            list(supported_modes),
+        )
+        self.assertEqual(
+            [body["profileId"] for body in start_requests[:3]],
+            list(supported_modes),
+        )
+        self.assertEqual(
+            [body["profileId"] for body in stop_requests],
+            list(supported_modes),
+        )
+
+        delegated_options = {
+            "ThoughtCoreLlmProvider",
+            "MediapipeMode",
+            "MediapipeOpenBrowser",
+            "MediapipeNoBrowser",
+            "SkipHomeAssistantBridge",
+            "SkipEnvironmentState",
+            "SkipMediapipe",
+            "SkipVisionSnapshotProcessor",
+            "SkipAituber",
+            "SkipTouchDesignerGui",
+            "EnableThoughtCore",
+            "EnableThoughtCoreWatch",
+            "StopExisting",
+        }
+        for body in save_requests[:3]:
+            self.assertTrue(delegated_options.isdisjoint(body["options"]))
+        explicit_options = save_requests[3]["options"]
+        self.assertTrue(explicit_options["SkipMediapipe"])
+        self.assertTrue(explicit_options["SkipVisionSnapshotProcessor"])
+        self.assertEqual(
+            explicit_options["ThoughtCoreLlmProvider"],
+            "sword-openai-broker",
+        )
+        self.assertEqual(
+            delegated_options.intersection(explicit_options),
+            {
+                "ThoughtCoreLlmProvider",
+                "SkipMediapipe",
+                "SkipVisionSnapshotProcessor",
+            },
+        )
 
     def test_body_map_inspector_is_the_only_launcher_diagnostics_route(self) -> None:
         server = read_launcher_server()
@@ -656,7 +828,7 @@ $cases = @(
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as rebound:
                     rebound.bind(("127.0.0.1", launcher_port))
 
-    def test_new_launcher_exposes_only_its_graph_profile_and_locks_active_config(self) -> None:
+    def test_launcher_separates_user_mode_from_lifecycle_identity_and_locks_active_config(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_root:
             state_dir = Path(temporary_root) / "state"
             probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -699,7 +871,7 @@ $cases = @(
                 self.assertIsNotNone(state)
                 self.assertEqual(
                     [profile["id"] for profile in state["profiles"]],
-                    ["thought-core-v0"],
+                    ["thought-core-v0", "visual-effects-v0", "full-system-v0"],
                 )
                 self.assertEqual(
                     state["config"]["profileState"]["resultClass"],
@@ -720,7 +892,10 @@ $cases = @(
                     unsupported["resultClass"],
                     "blocked_unsupported_supervisor_profile",
                 )
-                self.assertEqual(unsupported["supportedProfileIds"], ["thought-core-v0"])
+                self.assertEqual(
+                    unsupported["supportedProfileIds"],
+                    ["thought-core-v0", "visual-effects-v0", "full-system-v0"],
+                )
 
                 inconsistent_request = urllib.request.Request(
                     f"http://127.0.0.1:{launcher_port}/api/save-config",
@@ -744,26 +919,25 @@ $cases = @(
                 )
                 self.assertEqual(inconsistent["error"], "private_plan_config_invalid")
 
-                options = {
-                    "SkipMediapipe": True,
-                    "SkipVisionSnapshotProcessor": True,
-                }
+                options = {}
                 save_request = urllib.request.Request(
                     f"http://127.0.0.1:{launcher_port}/api/save-config",
                     data=json.dumps(
-                        {"profileId": "thought-core-v0", "options": options}
+                        {"profileId": "visual-effects-v0", "options": options}
                     ).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
                 with urllib.request.urlopen(save_request, timeout=5) as response:
                     saved = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(saved["profileId"], "visual-effects-v0")
+                self.assertEqual(saved["configIdentity"]["profile_id"], "thought-core-v0")
 
                 start_request = urllib.request.Request(
                     f"http://127.0.0.1:{launcher_port}/api/start",
                     data=json.dumps(
                         {
-                            "profileId": "thought-core-v0",
+                            "profileId": "visual-effects-v0",
                             "expectedConfigSha256": saved["configIdentity"][
                                 "effective_config_sha256"
                             ],
@@ -789,12 +963,13 @@ $cases = @(
                 )
                 failed_record = json.loads(operation_record_path.read_text(encoding="utf-8"))
                 failed_generation = failed_record["supervisor_generation"]
+                self.assertEqual(failed_record["profile_id"], "thought-core-v0")
 
                 save_after_failure_request = urllib.request.Request(
                     f"http://127.0.0.1:{launcher_port}/api/save-config",
                     data=json.dumps(
                         {
-                            "profileId": "thought-core-v0",
+                            "profileId": "visual-effects-v0",
                             "options": {**options, "MediapipeCameraFps": 25},
                         }
                     ).encode("utf-8"),
@@ -809,7 +984,7 @@ $cases = @(
                     f"http://127.0.0.1:{launcher_port}/api/start",
                     data=json.dumps(
                         {
-                            "profileId": "thought-core-v0",
+                            "profileId": "visual-effects-v0",
                             "expectedConfigSha256": saved_after_failure["configIdentity"][
                                 "effective_config_sha256"
                             ],
@@ -834,12 +1009,13 @@ $cases = @(
                     started["operation"]["effective_config_sha256"],
                     saved_after_failure["configIdentity"]["effective_config_sha256"],
                 )
+                self.assertEqual(started["operation"]["profile_id"], "thought-core-v0")
 
                 locked_request = urllib.request.Request(
                     f"http://127.0.0.1:{launcher_port}/api/save-config",
                     data=json.dumps(
                         {
-                            "profileId": "thought-core-v0",
+                            "profileId": "visual-effects-v0",
                             "options": {**options, "MediapipeCameraFps": 30},
                         }
                     ).encode("utf-8"),
@@ -959,7 +1135,7 @@ $cases = @(
 
                 save_body = json.dumps(
                     {
-                        "profileId": "thought-core-v0",
+                        "profileId": "full-system-v0",
                         "options": {
                             "MediapipeCameraName": "camera-a",
                             "MediapipeCameraSelectionKey": camera_a["value"],
@@ -982,7 +1158,7 @@ $cases = @(
 
                 retired_mode_body = json.dumps(
                     {
-                        "profileId": "thought-core-v0",
+                        "profileId": "full-system-v0",
                         "options": {"MediapipeMode": "headless"},
                     }
                 ).encode("utf-8")
@@ -1048,7 +1224,7 @@ $cases = @(
 
                 saved_boundary_body = json.dumps(
                     {
-                        "profileId": "thought-core-v0",
+                        "profileId": "full-system-v0",
                         "useSavedOptions": True,
                         "resolveSelection": True,
                         "expectedResolvedCameraName": "camera-a",
@@ -1073,7 +1249,7 @@ $cases = @(
                 adversarial_name = 'private://camera-$(expand)-`tick-"quote"'
                 request_body = json.dumps(
                     {
-                        "profileId": "thought-core-v0",
+                        "profileId": "full-system-v0",
                         "options": {"MediapipeCameraName": adversarial_name},
                     }
                 ).encode("utf-8")
@@ -1115,7 +1291,7 @@ $cases = @(
                 ):
                     invalid_body = json.dumps(
                         {
-                            "profileId": "thought-core-v0",
+                            "profileId": "full-system-v0",
                             "options": {
                                 "MediapipeCameraName": invalid_camera_name,
                                 "MediapipeCameraSelectionKey": "",
@@ -1225,7 +1401,7 @@ $cases = @(
                 selected = payload["devices"][0]
                 save_body = json.dumps(
                     {
-                        "profileId": "thought-core-v0",
+                        "profileId": "full-system-v0",
                         "options": {
                             "MediapipeCameraName": selected["label"],
                             "MediapipeCameraSelectionKey": selected["value"],
@@ -1248,7 +1424,7 @@ $cases = @(
 
                 boundary_body = json.dumps(
                     {
-                        "profileId": "thought-core-v0",
+                        "profileId": "full-system-v0",
                         "useSavedOptions": True,
                         "resolveSelection": True,
                         "expectedResolvedCameraName": first_alternative,
@@ -1268,7 +1444,7 @@ $cases = @(
                 self.assertNotIn("@device_pnp_", json.dumps(boundary))
 
                 for expected_hash in (None, "f" * 64):
-                    identity_body = {"profileId": "thought-core-v0"}
+                    identity_body = {"profileId": "full-system-v0"}
                     if expected_hash is not None:
                         identity_body["expectedConfigSha256"] = expected_hash
                     identity_request = urllib.request.Request(
@@ -1304,7 +1480,7 @@ $cases = @(
                     f"http://127.0.0.1:{launcher_port}/api/start",
                     data=json.dumps(
                         {
-                            "profileId": "thought-core-v0",
+                            "profileId": "full-system-v0",
                             "expectedConfigSha256": saved["configIdentity"][
                                 "effective_config_sha256"
                             ],
@@ -1332,7 +1508,7 @@ $cases = @(
                     f"http://127.0.0.1:{launcher_port}/api/start",
                     data=json.dumps(
                         {
-                            "profileId": "thought-core-v0",
+                            "profileId": "full-system-v0",
                             "expectedConfigSha256": saved["configIdentity"][
                                 "effective_config_sha256"
                             ],
@@ -1362,7 +1538,7 @@ $cases = @(
                     f"http://127.0.0.1:{launcher_port}/api/start",
                     data=json.dumps(
                         {
-                            "profileId": "thought-core-v0",
+                            "profileId": "full-system-v0",
                             "expectedConfigSha256": saved["configIdentity"][
                                 "effective_config_sha256"
                             ],
@@ -1406,7 +1582,7 @@ $cases = @(
             (state_dir / "launcher-config.json").write_text(
                 json.dumps(
                     {
-                        "selectedProfileId": "thought-core-v0",
+                        "selectedProfileId": "full-system-v0",
                         "options": {"MediapipeCameraName": local_camera},
                     }
                 ),
@@ -1495,7 +1671,7 @@ $cases = @(
 
                 save_body = json.dumps(
                     {
-                        "profileId": "thought-core-v0",
+                        "profileId": "full-system-v0",
                         "options": {"MediapipeCameraName": remote_camera},
                     }
                 ).encode("utf-8")
@@ -1519,7 +1695,7 @@ $cases = @(
 
                 boundary_body = json.dumps(
                     {
-                        "profileId": "thought-core-v0",
+                        "profileId": "full-system-v0",
                         "options": {"MediapipeCameraName": remote_camera},
                         "applyRequestCameraBoundary": True,
                     }
@@ -2388,16 +2564,63 @@ assert.deepStrictEqual(previewSnapshots[2], {
         self.assertIn("sendJson(response, 400, profileError)", server)
         self.assertIn("profileConfigState", server)
 
-    def test_launcher_profiles_keep_skip_enabled_combinations_explicit(self) -> None:
+    def test_launcher_modes_use_profile_manifests_as_the_single_membership_authority(self) -> None:
         profiles = {profile["id"]: profile for profile in read_launcher_profiles()}
+        graph = json.loads(SERVICE_GRAPH.read_text(encoding="utf-8"))
+        graph_services = graph["services"]
+        required_ids = {
+            service["service_id"]
+            for service in graph_services
+            if service["requirement"] == "required"
+        }
+        full_ids = {
+            service["service_id"]
+            for service in graph_services
+            if service["legacy_profile_member"]
+        }
+        membership_fields = {
+            "EnableThoughtCore",
+            "EnableThoughtCoreWatch",
+            "SkipHomeAssistantBridge",
+            "SkipEnvironmentState",
+            "SkipMediapipe",
+            "SkipVisionSnapshotProcessor",
+            "SkipAituber",
+            "SkipTouchDesignerGui",
+        }
+        supported_ids = ("thought-core-v0", "visual-effects-v0", "full-system-v0")
+        manifests = {
+            profile_id: json.loads(
+                (PROFILE_MANIFEST_DIR / f"{profile_id}.json").read_text(encoding="utf-8")
+            )
+            for profile_id in supported_ids
+        }
 
-        thought_core = profiles["thought-core-v0"]["options"]
-        self.assertTrue(thought_core["EnableThoughtCore"])
-        self.assertEqual(
-            thought_core["ThoughtCoreLlmProvider"],
-            "sword-openai-broker",
-        )
-        self.assertTrue(thought_core["EnableThoughtCoreWatch"])
+        self.assertEqual(manifests["thought-core-v0"]["services"], manifests["visual-effects-v0"]["services"])
+        self.assertEqual(set(manifests["thought-core-v0"]["services"]), required_ids)
+        self.assertEqual(set(manifests["full-system-v0"]["services"]), full_ids)
+        for profile_id in supported_ids:
+            self.assertEqual(manifests[profile_id]["lifecycle_profile_id"], graph["profile_id"])
+            self.assertTrue(membership_fields.isdisjoint(profiles[profile_id]["options"]))
+        self.assertIn("Projection Stage Output", profiles["visual-effects-v0"]["description"])
+
+        server = read_launcher_server()
+        private_plan = (ROOT / "tools" / "home-control-launcher" / "launcher-private-service-plan.js").read_text(encoding="utf-8")
+        surface_catalog = read_launcher_surface_catalog()
+        selection = LAUNCHER_SERVICE_SELECTION.read_text(encoding="utf-8")
+        self.assertNotIn("OPS_PROFILE_BY_LAUNCHER_PROFILE", server)
+        self.assertNotIn("legacy_profile_member", server)
+        self.assertNotIn("PRIMARY_PROFILE_ID", server)
+        self.assertIn("const DEFAULT_MODE_ID = 'thought-core-v0'", server)
+        self.assertIn("const ORDINARY_ROUTE_MODE_ID = 'full-system-v0'", server)
+        self.assertIn("normalizeOptions(ORDINARY_ROUTE_MODE_ID, {})", server)
+        self.assertIn("lifecycleProfileIdFor", server)
+        self.assertIn("selectedServiceIdsForOptions", server)
+        self.assertIn("selectedServiceIdsForOptions", private_plan)
+        self.assertIn("selectedServiceIds", surface_catalog)
+        self.assertIn("membershipOptionDefaults", selection)
+        self.assertIn("selectedServiceIdsForOptions", selection)
+        self.assertIn("validateProfileRecords", selection)
 
         demo_fast = profiles["demo-fast"]["options"]
         self.assertEqual(profiles["demo-fast"]["group"], "Compatibility")
@@ -2457,8 +2680,104 @@ assert.deepStrictEqual(previewSnapshots[2], {
         }
         self.assertEqual(
             response_provider_profiles,
-            {"thought-core-v0", "demo-fast", "demo-fast-action"},
+            {
+                "thought-core-v0",
+                "visual-effects-v0",
+                "full-system-v0",
+                "demo-fast",
+                "demo-fast-action",
+            },
         )
+
+    def test_launcher_service_selection_is_graph_ordered_pure_and_fail_closed(self) -> None:
+        script = r"""
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+const selection = require('./tools/home-control-launcher/launcher-service-selection')
+const graph = JSON.parse(fs.readFileSync('./ops/manifests/launcher-service-graph.standard.v1.json', 'utf8'))
+const loadProfile = (profileId) => JSON.parse(
+  fs.readFileSync(path.join('./ops/manifests/profiles', `${profileId}.json`), 'utf8')
+)
+const resolve = (profileId, overrides = {}) => {
+  const manifest = loadProfile(profileId)
+  const before = JSON.stringify(manifest)
+  const defaults = selection.membershipOptionDefaults({ graphServices: graph.services, profileManifest: manifest })
+  const selected = selection.selectedServiceIdsForOptions({
+    graphServices: graph.services,
+    options: { ...defaults, SkipVoicevoxCheck: false, ...overrides }
+  })
+  assert.equal(JSON.stringify(manifest), before)
+  return selected
+}
+const conversation = resolve('thought-core-v0')
+const visual = resolve('visual-effects-v0')
+const full = resolve('full-system-v0')
+assert.deepEqual(conversation, ['openai_provider_broker', 'thought_core_api', 'aituber_kit', 'voicevox'])
+assert.deepEqual(visual, conversation)
+assert.deepEqual(full, [
+  'home_assistant_bridge',
+  'environment_state_server',
+  'openai_provider_broker',
+  'thought_core_api',
+  'mediapipe_camera_hub_stack',
+  'vision_snapshot_processor',
+  'aituber_kit',
+  'thought_core_watcher',
+  'touchdesigner_control_gui',
+  'voicevox'
+])
+assert.deepEqual(resolve('full-system-v0', {
+  SkipMediapipe: true,
+  SkipVisionSnapshotProcessor: true
+}), [
+  'home_assistant_bridge',
+  'environment_state_server',
+  'openai_provider_broker',
+  'thought_core_api',
+  'aituber_kit',
+  'thought_core_watcher',
+  'touchdesigner_control_gui',
+  'voicevox'
+])
+assert.throws(
+  () => resolve('thought-core-v0', { SkipAituber: true }),
+  /launcher_required_service_missing/
+)
+assert.throws(
+  () => selection.membershipOptionDefaults({
+    graphServices: graph.services,
+    profileManifest: { services: ['thought_core_api', 'thought_core_api'] }
+  }),
+  /launcher_profile_membership_invalid/
+)
+assert.throws(
+  () => selection.membershipOptionDefaults({
+    graphServices: graph.services,
+    profileManifest: { services: ['unknown_service'] }
+  }),
+  /launcher_profile_membership_invalid/
+)
+assert.throws(
+  () => selection.selectedServiceIdsForOptions({
+    graphServices: [graph.services[2], graph.services[2]],
+    options: { EnableThoughtCore: true }
+  }),
+  /launcher_service_selection_invalid/
+)
+console.log(JSON.stringify({ conversation, visual, full }))
+"""
+        result = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        matrix = json.loads(result.stdout)
+        self.assertEqual(matrix["conversation"], matrix["visual"])
+        self.assertEqual(len(matrix["conversation"]), 4)
+        self.assertEqual(len(matrix["full"]), 10)
 
     def test_launcher_passes_readiness_timeouts_to_node_plan_and_compatibility_json(self) -> None:
         server = read_launcher_server()

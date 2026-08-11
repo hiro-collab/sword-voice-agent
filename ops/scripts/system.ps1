@@ -108,50 +108,6 @@ if (
     throw "launcher_compatibility_url_invalid"
 }
 
-$primaryProfile = $Profile -ceq "thought-core-v0"
-$effectiveThoughtCoreProvider = if (
-    $primaryProfile -and
-    -not $PSBoundParameters.ContainsKey("ThoughtCoreLlmProvider")
-) {
-    "sword-openai-broker"
-}
-else {
-    $ThoughtCoreLlmProvider
-}
-$effectiveEnableThoughtCore = if ($SkipThoughtCore) {
-    $false
-}
-elseif ($PSBoundParameters.ContainsKey("EnableThoughtCore")) {
-    [bool]$EnableThoughtCore
-}
-else {
-    $primaryProfile
-}
-$effectiveEnableThoughtCoreWatch = if ($SkipThoughtCoreWatch) {
-    $false
-}
-elseif ($PSBoundParameters.ContainsKey("EnableThoughtCoreWatch")) {
-    [bool]$EnableThoughtCoreWatch
-}
-else {
-    $primaryProfile
-}
-$effectiveMediapipeNoBrowser = if (
-    $PSBoundParameters.ContainsKey("MediapipeNoBrowser") -or
-    $PSBoundParameters.ContainsKey("MediapipeOpenBrowser")
-) {
-    [bool]$MediapipeNoBrowser
-}
-else {
-    $primaryProfile
-}
-$effectiveStopExisting = if ($PSBoundParameters.ContainsKey("StopExisting")) {
-    [bool]$StopExisting
-}
-else {
-    $primaryProfile
-}
-
 $options = [ordered]@{
     HomeAssistantBridgePort = $HomeAssistantBridgePort
     HomeAssistantBridgeHost = $HomeAssistantBridgeHost
@@ -167,31 +123,58 @@ $options = [ordered]@{
     ThoughtCorePort = $ThoughtCorePort
     OpenAIBrokerPort = $OpenAIBrokerPort
     OpenAIBrokerRequestBudget = $OpenAIBrokerRequestBudget
-    ThoughtCoreLlmProvider = $effectiveThoughtCoreProvider
     VoicevoxUrl = $VoicevoxUrl
     VoicevoxReadyTimeoutSeconds = $VoicevoxReadyTimeoutSeconds
     MediapipeReadyTimeoutSeconds = $MediapipeReadyTimeoutSeconds
-    MediapipeMode = $MediapipeMode
     MediapipeCameraName = $MediapipeCameraName
     MediapipeCameraWidth = $MediapipeCameraWidth
     MediapipeCameraHeight = $MediapipeCameraHeight
     MediapipeCameraFps = $MediapipeCameraFps
     MediapipeCameraInputCodec = $MediapipeCameraInputCodec
-    MediapipeOpenBrowser = [bool]$MediapipeOpenBrowser
-    MediapipeNoBrowser = $effectiveMediapipeNoBrowser
     MediapipePythonGui = [bool]$MediapipePythonGui
-    SkipHomeAssistantBridge = [bool]$SkipHomeAssistantBridge
-    SkipEnvironmentState = [bool]$SkipEnvironmentState
-    SkipMediapipe = [bool]$SkipMediapipe
-    SkipVisionSnapshotProcessor = [bool]$SkipVisionSnapshotProcessor
-    SkipAituber = [bool]$SkipAituber
-    SkipTouchDesignerGui = [bool]$SkipTouchDesignerGui
-    EnableThoughtCore = $effectiveEnableThoughtCore
-    EnableThoughtCoreWatch = $effectiveEnableThoughtCoreWatch
     ThoughtCoreNoProvider = [bool]$ThoughtCoreNoProvider
-    StopExisting = $effectiveStopExisting
     SkipVoicevoxCheck = [bool]$SkipVoicevoxCheck
     EnableHomeControlFaultInjection = [bool]$EnableHomeControlFaultInjection
+}
+if ($PSBoundParameters.ContainsKey("ThoughtCoreLlmProvider")) {
+    $options.ThoughtCoreLlmProvider = $ThoughtCoreLlmProvider
+}
+if ($PSBoundParameters.ContainsKey("MediapipeMode")) {
+    $options.MediapipeMode = $MediapipeMode
+}
+if (
+    $PSBoundParameters.ContainsKey("MediapipeOpenBrowser") -or
+    $PSBoundParameters.ContainsKey("MediapipeNoBrowser")
+) {
+    $options.MediapipeOpenBrowser = [bool]$MediapipeOpenBrowser
+    $options.MediapipeNoBrowser = [bool]$MediapipeNoBrowser
+}
+foreach ($membershipSwitch in @(
+    "SkipHomeAssistantBridge",
+    "SkipEnvironmentState",
+    "SkipMediapipe",
+    "SkipVisionSnapshotProcessor",
+    "SkipAituber",
+    "SkipTouchDesignerGui"
+)) {
+    if ($PSBoundParameters.ContainsKey($membershipSwitch)) {
+        $options[$membershipSwitch] = [bool]$PSBoundParameters[$membershipSwitch]
+    }
+}
+if ($PSBoundParameters.ContainsKey("SkipThoughtCore")) {
+    $options.EnableThoughtCore = -not [bool]$SkipThoughtCore
+}
+elseif ($PSBoundParameters.ContainsKey("EnableThoughtCore")) {
+    $options.EnableThoughtCore = [bool]$EnableThoughtCore
+}
+if ($PSBoundParameters.ContainsKey("SkipThoughtCoreWatch")) {
+    $options.EnableThoughtCoreWatch = -not [bool]$SkipThoughtCoreWatch
+}
+elseif ($PSBoundParameters.ContainsKey("EnableThoughtCoreWatch")) {
+    $options.EnableThoughtCoreWatch = [bool]$EnableThoughtCoreWatch
+}
+if ($PSBoundParameters.ContainsKey("StopExisting")) {
+    $options.StopExisting = [bool]$StopExisting
 }
 if (-not [string]::IsNullOrWhiteSpace($HomeControlConfigPath)) {
     $options.HomeControlConfigPath = $HomeControlConfigPath

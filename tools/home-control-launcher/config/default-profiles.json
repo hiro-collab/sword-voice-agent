@@ -1,13 +1,35 @@
 [
   {
     "id": "thought-core-v0",
-    "name": "System Cell (Thought Core)",
+    "name": "Conversation (Thought Core)",
     "group": "Primary",
-    "description": "Start the current system cell with Thought Core, expression, reflex, environment, action bridge, and display services.",
+    "description": "Start the minimum provider-backed Thought Core conversation and expression runtime.",
     "options": {
       "StopExisting": true,
-      "EnableThoughtCore": true,
-      "EnableThoughtCoreWatch": true,
+      "ThoughtCoreLlmProvider": "sword-openai-broker",
+      "MediapipeMode": "mediamtx",
+      "MediapipeNoBrowser": true
+    }
+  },
+  {
+    "id": "visual-effects-v0",
+    "name": "Conversation + Visual Effects",
+    "group": "Primary",
+    "description": "Start the conversation stack for the existing Projection Stage Output Fire/Thunder surface.",
+    "options": {
+      "StopExisting": true,
+      "ThoughtCoreLlmProvider": "sword-openai-broker",
+      "MediapipeMode": "mediamtx",
+      "MediapipeNoBrowser": true
+    }
+  },
+  {
+    "id": "full-system-v0",
+    "name": "Full System Cell",
+    "group": "Primary",
+    "description": "Start the full current system cell with conversation, action, environment, reflex, vision, watcher, expression, and display services.",
+    "options": {
+      "StopExisting": true,
       "ThoughtCoreLlmProvider": "sword-openai-broker",
       "MediapipeMode": "mediamtx",
       "MediapipeNoBrowser": true

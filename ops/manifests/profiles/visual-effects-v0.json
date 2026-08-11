@@ -1,7 +1,7 @@
 {
-  "profile_id": "thought-core-v0",
+  "profile_id": "visual-effects-v0",
   "layer": "ops",
-  "description": "Minimum conversation stack using the provider broker, Thought Core API, and expression runtime.",
+  "description": "Conversation stack presented through the canonical Projection Stage Output surface.",
   "lifecycle_profile_id": "thought-core-v0",
   "services": [
     "openai_provider_broker",

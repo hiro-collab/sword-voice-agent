@@ -14,6 +14,7 @@ const { TextDecoder } = require('node:util')
 
 const { assertAuthority, canonicalJsonSha256, deepFreeze } = require('./launcher-supervisor-contract')
 const { buildProjectionVisualUrls } = require('./launcher-surface-catalog')
+const { selectedServiceIdsForOptions } = require('./launcher-service-selection')
 
 const PLAN_DIRECTORY = 'launcher-private-plan.v1'
 const PLAN_FILE = 'launcher-private-service-plan.v1.json'
@@ -486,15 +487,21 @@ const compilePrivateServicePlan = ({
     display: path.join(workspace, 'organs', 'display', 'touchdesigner-ai-controller'),
     speech: path.join(workspace, 'organs', 'speech-input', 'ai-talk-core')
   }
-  const homeEnabled = !options.SkipHomeAssistantBridge
-  const environmentEnabled = !options.SkipEnvironmentState
-  const watcherEnabled = options.EnableThoughtCoreWatch
-  const displayEnabled = !options.SkipTouchDesignerGui
+  const selectedServiceIds = new Set(selectedServiceIdsForOptions({
+    graphServices: authority.graph.services,
+    options
+  }))
+  const homeEnabled = selectedServiceIds.has('home_assistant_bridge')
+  const environmentEnabled = selectedServiceIds.has('environment_state_server')
+  const cameraEnabled = selectedServiceIds.has('mediapipe_camera_hub_stack')
+  const visionEnabled = selectedServiceIds.has('vision_snapshot_processor')
+  const watcherEnabled = selectedServiceIds.has('thought_core_watcher')
+  const displayEnabled = selectedServiceIds.has('touchdesigner_control_gui')
   for (const [name, root] of Object.entries(roots)) {
     if ((name === 'home' && !homeEnabled && !environmentEnabled) ||
         (name === 'environment' && !environmentEnabled) ||
-        (name === 'vision' && (options.SkipVisionSnapshotProcessor || options.SkipMediapipe)) ||
-        (name === 'mediapipe' && options.SkipMediapipe) ||
+        (name === 'vision' && !visionEnabled) ||
+        (name === 'mediapipe' && !cameraEnabled) ||
         (name === 'display' && !displayEnabled) ||
         (name === 'speech' && !watcherEnabled)) continue
     roots[name] = exactAbsoluteDirectory(root, effectiveIo)
@@ -615,8 +622,8 @@ const compilePrivateServicePlan = ({
         '--profile-id', derivedConfigIdentity.profile_id,
         '--effective-config-sha256', derivedConfigIdentity.effective_config_sha256,
         '--camera-policy', derivedConfigIdentity.camera_policy,
-        ...((options.SkipMediapipe) ? ['--disable-camera-hub'] : []),
-        ...((!options.SkipVisionSnapshotProcessor && !options.SkipMediapipe) ? ['--vision-topic-url', `ws://127.0.0.1:${options.VisionSnapshotProcessorPort}`] : [])
+        ...((!cameraEnabled) ? ['--disable-camera-hub'] : []),
+        ...(visionEnabled ? ['--vision-topic-url', `ws://127.0.0.1:${options.VisionSnapshotProcessorPort}`] : [])
       ],
       cwd: roots.environment,
       environment: environmentStateEnvironment,
@@ -677,7 +684,7 @@ const compilePrivateServicePlan = ({
         NEXT_PUBLIC_ENVIRONMENT_INDICATORS_URL: `http://127.0.0.1:${options.EnvironmentStatePort}/indicators/current`,
         NEXT_PUBLIC_REFLEX_GESTURE_WS_URL: `ws://127.0.0.1:${options.MediapipePort}`,
         NEXT_PUBLIC_GESTURE_VOICE_WS_URL: `ws://127.0.0.1:${options.MediapipePort}`,
-        NEXT_PUBLIC_GESTURE_VOICE_BRIDGE_ENABLED: options.SkipMediapipe ? 'false' : 'true'
+        NEXT_PUBLIC_GESTURE_VOICE_BRIDGE_ENABLED: cameraEnabled ? 'true' : 'false'
       },
       listenerPort: options.AituberPort
     })
@@ -724,7 +731,7 @@ const compilePrivateServicePlan = ({
     }))
   }
 
-  if (!options.SkipMediapipe) {
+  if (cameraEnabled) {
     plans.push(ownedPlan({
       serviceId: 'mediapipe_camera_hub_stack',
       filePath: uv,
@@ -745,7 +752,7 @@ const compilePrivateServicePlan = ({
       listenerPort: options.MediapipePort
     }))
   }
-  if (!options.SkipVisionSnapshotProcessor && !options.SkipMediapipe) {
+  if (visionEnabled) {
     exactAbsoluteFile(path.join(roots.vision, 'src', 'vision_snapshot_processor', 'main.py'), effectiveIo)
     plans.push(ownedPlan({
       serviceId: 'vision_snapshot_processor',
@@ -764,6 +771,14 @@ const compilePrivateServicePlan = ({
 
   const planIds = new Set(plans.map((plan) => plan.service_id))
   if (planIds.size !== plans.length) fail('private_plan_config_invalid')
+  const expectedOwnedIds = new Set(
+    [...selectedServiceIds].filter((serviceId) =>
+      authority.graph.services.find((service) => service.service_id === serviceId)?.ownership === 'owned'
+    )
+  )
+  if (planIds.size !== expectedOwnedIds.size || [...planIds].some((serviceId) => !expectedOwnedIds.has(serviceId))) {
+    fail('private_plan_config_invalid')
+  }
   for (const spec of authority.graph.services) {
     if (spec.ownership === 'external') {
       if (planIds.has(spec.service_id)) fail('private_plan_config_invalid')

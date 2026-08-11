@@ -285,8 +285,30 @@ class LauncherSupervisorRuntimeContractTest(TestCase):
             stop_stack.index("const activeOperation = operationState()"),
             stop_stack.index("const config = readLauncherConfig()"),
         )
-        self.assertIn("if (activeProfileId)", stop_stack)
-        self.assertIn("return launcherRuntime.stop({ profileId })", stop_stack)
+        self.assertIn(
+            "if (activeProfileId && !explicitlyRequestedProfileId)",
+            stop_stack,
+        )
+        self.assertIn(
+            "return launcherRuntime.stop({ profileId: activeProfileId })",
+            stop_stack,
+        )
+        self.assertIn(
+            "const lifecycleProfileId = lifecycleProfileIdFor(requestedProfileId)",
+            stop_stack,
+        )
+        self.assertIn(
+            "if (activeProfileId && lifecycleProfileId !== activeProfileId)",
+            stop_stack,
+        )
+        self.assertIn(
+            "return unsupportedSupervisorProfilePayload(requestedProfileId)",
+            stop_stack,
+        )
+        self.assertIn(
+            "return launcherRuntime.stop({ profileId: activeProfileId || lifecycleProfileId })",
+            stop_stack,
+        )
         self.assertNotIn("readLauncherConfig", stop_route)
         self.assertNotIn("requireSupervisorProfile", stop_route)
 

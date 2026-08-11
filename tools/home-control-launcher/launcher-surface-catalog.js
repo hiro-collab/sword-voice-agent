@@ -34,7 +34,8 @@ const buildProjectionVisualUrls = (aituberHost, aituberPort) => {
   })
 }
 
-const buildLauncherSurfaceCatalog = (options) => {
+const buildLauncherSurfaceCatalog = (options, selectedServiceIds) => {
+  const selected = new Set(selectedServiceIds || [])
   const voicevoxUrl = normalizeLoopbackHttpUrl(
     options.VoicevoxUrl || 'http://127.0.0.1:50021'
   ).replace(/\/$/u, '')
@@ -53,106 +54,105 @@ const buildLauncherSurfaceCatalog = (options) => {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
       name: 'Expression runtime',
       url: `http://127.0.0.1:${options.AituberPort}`,
-      enabled: !options.SkipAituber
+      enabled: selected.has('aituber_kit')
     },
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
       name: 'Projection Visual',
       url: projection.operator,
-      enabled: !options.SkipAituber
+      enabled: selected.has('aituber_kit')
     },
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
       name: 'Projection Stage Output',
       url: projection.stageOutput,
-      enabled: !options.SkipAituber
+      enabled: selected.has('aituber_kit')
     },
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
       name: 'Passive Projection',
       url: projection.passive,
-      enabled: !options.SkipAituber
+      enabled: selected.has('aituber_kit')
     },
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
       name: 'Body map inspector',
       url: `http://127.0.0.1:${options.AituberPort}/body-map-inspector?fov=60&scale=1`,
-      enabled: !options.SkipAituber
+      enabled: selected.has('aituber_kit')
     },
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
       name: 'Thought Core API index',
       url: thoughtCoreUrl,
-      enabled: options.EnableThoughtCore
+      enabled: selected.has('thought_core_api')
     },
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
       name: 'Display runtime GUI/API',
       url: `http://127.0.0.1:${options.TouchDesignerGuiPort}`,
-      enabled: !options.SkipTouchDesignerGui
+      enabled: selected.has('touchdesigner_control_gui')
     },
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
       name: 'Action bridge operator',
       url: `http://127.0.0.1:${options.HomeAssistantBridgePort}/operator`,
-      enabled: !options.SkipHomeAssistantBridge
+      enabled: selected.has('home_assistant_bridge')
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
       name: 'Action bridge health',
       url: `http://127.0.0.1:${options.HomeAssistantBridgePort}/health`,
-      enabled: !options.SkipHomeAssistantBridge
+      enabled: selected.has('home_assistant_bridge')
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
       name: 'Environment display state',
       url: `http://127.0.0.1:${options.EnvironmentStatePort}/indicators/current`,
-      enabled: !options.SkipEnvironmentState
+      enabled: selected.has('environment_state_server')
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
       name: 'Reflex browser monitor',
       url: browserMonitorUrl,
-      enabled: !options.SkipMediapipe && options.MediapipeMode === 'mediamtx'
+      enabled: selected.has('mediapipe_camera_hub_stack') && options.MediapipeMode === 'mediamtx'
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
       name: 'Reflex camera video',
       url: 'http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true',
-      enabled: !options.SkipMediapipe && options.MediapipeMode === 'mediamtx'
+      enabled: selected.has('mediapipe_camera_hub_stack') && options.MediapipeMode === 'mediamtx'
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
       name: 'Reflex Camera Hub WebSocket',
       url: `ws://127.0.0.1:${options.MediapipePort}`,
-      enabled: !options.SkipMediapipe
+      enabled: selected.has('mediapipe_camera_hub_stack')
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
       name: 'Vision snapshot WebSocket',
       url: `ws://127.0.0.1:${options.VisionSnapshotProcessorPort}`,
       enabled:
-        !options.SkipVisionSnapshotProcessor &&
-        !options.SkipMediapipe &&
+        selected.has('vision_snapshot_processor') &&
         options.MediapipeMode === 'mediamtx'
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
       name: 'VOICEVOX',
       url: voicevoxUrl,
-      enabled: !options.SkipVoicevoxCheck && !options.SkipAituber
+      enabled: selected.has('voicevox')
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
       name: 'Thought Core health',
       url: `${thoughtCoreUrl}/health`,
-      enabled: options.EnableThoughtCore
+      enabled: selected.has('thought_core_api')
     },
     {
       group: SURFACE_GROUP.BACKGROUND_REFERENCE,
       name: 'Thought Core watcher',
       url: 'no browser URL',
-      enabled: options.EnableThoughtCoreWatch
+      enabled: selected.has('thought_core_watcher')
     },
     {
       group: SURFACE_GROUP.BACKGROUND_REFERENCE,

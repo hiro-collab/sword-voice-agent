@@ -14,6 +14,7 @@ const https = require('https')
 const net = require('net')
 const os = require('os')
 const path = require('path')
+const { TextDecoder } = require('node:util')
 const {
   assertLauncherRuntimeAlignment,
   loadContract: loadOrdinaryRouteContract,
@@ -42,6 +43,11 @@ const {
   deriveEffectiveConfigIdentity,
   expectedEventJournalDirectory
 } = require('./launcher-private-service-plan')
+const {
+  membershipOptionDefaults,
+  selectedServiceIdsForOptions,
+  validateProfileRecords
+} = require('./launcher-service-selection')
 
 const args = process.argv.slice(2)
 
@@ -97,6 +103,7 @@ const OPENAI_BROKER_PORT =
 
 const PUBLIC_DIR = path.join(__dirname, 'public')
 const PROFILE_FILE = path.join(__dirname, 'config', 'default-profiles.json')
+const PROFILE_MANIFEST_DIR = path.join(PROJECT_ROOT, 'ops', 'manifests', 'profiles')
 const OPS_SCRIPT_ROOT = path.join(PROJECT_ROOT, 'ops', 'scripts')
 const COMMON_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'common.ps1')
 const STATE_DIR = resolveStackStateDir()
@@ -118,7 +125,9 @@ const STOP_VERIFY_TIMEOUT_MS = Number(
 const STOP_VERIFY_INTERVAL_MS = Number(
   process.env.HOME_CONTROL_LAUNCHER_STOP_VERIFY_INTERVAL_MS || 600
 )
-const PRIMARY_PROFILE_ID = 'thought-core-v0'
+const DEFAULT_MODE_ID = 'thought-core-v0'
+const ORDINARY_ROUTE_MODE_ID = 'full-system-v0'
+const MAX_PROFILE_BYTES = 64 * 1024
 const ORDINARY_ROUTE_CONTRACT = loadOrdinaryRouteContract()
 const ORDINARY_ROUTE_PUBLIC_SURFACES = ORDINARY_ROUTE_CONTRACT.public_surfaces
 const isTemporaryTestPath = (target) => {
@@ -372,18 +381,6 @@ const DEFAULT_OPTIONS = {
   ...(PORT_MODE_OPTIONS[PORT_MODE] || {})
 }
 
-const OPS_PROFILE_BY_LAUNCHER_PROFILE = {
-  'demo-fast': 'demo-fast',
-  'demo-fast-action': 'demo-fast-action',
-  'no-touchdesigner': 'thought-core-v0',
-  'thought-core-v0': 'thought-core-v0',
-  'aituber-only': 'aituber-only',
-  'camera-debug': 'camera-debug'
-}
-
-const opsProfileFor = (profileId) =>
-  OPS_PROFILE_BY_LAUNCHER_PROFILE[profileId] || profileId || PRIMARY_PROFILE_ID
-
 const NUMBER_FIELDS = new Set([
   'HomeAssistantBridgePort',
   'EnvironmentStatePort',
@@ -535,12 +532,66 @@ const readJsonFile = (filePath, fallback = null) => {
   }
 }
 
+const readBoundedJsonFile = (filePath, fallback = null) => {
+  try {
+    const bytes = fs.readFileSync(filePath)
+    if (bytes.length > MAX_PROFILE_BYTES) return fallback
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+  } catch {
+    return fallback
+  }
+}
+
 const writeJsonFile = (filePath, value) => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
 }
 
-const readProfiles = () => readJsonFile(PROFILE_FILE, [])
+const readProfiles = () => readBoundedJsonFile(PROFILE_FILE, [])
+
+const readProfileManifest = (profileId) => {
+  const requested = String(profileId || '').trim()
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/u.test(requested)) {
+    throw new Error('launcher_profile_manifest_invalid')
+  }
+  const manifest = readBoundedJsonFile(path.join(PROFILE_MANIFEST_DIR, `${requested}.json`), null)
+  if (!manifest || manifest.profile_id !== requested || !Array.isArray(manifest.services)) {
+    throw new Error('launcher_profile_manifest_invalid')
+  }
+  return manifest
+}
+
+const supportedProfileRecords = () => {
+  const defaultProfiles = readProfiles()
+  const profileManifests = []
+  for (const profile of defaultProfiles) {
+    const profileId = String(profile && profile.id || '').trim()
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/u.test(profileId)) {
+      throw new Error('launcher_profile_manifest_invalid')
+    }
+    const manifestPath = path.join(PROFILE_MANIFEST_DIR, `${profileId}.json`)
+    if (fs.existsSync(manifestPath)) profileManifests.push(readProfileManifest(profileId))
+  }
+  try {
+    return validateProfileRecords({
+      graphProfileId: launcherRuntime.authority.graph.profile_id,
+      graphServices: launcherRuntime.authority.graph.services,
+      defaultProfiles,
+      profileManifests
+    })
+  } catch {
+    throw new Error('launcher_profile_manifest_invalid')
+  }
+}
+
+const supportedProfileRecord = (profileId) =>
+  supportedProfileRecords().find((record) => record.profile.id === profileId) || null
+
+const lifecycleProfileIdFor = (profileId) => {
+  const record = supportedProfileRecord(profileId)
+  if (!record) throw new Error('unsupported_supervisor_profile')
+  return record.manifest.lifecycle_profile_id
+}
 
 const compactProfileId = (profileId) => {
   const value = String(profileId || '').trim()
@@ -572,7 +623,7 @@ const requireKnownProfile = (profileId) => {
   return null
 }
 
-const supervisorProfileIds = () => [launcherRuntime.authority.graph.profile_id]
+const supervisorProfileIds = () => supportedProfileRecords().map((record) => record.profile.id)
 
 const unsupportedSupervisorProfilePayload = (profileId) => ({
   ok: false,
@@ -593,7 +644,7 @@ const requireSupervisorProfile = (profileId) => {
 
 const readLauncherConfig = () =>
   readJsonFile(LAUNCHER_CONFIG_FILE, {
-    selectedProfileId: PRIMARY_PROFILE_ID,
+    selectedProfileId: DEFAULT_MODE_ID,
     options: {}
   })
 
@@ -1062,8 +1113,16 @@ const readBody = (request) =>
 const normalizeOptions = (profileId, overrides = {}) => {
   const profiles = readProfiles()
   const selectedProfile = profiles.find((profile) => profile.id === profileId)
+  const supported = supportedProfileRecord(profileId)
+  const membershipDefaults = supported
+    ? membershipOptionDefaults({
+        graphServices: launcherRuntime.authority.graph.services,
+        profileManifest: supported.manifest
+      })
+    : {}
   const base = {
     ...DEFAULT_OPTIONS,
+    ...membershipDefaults,
     ...(selectedProfile ? selectedProfile.options || {} : {}),
     ...(overrides || {})
   }
@@ -1207,7 +1266,7 @@ const publicCommandPreview = (preview) => {
 
 const withPreservedLocalCameraSelection = (profileId, requestedOptions = {}) => {
   const saved = readLauncherConfig()
-  const savedProfileId = saved.selectedProfileId || profileId || PRIMARY_PROFILE_ID
+  const savedProfileId = saved.selectedProfileId || profileId || DEFAULT_MODE_ID
   const savedOptions = normalizeOptions(savedProfileId, saved.options || {})
   return {
     ...(requestedOptions || {}),
@@ -1234,7 +1293,7 @@ const previewCommand = (
   return {
     ok: true,
     profileId,
-    opsProfile: opsProfileFor(profileId),
+    opsProfile: lifecycleProfileIdFor(profileId),
     options: executionOptions,
     demoSafeGate: effectiveDemoSafeSettings().summary,
     command_class: 'node_supervisor',
@@ -1248,7 +1307,7 @@ const saveConfig = (profileId, options) => {
   const { OpenAIBrokerPort, ...persistedOptions } = options || {}
   const effectiveOptions = normalizeOptions(profileId, persistedOptions)
   const configIdentity = deriveEffectiveConfigIdentity({
-    profileId,
+    profileId: lifecycleProfileIdFor(profileId),
     options: effectiveOptions,
     authority: launcherRuntime.authority
   })
@@ -1282,7 +1341,7 @@ const resolveSavedStartConfig = (profileId, expectedConfigSha256) => {
   let configIdentity
   try {
     configIdentity = deriveEffectiveConfigIdentity({
-      profileId,
+      profileId: lifecycleProfileIdFor(profileId),
       options: effectiveOptions,
       authority: launcherRuntime.authority
     })
@@ -1589,7 +1648,7 @@ const startStack = async (profileId, savedStartConfig) => {
     return preview
   }
   const result = await launcherRuntime.start({
-    profileId,
+    profileId: lifecycleProfileIdFor(profileId),
     options: preview.options,
     configIdentity: savedStartConfig.configIdentity
   })
@@ -1697,29 +1756,26 @@ const SEALED_LISTENER_CLASS_BY_TARGET = {
 const stopStack = async (body) => {
   const activeOperation = operationState()
   const activeProfileId = activeOperation.operation_id ? activeOperation.profile_id : null
-  let requestedProfileId
-  let profileId
-  if (activeProfileId) {
-    requestedProfileId = (body && body.profileId) || activeProfileId
-    profileId = activeProfileId
-  } else {
-    const config = readLauncherConfig()
-    requestedProfileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
-    profileId = requestedProfileId
+  const explicitlyRequestedProfileId = body && body.profileId
+  if (activeProfileId && !explicitlyRequestedProfileId) {
+    return launcherRuntime.stop({ profileId: activeProfileId })
   }
-  const profileError = requireSupervisorProfile(profileId)
+  const config = readLauncherConfig()
+  const requestedProfileId = explicitlyRequestedProfileId || config.selectedProfileId || DEFAULT_MODE_ID
+  const profileError = requireSupervisorProfile(requestedProfileId)
   if (profileError) {
     return profileError
   }
-  if (activeProfileId && requestedProfileId !== activeProfileId) {
+  const lifecycleProfileId = lifecycleProfileIdFor(requestedProfileId)
+  if (activeProfileId && lifecycleProfileId !== activeProfileId) {
     return unsupportedSupervisorProfilePayload(requestedProfileId)
   }
-  return launcherRuntime.stop({ profileId })
+  return launcherRuntime.stop({ profileId: activeProfileId || lifecycleProfileId })
 }
 
 const reclaimManagedPortsFromLauncher = async (body) => {
   const config = readLauncherConfig()
-  const profileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
+  const profileId = (body && body.profileId) || config.selectedProfileId || DEFAULT_MODE_ID
   const profileError = requireKnownProfile(profileId)
   if (profileError) {
     return profileError
@@ -2664,19 +2720,21 @@ const publicReadinessIdsForServiceIds = (serviceIds) => {
 }
 
 const expectedServicesForOptions = (options) => {
-  const serviceIds = []
-  if (!options.SkipHomeAssistantBridge) serviceIds.push('home_assistant_bridge')
-  if (!options.SkipEnvironmentState) serviceIds.push('environment_state_server')
-  if (!options.SkipMediapipe) serviceIds.push('mediapipe_camera_hub_stack')
-  if (!options.SkipVisionSnapshotProcessor && !options.SkipMediapipe) {
-    serviceIds.push('vision_snapshot_processor')
+  const serviceIds = selectedServiceIdsForOptions({
+    graphServices: launcherRuntime.authority.graph.services,
+    options
+  }).filter((serviceId) =>
+    launcherRuntime.authority.graph.services.find((service) => service.service_id === serviceId)
+      .public_readiness_id
+  )
+  const selectedPublicIds = new Set(publicReadinessIdsForServiceIds(serviceIds))
+  const publicIds = ORDINARY_ROUTE_CONTRACT.readiness.expected_service_ids.filter((publicId) =>
+    selectedPublicIds.has(publicId)
+  )
+  if (publicIds.length !== selectedPublicIds.size) {
+    throw new Error('launcher_public_readiness_projection_unmapped')
   }
-  if (!options.SkipAituber) serviceIds.push('aituber_kit')
-  if (!options.SkipTouchDesignerGui) serviceIds.push('touchdesigner_control_gui')
-  if (options.EnableThoughtCore) serviceIds.push('thought_core_api')
-  if (options.EnableThoughtCoreWatch) serviceIds.push('thought_core_watcher')
-  if (!options.SkipVoicevoxCheck && !options.SkipAituber) serviceIds.push('voicevox')
-  return publicReadinessIdsForServiceIds(serviceIds)
+  return publicIds
 }
 
 const serviceIsReady = (service) => {
@@ -2686,12 +2744,12 @@ const serviceIsReady = (service) => {
 
 const effectiveStatusOptions = () => {
   const config = readLauncherConfig()
-  return normalizeOptions(config.selectedProfileId || PRIMARY_PROFILE_ID, config.options || {})
+  return normalizeOptions(config.selectedProfileId || DEFAULT_MODE_ID, config.options || {})
 }
 
 const getStatus = async () => {
   const config = readLauncherConfig()
-  const selectedProfileId = config.selectedProfileId || PRIMARY_PROFILE_ID
+  const selectedProfileId = config.selectedProfileId || DEFAULT_MODE_ID
   const profileConfigState = requireSupervisorProfile(selectedProfileId) || {
     ok: true,
     resultClass: 'known_profile',
@@ -2735,9 +2793,9 @@ const getStatus = async () => {
 
 const getState = async ({ includeLocalCameraSelection = true } = {}) => {
   const config = readLauncherConfig()
-  const savedProfileId = config.selectedProfileId || PRIMARY_PROFILE_ID
+  const savedProfileId = config.selectedProfileId || DEFAULT_MODE_ID
   const savedProfileState = requireSupervisorProfile(savedProfileId)
-  const selectedProfileId = savedProfileState ? PRIMARY_PROFILE_ID : savedProfileId
+  const selectedProfileId = savedProfileState ? DEFAULT_MODE_ID : savedProfileId
   const options = normalizeOptions(selectedProfileId, savedProfileState ? {} : config.options || {})
   const status = await getStatus()
   const demoSafeSettings = effectiveDemoSafeSettings()
@@ -2764,7 +2822,7 @@ const getState = async ({ includeLocalCameraSelection = true } = {}) => {
       },
       configIdentity: !savedProfileState && config.schemaVersion === 'launcher_saved_config.v1'
         ? {
-            profile_id: selectedProfileId,
+            profile_id: lifecycleProfileIdFor(selectedProfileId),
             effective_config_sha256: config.effectiveConfigSha256 || null,
             camera_policy: config.cameraPolicy || null
           }
@@ -2780,7 +2838,13 @@ const getState = async ({ includeLocalCameraSelection = true } = {}) => {
     diagnosticSurfaces: status.diagnosticSurfaces,
     demoSafeSettings,
     demoReadinessStatus: demoReadinessStatus(demoSafeSettings, status),
-    endpoints: buildLauncherSurfaceCatalog(options)
+    endpoints: buildLauncherSurfaceCatalog(
+      options,
+      selectedServiceIdsForOptions({
+        graphServices: launcherRuntime.authority.graph.services,
+        options
+      })
+    )
   }
 }
 
@@ -2798,7 +2862,7 @@ const getStartupTimingPayload = async () => {
 const demoTimedActionReadiness = async () => {
   const status = await getStatus()
   const config = readLauncherConfig()
-  const profileId = config.selectedProfileId || PRIMARY_PROFILE_ID
+  const profileId = config.selectedProfileId || DEFAULT_MODE_ID
   const options = effectiveStatusOptions()
   const timing = status.startupTiming || {}
   const elapsed = Number(timing.elapsedMs)
@@ -2960,13 +3024,13 @@ const handleApi = async (request, response, requestUrl) => {
       : body.options || {}
     const testOptions = body.applyRequestCameraBoundary && !includeLocalCameraSelection
       ? withPreservedLocalCameraSelection(
-          body.profileId || PRIMARY_PROFILE_ID,
+          body.profileId || DEFAULT_MODE_ID,
           suppliedTestOptions
         )
       : suppliedTestOptions
     const requested = sanitizeVideoInputDeviceName(testOptions.MediapipeCameraName)
     const normalizedTestOptions = normalizeOptions(
-      body.profileId || PRIMARY_PROFILE_ID,
+      body.profileId || DEFAULT_MODE_ID,
       testOptions
     )
     const cameraSelection = body.resolveSelection
@@ -2977,7 +3041,7 @@ const handleApi = async (request, response, requestUrl) => {
           selection_class: requested ? 'manual_selection' : 'no_selection'
         }
     const preview = previewCommand(
-      body.profileId || PRIMARY_PROFILE_ID,
+      body.profileId || DEFAULT_MODE_ID,
       normalizedTestOptions,
       { resolvedCameraName: cameraSelection.ok ? cameraSelection.captureName : '' }
     )
@@ -3068,14 +3132,14 @@ const handleApi = async (request, response, requestUrl) => {
       response,
       200,
       publicCommandPreview(
-        previewCommand(body.profileId || PRIMARY_PROFILE_ID, body.options || {})
+        previewCommand(body.profileId || DEFAULT_MODE_ID, body.options || {})
       )
     )
     return
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/save-config') {
     const body = await readBody(request)
-    const profileId = body.profileId || PRIMARY_PROFILE_ID
+    const profileId = body.profileId || DEFAULT_MODE_ID
     const profileError = requireSupervisorProfile(profileId)
     if (profileError) {
       sendJson(response, 400, profileError)
@@ -3116,7 +3180,7 @@ const handleApi = async (request, response, requestUrl) => {
   }
   if (request.method === 'POST' && requestUrl.pathname === '/api/start') {
     const body = await readBody(request)
-    const profileId = body.profileId || PRIMARY_PROFILE_ID
+    const profileId = body.profileId || DEFAULT_MODE_ID
     const profileError = requireSupervisorProfile(profileId)
     if (profileError) {
       sendJson(response, 400, profileError)
@@ -3149,7 +3213,7 @@ const handleApi = async (request, response, requestUrl) => {
   ) {
     const body = await readBody(request)
     const config = readLauncherConfig()
-    const profileId = (body && body.profileId) || config.selectedProfileId || PRIMARY_PROFILE_ID
+    const profileId = (body && body.profileId) || config.selectedProfileId || DEFAULT_MODE_ID
     const profileError = requireSupervisorProfile(profileId)
     if (profileError) {
       sendJson(response, 400, profileError)
@@ -3285,7 +3349,7 @@ server.on('error', (error) => {
 })
 
 assertLauncherRuntimeAlignment({
-  profileId: PRIMARY_PROFILE_ID,
+  profileId: ORDINARY_ROUTE_CONTRACT.profile_id,
   publicSurfaces: {
     contract: { path: ORDINARY_ROUTE_PUBLIC_SURFACES.contract.path },
     status: {
@@ -3298,7 +3362,7 @@ assertLauncherRuntimeAlignment({
     }
   },
   expectedServiceIds: expectedServicesForOptions(
-    normalizeOptions(PRIMARY_PROFILE_ID, {})
+    normalizeOptions(ORDINARY_ROUTE_MODE_ID, {})
   )
 })
 ensureRuntimeDirs()
