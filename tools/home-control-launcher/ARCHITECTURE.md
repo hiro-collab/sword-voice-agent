@@ -17,21 +17,27 @@ Launcher自身が会話、映像、音声、Camera、Home Controlの意味を決
 
 ```mermaid
 flowchart TD
-    UI["利用者 / public UI"] --> HTTP["server.js\nHTTP合成ルート"]
-    HTTP --> RT["launcher-supervisor-runtime.js\nlifecycle調整役"]
-    RT --> CONTRACT["launcher-supervisor-contract.js\nauthorityとschema"]
-    RT --> REDUCER["launcher-supervisor-reducer.js\n純粋な状態機械"]
-    RT --> STORE["launcher-operation-store.js\noperation/lock/lease永続化"]
-    RT --> PLAN["launcher-private-service-plan.js\nsealed service plan"]
-    RT --> WORKER["launcher-job-worker-client.js\n所有worker通信"]
-    WORKER --> PROBES["probe 3モジュール\nreadiness証拠"]
+    UI["利用者 / public UI"] -->|"GET: state/status<br/>POST: config/start/stop"| HTTP["server.js\nHTTP合成ルート"]
+    HTTP -->|"正規化options<br/>saved config identity<br/>Start / Stop要求"| RT["launcher-supervisor-runtime.js\nlifecycle調整役"]
+    RT -->|"operation ID・hash・authority<br/>worker messageの検証"| CONTRACT["launcher-supervisor-contract.js\nauthorityとschema"]
+    RT -->|"現在state + event<br/>→ 次state + failure class"| REDUCER["launcher-supervisor-reducer.js\n純粋な状態機械"]
+    RT <-->|"operation record<br/>lock・lease・revision"| STORE["launcher-operation-store.js\noperation/lock/lease永続化"]
+    RT -->|"profile + options<br/>config identity"| PLAN["launcher-private-service-plan.js\nsealed service plan"]
+    PLAN -->|"実行順序・argv・環境<br/>service/plan identity"| RT
+    RT -->|"owned action request<br/>operation/service/dispatch ID"| WORKER["launcher-job-worker-client.js\n所有worker通信"]
+    WORKER -->|"identity付きworker result<br/>cleanup / residue"| RT
+    RT -->|"probe expectation<br/>plan/config identity"| PROBES["probe 3モジュール\nreadiness証拠"]
+    PROBES -->|"semantic result・count・boolean<br/>identity binding"| RT
 
-    HTTP -. "表示の枝" .-> SURFACES["launcher-surface-catalog.js\n画面/参照先一覧"]
-    HTTP -. "会話互換の枝" .-> ORDINARY["ordinary-route-contract.js"]
-    HTTP -. "製品機能の枝" .-> FEATURES["Camera / Display / Home / VOICEVOX"]
+    HTTP -.->|"options → canonical URL一覧"| SURFACES["launcher-surface-catalog.js\n画面/参照先一覧"]
+    HTTP -.->|"互換status/route契約"| ORDINARY["ordinary-route-contract.js"]
+    HTTP -.->|"loopback URL・port・有効flag<br/>privacy-safe公開状態"| FEATURES["Camera / Display / Home / VOICEVOX"]
 ```
 
 実線がlifecycleの根幹です。点線はそこへ接続する枝です。
+矢印上の文字は代表的な受け渡し内容で、完全なfield一覧ではありません。
+秘密値、private planの完全record、raw PID/pathはpublic UIへ流さず、固定status、count、
+boolean、利用者向けloopback URLへ変換してから返します。
 
 ### 根幹（spine）
 
