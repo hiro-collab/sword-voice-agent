@@ -312,485 +312,6 @@ $cases = @(
             self.assertNotIn("Cube Vault", source)
             self.assertNotIn("cube vault", source)
 
-    def test_launcher_runtime_copies_camera_state_and_fails_closed(self) -> None:
-        self.skipTest("N2 status is reducer-owned and no longer copies legacy PID/manifest state")
-        with tempfile.TemporaryDirectory() as temporary_root:
-            state_dir = Path(temporary_root) / "state"
-            manifest_path = (
-                state_dir
-                / "modules"
-                / "mediapipe_camera_hub_stack"
-                / "processes.json"
-            )
-            manifest_path.parent.mkdir(parents=True)
-            started_at = datetime.now(timezone.utc).isoformat()
-
-            camera_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            camera_probe.bind(("127.0.0.1", 0))
-            mediapipe_port = camera_probe.getsockname()[1]
-            camera_probe.close()
-            camera_helper_code = (
-                "import socket,sys,time;"
-                "p=int(sys.argv[sys.argv.index('--port')+1]);"
-                "s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);"
-                "s.bind(('127.0.0.1',p));s.listen();s.settimeout(.1);"
-                "\nwhile True:\n"
-                " try:\n  c,_=s.accept();c.close()\n"
-                " except TimeoutError:\n  pass\n"
-            )
-            camera_helper = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-c",
-                    camera_helper_code,
-                    "apps/serve_camera_hub.py",
-                    "--port",
-                    str(mediapipe_port),
-                ],
-                cwd=ROOT,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            helper_deadline = time.monotonic() + 5
-            while time.monotonic() < helper_deadline:
-                try:
-                    with socket.create_connection(("127.0.0.1", mediapipe_port), timeout=0.2):
-                        break
-                except OSError:
-                    time.sleep(0.05)
-            else:
-                camera_helper.terminate()
-                camera_helper.wait(timeout=5)
-                self.fail("camera ownership helper did not start")
-
-            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            probe.bind(("127.0.0.1", 0))
-            launcher_port = probe.getsockname()[1]
-            probe.close()
-
-            (state_dir / "launcher-config.json").write_text(
-                json.dumps(
-                    {
-                        "selectedProfileId": "camera-debug",
-                        "options": {"MediapipePort": mediapipe_port},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            private_camera_name = "private://camera-$(expand)-raw-marker"
-            (state_dir / "pids.json").write_text(
-                json.dumps(
-                    {
-                        "schema_version": 3,
-                        "started_at": started_at,
-                        "workspace_root": str(ROOT.parents[1]),
-                        "processes": [
-                            {
-                                "name": "mediapipe_camera_hub_stack",
-                                "module": "mediapipe-sword-sign",
-                                "role": "camera_hub_stack",
-                                "pid": camera_helper.pid,
-                                "working_directory": str(ROOT),
-                                "command": (
-                                    "uv run python apps/serve_camera_hub.py "
-                                    f"--camera-name {private_camera_name} "
-                                    f"--port {mediapipe_port}"
-                                ),
-                                "started_at": started_at,
-                                "allowed_process_names": ["uv", "python", "mediamtx", "ffmpeg"],
-                                "child_process_file": str(manifest_path),
-                                "stop_strategy": "managed_tree",
-                            },
-                            {
-                                "name": "vision_snapshot_processor",
-                                "module": "vision-snapshot-processor",
-                                "role": "vision_snapshot_processor",
-                                "pid": os.getpid(),
-                                "working_directory": str(ROOT),
-                                "command": "test-only-owner",
-                                "started_at": started_at,
-                                "allowed_process_names": ["python"],
-                                "child_process_file": "",
-                                "stop_strategy": "managed_tree",
-                            },
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            def write_manifest(
-                state_class: str,
-                ready: bool,
-                *,
-                owner_pid: int | None = None,
-                processes: list[dict] | None = None,
-            ) -> None:
-                now = datetime.now(timezone.utc).isoformat()
-                manifest_path.write_text(
-                    json.dumps(
-                        {
-                            "schema_version": 2,
-                            "module": "mediapipe-sword-sign",
-                            "service": "mediapipe_camera_hub_stack",
-                            "owner_pid": camera_helper.pid if owner_pid is None else owner_pid,
-                            "camera_state_class": state_class,
-                            "ready": ready,
-                            "ready_at": now if ready else None,
-                            "ready_detail": "private://camera-source-must-not-leak",
-                            "updated_at": now,
-                            "processes": processes
-                            if processes is not None
-                            else [
-                                {"name": "mediamtx", "running": True},
-                                {"name": "camera-hub", "running": True},
-                            ],
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-
-            write_manifest("unavailable", False)
-            launcher = subprocess.Popen(
-                [
-                    "node",
-                    str(LAUNCHER_SERVER),
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    str(launcher_port),
-                    "--workspace",
-                    str(ROOT.parents[1]),
-                    "--state-dir",
-                    str(state_dir),
-                ],
-                cwd=ROOT,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            try:
-                status_url = f"http://127.0.0.1:{launcher_port}/api/status"
-                state_url = f"http://127.0.0.1:{launcher_port}/api/state"
-
-                def read_status() -> dict:
-                    deadline = time.monotonic() + 8
-                    last_error: Exception | None = None
-                    while time.monotonic() < deadline:
-                        try:
-                            with urllib.request.urlopen(status_url, timeout=2) as response:
-                                return json.loads(response.read().decode("utf-8"))
-                        except Exception as error:
-                            last_error = error
-                            time.sleep(0.05)
-                    raise AssertionError(f"launcher status unavailable: {last_error}")
-
-                def read_cli_status() -> str:
-                    powershell = shutil.which("pwsh") or shutil.which("powershell")
-                    self.assertIsNotNone(powershell)
-                    completed = subprocess.run(
-                        [
-                            powershell,
-                            "-NoProfile",
-                            "-File",
-                            str(STACK_STATUS_SCRIPT),
-                            "-WorkspaceRoot",
-                            str(ROOT.parents[1]),
-                            "-StackStateDir",
-                            str(state_dir),
-                            "-HomeAssistantBridgePort",
-                            str(mediapipe_port),
-                            "-EnvironmentStatePort",
-                            str(mediapipe_port),
-                            "-MediapipePort",
-                            str(mediapipe_port),
-                            "-VisionSnapshotProcessorPort",
-                            str(mediapipe_port),
-                            "-AituberPort",
-                            str(mediapipe_port),
-                            "-TouchDesignerGuiPort",
-                            str(mediapipe_port),
-                            "-VoicevoxUrl",
-                            f"http://127.0.0.1:{mediapipe_port}",
-                        ],
-                        cwd=ROOT,
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        timeout=20,
-                        check=True,
-                    )
-                    return completed.stdout
-
-                unavailable = read_status()
-                self.assertEqual(unavailable["services"]["mediapipe"]["state"], "DEGRADED")
-                self.assertEqual(
-                    unavailable["services"]["mediapipe"]["camera_state_class"],
-                    "unavailable",
-                    unavailable,
-                )
-                self.assertTrue(
-                    unavailable["services"]["mediapipe"]["camera_state_operational"]
-                )
-                self.assertEqual(
-                    unavailable["startupTiming"]["status_class"],
-                    "startup_expected_services_operational_with_degraded",
-                )
-                unavailable_serialized = json.dumps(unavailable)
-                self.assertNotIn(private_camera_name, unavailable_serialized)
-                self.assertIn(
-                    "<local-camera-selection>",
-                    unavailable["services"]["mediapipe"]["command"],
-                )
-                with urllib.request.urlopen(state_url, timeout=2) as response:
-                    launcher_state = json.loads(response.read().decode("utf-8"))
-                launcher_state_serialized = json.dumps(launcher_state)
-                self.assertNotIn(private_camera_name, launcher_state_serialized)
-                self.assertIn(
-                    "<local-camera-selection>",
-                    launcher_state["status"]["services"]["mediapipe"]["command"],
-                )
-                self.assertNotIn("private://", unavailable_serialized)
-
-                write_manifest("recovering", False)
-                recovering = read_status()
-                self.assertEqual(recovering["services"]["mediapipe"]["state"], "DEGRADED")
-                self.assertEqual(
-                    recovering["services"]["mediapipe"]["camera_state_class"],
-                    "recovering",
-                )
-                self.assertIn("mediapipe", recovering["startupTiming"]["degradedServiceIds"])
-
-                write_manifest("ready", True)
-                ready = read_status()
-                self.assertEqual(ready["services"]["mediapipe"]["state"], "OK")
-                self.assertEqual(
-                    ready["services"]["mediapipe"]["camera_state_class"],
-                    "ready",
-                )
-                self.assertRegex(read_cli_status(), r"(?m)^\s*mediapipe\s+OK\s+")
-
-                write_manifest(
-                    "ready",
-                    True,
-                    processes=[
-                        {"name": "mediamtx", "running": False},
-                        {"name": "camera-hub", "running": True},
-                    ],
-                )
-                nonoperational_ready = read_status()
-                self.assertEqual(
-                    nonoperational_ready["services"]["mediapipe"]["state"],
-                    "DEGRADED",
-                )
-                self.assertFalse(
-                    nonoperational_ready["services"]["mediapipe"][
-                        "camera_state_operational"
-                    ]
-                )
-                self.assertRegex(
-                    read_cli_status(), r"(?m)^\s*mediapipe\s+DEGRADED\s+"
-                )
-
-                write_manifest("ready", False)
-                malformed = read_status()
-                self.assertEqual(malformed["services"]["mediapipe"]["state"], "DEGRADED")
-                self.assertEqual(
-                    malformed["services"]["mediapipe"]["camera_state_class"],
-                    "unknown",
-                )
-                self.assertEqual(
-                    malformed["services"]["mediapipe"]["camera_state_validation_class"],
-                    "camera_manifest_ready_mismatch",
-                )
-                self.assertIn("mediapipe", malformed["startupTiming"]["waitingServiceIds"])
-                self.assertNotIn("private://", json.dumps(malformed))
-
-                write_manifest("unavailable", False, owner_pid=os.getpid())
-                unrelated_owner = read_status()
-                self.assertEqual(
-                    unrelated_owner["services"]["mediapipe"]["camera_state_class"],
-                    "unknown",
-                )
-                self.assertIn(
-                    "camera_runtime_owner_lineage_invalid",
-                    unrelated_owner["services"]["mediapipe"]["camera_state_validation_class"],
-                )
-                self.assertNotIn("private://", json.dumps(unrelated_owner))
-
-                write_manifest("unavailable", False, owner_pid=2147483000)
-                dead_owner = read_status()
-                self.assertEqual(
-                    dead_owner["services"]["mediapipe"]["camera_state_class"],
-                    "unknown",
-                )
-                self.assertEqual(
-                    dead_owner["services"]["mediapipe"]["camera_state_validation_class"],
-                    "camera_runtime_inspection_failed",
-                )
-
-                nonlistener_helper = subprocess.Popen(
-                    [
-                        sys.executable,
-                        "-c",
-                        "import time;time.sleep(30)",
-                        "apps/serve_camera_hub.py",
-                        "--port",
-                        str(mediapipe_port),
-                    ],
-                    cwd=ROOT,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                try:
-                    pid_state_path = state_dir / "pids.json"
-                    missing_listener_state = json.loads(
-                        pid_state_path.read_text(encoding="utf-8")
-                    )
-                    missing_listener_state["processes"][0]["pid"] = nonlistener_helper.pid
-                    missing_listener_state["processes"][0]["started_at"] = (
-                        datetime.now(timezone.utc).isoformat()
-                    )
-                    pid_state_path.write_text(
-                        json.dumps(missing_listener_state), encoding="utf-8"
-                    )
-                    write_manifest(
-                        "unavailable", False, owner_pid=nonlistener_helper.pid
-                    )
-                    missing_owned_listener = read_status()
-                    self.assertEqual(
-                        missing_owned_listener["services"]["mediapipe"][
-                            "camera_state_validation_class"
-                        ],
-                        "camera_runtime_listener_lineage_invalid",
-                    )
-                finally:
-                    nonlistener_helper.terminate()
-                    nonlistener_helper.wait(timeout=5)
-                restored_pid_state = json.loads(
-                    pid_state_path.read_text(encoding="utf-8")
-                )
-                restored_pid_state["processes"][0]["pid"] = camera_helper.pid
-                restored_pid_state["processes"][0]["started_at"] = started_at
-                pid_state_path.write_text(
-                    json.dumps(restored_pid_state), encoding="utf-8"
-                )
-
-                write_manifest(
-                    "unavailable",
-                    False,
-                    processes=[
-                        {"name": "mediamtx", "running": "true"},
-                        {"name": "camera-hub", "running": True},
-                    ],
-                )
-                string_running = read_status()
-                self.assertEqual(
-                    string_running["services"]["mediapipe"]["camera_state_validation_class"],
-                    "camera_manifest_processes_invalid",
-                )
-
-                write_manifest(
-                    "unavailable",
-                    False,
-                    processes=[
-                        {"name": "mediamtx", "running": True},
-                        {"name": "camera-hub", "running": True},
-                        {"name": "camera-hub", "running": True},
-                    ],
-                )
-                duplicate_process = read_status()
-                self.assertEqual(
-                    duplicate_process["services"]["mediapipe"]["camera_state_validation_class"],
-                    "camera_manifest_processes_invalid",
-                )
-
-                pid_state = json.loads(pid_state_path.read_text(encoding="utf-8"))
-                pid_state["processes"][0]["pid"] = camera_helper.pid
-                pid_state["processes"][0]["started_at"] = started_at
-                pid_state["processes"][0]["module"] = "wrong-camera-authority"
-                pid_state_path.write_text(json.dumps(pid_state), encoding="utf-8")
-                wrong_registry = read_status()
-                self.assertEqual(
-                    wrong_registry["services"]["mediapipe"]["camera_state_validation_class"],
-                    "camera_registry_identity_invalid",
-                )
-
-                pid_state["processes"][0]["module"] = "mediapipe-sword-sign"
-                pid_state["processes"][0]["role"] = "wrong-role"
-                pid_state_path.write_text(json.dumps(pid_state), encoding="utf-8")
-                wrong_role = read_status()
-                self.assertEqual(
-                    wrong_role["services"]["mediapipe"]["camera_state_validation_class"],
-                    "camera_registry_identity_invalid",
-                )
-
-                pid_state["processes"][0]["role"] = "camera_hub_stack"
-                pid_state["processes"][0]["child_process_file"] = str(
-                    state_dir / "wrong-processes.json"
-                )
-                pid_state_path.write_text(json.dumps(pid_state), encoding="utf-8")
-                wrong_path = read_status()
-                self.assertEqual(
-                    wrong_path["services"]["mediapipe"]["camera_state_validation_class"],
-                    "camera_registry_manifest_path_invalid",
-                )
-
-                pid_state["processes"][0]["child_process_file"] = str(manifest_path)
-                pid_state["processes"].append(dict(pid_state["processes"][0]))
-                pid_state_path.write_text(json.dumps(pid_state), encoding="utf-8")
-                duplicate_registry = read_status()
-                self.assertEqual(
-                    duplicate_registry["services"]["mediapipe"][
-                        "camera_state_validation_class"
-                    ],
-                    "camera_registry_identity_invalid",
-                )
-
-                pid_state["processes"] = pid_state["processes"][:2]
-                write_manifest("unavailable", False)
-                pid_state["processes"][0]["pid"] = ""
-                pid_state_path.write_text(json.dumps(pid_state), encoding="utf-8")
-                blank_pid = read_status()
-                self.assertEqual(
-                    blank_pid["services"]["mediapipe"]["camera_state_validation_class"],
-                    "camera_registry_identity_invalid",
-                )
-
-                pid_state["processes"][0]["pid"] = "not-a-pid"
-                pid_state_path.write_text(json.dumps(pid_state), encoding="utf-8")
-                malformed_pid = read_status()
-                self.assertEqual(
-                    malformed_pid["services"]["mediapipe"][
-                        "camera_state_validation_class"
-                    ],
-                    "camera_registry_identity_invalid",
-                )
-
-                pid_state["processes"][0]["pid"] = camera_helper.pid
-                pid_state["processes"][0]["started_at"] = ""
-                pid_state_path.write_text(json.dumps(pid_state), encoding="utf-8")
-                blank_start = read_status()
-                self.assertEqual(
-                    blank_start["services"]["mediapipe"]["camera_state_validation_class"],
-                    "camera_registry_identity_invalid",
-                )
-
-                pid_state["processes"][0]["pid"] = launcher.pid
-                pid_state["processes"][0]["started_at"] = started_at
-                pid_state_path.write_text(json.dumps(pid_state), encoding="utf-8")
-                disallowed_root = read_status()
-                self.assertEqual(
-                    disallowed_root["services"]["mediapipe"][
-                        "camera_state_validation_class"
-                    ],
-                    "camera_runtime_root_identity_invalid",
-                )
-            finally:
-                launcher.terminate()
-                launcher.wait(timeout=5)
-                camera_helper.terminate()
-                camera_helper.wait(timeout=5)
-
     def test_launcher_reuse_requires_same_workspace_launcher_owner(self) -> None:
         script = read_launcher_start_script()
 
@@ -2757,13 +2278,13 @@ assert.deepStrictEqual(previewSnapshots[2], {
         self.assertIn("if ($null -ne $mediapipeCameraHubChild)", stack_start)
         self.assertIn("foreach ($spec in $delayedVisionSnapshotSpecs)", stack_start)
 
-    def test_camera_hub_state_authority_is_validated_and_copied_without_raw_detail(self) -> None:
+    def test_camera_hub_state_authority_stays_in_powershell_and_public_status_is_supervisor_only(self) -> None:
         server = read_launcher_server()
         app = read_public("app.js")
         stack_start = read_stack_start_script()
         stack_status = read_stack_status_script()
 
-        for source in (server, stack_start, stack_status):
+        for source in (stack_start, stack_status):
             self.assertIn("camera_state_class", source)
             self.assertIn("mediapipe-sword-sign", source)
             self.assertIn("mediapipe_camera_hub_stack", source)
@@ -2771,21 +2292,22 @@ assert.deepStrictEqual(previewSnapshots[2], {
             self.assertIn("recovering", source)
             self.assertIn("ready", source)
 
-        self.assertIn("CAMERA_HUB_STATE_FILE", server)
-        self.assertIn("cameraHubManifestState", server)
-        self.assertIn("cameraHubServiceState", server)
-        self.assertIn("camera_state_validation_class", server)
-        self.assertIn("camera_state_operational", server)
+        for legacy_symbol in (
+            "CAMERA_HUB_STATE_FILE",
+            "CAMERA_STATE_CLASSES",
+            "invalidCameraHubState",
+            "cameraHubRegistryEntryState",
+            "inspectCameraHubRuntimeOwnership",
+            "cameraHubManifestState",
+            "cameraHubServiceState",
+            "camera_state_validation_class",
+            "camera_state_operational",
+        ):
+            self.assertNotIn(legacy_symbol, server)
         status_projection = extract_between(server, "const getStatus", "const getState")
         self.assertIn("launcherRuntime.publicState()", status_projection)
         self.assertNotIn("checkTcpIf(", status_projection)
-        self.assertNotIn("cameraHubManifestState(", status_projection)
-        camera_manifest_reader = extract_between(
-            server,
-            "const cameraHubManifestState",
-            "const cameraHubServiceState",
-        )
-        self.assertNotIn("child_process_file", camera_manifest_reader)
+        self.assertNotIn("camera_state_", status_projection)
 
         self.assertIn("Get-ValidatedCameraHubState", stack_start)
         self.assertIn("Test-CameraHubRequiredProcessesRunning", stack_start)
@@ -2799,12 +2321,13 @@ assert.deepStrictEqual(previewSnapshots[2], {
         self.assertIn("Test-CameraHubRuntimeOwnership", stack_status)
         self.assertIn("[int]::TryParse($pidText", stack_status)
         self.assertIn("[DateTimeOffset]::TryParse($startedAtText", stack_status)
-        self.assertIn("camera_registry_identity_invalid", server)
-        self.assertIn("camera_runtime_root_identity_invalid", server)
-        self.assertIn("camera_runtime_listener_lineage_invalid", server)
+        self.assertIn("camera_registry_validation_failed", stack_status)
+        self.assertIn("camera_manifest_runtime_ownership_invalid", stack_start)
         self.assertIn("-StateOverride $mediapipeState", stack_status)
         self.assertNotIn("ready_detail", stack_status)
 
+        self.assertIn("redactCameraSelectionArgument", server)
+        self.assertIn("redactCameraSelectionInCommandText", server)
         self.assertIn("startup.degraded", app)
         self.assertIn("カメラ入力なしで稼働中", app)
 
