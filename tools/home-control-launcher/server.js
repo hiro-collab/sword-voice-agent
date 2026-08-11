@@ -3820,12 +3820,27 @@ const getStatus = async () => {
   const serviceStates = new Map(
     (supervisor.services || []).map((service) => [service.service_id, service.state])
   )
-  const serviceKey = (serviceId) =>
-    serviceId === 'mediapipe_camera_hub_stack' ? 'mediapipe' : serviceId
+  const serviceIdsByPublicReadinessId = new Map()
+  for (const spec of launcherRuntime.authority.graph.services) {
+    if (!Object.prototype.hasOwnProperty.call(spec, 'public_readiness_id')) {
+      throw new Error('launcher_public_readiness_id_missing')
+    }
+    const publicId = spec.public_readiness_id
+    if (publicId === null) {
+      continue
+    }
+    if (typeof publicId !== 'string' || !publicId) {
+      throw new Error('launcher_public_readiness_id_invalid')
+    }
+    if (serviceIdsByPublicReadinessId.has(publicId)) {
+      throw new Error('launcher_public_readiness_id_duplicate')
+    }
+    serviceIdsByPublicReadinessId.set(publicId, spec.service_id)
+  }
   const enabledIds = new Set(expectedServicesForOptions(options))
   const services = {}
   for (const spec of launcherRuntime.authority.graph.services) {
-    const key = serviceKey(spec.public_readiness_id || spec.service_id)
+    const key = spec.public_readiness_id || spec.service_id
     const supervisorState = serviceStates.get(spec.service_id) || 'pending'
     const ready = supervisorState === 'ready' || supervisorState === 'external_ready'
     const enabled = enabledIds.has(spec.public_readiness_id) || spec.requirement === 'external'
@@ -3852,7 +3867,10 @@ const getStatus = async () => {
     }
   }
   const readyServiceIds = [...enabledIds].filter((serviceId) => {
-    const graphId = serviceId === 'mediapipe' ? 'mediapipe_camera_hub_stack' : serviceId
+    const graphId = serviceIdsByPublicReadinessId.get(serviceId)
+    if (!graphId) {
+      throw new Error('launcher_public_readiness_id_unmapped')
+    }
     return ['ready', 'external_ready', 'optional_absent'].includes(serviceStates.get(graphId))
   })
   const startupTiming = {
