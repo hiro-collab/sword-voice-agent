@@ -605,16 +605,6 @@ const readyTimeoutFieldForService = (serviceId) => {
   return null
 }
 
-const corePortFields = [
-  'AituberPort',
-  'ThoughtCorePort',
-  'TouchDesignerGuiPort',
-  'HomeAssistantBridgePort',
-  'EnvironmentStatePort',
-  'MediapipePort',
-  'VisionSnapshotProcessorPort'
-]
-
 const textFields = [
   'MediapipeCameraInputCodec',
   'VoicevoxUrl',
@@ -1290,10 +1280,10 @@ const summarizeRuntime = () => {
 }
 
 const summarizePorts = () => {
-  const values = corePortFields.map((field) => String(state.options[field] || '').trim()).filter(Boolean)
+  const values = portFields.map((field) => String(state.options[field] || '').trim()).filter(Boolean)
   const duplicates = values.filter((value, index) => values.indexOf(value) !== index)
   return {
-    card: duplicates.length ? t('summary.checkConflict') : `${values.length}/${corePortFields.length} ${t('summary.set')}`,
+    card: duplicates.length ? t('summary.checkConflict') : `${values.length}/${portFields.length} ${t('summary.set')}`,
     drawer: duplicates.length ? t('summary.duplicatePorts') : t('summary.coreBindings')
   }
 }
