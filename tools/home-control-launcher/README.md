@@ -40,17 +40,20 @@ Normal profiles keep a longer `MediapipeReadyTimeoutSeconds` budget. Camera Hub
 startup can be close to 35 seconds on the local webcam path, so the Launcher
 passes a 90-second default to avoid treating a nearly-ready MediaPipe stack as a
 failed startup.
-The Startup timing panel shows each service's measured startup time next to its
-maximum ready wait. Services with an explicit wait budget, such as VOICEVOX and
+The Startup timing panel shows the current expected-versus-ready service state.
+Separately, services with an explicit maximum ready wait, such as VOICEVOX and
 MediaPipe, can be edited in that panel and saved with the normal Launcher
 configuration.
 
 The Launcher exposes source/static diagnostic readiness and startup timing
 summaries for later reviewed measurement routes:
 
-- `GET /api/startup-timing` returns `launcher_startup_timing.v0` with expected
-  service IDs, first-ready elapsed milliseconds, waiting elapsed milliseconds,
-  timeline events, and the current critical-path service ID.
+- `GET /api/startup-timing` returns `launcher_startup_timing.v1` with
+  `profileId`, `status_class`, `expectedServiceIds`, `readyServiceIds`,
+  `operational`, `readiness_authority`, and `raw_private_publication_flags`.
+  It does not publish measured elapsed time, per-service timeline events, or a
+  critical-path service. The editable maximum ready wait is Launcher
+  configuration, not a measured field from this endpoint.
 - `GET /api/diagnostic-surfaces` returns the no-live diagnostic surface map for
   audio awareness, Self Mirror temporal motion, Projection Visual display/TTS,
   Projection Visual response binding, and OS display/window prompt summaries.
