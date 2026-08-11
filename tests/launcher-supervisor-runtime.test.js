@@ -1713,6 +1713,14 @@ test('real private compiler never puts external VOICEVOX in the owned plan', () 
       'run', 'python', '-m', 'sword_voice_agent.apps.openai_broker',
       '--port', '18786', '--request-budget', '64'
     ])
+    const displayPlan = compiled.document.services.find((service) => service.service_id === 'touchdesigner_control_gui')
+    const aituberUrlIndex = displayPlan.arguments.indexOf('--aituber-url')
+    assert.notEqual(aituberUrlIndex, -1)
+    assert.equal(
+      displayPlan.arguments[aituberUrlIndex + 1],
+      `http://${canonicalOptions.AituberHost}:${canonicalOptions.AituberPort}/projection-visual/?mode=stage-output&hud=0`
+    )
+    assert.equal(displayPlan.arguments.some((value) => String(value).includes('mode=passive')), false)
     assert.deepEqual(
       budget2Compiled.document.services.find((service) => service.service_id === 'openai_provider_broker').arguments,
       ['run', 'python', '-m', 'sword_voice_agent.apps.openai_broker', '--port', '18786', '--request-budget', '2']

@@ -1,5 +1,10 @@
 'use strict'
 
+/**
+ * 証拠の枝2/3: loopback HTTP/WebSocket/module statusを期限付きで観測する。
+ * 観測結果を作るだけで、serviceの起動・停止・再試行判断は行わない。
+ */
+
 const { performance } = require('node:perf_hooks')
 
 const { bindProbeResult } = require('./launcher-probe-result-binding')

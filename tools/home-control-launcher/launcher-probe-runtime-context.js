@@ -1,5 +1,11 @@
 'use strict'
 
+/**
+ * 証拠の枝1/3: sealed planからreadiness観測に必要な最小contextを作る。
+ * privateなendpoint/secretを公開せず、probe executorへ限定的に渡す。
+ * lifecycleの成功判定そのものはreducer/runtimeが所有する。
+ */
+
 const fs = require('node:fs')
 const path = require('node:path')
 

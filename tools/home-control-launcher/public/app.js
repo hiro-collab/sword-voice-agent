@@ -13,6 +13,12 @@ const readInitialLanguage = () => {
   return String(window.navigator?.language || '').toLowerCase().startsWith('ja') ? 'ja' : 'en'
 }
 
+/**
+ * ブラウザUIの枝。
+ * server.jsの公開APIだけを使い、lifecycleの意味やprivate planを再実装しない。
+ * 画面リンクの役割表示は endpointDisplayName / endpointKind に集約する。
+ */
+
 const state = {
   language: readInitialLanguage(),
   profiles: [],
@@ -1772,6 +1778,8 @@ const renderDiagnosticSurfaces = (summary) => {
   `
 }
 
+// Quick Linksの表示専用翻訳。canonical URLと有効条件は
+// server側 launcher-surface-catalog.js が所有する。
 const endpointDisplayName = (name) => {
   const labels = {
     'AITuber Kit': 'Expression runtime',
@@ -1793,6 +1801,7 @@ const endpointDisplayName = (name) => {
     'TouchDesigner UDP receiver': 'Display UDP receiver',
     'Display UDP receiver': 'TD UDP',
     'Projection Visual': 'Operator stage',
+    'Projection Stage Output': 'Stage output',
     'Passive Projection': 'Stage',
     'Thought Core API index': 'Core API',
     'Thought Core health': 'Core health',
@@ -1821,6 +1830,7 @@ const endpointDisplayName = (name) => {
     'TouchDesigner UDP receiver': '表示UDP受信',
     'Display UDP receiver': 'TD UDP',
     'Projection Visual': '操作ステージ',
+    'Projection Stage Output': '投影出力',
     'Passive Projection': 'ステージ',
     'Thought Core API index': '思考中枢API',
     'Thought Core health': '思考中枢の状態',
@@ -2215,11 +2225,17 @@ const endpointGroupLabel = (group) => {
   return labels[group] ? t(labels[group]) : group
 }
 
+// URLのsemantic authorityではなく、UI上の色・説明を選ぶ分類だけを行う。
 const endpointKind = (endpoint) => {
   const name = String(endpoint.name || '').toLowerCase()
   const url = String(endpoint.url || '').toLowerCase()
   if (url.startsWith('ws:') || name.includes('websocket')) return 'websocket'
-  if (name.includes('passive projection') || url.includes('mode=passive')) return 'stage'
+  if (
+    name.includes('projection stage output') ||
+    name.includes('passive projection') ||
+    url.includes('mode=stage-output') ||
+    url.includes('mode=passive')
+  ) return 'stage'
   if (name.includes('thought-core')) return 'thought'
   if (name.includes('operator') || url.includes('/operator')) return 'ui'
   if (name.includes('aituber') || name.includes('projection')) return 'ui'

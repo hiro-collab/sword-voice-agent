@@ -331,7 +331,7 @@ $OpenAIBrokerHost = "127.0.0.1"
 $OpenAIBrokerBaseUrl = "http://{0}:{1}/v1" -f $OpenAIBrokerHost, $OpenAIBrokerPort
 $OpenAIBrokerHealthUrl = "http://{0}:{1}/health" -f $OpenAIBrokerHost, $OpenAIBrokerPort
 $BrokerRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..\..")).Path
-$AituberProjectionVisualUrl = "http://{0}:{1}/projection-visual/?mode=passive&hud=0" -f $AituberClientHost, $AituberPort
+$AituberProjectionVisualUrl = "http://{0}:{1}/projection-visual/?mode=stage-output&hud=0" -f $AituberClientHost, $AituberPort
 $MediapipeCameraHubChildProcessFile = Join-Path $StateDir "modules\mediapipe_camera_hub_stack\processes.json"
 $StateQueryFeedbackPath = Join-Path $StateDir "feedback\state-query.jsonl"
 
@@ -1323,15 +1323,15 @@ function Write-StackEndpointGuide {
         Write-GuideItem `
             -Name "Projection Visual" `
             -Target ("http://{0}:{1}/projection-visual/" -f $AituberClientHost, $AituberPort) `
-            -Description "投影・配信用のキャラクター表示画面。普段見るメインの表示はこちら。"
+            -Description "会話入力と表示調整を行う operator 画面。"
+        Write-GuideItem `
+            -Name "Projection Visual stage output" `
+            -Target $AituberProjectionVisualUrl `
+            -Description "avatar・吹き出し・Fire/Thunder を合成する HUD なしの正式な投影出力。エフェクトを要求する前に開く。"
         Write-GuideItem `
             -Name "Projection Visual passive" `
             -Target ("http://{0}:{1}/projection-visual/?mode=passive" -f $AituberClientHost, $AituberPort) `
-            -Description "投影先・TouchDesigner プレビュー向けの passive 表示。操作 UI を前面に出さない。"
-        Write-GuideItem `
-            -Name "Projection Visual passive no HUD" `
-            -Target $AituberProjectionVisualUrl `
-            -Description "HUD なしの passive 表示。Display Runtime GUI の Stage preview 用。"
+            -Description "display state の互換表示。Fire/Thunder の production receiver ではない。"
         Write-GuideItem `
             -Name "Body map inspector" `
             -Target ("http://{0}:{1}/body-map-inspector?fov=60&scale=1" -f $AituberClientHost, $AituberPort) `

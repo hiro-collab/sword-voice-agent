@@ -1,5 +1,11 @@
 'use strict'
 
+/**
+ * 根幹1/6: Launcher全体が従うauthority・schema・ID・hashの契約。
+ * 他の根幹モジュールはここで検証済みのauthorityだけを受け取る。
+ * serviceを起動せず、状態遷移も行わない「境界の定義」だけを所有する。
+ */
+
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')

@@ -1,5 +1,11 @@
 'use strict'
 
+/**
+ * 根幹4/6: 選択profileから、子serviceの正確な実行計画を一度だけ組み立てる。
+ * 秘密値やprivate pathを扱うため、UIへ返す公開状態とは必ず分離する。
+ * このファイルは実行せず、workerが消費するsealed planだけを作る。
+ */
+
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -7,6 +13,7 @@ const { spawnSync } = require('node:child_process')
 const { TextDecoder } = require('node:util')
 
 const { assertAuthority, canonicalJsonSha256, deepFreeze } = require('./launcher-supervisor-contract')
+const { buildProjectionVisualUrls } = require('./launcher-surface-catalog')
 
 const PLAN_DIRECTORY = 'launcher-private-plan.v1'
 const PLAN_FILE = 'launcher-private-service-plan.v1.json'
@@ -707,7 +714,7 @@ const compilePrivateServicePlan = ({
         '--environment-state-host', '127.0.0.1',
         '--environment-state-port', options.EnvironmentStatePort,
         '--aituber-host', aituberHost, '--aituber-port', options.AituberPort,
-        '--aituber-url', `http://${aituberHost}:${options.AituberPort}/projection-visual/?mode=passive&hud=0`,
+        '--aituber-url', buildProjectionVisualUrls(aituberHost, options.AituberPort).stageOutput,
         '--touchdesigner-host', '127.0.0.1', '--touchdesigner-port', 9001,
         '--thought-core-host', thoughtHost, '--thought-core-port', options.ThoughtCorePort
       ],

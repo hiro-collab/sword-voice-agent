@@ -1,5 +1,10 @@
 'use strict'
 
+/**
+ * 証拠の枝3/3: probe結果をoperation/service/dispatch authorityへ結び付ける。
+ * stale・別operation・別serviceの結果がReady判定へ混入するのを防ぐ。
+ */
+
 const path = require('node:path')
 
 const {

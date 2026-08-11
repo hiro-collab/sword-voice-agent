@@ -28,6 +28,7 @@ PRODUCT_ROOT = next(
 )
 PUBLIC = ROOT / "tools" / "home-control-launcher" / "public"
 LAUNCHER_SERVER = ROOT / "tools" / "home-control-launcher" / "server.js"
+LAUNCHER_SURFACE_CATALOG = ROOT / "tools" / "home-control-launcher" / "launcher-surface-catalog.js"
 LAUNCHER_PROFILES = ROOT / "tools" / "home-control-launcher" / "config" / "default-profiles.json"
 TIMING_COLLECTOR = ROOT / "tools" / "home-control-launcher" / "scripts" / "collect-demo-timing.mjs"
 DEMO_SAFE_DEFAULTS = PRODUCT_ROOT / "manifests" / "demo-safe-settings" / "defaults.json"
@@ -45,6 +46,10 @@ def read_public(name: str) -> str:
 
 def read_launcher_server() -> str:
     return LAUNCHER_SERVER.read_text(encoding="utf-8")
+
+
+def read_launcher_surface_catalog() -> str:
+    return LAUNCHER_SURFACE_CATALOG.read_text(encoding="utf-8")
 
 
 def read_launcher_profiles() -> list[dict]:
@@ -285,16 +290,17 @@ $cases = @(
 
     def test_body_map_inspector_is_the_only_launcher_diagnostics_route(self) -> None:
         server = read_launcher_server()
+        surface_catalog = read_launcher_surface_catalog()
         public_app = read_public("app.js")
         stack_start = read_stack_start_script()
 
-        self.assertIn("name: 'Body map inspector'", server)
-        self.assertIn("/body-map-inspector?fov=60&scale=1", server)
+        self.assertIn("name: 'Body map inspector'", surface_catalog)
+        self.assertIn("/body-map-inspector?fov=60&scale=1", surface_catalog)
         self.assertIn("'Body map inspector': 'Diagnostics body map'", public_app)
         self.assertIn("'Body map inspector': '自己状態マップ'", public_app)
         self.assertIn('-Name "Body map inspector"', stack_start)
         self.assertIn("/body-map-inspector?fov=60&scale=1", stack_start)
-        for source in (server, public_app, stack_start):
+        for source in (server, surface_catalog, public_app, stack_start):
             self.assertNotIn("cube-vault-background", source)
             self.assertNotIn("Cube Vault", source)
             self.assertNotIn("cube vault", source)
@@ -2160,6 +2166,7 @@ $cases = @(
         html = read_public("index.html")
         app = read_public("app.js")
         server = read_launcher_server()
+        surface_catalog = read_launcher_surface_catalog()
 
         self.assertIn('id="startup-timing-list"', html)
         self.assertIn('id="diagnostic-surface-list"', html)
@@ -2222,8 +2229,8 @@ $cases = @(
         self.assertIn("aircon_hvac_off", server)
         self.assertIn("latency_bottleneck_hints", server)
         self.assertIn("command_submission_authorized_by_this_summary: false", server)
-        self.assertIn("Action bridge operator", server)
-        self.assertIn("/operator", server)
+        self.assertIn("Action bridge operator", surface_catalog)
+        self.assertIn("/operator", surface_catalog)
         self.assertIn("Action bridge operator", app)
         self.assertIn("家電操作面", app)
         self.assertIn("source_static_diagnostic_surface_inventory.v0", server)
@@ -2641,21 +2648,22 @@ assert.deepStrictEqual(previewSnapshots[2], {
         self.assertIn('.service-row[data-startup-target="skipped"]', css)
 
     def test_quick_links_use_display_safe_environment_endpoint(self) -> None:
-        server = read_launcher_server()
+        surface_catalog = read_launcher_surface_catalog()
         app = read_public("app.js")
 
-        self.assertIn("Environment display state", server)
-        self.assertIn("/indicators/current", server)
-        self.assertNotIn("name: 'Environment current state'", server)
-        self.assertNotIn("/environment/current`,", server)
+        self.assertIn("Environment display state", surface_catalog)
+        self.assertIn("/indicators/current", surface_catalog)
+        self.assertNotIn("name: 'Environment current state'", surface_catalog)
+        self.assertNotIn("/environment/current`,", surface_catalog)
         self.assertIn("'Environment display state': 'Env state'", app)
 
     def test_launcher_status_uses_lightweight_action_bridge_probe(self) -> None:
         server = read_launcher_server()
+        surface_catalog = read_launcher_surface_catalog()
 
         self.assertIn(
             "`http://127.0.0.1:${options.HomeAssistantBridgePort}/operator`",
-            server,
+            surface_catalog,
         )
         self.assertNotIn(
             "`http://127.0.0.1:${options.HomeAssistantBridgePort}/health`,\n      2500",
@@ -2664,15 +2672,24 @@ assert.deepStrictEqual(previewSnapshots[2], {
 
     def test_projection_quick_links_use_canonical_trailing_slash_routes(self) -> None:
         server = read_launcher_server()
+        surface_catalog = read_launcher_surface_catalog()
         stack_start = read_stack_start_script()
         app = read_public("app.js")
 
-        self.assertIn("name: 'Passive Projection'", server)
-        self.assertIn("/projection-visual/`", server)
-        self.assertIn("/projection-visual/?mode=passive&hud=0`", server)
+        self.assertIn("buildLauncherSurfaceCatalog", server)
+        self.assertIn("name: 'Projection Stage Output'", surface_catalog)
+        self.assertIn("name: 'Passive Projection'", surface_catalog)
+        self.assertIn("/projection-visual/`", surface_catalog)
+        self.assertIn("/projection-visual/?mode=stage-output&hud=0`", surface_catalog)
+        self.assertIn("/projection-visual/?mode=passive&hud=0`", surface_catalog)
+        self.assertIn("/projection-visual/?mode=stage-output&hud=0", stack_start)
         self.assertIn("/projection-visual/?mode=passive", stack_start)
+        self.assertIn("'Projection Stage Output': 'Stage output'", app)
+        self.assertIn("'Projection Stage Output': '投影出力'", app)
         self.assertIn("'Passive Projection': 'Stage'", app)
-        self.assertNotIn("/projection-visual?mode=passive", server)
+        self.assertNotIn("/projection-visual?mode=stage-output", surface_catalog)
+        self.assertNotIn("/projection-visual?mode=stage-output", stack_start)
+        self.assertNotIn("/projection-visual?mode=passive", surface_catalog)
         self.assertNotIn("/projection-visual?mode=passive", stack_start)
 
     def test_stack_start_reclaims_only_managed_stale_port_owners(self) -> None:

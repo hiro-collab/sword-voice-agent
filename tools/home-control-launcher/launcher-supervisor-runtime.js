@@ -1,5 +1,11 @@
 'use strict'
 
+/**
+ * 根幹6/6: contract・reducer・store・plan・workerを束ねるlifecycle調整役。
+ * Start/Stop/Recoveryを一つのoperationとして進め、公開可能な要約だけを返す。
+ * HTTP routingやブラウザ表示はserver.js側の責務。
+ */
+
 const crypto = require('node:crypto')
 
 const { LauncherContractError, assertAuthority, canonicalJsonSha256, loadAuthority } = require('./launcher-supervisor-contract')

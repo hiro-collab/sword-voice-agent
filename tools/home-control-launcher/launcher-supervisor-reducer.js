@@ -1,5 +1,11 @@
 'use strict'
 
+/**
+ * 根幹2/6: Start/Ready/Stop/Failure/Residueを決める純粋な状態機械。
+ * 外部I/Oは行わず、現在snapshot + eventから次snapshotだけを返す。
+ * 「どのphaseを成功と呼べるか」を調べるときは、まずここを見る。
+ */
+
 const {
   LauncherContractError, assertAuthority, canonicalJsonSha256, validateWorkerMessage, validateWorkerRequestAgainstAuthority
 } = require('./launcher-supervisor-contract')

@@ -1,0 +1,171 @@
+'use strict'
+
+/**
+ * Launcher の「利用者が開く画面」と「ローカル参照先」を組み立てる枝モジュール。
+ *
+ * 根幹との関係:
+ * - server.js がこの一覧を公開状態へ載せる。
+ * - private service plan は Projection Visual の正式な投影 URL だけを再利用する。
+ *
+ * このモジュールがしないこと:
+ * - サービスの起動・停止、HTTPアクセス、プロセス確認、権限判断は行わない。
+ * - operator / stage-output / passive の役割を入れ替えない。
+ *
+ * 人間が画面構成を確認するときは、まずこのファイルを見る。
+ */
+
+const SURFACE_GROUP = Object.freeze({
+  OPEN_IN_BROWSER: 'Open in browser',
+  LOCAL_API_OR_FEED: 'Local APIs and feeds',
+  BACKGROUND_REFERENCE: 'Background links'
+})
+
+const normalizeLoopbackHttpUrl = (value) =>
+  String(value || '').replace(/^http:\/\/localhost(?=:|\/|$)/u, 'http://127.0.0.1')
+
+const buildProjectionVisualUrls = (aituberHost, aituberPort) => {
+  const origin = `http://${aituberHost}:${aituberPort}`
+  return Object.freeze({
+    operator: `${origin}/projection-visual/`,
+    // Fire/Thunder を受け取る唯一の正式な production receiver。
+    stageOutput: `${origin}/projection-visual/?mode=stage-output&hud=0`,
+    // display-state 互換表示。production effect receiver ではない。
+    passive: `${origin}/projection-visual/?mode=passive&hud=0`
+  })
+}
+
+const buildLauncherSurfaceCatalog = (options) => {
+  const voicevoxUrl = normalizeLoopbackHttpUrl(
+    options.VoicevoxUrl || 'http://127.0.0.1:50021'
+  ).replace(/\/$/u, '')
+  const thoughtCoreHost =
+    options.ThoughtCoreHost === '0.0.0.0' ? '127.0.0.1' : options.ThoughtCoreHost
+  const thoughtCoreUrl = `http://${thoughtCoreHost}:${options.ThoughtCorePort}`
+  const projection = buildProjectionVisualUrls('127.0.0.1', options.AituberPort)
+  const mediaUrl = encodeURIComponent(
+    'http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true'
+  )
+  const wsUrl = encodeURIComponent(`ws://127.0.0.1:${options.MediapipePort}`)
+  const browserMonitorUrl = `http://127.0.0.1:${options.MediapipeBrowserMonitorPort}/browser_camera_hub_viewer.html?mediaUrl=${mediaUrl}&wsUrl=${wsUrl}&target=sword_sign`
+
+  return [
+    {
+      group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      name: 'Expression runtime',
+      url: `http://127.0.0.1:${options.AituberPort}`,
+      enabled: !options.SkipAituber
+    },
+    {
+      group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      name: 'Projection Visual',
+      url: projection.operator,
+      enabled: !options.SkipAituber
+    },
+    {
+      group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      name: 'Projection Stage Output',
+      url: projection.stageOutput,
+      enabled: !options.SkipAituber
+    },
+    {
+      group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      name: 'Passive Projection',
+      url: projection.passive,
+      enabled: !options.SkipAituber
+    },
+    {
+      group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      name: 'Body map inspector',
+      url: `http://127.0.0.1:${options.AituberPort}/body-map-inspector?fov=60&scale=1`,
+      enabled: !options.SkipAituber
+    },
+    {
+      group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      name: 'Thought Core API index',
+      url: thoughtCoreUrl,
+      enabled: options.EnableThoughtCore
+    },
+    {
+      group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      name: 'Display runtime GUI/API',
+      url: `http://127.0.0.1:${options.TouchDesignerGuiPort}`,
+      enabled: !options.SkipTouchDesignerGui
+    },
+    {
+      group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      name: 'Action bridge operator',
+      url: `http://127.0.0.1:${options.HomeAssistantBridgePort}/operator`,
+      enabled: !options.SkipHomeAssistantBridge
+    },
+    {
+      group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      name: 'Action bridge health',
+      url: `http://127.0.0.1:${options.HomeAssistantBridgePort}/health`,
+      enabled: !options.SkipHomeAssistantBridge
+    },
+    {
+      group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      name: 'Environment display state',
+      url: `http://127.0.0.1:${options.EnvironmentStatePort}/indicators/current`,
+      enabled: !options.SkipEnvironmentState
+    },
+    {
+      group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      name: 'Reflex browser monitor',
+      url: browserMonitorUrl,
+      enabled: !options.SkipMediapipe && options.MediapipeMode === 'mediamtx'
+    },
+    {
+      group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      name: 'Reflex camera video',
+      url: 'http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true',
+      enabled: !options.SkipMediapipe && options.MediapipeMode === 'mediamtx'
+    },
+    {
+      group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      name: 'Reflex Camera Hub WebSocket',
+      url: `ws://127.0.0.1:${options.MediapipePort}`,
+      enabled: !options.SkipMediapipe
+    },
+    {
+      group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      name: 'Vision snapshot WebSocket',
+      url: `ws://127.0.0.1:${options.VisionSnapshotProcessorPort}`,
+      enabled:
+        !options.SkipVisionSnapshotProcessor &&
+        !options.SkipMediapipe &&
+        options.MediapipeMode === 'mediamtx'
+    },
+    {
+      group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      name: 'VOICEVOX',
+      url: voicevoxUrl,
+      enabled: !options.SkipVoicevoxCheck && !options.SkipAituber
+    },
+    {
+      group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      name: 'Thought Core health',
+      url: `${thoughtCoreUrl}/health`,
+      enabled: options.EnableThoughtCore
+    },
+    {
+      group: SURFACE_GROUP.BACKGROUND_REFERENCE,
+      name: 'Thought Core watcher',
+      url: 'no browser URL',
+      enabled: options.EnableThoughtCoreWatch
+    },
+    {
+      group: SURFACE_GROUP.BACKGROUND_REFERENCE,
+      name: 'Display UDP receiver',
+      url: '127.0.0.1:9001',
+      enabled: true
+    }
+  ]
+}
+
+module.exports = {
+  SURFACE_GROUP,
+  buildLauncherSurfaceCatalog,
+  buildProjectionVisualUrls,
+  normalizeLoopbackHttpUrl
+}

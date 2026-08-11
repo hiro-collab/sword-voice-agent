@@ -1,3 +1,11 @@
+/**
+ * Sword System Launcher の HTTP 合成ルート。
+ *
+ * 読み順は ARCHITECTURE.md を参照する。ここは利用者/UI/APIの入口であり、
+ * lifecycle の意味は launcher-supervisor-runtime.js と reducer が所有する。
+ * service plan、永続状態、worker実行をこのファイルだけで推測しないこと。
+ */
+
 const childProcess = require('child_process')
 const crypto = require('crypto')
 const fs = require('fs')
@@ -17,6 +25,7 @@ const {
 const {
   LauncherProbeRuntimeContext
 } = require('./launcher-probe-runtime-context')
+const { buildLauncherSurfaceCatalog } = require('./launcher-surface-catalog')
 const {
   deriveEffectiveConfigIdentity,
   expectedEventJournalDirectory
@@ -293,6 +302,10 @@ const MIME_TYPES = {
   '.svg': 'image/svg+xml; charset=utf-8'
 }
 
+// ─────────────────────────────────────────────────────────────
+// 設定の枝: profile既定値、型、保存済みconfig identity
+// lifecycleを直接進めず、Startへ渡す確定入力を作る。
+// ─────────────────────────────────────────────────────────────
 const PORT_MODE_OPTIONS = {
   isolated_override: {
     HomeAssistantBridgePort: 18887,
@@ -1148,6 +1161,10 @@ const resolveExecutable = (name) => {
 const psExecutable = () =>
   resolveExecutable(process.env.HOME_CONTROL_POWERSHELL || 'pwsh')
 
+// ─────────────────────────────────────────────────────────────
+// Camera入力の枝: local device名の列挙・選択・redaction
+// privateなdevice名をremote/public状態へ出さない。
+// ─────────────────────────────────────────────────────────────
 const sanitizeVideoInputDeviceName = (value) => {
   const name = String(value || '').trim()
   if (
@@ -1617,6 +1634,10 @@ const runExclusiveStackOperation = async (type, action) => {
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// Lifecycle入口: 保存済みconfigをSupervisor Runtimeへ渡す。
+// Start/Stopのphase意味はruntime/reducer側がauthority。
+// ─────────────────────────────────────────────────────────────
 const FIXED_START_FAILURE_CLASSES = new Set([
   'camera_selection_missing',
   'voicevox_unavailable',
@@ -2131,6 +2152,10 @@ const MANAGED_PORT_RECLAIM_POLICIES = {
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// 所有process回収の枝: PIDだけでなくlineage/argv/listenerを結合する。
+// 不明なport ownerを一般的にkillする機能ではない。
+// ─────────────────────────────────────────────────────────────
 const reclaimPolicyForTarget = (target) => {
   const policy = MANAGED_PORT_RECLAIM_POLICIES[target && target.key]
   if (!policy) {
@@ -2964,6 +2989,10 @@ const checkHttp = (targetUrl, timeoutMs = 1800) =>
     })
   })
 
+// ─────────────────────────────────────────────────────────────
+// 公開状態の枝: 各serviceの観測をprivacy-safeな要約へ変換する。
+// 観測値はReadyのsemantic authorityではない。
+// ─────────────────────────────────────────────────────────────
 const skippedProbe = (detail = 'skipped') => ({ ok: false, detail })
 
 const checkTcpIf = (enabled, port, host = '127.0.0.1', timeoutMs = 1200) =>
@@ -3759,131 +3788,6 @@ const effectiveStatusOptions = () => {
   return normalizeOptions(config.selectedProfileId || PRIMARY_PROFILE_ID, config.options || {})
 }
 
-const getVoicevoxUrl = (options) =>
-  (options.VoicevoxUrl || 'http://127.0.0.1:50021').replace(
-    /^http:\/\/localhost(?=:|\/|$)/,
-    'http://127.0.0.1'
-  )
-
-const getEndpoints = (options) => {
-  const voicevoxUrl = getVoicevoxUrl(options).replace(/\/$/, '')
-  const thoughtCoreHost =
-    options.ThoughtCoreHost === '0.0.0.0' ? '127.0.0.1' : options.ThoughtCoreHost
-  const thoughtCoreUrl = `http://${thoughtCoreHost}:${options.ThoughtCorePort}`
-  const mediaUrl = encodeURIComponent(
-    'http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true'
-  )
-  const wsUrl = encodeURIComponent(`ws://127.0.0.1:${options.MediapipePort}`)
-  const browserMonitorUrl = `http://127.0.0.1:${options.MediapipeBrowserMonitorPort}/browser_camera_hub_viewer.html?mediaUrl=${mediaUrl}&wsUrl=${wsUrl}&target=sword_sign`
-  return [
-    {
-      group: 'Open in browser',
-      name: 'Expression runtime',
-      url: `http://127.0.0.1:${options.AituberPort}`,
-      enabled: !options.SkipAituber
-    },
-    {
-      group: 'Open in browser',
-      name: 'Projection Visual',
-      url: `http://127.0.0.1:${options.AituberPort}/projection-visual/`,
-      enabled: !options.SkipAituber
-    },
-    {
-      group: 'Open in browser',
-      name: 'Passive Projection',
-      url: `http://127.0.0.1:${options.AituberPort}/projection-visual/?mode=passive&hud=0`,
-      enabled: !options.SkipAituber
-    },
-    {
-      group: 'Open in browser',
-      name: 'Body map inspector',
-      url: `http://127.0.0.1:${options.AituberPort}/body-map-inspector?fov=60&scale=1`,
-      enabled: !options.SkipAituber
-    },
-    {
-      group: 'Open in browser',
-      name: 'Thought Core API index',
-      url: thoughtCoreUrl,
-      enabled: options.EnableThoughtCore
-    },
-    {
-      group: 'Open in browser',
-      name: 'Display runtime GUI/API',
-      url: `http://127.0.0.1:${options.TouchDesignerGuiPort}`,
-      enabled: !options.SkipTouchDesignerGui
-    },
-    {
-      group: 'Open in browser',
-      name: 'Action bridge operator',
-      url: `http://127.0.0.1:${options.HomeAssistantBridgePort}/operator`,
-      enabled: !options.SkipHomeAssistantBridge
-    },
-    {
-      group: 'Local APIs and feeds',
-      name: 'Action bridge health',
-      url: `http://127.0.0.1:${options.HomeAssistantBridgePort}/health`,
-      enabled: !options.SkipHomeAssistantBridge
-    },
-    {
-      group: 'Local APIs and feeds',
-      name: 'Environment display state',
-      url: `http://127.0.0.1:${options.EnvironmentStatePort}/indicators/current`,
-      enabled: !options.SkipEnvironmentState
-    },
-    {
-      group: 'Local APIs and feeds',
-      name: 'Reflex browser monitor',
-      url: browserMonitorUrl,
-      enabled: !options.SkipMediapipe && options.MediapipeMode === 'mediamtx'
-    },
-    {
-      group: 'Local APIs and feeds',
-      name: 'Reflex camera video',
-      url: 'http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true',
-      enabled: !options.SkipMediapipe && options.MediapipeMode === 'mediamtx'
-    },
-    {
-      group: 'Local APIs and feeds',
-      name: 'Reflex Camera Hub WebSocket',
-      url: `ws://127.0.0.1:${options.MediapipePort}`,
-      enabled: !options.SkipMediapipe
-    },
-    {
-      group: 'Local APIs and feeds',
-      name: 'Vision snapshot WebSocket',
-      url: `ws://127.0.0.1:${options.VisionSnapshotProcessorPort}`,
-      enabled:
-        !options.SkipVisionSnapshotProcessor &&
-        !options.SkipMediapipe &&
-        options.MediapipeMode === 'mediamtx'
-    },
-    {
-      group: 'Local APIs and feeds',
-      name: 'VOICEVOX',
-      url: voicevoxUrl,
-      enabled: !options.SkipVoicevoxCheck && !options.SkipAituber
-    },
-    {
-      group: 'Local APIs and feeds',
-      name: 'Thought Core health',
-      url: `${thoughtCoreUrl}/health`,
-      enabled: options.EnableThoughtCore
-    },
-    {
-      group: 'Background links',
-      name: 'Thought Core watcher',
-      url: 'no browser URL',
-      enabled: options.EnableThoughtCoreWatch
-    },
-    {
-      group: 'Background links',
-      name: 'Display UDP receiver',
-      url: '127.0.0.1:9001',
-      enabled: true
-    }
-  ]
-}
-
 const getStatus = async () => {
   const config = readLauncherConfig()
   const selectedProfileId = config.selectedProfileId || PRIMARY_PROFILE_ID
@@ -4032,7 +3936,7 @@ const getState = async ({ includeLocalCameraSelection = true } = {}) => {
     diagnosticSurfaces: status.diagnosticSurfaces,
     demoSafeSettings,
     demoReadinessStatus: demoReadinessStatus(demoSafeSettings, status),
-    endpoints: getEndpoints(options)
+    endpoints: buildLauncherSurfaceCatalog(options)
   }
 }
 
@@ -4182,6 +4086,7 @@ const serveStatic = (request, response, requestUrl) => {
 }
 
 const handleApi = async (request, response, requestUrl) => {
+  // HTTP route表。mutation routeは必ずexclusive lifecycle入口へ流す。
   const includeLocalCameraSelection = isLoopbackAddress(getRemoteAddress(request))
   if (request.method === 'OPTIONS') {
     const headers =

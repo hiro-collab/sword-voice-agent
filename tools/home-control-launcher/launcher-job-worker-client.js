@@ -1,5 +1,11 @@
 'use strict'
 
+/**
+ * 根幹5/6: sealed private planを実行する所有workerとの唯一の通信窓口。
+ * Node側はJSON lineを相関し、PowerShell workerの作業結果を固定schemaで受け取る。
+ * 任意commandや未検証processを起動する一般shellではない。
+ */
+
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')

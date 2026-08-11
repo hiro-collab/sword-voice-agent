@@ -1,5 +1,10 @@
 'use strict'
 
+/**
+ * 会話互換の枝: 通常会話routeがLauncherから参照する公開surface契約を読む。
+ * Launcher lifecycleの内部authorityとは別で、公開pathと整合性だけを固定する。
+ */
+
 const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')

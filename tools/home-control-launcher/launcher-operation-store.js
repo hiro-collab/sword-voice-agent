@@ -1,5 +1,11 @@
 'use strict'
 
+/**
+ * 根幹3/6: 現在のoperation、lock、supervisor leaseをprivate領域へ保存する。
+ * reducerの意味を変更せず、atomic write・lock recovery・所有者生存確認を担当する。
+ * UIへ公開する形への変換は行わない。
+ */
+
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')

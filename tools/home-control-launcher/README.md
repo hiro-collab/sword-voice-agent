@@ -2,6 +2,10 @@
 
 Local web launcher for the Sword Agent OS system cell.
 
+人間が構成を確認するときは、最初に
+[`ARCHITECTURE.md`](ARCHITECTURE.md) を読んでください。根幹のlifecycle、
+そこへ接続する証拠・UI・製品機能の枝、Start/Stopの読み順を日本語で整理しています。
+
 It serves a browser UI for:
 
 - choosing launch profiles
@@ -24,6 +28,13 @@ The fast demo profiles lower the VOICEVOX readiness wait budget with
 normal profiles, while `Fast visible demo` and `Fast action demo` use an
 8-second wait so missing speech readiness does not consume the entire
 first-response timing budget.
+
+Quick Links separates the operator and final presentation surfaces. Use
+`Projection Visual` for conversation input and calibration. Open
+`Projection Stage Output` before requesting a Fire or Thunder effect; it is the
+single production effect receiver and the canonical avatar + bubble + effect
+composite used by Display Runtime. `Passive Projection` remains a compatibility
+display-state viewer and does not receive production effect intents.
 
 Normal profiles keep a longer `MediapipeReadyTimeoutSeconds` budget. Camera Hub
 startup can be close to 35 seconds on the local webcam path, so the Launcher
