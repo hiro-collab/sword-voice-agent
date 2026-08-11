@@ -3542,20 +3542,39 @@ const cameraHubServiceState = ({ entry, tcp, cameraState }) => {
 
 // N0 parse-only drift anchor for the frozen external graph port:
 // let voicevoxPort = 50021
-const expectedServicesForOptions = (options) => {
-  const services = []
-  if (!options.SkipHomeAssistantBridge) services.push('home_assistant_bridge')
-  if (!options.SkipEnvironmentState) services.push('environment_state_server')
-  if (!options.SkipMediapipe) services.push('mediapipe')
-  if (!options.SkipVisionSnapshotProcessor && !options.SkipMediapipe) {
-    services.push('vision_snapshot_processor')
+const publicReadinessIdsForServiceIds = (serviceIds) => {
+  const graphServices = launcherRuntime.authority.graph.services
+  const publicIds = serviceIds.map((serviceId) => {
+    const matches = graphServices.filter((service) => service.service_id === serviceId)
+    if (matches.length !== 1) {
+      throw new Error('launcher_service_graph_selection_invalid')
+    }
+    const publicId = matches[0].public_readiness_id
+    if (typeof publicId !== 'string' || !publicId) {
+      throw new Error('launcher_public_readiness_id_missing')
+    }
+    return publicId
+  })
+  if (new Set(publicIds).size !== publicIds.length) {
+    throw new Error('launcher_public_readiness_id_duplicate')
   }
-  if (!options.SkipAituber) services.push('aituber_kit')
-  if (!options.SkipTouchDesignerGui) services.push('touchdesigner_control_gui')
-  if (options.EnableThoughtCore) services.push('thought_core_api')
-  if (options.EnableThoughtCoreWatch) services.push('thought_core_watcher')
-  if (!options.SkipVoicevoxCheck && !options.SkipAituber) services.push('voicevox')
-  return services
+  return publicIds
+}
+
+const expectedServicesForOptions = (options) => {
+  const serviceIds = []
+  if (!options.SkipHomeAssistantBridge) serviceIds.push('home_assistant_bridge')
+  if (!options.SkipEnvironmentState) serviceIds.push('environment_state_server')
+  if (!options.SkipMediapipe) serviceIds.push('mediapipe_camera_hub_stack')
+  if (!options.SkipVisionSnapshotProcessor && !options.SkipMediapipe) {
+    serviceIds.push('vision_snapshot_processor')
+  }
+  if (!options.SkipAituber) serviceIds.push('aituber_kit')
+  if (!options.SkipTouchDesignerGui) serviceIds.push('touchdesigner_control_gui')
+  if (options.EnableThoughtCore) serviceIds.push('thought_core_api')
+  if (options.EnableThoughtCoreWatch) serviceIds.push('thought_core_watcher')
+  if (!options.SkipVoicevoxCheck && !options.SkipAituber) serviceIds.push('voicevox')
+  return publicReadinessIdsForServiceIds(serviceIds)
 }
 
 const startupReadyTimeoutMsForService = (serviceId, options) => {

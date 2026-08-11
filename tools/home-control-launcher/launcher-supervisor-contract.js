@@ -548,11 +548,25 @@ const validateLegacyDrift = (repositoryRoot, graph) => {
   const voicevoxPort = /let\s+voicevoxPort\s*=\s*(\d+)/u.exec(server)
   const voicevox = graph.services.find((service) => service.service_id === 'voicevox')
   if (!voicevoxPort || Number(voicevoxPort[1]) !== voicevox.port.loopback_port) fail('drift_voicevox_port')
-  const functionStart = server.indexOf('const expectedServicesForOptions')
+  const projectionStart = server.indexOf('const publicReadinessIdsForServiceIds')
+  const functionStart = server.indexOf('const expectedServicesForOptions', projectionStart)
   const functionEnd = server.indexOf('const startupReadyTimeoutMsForService', functionStart)
-  if (functionStart < 0 || functionEnd <= functionStart) fail('drift_launcher_function_missing')
-  const launcherIds = [...server.slice(functionStart, functionEnd).matchAll(/services\.push\('([^']+)'\)/gu)].map((match) => match[1]).sort()
-  if (JSON.stringify(launcherIds) !== JSON.stringify(expectedReady)) fail('drift_launcher_readiness_list')
+  if (projectionStart < 0 || functionStart <= projectionStart || functionEnd <= functionStart) fail('drift_launcher_function_missing')
+  const projection = server.slice(projectionStart, functionStart)
+  const selection = server.slice(functionStart, functionEnd)
+  if (!/const\s+publicReadinessIdsForServiceIds\s*=\s*\(serviceIds\)\s*=>\s*\{/u.test(projection) ||
+      !/launcherRuntime\.authority\.graph\.services/u.test(projection) ||
+      !/graphServices\.filter\(\(service\)\s*=>\s*service\.service_id\s*===\s*serviceId\)/u.test(projection) ||
+      !/matches\[0\]\.public_readiness_id/u.test(projection) ||
+      !/launcher_service_graph_selection_invalid/u.test(projection) ||
+      !/launcher_public_readiness_id_missing/u.test(projection) ||
+      !/launcher_public_readiness_id_duplicate/u.test(projection) ||
+      !/return\s+publicReadinessIdsForServiceIds\(serviceIds\)/u.test(selection)) {
+    fail('drift_launcher_readiness_projection')
+  }
+  const launcherServiceIds = [...selection.matchAll(/serviceIds\.push\('([^']+)'\)/gu)].map((match) => match[1]).sort()
+  const expectedLauncherServiceIds = graph.services.filter((service) => service.public_readiness_id !== null).map((service) => service.service_id).sort()
+  if (JSON.stringify(launcherServiceIds) !== JSON.stringify(expectedLauncherServiceIds)) fail('drift_launcher_readiness_list')
   const stackIds = [...stack.matchAll(/\$specs\s*\+=\s*New-ServiceSpec[\s\S]{0,400}?-Name\s+"([^"]+)"/gu)].map((match) => match[1])
   const expectedStack = [...new Set(graph.services.flatMap((service) => service.start.legacy_spec_ids))].sort()
   if (JSON.stringify([...new Set(stackIds)].sort()) !== JSON.stringify(expectedStack)) fail('drift_stack_service_list')
