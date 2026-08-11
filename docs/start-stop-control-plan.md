@@ -70,6 +70,11 @@ lifecycle logic.
 ## Service Manifest
 
 Each service manifest should describe process ownership, not business behavior.
+The earlier plan to put lifecycle dependencies in each service manifest is
+superseded. Current Launcher dependency order and reverse Stop ordering are
+authored only in the
+[`launcher-service-graph.standard.v1.json`](../ops/manifests/launcher-service-graph.standard.v1.json)
+service `dependencies`; do not add `depends_on` to service manifests.
 
 ```json
 {
@@ -88,8 +93,7 @@ Each service manifest should describe process ownership, not business behavior.
   },
   "stop": {
     "strategy": "owned_pid"
-  },
-  "depends_on": ["environment-state-server", "home-assistant-server"]
+  }
 }
 ```
 
@@ -106,24 +110,23 @@ Required manifest concepts:
 - `start`: command, args, env overlays, working directory.
 - `health`: TCP, HTTP, file, or custom probe.
 - `stop`: graceful endpoint, docker compose, owned PID, or no-op.
-- `depends_on`: startup order and reverse shutdown order.
 
 ## Lifecycle Rules
 
 Start:
 
 1. Resolve workspace root and stack state directory.
-2. Load profile and service manifests.
+2. Load the profile, service manifests, and canonical Launcher service graph.
 3. Validate required sibling repos, `.env` files, local assets, and ports.
 4. Stop existing owned processes only when requested.
-5. Start services in dependency order.
+5. Start services in the dependency order from the canonical Launcher service graph.
 6. Write process records with `layer`, `service_id`, PID, command, cwd, and log paths.
 7. Probe health and emit status records.
 
 Stop:
 
 1. Read the process registry from the selected stack state directory.
-2. Stop services in reverse dependency order.
+2. Stop services in the reverse dependency order from the canonical Launcher service graph.
 3. Prefer graceful shutdown endpoints when available.
 4. Stop docker compose services only when the profile owns them.
 5. Kill only recorded owned PIDs as a fallback.

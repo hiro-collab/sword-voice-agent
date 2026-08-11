@@ -9,8 +9,13 @@ profile into the matching start/status/stop arguments.
 
 | Path | Purpose |
 |---|---|
-| `services/` | Stable service records, current script owner, layer, contracts, adapter edges, memory layers, health, stop strategy, dependencies. |
+| `services/` | Stable service records, current script owner, layer, contracts, adapter edges, memory layers, health, and stop strategy. |
 | `profiles/` | Named service sets accepted by `ops/scripts/system.ps1 -Profile`. |
+
+Launcher dependency order and reverse Stop ordering are authored only in the
+[`launcher-service-graph.standard.v1.json`](./launcher-service-graph.standard.v1.json)
+service `dependencies`. Service manifests must not add a second `depends_on`
+authority.
 
 The `service_id` values intentionally match current PID registry names where
 possible, so `system.ps1 status` can compare manifests against
