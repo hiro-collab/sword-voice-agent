@@ -43,23 +43,23 @@ boolean、利用者向けloopback URLへ変換してから返します。
 
 | 順 | ファイル | 人間向けの役割 | ここに置かないもの |
 | --- | --- | --- | --- |
-| 1 | `launcher-supervisor-contract.js` | 正しいID、hash、authority、worker messageの定義 | 起動処理、UI |
-| 2 | `launcher-supervisor-reducer.js` | operationのphaseと失敗理由を決める純粋状態機械 | filesystem、HTTP、process起動 |
-| 3 | `launcher-operation-store.js` | operation、lock、supervisor leaseをprivate領域へ安全に保存 | 公開DTO、製品機能の意味 |
-| 4 | `launcher-private-service-plan.js` | profileから実行対象、順序、引数、環境をsealed planへ確定 | 実行、UI公開 |
-| 5 | `launcher-job-worker-client.js` | planを実行する所有workerと固定JSON lineで通信 | 任意shell、semantic判断 |
-| 6 | `launcher-supervisor-runtime.js` | 1〜5を束ね、Start/Stop/Recoveryを一つのoperationとして進める | HTTP route、画面描画 |
+| 1 | [`launcher-supervisor-contract.js`](./launcher-supervisor-contract.js) | 正しいID、hash、authority、worker messageの定義 | 起動処理、UI |
+| 2 | [`launcher-supervisor-reducer.js`](./launcher-supervisor-reducer.js) | operationのphaseと失敗理由を決める純粋状態機械 | filesystem、HTTP、process起動 |
+| 3 | [`launcher-operation-store.js`](./launcher-operation-store.js) | operation、lock、supervisor leaseをprivate領域へ安全に保存 | 公開DTO、製品機能の意味 |
+| 4 | [`launcher-private-service-plan.js`](./launcher-private-service-plan.js) | profileから実行対象、順序、引数、環境をsealed planへ確定 | 実行、UI公開 |
+| 5 | [`launcher-job-worker-client.js`](./launcher-job-worker-client.js) | planを実行する所有workerと固定JSON lineで通信 | 任意shell、semantic判断 |
+| 6 | [`launcher-supervisor-runtime.js`](./launcher-supervisor-runtime.js) | 1〜5を束ね、Start/Stop/Recoveryを一つのoperationとして進める | HTTP route、画面描画 |
 
-`server.js`はこの根幹の**合成ルート**です。HTTP受付、設定保存、公開状態への変換、
+[`server.js`](./server.js)はこの根幹の**合成ルート**です。HTTP受付、設定保存、公開状態への変換、
 static UI配信を担当します。Start/Stopの意味をserver.jsだけで判断してはいけません。
 
 ### 証拠の枝（readiness probes）
 
 | ファイル | 役割 |
 | --- | --- |
-| `launcher-probe-runtime-context.js` | private planから、観測に必要な最小contextだけを作る |
-| `launcher-probe-executor.js` | loopback HTTP/WebSocket/module statusを期限付きで観測する |
-| `launcher-probe-result-binding.js` | 観測結果をoperation/service/dispatch identityへ結び付ける |
+| [`launcher-probe-runtime-context.js`](./launcher-probe-runtime-context.js) | private planから、観測に必要な最小contextだけを作る |
+| [`launcher-probe-executor.js`](./launcher-probe-executor.js) | loopback HTTP/WebSocket/module statusを期限付きで観測する |
+| [`launcher-probe-result-binding.js`](./launcher-probe-result-binding.js) | 観測結果をoperation/service/dispatch identityへ結び付ける |
 
 Probeは「見えたもの」を返します。Readyへ進めるかはruntime/reducerが決めます。
 
@@ -67,11 +67,11 @@ Probeは「見えたもの」を返します。Readyへ進めるかはruntime/re
 
 | ファイル | 役割 |
 | --- | --- |
-| `launcher-surface-catalog.js` | Quick Linksに出す画面、API、feedの一覧とcanonical URL |
-| `public/index.html` | Launcher画面の骨格 |
-| `public/app.js` | 公開APIを読み、操作を送るブラウザUI |
-| `public/styles.css` | 見た目 |
-| `config/default-profiles.json` | 利用者が選ぶ起動profile |
+| [`launcher-surface-catalog.js`](./launcher-surface-catalog.js) | Quick Linksに出す画面、API、feedの一覧とcanonical URL |
+| [`public/index.html`](./public/index.html) | Launcher画面の骨格 |
+| [`public/app.js`](./public/app.js) | 公開APIを読み、操作を送るブラウザUI |
+| [`public/styles.css`](./public/styles.css) | 見た目 |
+| [`config/default-profiles.json`](./config/default-profiles.json) | 利用者が選ぶ起動profile |
 
 ## 3. Startの読み順
 
@@ -216,14 +216,14 @@ Effectをoperatorにも受信させると、二つのreceiverが同じintentを�
 
 | 目的 | 最初に見る場所 | 一緒に確認する場所 |
 | --- | --- | --- |
-| Quick Linkや表示URLを変える | `launcher-surface-catalog.js` | `public/app.js`、surface catalog test |
-| 起動対象serviceを変える | `launcher-private-service-plan.js` | supervisor contract、manifest/pins |
+| Quick Linkや表示URLを変える | [`launcher-surface-catalog.js`](./launcher-surface-catalog.js) | [`public/app.js`](./public/app.js)、[surface catalog test](../../tests/launcher-surface-catalog.test.js) |
+| 起動対象serviceを変える | [`launcher-private-service-plan.js`](./launcher-private-service-plan.js) | [supervisor contract](./launcher-supervisor-contract.js)、manifest/pins |
 | Ready条件を変える | probe 3モジュール | reducer、runtime、focused tests |
-| Stop条件を変える | `launcher-supervisor-runtime.js` | reducer、operation store、worker tests |
-| phase/reasonを変える | `launcher-supervisor-reducer.js` | reducer vectors、public mapping |
-| UIを変える | `public/app.js` / `index.html` | `/api/state`の公開schema |
-| Camera選択を変える | `server.js`のcamera section | privacy/redaction tests |
-| process回収を変える | `server.js`のmanaged-port section | ownership/lineage tests |
+| Stop条件を変える | [`launcher-supervisor-runtime.js`](./launcher-supervisor-runtime.js) | [reducer](./launcher-supervisor-reducer.js)、[operation store](./launcher-operation-store.js)、[worker tests](../../tests/launcher-job-worker.test.js) |
+| phase/reasonを変える | [`launcher-supervisor-reducer.js`](./launcher-supervisor-reducer.js) | reducer vectors、public mapping |
+| UIを変える | [`public/app.js`](./public/app.js) / [`index.html`](./public/index.html) | `/api/state`の公開schema |
+| Camera選択を変える | [`server.js`](./server.js)のcamera section | privacy/redaction tests |
+| process回収を変える | [`server.js`](./server.js)のmanaged-port section | ownership/lineage tests |
 
 ## 10. 現在の複雑さと、次の安全な分離順
 
@@ -252,3 +252,74 @@ Effectをoperatorにも受信させると、二つのreceiverが同じintentを�
 
 「根幹を変える必要がある」と思った場合は、まず枝側の入口・adapter・表示分類の欠落を確認します。
 今回のProjection Effectsでは、effect engineではなくstage-outputへの入口が欠けていました。
+
+## 12. Cleanup判定はどこで行うか
+
+ここでいうoperation recordの`cleanup: clear`は、**全製品機能が実現・完成したという意味ではありません**。
+Launcherが所有するservice群について、Stop結果を同じoperationへ結合し、Reducerが既知の残存を
+成功扱いしていないことを表します。Stop API全体の成功には、さらにworker client・private planの片付けと
+supervisor leaseの解放まで必要です。
+
+```mermaid
+flowchart LR
+    API["POST /api/stop"] -->|"profile ID"| SERVER["server.js\nstopStack"]
+    SERVER -->|"stop(profile)"| RUNTIME["Supervisor Runtime\nstop / stopOwnedServices"]
+    RUNTIME -->|"serviceごとのstop request\noperation/service/dispatch ID"| CLIENT["Job Worker Client"]
+    CLIENT -->|"固定JSON line"| WORKER["PowerShell Job Worker\nInvoke-LauncherStop"]
+    WORKER -->|"Job Objectを停止\nactive process countを0へ"| OWNED["Launcher所有process群"]
+    WORKER -->|"stopped / stop_failed\nownership / descendant class"| CLIENT
+    CLIENT -->|"correlation済みresult"| RUNTIME
+    RUNTIME -->|"eventを適用"| REDUCER["Reducer"]
+    REDUCER -->|"Stopped + clear<br/>または Residue / unknown"| STORE["Operation Store"]
+    RUNTIME -->|"client close / plan remove"| FINALIZE["Runtime cleanup"]
+    STORE -->|"最終operation"| FINALIZE
+    FINALIZE -->|"lease release + privacy-safe result"| SERVER
+    SERVER -->|"HTTP response"| API
+```
+
+### 実装を読む順番
+
+| 順 | 場所 | 何を判定・実行するか |
+| --- | --- | --- |
+| 1 | [`server.js`: `stopStack`と`/api/stop`](./server.js) | UI/APIのStop要求からactive profileを選び、Runtimeへ渡す |
+| 2 | [`launcher-supervisor-runtime.js`: `stop` / `stopOwnedServices`](./launcher-supervisor-runtime.js) | private planを復元し、所有serviceを逆順で一度ずつ止め、client・plan・leaseを片付ける |
+| 3 | [`launcher-job-worker-client.js`](./launcher-job-worker-client.js) | operation/service/dispatch identity付きの固定request/resultをPowerShell workerと交換する |
+| 4 | [`launcher-job-worker.ps1`: `Invoke-LauncherStop`](../../ops/scripts/home-control-stack/launcher-job-worker.ps1) | process identityとlistener ownershipを確認し、Job Objectを停止してactive process count 0を待つ |
+| 5 | [`launcher-supervisor-reducer.js`: `serviceStopped` / `residue`](./launcher-supervisor-reducer.js) | `stopped + owned_clear`をstateへ反映し、失敗・不明なら`residue`または`unknown`にする |
+| 6 | [`launcher-operation-store.js`](./launcher-operation-store.js) | 最終operation、lock、supervisor leaseをprivate storeへ保存・検証する |
+
+worker messageとoperation recordのfield定義は、
+[`launcher-worker.v2.schema.json`](../../contracts/launcher/launcher-worker.v2.schema.json) と
+[`launcher-operation.v2.schema.json`](../../contracts/launcher/launcher-operation.v2.schema.json) から確認できます。
+
+主なテストは
+[`launcher-supervisor-runtime.test.js`](../../tests/launcher-supervisor-runtime.test.js) と
+[`launcher-job-worker.test.js`](../../tests/launcher-job-worker.test.js) です。特に、Stop成功、別profile拒否、
+private plan不明時のfail-closed、worker crash後のrecovery、cleanup失敗時のresidue保持を確認します。
+
+### operation recordの`cleanup: clear`が意味する範囲
+
+- owned serviceがすべて`stopped`または`optional_absent`
+- `residue_service_ids`が空
+- rollback/recoveryが未完了でない
+- 採用されたowned serviceのStop結果が`ownership_class=matched`かつ`descendant_class=owned_clear`
+- owned Jobが存在した場合、workerがJob Object内のactive process count 0を確認した
+
+### Stop APIが`ok: true`になるための追加条件
+
+- worker clientのcloseとprivate planのremoveが成功した
+- 最終operationが`stopped`になった
+- Stop operation完了後にsupervisor leaseを解放できた
+
+### 含まれないもの
+
+- 会話、avatar、音声、Fire/Thunderなど全製品機能の完成証明
+- Chrome tab、page hook、JavaScript globalの最終不在
+- Launcher所有外の外部serviceやdeviceが停止した証明
+- 画面上の表示が消えたことや、projectorの物理状態
+- ユーザーが体験を受け入れたというU1証明
+
+過去の「完全cleanup証明」は、この製品内の`cleanup: clear`より広く、Chrome・browser hook・root directory・
+listener・元operationとの履歴同一性まで一度に証明しようとしました。しかし、その一部には後から安全に
+再観測するpublic APIや保持identityがありませんでした。機能実装そのものより、**不在を証明する観測面が
+不足していたこと**が難航の主因です。
