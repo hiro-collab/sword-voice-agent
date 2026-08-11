@@ -341,6 +341,14 @@ const validateSchemaAuthority = (graphSchema, operationSchema, workerSchema) => 
   return serviceIdPattern
 }
 
+const bindingGraphProjection = (graph) => ({
+  service_order: topologicalOrder(graph.services),
+  public_readiness_ids: graph.services.filter((service) => service.public_readiness_id !== null).map((service) => service.public_readiness_id).sort(),
+  required_service_ids: graph.services.filter((service) => service.requirement === 'required').map((service) => service.service_id).sort(),
+  optional_service_ids: graph.services.filter((service) => service.requirement === 'optional').map((service) => service.service_id).sort(),
+  external_service_ids: graph.services.filter((service) => service.requirement === 'external').map((service) => service.service_id).sort()
+})
+
 const validateBinding = (document, identities, graph) => {
   exactKeys(document, ['binding_sha256', 'binding'], 'binding_shape_invalid')
   requireSha(document.binding_sha256, 'binding_sha256_invalid')
@@ -361,13 +369,7 @@ const validateBinding = (document, identities, graph) => {
       binding.reducer_vectors_sha256 !== identities.reducerVectorsSha256 ||
       binding.probe_schema_sha256 !== identities.probeSchemaSha256 ||
       binding.probe_document_sha256 !== identities.probeDocumentSha256) fail('binding_source_drift')
-  const expected = {
-    service_order: topologicalOrder(graph.services),
-    public_readiness_ids: graph.services.filter((service) => service.public_readiness_id !== null).map((service) => service.public_readiness_id).sort(),
-    required_service_ids: graph.services.filter((service) => service.requirement === 'required').map((service) => service.service_id).sort(),
-    optional_service_ids: graph.services.filter((service) => service.requirement === 'optional').map((service) => service.service_id).sort(),
-    external_service_ids: graph.services.filter((service) => service.requirement === 'external').map((service) => service.service_id).sort()
-  }
+  const expected = bindingGraphProjection(graph)
   for (const [field, value] of Object.entries(expected)) {
     if (!Array.isArray(binding[field]) || JSON.stringify(binding[field]) !== JSON.stringify(value)) fail('binding_graph_drift')
   }
@@ -500,11 +502,7 @@ const renderBindingDocument = ({ graph, identities }) => {
     reducer_vectors_sha256: identities.reducerVectorsSha256,
     probe_schema_sha256: identities.probeSchemaSha256,
     probe_document_sha256: identities.probeDocumentSha256,
-    service_order: topologicalOrder(graph.services),
-    public_readiness_ids: graph.services.filter((service) => service.public_readiness_id !== null).map((service) => service.public_readiness_id).sort(),
-    required_service_ids: graph.services.filter((service) => service.requirement === 'required').map((service) => service.service_id).sort(),
-    optional_service_ids: graph.services.filter((service) => service.requirement === 'optional').map((service) => service.service_id).sort(),
-    external_service_ids: graph.services.filter((service) => service.requirement === 'external').map((service) => service.service_id).sort()
+    ...bindingGraphProjection(graph)
   }
   return `${JSON.stringify({ binding_sha256: canonicalJsonSha256(binding), binding }, null, 2)}\n`
 }
