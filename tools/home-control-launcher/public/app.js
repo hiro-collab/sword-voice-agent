@@ -594,16 +594,17 @@ const numericOptionFields = [
   'MediapipeCameraFps'
 ]
 
-const readyTimeoutOptionFields = [
-  'VoicevoxReadyTimeoutSeconds',
-  'MediapipeReadyTimeoutSeconds'
-]
+const readyTimeoutFieldByService = Object.freeze({
+  voicevox: 'VoicevoxReadyTimeoutSeconds',
+  mediapipe: 'MediapipeReadyTimeoutSeconds'
+})
 
-const readyTimeoutFieldForService = (serviceId) => {
-  if (serviceId === 'voicevox') return 'VoicevoxReadyTimeoutSeconds'
-  if (serviceId === 'mediapipe') return 'MediapipeReadyTimeoutSeconds'
-  return null
-}
+const readyTimeoutOptionFields = Object.values(readyTimeoutFieldByService)
+
+const readyTimeoutFieldForService = (serviceId) =>
+  Object.hasOwn(readyTimeoutFieldByService, serviceId)
+    ? readyTimeoutFieldByService[serviceId]
+    : null
 
 const textFields = [
   'MediapipeCameraInputCodec',
