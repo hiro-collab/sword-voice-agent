@@ -9,48 +9,76 @@ $script:ReservedEnvironmentNames = @(
     "SWORD_LAUNCHER_N1_PRIVATE_PLAN_SHA256",
     "SWORD_LAUNCHER_N1_PRIVATE_LEASE_PROOF"
 )
-$script:Descriptors = [ordered]@{
-    home_assistant_bridge = [pscustomobject]@{
-        ServiceId = "home_assistant_bridge"; Requirement = "optional"; Ownership = "owned"
-        ExecutableNames = @("uv"); DefaultListenerPort = 8787
-    }
-    environment_state_server = [pscustomobject]@{
-        ServiceId = "environment_state_server"; Requirement = "optional"; Ownership = "owned"
-        ExecutableNames = @("uv"); DefaultListenerPort = 8790
-    }
-    openai_provider_broker = [pscustomobject]@{
-        ServiceId = "openai_provider_broker"; Requirement = "required"; Ownership = "owned"
-        ExecutableNames = @("uv"); DefaultListenerPort = 18786
-    }
-    thought_core_api = [pscustomobject]@{
-        ServiceId = "thought_core_api"; Requirement = "required"; Ownership = "owned"
-        ExecutableNames = @("pwsh", "powershell"); DefaultListenerPort = 18787
-    }
-    mediapipe_camera_hub_stack = [pscustomobject]@{
-        ServiceId = "mediapipe_camera_hub_stack"; Requirement = "optional"; Ownership = "owned"
-        ExecutableNames = @("uv"); DefaultListenerPort = 8765
-    }
-    vision_snapshot_processor = [pscustomobject]@{
-        ServiceId = "vision_snapshot_processor"; Requirement = "optional"; Ownership = "owned"
-        ExecutableNames = @("uv"); DefaultListenerPort = 8776
-    }
-    aituber_kit = [pscustomobject]@{
-        ServiceId = "aituber_kit"; Requirement = "required"; Ownership = "owned"
-        ExecutableNames = @("node"); DefaultListenerPort = 3000
-    }
-    thought_core_watcher = [pscustomobject]@{
-        ServiceId = "thought_core_watcher"; Requirement = "optional"; Ownership = "owned"
-        ExecutableNames = @("pwsh", "powershell"); DefaultListenerPort = 0
-    }
-    touchdesigner_control_gui = [pscustomobject]@{
-        ServiceId = "touchdesigner_control_gui"; Requirement = "optional"; Ownership = "owned"
-        ExecutableNames = @("node"); DefaultListenerPort = 8788
-    }
-    voicevox = [pscustomobject]@{
-        ServiceId = "voicevox"; Requirement = "external"; Ownership = "external"
-        ExecutableNames = @(); DefaultListenerPort = 50021
-    }
+# Executable class is a worker safety policy. Lifecycle facts come from the canonical graph.
+$script:ExecutableNamesByService = [ordered]@{
+    home_assistant_bridge = @("uv")
+    environment_state_server = @("uv")
+    openai_provider_broker = @("uv")
+    thought_core_api = @("pwsh", "powershell")
+    mediapipe_camera_hub_stack = @("uv")
+    vision_snapshot_processor = @("uv")
+    aituber_kit = @("node")
+    thought_core_watcher = @("pwsh", "powershell")
+    touchdesigner_control_gui = @("node")
+    voicevox = @()
 }
+
+function Read-LauncherGraphDescriptors {
+    $graphPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\..\manifests\launcher-service-graph.standard.v1.json"))
+    try {
+        $item = Get-Item -LiteralPath $graphPath -Force -ErrorAction Stop
+        if (
+            $item.PSIsContainer -or
+            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            $item.Length -le 0 -or
+            $item.Length -gt $script:MaximumPlanBytes
+        ) {
+            throw "launcher_service_graph_invalid"
+        }
+        $bytes = [IO.File]::ReadAllBytes($item.FullName)
+        $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+        $text = $strictUtf8.GetString($bytes)
+        if ($text.StartsWith([char]0xFEFF)) { throw "launcher_service_graph_invalid" }
+        $canonicalText = $text.Replace("`r`n", "`n").Replace("`r", "`n")
+        $canonicalBytes = [Text.Encoding]::UTF8.GetBytes($canonicalText)
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $script:DescriptorGraphSha256 = ([BitConverter]::ToString($sha256.ComputeHash($canonicalBytes))).Replace("-", "").ToLowerInvariant()
+        }
+        finally { $sha256.Dispose() }
+        $graph = $canonicalText | ConvertFrom-Json -Depth 32 -ErrorAction Stop
+    }
+    catch {
+        throw "launcher_service_graph_invalid"
+    }
+
+    $descriptors = [ordered]@{}
+    foreach ($service in @($graph.services)) {
+        $serviceId = [string]$service.service_id
+        if (
+            $descriptors.Contains($serviceId) -or
+            -not $script:ExecutableNamesByService.Contains($serviceId)
+        ) {
+            throw "launcher_service_graph_invalid"
+        }
+        $descriptors[$serviceId] = [pscustomobject]@{
+            ServiceId = $serviceId
+            Requirement = [string]$service.requirement
+            Ownership = [string]$service.ownership
+            ExecutableNames = @($script:ExecutableNamesByService[$serviceId])
+            DefaultListenerPort = if ($null -eq $service.port.loopback_port) { 0 } else { [int]$service.port.loopback_port }
+        }
+    }
+    if (
+        [string]$graph.profile_id -cne "thought-core-v0" -or
+        $descriptors.Count -ne $script:ExecutableNamesByService.Count
+    ) {
+        throw "launcher_service_graph_invalid"
+    }
+    return $descriptors
+}
+
+$script:Descriptors = Read-LauncherGraphDescriptors
 
 function Get-LauncherProperty {
     param(
@@ -286,7 +314,8 @@ function Read-LauncherPrivateServicePlans {
     $effectiveConfigSha256 = Assert-LauncherBoundedString -Value (Get-LauncherProperty $document "effective_config_sha256") -Maximum 64
     $cameraPolicy = Assert-LauncherBoundedString -Value (Get-LauncherProperty $document "camera_policy") -Maximum 64
     $workerFilePath = Assert-LauncherBoundedString -Value (Get-LauncherProperty $document "worker_file_path") -Maximum 1024
-    if ($graphSha256 -cnotmatch $script:Sha256Pattern -or $bindingSha256 -cnotmatch $script:Sha256Pattern -or
+    if ($graphSha256 -cnotmatch $script:Sha256Pattern -or $graphSha256 -cne $script:DescriptorGraphSha256 -or
+        $bindingSha256 -cnotmatch $script:Sha256Pattern -or
         $effectiveConfigSha256 -cnotmatch $script:Sha256Pattern -or $profileId -cne "thought-core-v0" -or
         @("required", "camera_excluded_by_profile") -cnotcontains $cameraPolicy -or
         -not [IO.Path]::IsPathFullyQualified($workerFilePath) -or

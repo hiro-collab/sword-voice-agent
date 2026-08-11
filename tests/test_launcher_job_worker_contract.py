@@ -216,7 +216,10 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
             "thought_core_watcher": "pwsh.exe",
             "touchdesigner_control_gui": "node.exe",
         }
-        graph = json.loads((ROOT / "ops/manifests/launcher-service-graph.standard.v1.json").read_text(encoding="utf-8"))
+        graph_path = ROOT / "ops/manifests/launcher-service-graph.standard.v1.json"
+        graph_text = graph_path.read_bytes().decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        graph = json.loads(graph_text)
+        graph_sha256 = hashlib.sha256(graph_text.encode("utf-8")).hexdigest()
         services = []
         for service in graph["services"]:
             if service["requirement"] != "required":
@@ -246,7 +249,7 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
             })
         document = {
             "schema_version": "launcher_private_service_plans.v1",
-            "graph_sha256": "a" * 64,
+            "graph_sha256": graph_sha256,
             "binding_sha256": "b" * 64,
             "profile_id": "thought-core-v0",
             "effective_config_sha256": "c" * 64,
@@ -302,6 +305,10 @@ class LauncherJobWorkerContractTests(unittest.TestCase):
                 )
 
             self.assertEqual(run_reader(valid_command).returncode, 0)
+
+            document["graph_sha256"] = "a" * 64
+            self.assertEqual(run_reader(reject_command).returncode, 0)
+            document["graph_sha256"] = graph_sha256
 
             broker_plan = next(
                 service
