@@ -28,6 +28,9 @@ PRODUCT_ROOT = next(
 )
 PUBLIC = ROOT / "tools" / "home-control-launcher" / "public"
 LAUNCHER_SERVER = ROOT / "tools" / "home-control-launcher" / "server.js"
+LAUNCHER_CAMERA_ADAPTER = (
+    ROOT / "tools" / "home-control-launcher" / "launcher-camera-adapter.js"
+)
 LAUNCHER_PUBLIC_STATUS_PROJECTION = (
     ROOT / "tools" / "home-control-launcher" / "launcher-public-status-projection.js"
 )
@@ -49,6 +52,10 @@ def read_public(name: str) -> str:
 
 def read_launcher_server() -> str:
     return LAUNCHER_SERVER.read_text(encoding="utf-8")
+
+
+def read_launcher_camera_adapter() -> str:
+    return LAUNCHER_CAMERA_ADAPTER.read_text(encoding="utf-8")
 
 
 def read_launcher_public_status_projection() -> str:
@@ -432,6 +439,7 @@ $cases = @(
         html = read_public("index.html")
         app = read_public("app.js")
         server = read_launcher_server()
+        camera_adapter = read_launcher_camera_adapter()
 
         self.assertIn('<select id="MediapipeCameraSelectionKey"></select>', html)
         self.assertIn('id="refresh-camera-devices"', html)
@@ -455,18 +463,22 @@ $cases = @(
         self.assertIn("setOption('MediapipeCameraName', value)", app)
         self.assertIn("const normalizeCameraSelection = (value) =>", app)
         self.assertNotIn("'MediapipeCameraName',\n  'MediapipeCameraInputCodec'", app)
-        self.assertIn("-list_devices", server)
-        self.assertIn("\\(video\\)", server)
-        self.assertIn("device_start_count: 0", server)
-        self.assertIn("capture_count: 0", server)
-        self.assertIn("video_input_enumeration_unavailable", server)
+        self.assertIn("createLauncherCameraAdapter", server)
+        self.assertIn("require('./launcher-camera-adapter')", server)
+        self.assertIn("-list_devices", camera_adapter)
+        self.assertIn("\\(video\\)", camera_adapter)
+        self.assertIn("device_start_count: 0", camera_adapter)
+        self.assertIn("capture_count: 0", camera_adapter)
+        self.assertIn("video_input_enumeration_unavailable", camera_adapter)
         self.assertIn("normalized.MediapipeCameraName = sanitizeVideoInputDeviceName", server)
         self.assertIn("normalized.MediapipeCameraSelectionKey = sanitizeVideoInputSelectionKey", server)
         self.assertIn("resolveVideoInputSelectionForStart", server)
-        self.assertIn("selected_camera_unresolvable", server)
-        self.assertIn("selected_camera_ambiguous", server)
-        self.assertIn("@device_(?:pnp|cm)_", server)
+        self.assertIn("selected_camera_unresolvable", camera_adapter)
+        self.assertIn("selected_camera_ambiguous", camera_adapter)
+        self.assertIn("@device_(?:pnp|cm)_", camera_adapter)
         self.assertIn("redactCameraSelectionInCommandText", server)
+        self.assertNotIn("const enumerateVideoInputDevices", server)
+        self.assertNotIn("const resolveVideoInputSelectionForStart", server)
 
     def test_openai_broker_request_budget_is_strict_saved_and_identity_bound(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_root:
