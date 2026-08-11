@@ -39,6 +39,5 @@
   },
   "stop": {
     "strategy": "owned_pid_tree"
-  },
-  "depends_on": []
+  }
 }

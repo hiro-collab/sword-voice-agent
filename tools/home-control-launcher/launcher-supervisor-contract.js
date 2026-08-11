@@ -512,7 +512,6 @@ const validateLegacyDrift = (repositoryRoot, graph) => {
   for (const service of owned.values()) {
     const manifest = readContract(path.join(repositoryRoot, 'ops', 'manifests', 'services', `${service.service_id}.json`), 'drift_service_manifest_missing').value
     if (manifest.service_id !== service.service_id) fail('drift_service_id')
-    if (JSON.stringify([...manifest.depends_on].sort()) !== JSON.stringify([...service.dependencies].sort())) fail('drift_service_dependencies')
     const noPort = service.port.ownership === 'none'
     if (noPort) {
       if (manifest.health?.type !== 'module_status') fail('drift_service_port')

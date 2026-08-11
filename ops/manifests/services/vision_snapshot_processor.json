@@ -34,8 +34,5 @@
   },
   "stop": {
     "strategy": "owned_pid"
-  },
-  "depends_on": [
-    "mediapipe_camera_hub_stack"
-  ]
+  }
 }

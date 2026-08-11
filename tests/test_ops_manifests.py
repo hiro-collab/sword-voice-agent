@@ -23,13 +23,12 @@ class OpsManifestTest(TestCase):
                 self.assertIsInstance(manifest.get("start"), dict)
                 self.assertIsInstance(manifest.get("health"), dict)
                 self.assertIsInstance(manifest.get("stop"), dict)
+                self.assertNotIn("depends_on", manifest)
                 for contract in manifest.get("contracts", []):
                     self.assertIn(contract, contract_areas)
                 for adapter in manifest.get("adapters", []):
                     self.assertIsInstance(adapter, str)
                     self.assertGreater(len(adapter.strip()), 0)
-                for dependency in manifest.get("depends_on", []):
-                    self.assertIn(dependency, services)
 
     def test_profile_manifests_reference_known_services(self) -> None:
         layers = _allowed_layers()
@@ -78,16 +77,20 @@ class OpsManifestTest(TestCase):
         aituber_only = set(profiles["aituber-only"]["services"])
         self.assertEqual(aituber_only, {"aituber_kit"})
 
-    def test_openai_broker_manifest_is_the_thought_core_primary_dependency(self) -> None:
+    def test_openai_broker_is_the_thought_core_primary_dependency(self) -> None:
         services = _load_service_manifests()
         broker = services["openai_provider_broker"]
-        thought_core = services["thought_core_api"]
+        graph = _load_json(MANIFEST_ROOT / "launcher-service-graph.standard.v1.json")
+        graph_services = {
+            service["service_id"]: service for service in graph["services"]
+        }
+        thought_core = graph_services["thought_core_api"]
 
         self.assertEqual(broker["health"]["url"], "http://127.0.0.1:18786/health")
         self.assertEqual(broker["secret_source_class"], "thought-core-existing-env-v1")
         self.assertIn("secrets.use.adapter", _load_json(REPO_ROOT / "policies" / "access" / "services.json")["services"]["openai_provider_broker"]["capabilities"])
         self.assertIn("secrets.use.adapter", _load_json(REPO_ROOT / "policies" / "access" / "services.json")["services"]["thought_core_api"]["denied"])
-        self.assertIn("openai_provider_broker", thought_core["depends_on"])
+        self.assertIn("openai_provider_broker", thought_core["dependencies"])
 
     def test_lifecycle_scripts_are_consolidated_under_ops(self) -> None:
         script_names = {
