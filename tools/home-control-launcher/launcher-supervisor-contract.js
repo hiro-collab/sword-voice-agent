@@ -538,9 +538,11 @@ const validateLegacyDrift = (repositoryRoot, graph) => {
 
   let server
   let stack
+  let publicStatusProjection
   try {
     server = readBoundedUtf8Text(path.join(repositoryRoot, 'tools', 'home-control-launcher', 'server.js'), MAX_LEGACY_SOURCE_BYTES, 'drift_legacy_source_missing', 'drift_legacy_source_oversized')
     stack = readBoundedUtf8Text(path.join(repositoryRoot, 'ops', 'scripts', 'home-control-stack', 'start-home-control-stack.ps1'), MAX_LEGACY_SOURCE_BYTES, 'drift_legacy_source_missing', 'drift_legacy_source_oversized')
+    publicStatusProjection = readBoundedUtf8Text(path.join(repositoryRoot, 'tools', 'home-control-launcher', 'launcher-public-status-projection.js'), MAX_LEGACY_SOURCE_BYTES, 'drift_legacy_source_missing', 'drift_legacy_source_oversized')
   } catch (error) {
     if (error instanceof LauncherContractError) throw error
     fail('drift_legacy_source_missing')
@@ -568,12 +570,31 @@ const validateLegacyDrift = (repositoryRoot, graph) => {
       !/return\s+Object\.freeze\(\{/u.test(projection) ||
       !/buildPublicReadinessProjection\(\s*launcherRuntime\.authority\.graph\.services\s*\)/u.test(projection) ||
       !/launcherPublicReadinessProjection\.publicIdForServiceId\(serviceId\)/u.test(projection) ||
-      !/launcherPublicReadinessProjection\.serviceIdForPublicId\(serviceId\)/u.test(status) ||
       !/launcher_public_readiness_projection_invalid/u.test(projection) ||
       !/launcher_public_readiness_projection_duplicate/u.test(projection) ||
       !/launcher_public_readiness_projection_unmapped/u.test(projection) ||
       !/return\s+publicReadinessIdsForServiceIds\(serviceIds\)/u.test(selection)) {
     fail('drift_launcher_readiness_projection')
+  }
+  if (!/require\('\.\/launcher-public-status-projection'\)/u.test(server) ||
+      !/const\s+projectedStatus\s*=\s*projectLauncherServiceStatus\(\{/u.test(status) ||
+      !/graphServices:\s*launcherRuntime\.authority\.graph\.services/u.test(status) ||
+      !/expectedServiceIds:\s*expectedServicesForOptions\(options\)/u.test(status) ||
+      !/serviceIdForPublicId:\s*launcherPublicReadinessProjection\.serviceIdForPublicId/u.test(status) ||
+      !/profileId:\s*selectedProfileId/u.test(status) ||
+      !/services:\s*projectedStatus\.services/u.test(status) ||
+      !/startupTiming:\s*projectedStatus\.startupTiming/u.test(status) ||
+      !/const\s+projectLauncherServiceStatus\s*=\s*\(\{/u.test(publicStatusProjection) ||
+      !/for\s*\(const\s+spec\s+of\s+graphServices\)/u.test(publicStatusProjection) ||
+      !/const\s+key\s*=\s*spec\.public_readiness_id\s*\|\|\s*spec\.service_id/u.test(publicStatusProjection) ||
+      !/serviceStates\.get\(spec\.service_id\)/u.test(publicStatusProjection) ||
+      !/serviceIdForPublicId\(serviceId\)/u.test(publicStatusProjection) ||
+      !/readiness_authority:\s*'node_supervisor'/u.test(publicStatusProjection) ||
+      !/module\.exports\s*=\s*\{\s*projectLauncherServiceStatus\s*\}/u.test(publicStatusProjection) ||
+      /require\s*\(/u.test(publicStatusProjection) ||
+      /\.(?:start|stop|apply)\s*\(/u.test(publicStatusProjection) ||
+      /(?:read|write)File/u.test(publicStatusProjection)) {
+    fail('drift_launcher_status_projection')
   }
   const launcherServiceIds = [...selection.matchAll(/serviceIds\.push\('([^']+)'\)/gu)].map((match) => match[1]).sort()
   const expectedLauncherServiceIds = graph.services.filter((service) => service.public_readiness_id !== null).map((service) => service.service_id).sort()

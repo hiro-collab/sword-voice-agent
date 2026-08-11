@@ -30,6 +30,7 @@ flowchart TD
     PROBES -->|"semantic result・count・boolean<br/>identity binding"| RT
 
     HTTP -.->|"options → canonical URL一覧"| SURFACES["launcher-surface-catalog.js\n画面/参照先一覧"]
+    HTTP -.->|"fresh supervisor snapshot\n→ service/status DTO"| STATUS["launcher-public-status-projection.js\n読み取り専用の公開状態変換"]
     HTTP -.->|"互換status/route契約"| ORDINARY["ordinary-route-contract.js"]
     HTTP -.->|"loopback URL・port・有効flag<br/>privacy-safe公開状態"| FEATURES["Camera / Display / Home / VOICEVOX"]
 ```
@@ -50,8 +51,10 @@ boolean、利用者向けloopback URLへ変換してから返します。
 | 5 | [`launcher-job-worker-client.js`](./launcher-job-worker-client.js) | planを実行する所有workerと固定JSON lineで通信 | 任意shell、semantic判断 |
 | 6 | [`launcher-supervisor-runtime.js`](./launcher-supervisor-runtime.js) | 1〜5を束ね、Start/Stop/Recoveryを一つのoperationとして進める | HTTP route、画面描画 |
 
-[`server.js`](./server.js)はこの根幹の**合成ルート**です。HTTP受付、設定保存、公開状態への変換、
-static UI配信を担当します。Start/Stopの意味をserver.jsだけで判断してはいけません。
+[`server.js`](./server.js)はこの根幹の**合成ルート**です。HTTP受付、設定保存、freshなSupervisor
+snapshotの取得、公開responseの組立て、static UI配信を担当します。service状態とstartup timingの変換は
+[`launcher-public-status-projection.js`](./launcher-public-status-projection.js)へ渡します。
+Start/Stopの意味をserver.jsや公開状態変換だけで判断してはいけません。
 
 ### 証拠の枝（readiness probes）
 
@@ -68,6 +71,7 @@ Probeは「見えたもの」を返します。Readyへ進めるかはruntime/re
 | ファイル | 役割 |
 | --- | --- |
 | [`launcher-surface-catalog.js`](./launcher-surface-catalog.js) | Quick Linksに出す画面、API、feedの一覧とcanonical URL |
+| [`launcher-public-status-projection.js`](./launcher-public-status-projection.js) | Supervisorのpublic snapshotをservice状態とstartup timingへ変換する。I/O、cache、polling、Ready決定は持たない |
 | [`public/index.html`](./public/index.html) | Launcher画面の骨格 |
 | [`public/app.js`](./public/app.js) | 公開APIを読み、操作を送るブラウザUI |
 | [`public/styles.css`](./public/styles.css) | 見た目 |
@@ -221,6 +225,7 @@ Effectをoperatorにも受信させると、二つのreceiverが同じintentを�
 | Ready条件を変える | probe 3モジュール | reducer、runtime、focused tests |
 | Stop条件を変える | [`launcher-supervisor-runtime.js`](./launcher-supervisor-runtime.js) | [reducer](./launcher-supervisor-reducer.js)、[operation store](./launcher-operation-store.js)、[worker tests](../../tests/launcher-job-worker.test.js) |
 | phase/reasonを変える | [`launcher-supervisor-reducer.js`](./launcher-supervisor-reducer.js) | reducer vectors、public mapping |
+| service状態やstartup timingの公開変換を変える | [`launcher-public-status-projection.js`](./launcher-public-status-projection.js) | [`server.js`](./server.js)の`getStatus`、focused projection test |
 | UIを変える | [`public/app.js`](./public/app.js) / [`index.html`](./public/index.html) | `/api/state`の公開schema |
 | Camera選択を変える | [`server.js`](./server.js)のcamera section | privacy/redaction tests |
 | process回収を変える | [`server.js`](./server.js)のmanaged-port section | ownership/lineage tests |
@@ -228,12 +233,12 @@ Effectをoperatorにも受信させると、二つのreceiverが同じintentを�
 ## 10. 現在の複雑さと、次の安全な分離順
 
 現時点でも `server.js` と `public/app.js` は大きく、根幹と枝の読解を難しくしています。
-一度に全面移動するとStart/Stopの境界を壊すため、次の順で分離します。
+一度に全面移動するとStart/Stopの境界を壊すため、依存とテストを同じpacketで閉じられる枝から分離します。
 
 1. **完了**: 画面URL一覧を `launcher-surface-catalog.js` へ抽出。
-2. 次: camera enumeration/redactionを独立moduleへ抽出。
-3. 次: managed-port ownership/reclaimを独立moduleへ抽出。
-4. 次: status aggregationをread-only moduleへ抽出。
+2. **完了**: status aggregationを `launcher-public-status-projection.js` へ読み取り専用で抽出。
+3. 次: camera enumeration/redactionを独立moduleへ抽出。
+4. 次: managed-port ownership/reclaimを独立moduleへ抽出。
 5. 最後: HTTP route tableを薄いrouterへ抽出。
 
 各段階で既存テストを維持し、Start/Stopの意味を変更しません。
