@@ -299,6 +299,9 @@ const translations = {
     'action.launcherStopped': 'Launcher stopped. Close this tab or start it again from the terminal.',
     'action.savingConfig': 'Writing launcher configuration.',
     'error.operationInProgress': 'Another operation is already running.',
+    'error.operationConfigLocked': 'A Launcher operation is in progress or still owns managed state. Wait for it to finish, or use Stop before changing settings or starting again.',
+    'error.voicevoxUnavailable': 'VOICEVOX did not become ready. Start or restart VOICEVOX, wait for http://127.0.0.1:50021/version, then start again.',
+    'error.readinessTimeout': 'A required service did not become ready. Check the failed service under Services, then start again.',
     'error.checkLog': 'Check the launcher log for details.'
   },
   ja: {
@@ -546,6 +549,9 @@ const translations = {
     'action.launcherStopped': 'ランチャーを停止しました。このタブを閉じるか、ターミナルから再起動してください。',
     'action.savingConfig': 'ランチャー設定を書き込み中です。',
     'error.operationInProgress': '別の操作がすでに実行中です。',
+    'error.operationConfigLocked': '起動・停止処理中、または管理中の状態が残っています。処理完了を待つか、設定変更や再起動の前に「全体を停止」を実行してください。',
+    'error.voicevoxUnavailable': 'VOICEVOXの準備完了を確認できませんでした。VOICEVOXを起動または再起動し、http://127.0.0.1:50021/version が開くことを確認してから、もう一度起動してください。',
+    'error.readinessTimeout': '必要な機能の準備完了を確認できませんでした。「機能の状態」で失敗した機能を確認してから、もう一度起動してください。',
     'error.checkLog': '詳細はランチャーログを確認してください。'
   }
 }
@@ -2536,6 +2542,31 @@ const bindControls = () => {
   })
 }
 
+// 公開operationの固定classだけから、利用者が次に行う操作を案内する。
+// raw detail、path、command、provider responseは表示判断に使わない。
+const formatOperationError = (error) => {
+  const payload = error?.payload && typeof error.payload === 'object'
+    ? error.payload
+    : {}
+  if (payload.error === 'operation_config_locked') {
+    return t('error.operationConfigLocked')
+  }
+  const operation = payload.operation && typeof payload.operation === 'object'
+    ? payload.operation
+    : null
+  if (operation?.phase === 'failed' && operation.reason === 'readiness_timeout') {
+    const failedServiceIds = Array.isArray(operation.services)
+      ? operation.services
+          .filter((service) => service?.state === 'failed')
+          .map((service) => String(service.service_id || ''))
+      : []
+    return failedServiceIds.includes('voicevox')
+      ? t('error.voicevoxUnavailable')
+      : t('error.readinessTimeout')
+  }
+  return error?.message || t('error.checkLog')
+}
+
 const showError = (error) => {
   setBusy(false)
   if (error.payload?.error === 'operation_in_progress') {
@@ -2553,9 +2584,10 @@ const showError = (error) => {
     prependLauncherLog(error.payload.message || error.message)
     return
   }
-  setOperation('error', error.message || t('error.checkLog'))
+  const message = formatOperationError(error)
+  setOperation('error', message)
   setSaveState('saveState.error')
-  prependLauncherLog(error.message)
+  prependLauncherLog(message)
 }
 
 applyStaticTranslations()

@@ -518,6 +518,26 @@ $cases = @(
         self.assertIn('id="launch-scope-enabled"', html)
         self.assertIn('id="launch-scope-skipped"', html)
 
+    def test_launcher_maps_bounded_start_failures_to_owner_actions(self) -> None:
+        app = read_public("app.js")
+        formatter = extract_between(
+            app,
+            "const formatOperationError = (error) => {",
+            "const showError = (error) => {",
+        )
+
+        self.assertIn("payload.error === 'operation_config_locked'", formatter)
+        self.assertIn("operation.reason === 'readiness_timeout'", formatter)
+        self.assertIn("service?.state === 'failed'", formatter)
+        self.assertIn("failedServiceIds.includes('voicevox')", formatter)
+        self.assertIn("t('error.voicevoxUnavailable')", formatter)
+        self.assertIn("t('error.readinessTimeout')", formatter)
+        self.assertNotIn("detail", formatter)
+        self.assertNotIn("command", formatter)
+        self.assertNotIn("path", formatter)
+        self.assertIn("VOICEVOXの準備完了を確認できませんでした", app)
+        self.assertIn("http://127.0.0.1:50021/version", app)
+
     def test_launcher_selects_conversation_provider_without_rewriting_env(self) -> None:
         html = read_public("index.html")
         app = read_public("app.js")
