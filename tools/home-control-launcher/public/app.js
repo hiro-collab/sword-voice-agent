@@ -1680,6 +1680,46 @@ const renderReadyTimeoutCell = (serviceId, item) => {
   `
 }
 
+// launcher_startup_timing.v1 を、表示に必要な最小状態へ変換する。
+// lifecycle の正本は Node supervisor のままで、この関数は判定を追加しない。
+const projectStartupTimingView = (timing) => {
+  if (
+    !timing ||
+    timing.schema_version !== 'launcher_startup_timing.v1' ||
+    !Array.isArray(timing.expectedServiceIds) ||
+    !Array.isArray(timing.readyServiceIds)
+  ) {
+    return null
+  }
+  const expectedServiceIds = timing.expectedServiceIds.map((value) => String(value || '').trim())
+  const readyServiceIds = timing.readyServiceIds.map((value) => String(value || '').trim())
+  if (
+    expectedServiceIds.some((value) => !value) ||
+    readyServiceIds.some((value) => !value) ||
+    new Set(expectedServiceIds).size !== expectedServiceIds.length ||
+    new Set(readyServiceIds).size !== readyServiceIds.length
+  ) {
+    return null
+  }
+  const expected = new Set(expectedServiceIds)
+  if (readyServiceIds.some((serviceId) => !expected.has(serviceId))) {
+    return null
+  }
+  const ready = new Set(readyServiceIds)
+  const rows = expectedServiceIds.map((serviceId) => Object.freeze({
+    serviceId,
+    ready: ready.has(serviceId)
+  }))
+  const allExpectedReady = rows.every((row) => row.ready)
+  return Object.freeze({
+    expectedCount: expectedServiceIds.length,
+    readyCount: rows.filter((row) => row.ready).length,
+    operational: timing.operational === true && allExpectedReady,
+    statusClass: String(timing.status_class || 'unknown'),
+    rows: Object.freeze(rows)
+  })
+}
+
 const renderStartupTiming = (timing) => {
   const container = $('startup-timing-list')
   if (!container) {
@@ -1688,41 +1728,27 @@ const renderStartupTiming = (timing) => {
   if (startupTimingTimeoutEditIsActive()) {
     return
   }
-  if (!timing || !Array.isArray(timing.expectedServiceIds)) {
+  const view = projectStartupTimingView(timing)
+  if (!view) {
     container.innerHTML = `<div class="diagnostic-row"><strong>${escapeHtml(t('startup.noTiming'))}</strong></div>`
     return
   }
-  const waiting = timing.waitingServiceIds || []
-  const ready = timing.readyServiceIds || []
-  const operational = timing.operationalServiceIds || ready
-  const degraded = timing.degradedServiceIds || []
-  const critical = timing.criticalPathServiceId || '-'
-  const rows = timing.expectedServiceIds.map((serviceId) => {
-    const item = timing.serviceReadiness?.[serviceId] || {}
-    const isWaiting = waiting.includes(serviceId)
-    const isDegraded = degraded.includes(serviceId)
-    const stateLabel = isWaiting
-      ? t('startup.waiting')
-      : isDegraded
-        ? t('startup.degraded')
-        : t('startup.ready')
-    const actualElapsed = isWaiting
-      ? formatElapsed(item.waitingElapsedMs)
-      : formatElapsed(isDegraded ? item.firstOperationalElapsedMs : item.firstReadyElapsedMs)
+  const rows = view.rows.map((row) => {
+    const stateLabel = row.ready ? t('startup.ready') : t('startup.waiting')
     return `
-      <div class="startup-timing-row" data-state-group="${isWaiting || isDegraded ? 'warn' : 'ok'}">
-        <span class="startup-service">${escapeHtml(serviceDisplayName(serviceId))}</span>
+      <div class="startup-timing-row" data-state-group="${row.ready ? 'ok' : 'warn'}">
+        <span class="startup-service">${escapeHtml(serviceDisplayName(row.serviceId))}</span>
         <span class="startup-state">${escapeHtml(stateLabel)}</span>
-        <span class="startup-elapsed">${escapeHtml(actualElapsed)}</span>
-        <span class="startup-timeout">${renderReadyTimeoutCell(serviceId, item)}</span>
+        <span class="startup-elapsed">-</span>
+        <span class="startup-timeout">${renderReadyTimeoutCell(row.serviceId, {})}</span>
       </div>
     `
   }).join('')
   container.innerHTML = `
     <div class="diagnostic-summary-grid">
-      <div><span>${escapeHtml(t('startup.elapsed'))}</span><strong>${escapeHtml(formatElapsed(timing.elapsedMs))}</strong></div>
-      <div><span>${escapeHtml(t('startup.operational'))}</span><strong>${escapeHtml(String(operational.length))}/${escapeHtml(String(timing.expectedServiceIds.length))}</strong></div>
-      <div><span>${escapeHtml(t('startup.critical'))}</span><strong>${escapeHtml(serviceDisplayName(critical))}</strong></div>
+      <div><span>${escapeHtml(t('startup.operational'))}</span><strong>${escapeHtml(view.operational ? t('startup.ready') : t('startup.waiting'))}</strong></div>
+      <div><span>${escapeHtml(t('startup.ready'))}</span><strong>${escapeHtml(String(view.readyCount))}/${escapeHtml(String(view.expectedCount))}</strong></div>
+      <div><span>${escapeHtml(t('startup.state'))}</span><strong>${escapeHtml(view.statusClass)}</strong></div>
     </div>
     <div class="startup-timing-table" role="table" aria-label="${escapeHtml(t('startup.title'))}">
       <div class="startup-timing-header" role="row">
