@@ -43,6 +43,7 @@ from thought_core.loop import (  # noqa: E402
     AGENTIC_HOLD_REASON_CODES,
     ThoughtLoop,
 )
+from thought_core.responders import ResponderResult  # noqa: E402
 from thought_core.tools import MockThoughtTools  # noqa: E402
 
 
@@ -126,6 +127,31 @@ class _NeverCalledVisibleResponder:
         del turn, response_context
         self.calls += 1
         raise AssertionError("second_visible_ai_call_must_not_run")
+
+
+class _AiVisibleResponder:
+    adapter_kind = "test_ai_visible_responder"
+    provider = "test-ai"
+    model = "test-ai-model"
+
+    def __init__(self, speech: str) -> None:
+        self.speech = speech
+        self.calls = 0
+        self.response_contexts: list[dict[str, object]] = []
+
+    def respond(self, turn, *, response_context=None):  # type: ignore[no-untyped-def]
+        del turn
+        self.calls += 1
+        self.response_contexts.append(dict(response_context or {}))
+        return ResponderResult(
+            speech=self.speech,
+            display=self.speech,
+            status="llm_response",
+            adapter_kind=self.adapter_kind,
+            provider=self.provider,
+            model=self.model,
+            used_llm=True,
+        )
 
 
 class _CapturingUnavailableProvider:
@@ -482,28 +508,29 @@ class AgenticTurnIntegrationTest(TestCase):
                 "projection.fire.start",
                 "炎を出して。",
                 "炎を出すことはできません。",
-                "炎のエフェクトを出します。",
+                "じゃあ、炎を出すね。",
             ),
             (
                 "projection.effect.stop",
                 "映像効果を止めて。",
                 "映像効果を止めることはできません。",
-                "エフェクトを止めます。",
+                "うん、映像効果を消すね。",
             ),
             (
                 "projection.effect.reset",
                 "映像効果をリセットして。",
                 "映像効果をリセットできません。",
-                "エフェクトをリセットします。",
+                "では、映像効果を元に戻します。",
             ),
         )
-        for index, (capability_id, human_wish, rejected, fallback) in enumerate(cases):
+        for index, (capability_id, human_wish, rejected, repaired) in enumerate(cases):
             with self.subTest(capability_id=capability_id):
                 candidate = self._capability(
                     capability_id,
                     speech=rejected,
                     display=rejected,
                 )
+                responder = _AiVisibleResponder(repaired)
                 with (
                     patch(
                         "thought_core.loop.detect_projection_effect_intent",
@@ -516,6 +543,7 @@ class AgenticTurnIntegrationTest(TestCase):
                 ):
                     events = ThoughtLoop(
                         tools=_DirectOnlyTools(),
+                        responder=responder,
                         agentic_turn_provider=StaticAgenticTurnProvider(candidate),
                     ).run_dicts(
                         self._turn(
@@ -541,14 +569,16 @@ class AgenticTurnIntegrationTest(TestCase):
                 self.assertEqual(len(requested), 1)
                 self.assertEqual(len(speech_deltas), 1)
                 self.assertEqual(len(messages), 1)
-                self.assertEqual(speech_deltas[0]["data"]["delta"], fallback)
-                self.assertEqual(messages[0]["data"]["speech"], fallback)
-                self.assertEqual(messages[0]["data"]["display"], fallback)
+                self.assertEqual(responder.calls, 1)
+                self.assertTrue(responder.response_contexts[0]["repair_required"])
+                self.assertEqual(speech_deltas[0]["data"]["delta"], repaired)
+                self.assertEqual(messages[0]["data"]["speech"], repaired)
+                self.assertEqual(messages[0]["data"]["display"], repaired)
                 expected_generation = {
                     "enabled": True,
-                    "used_llm": False,
-                    "status": "local_fallback_projection_effect_companion",
-                    "adapter_kind": "thought_core_projection_effect_fallback",
+                    "used_llm": True,
+                    "status": "llm_response",
+                    "adapter_kind": "test_ai_visible_responder",
                 }
                 self.assertEqual(
                     speech_deltas[0]["data"]["phrase_generation"],
@@ -563,6 +593,48 @@ class AgenticTurnIntegrationTest(TestCase):
                     messages[0]["data"]["assistant_message_id"],
                 )
                 self.assertNotIn(rejected, json.dumps(events, ensure_ascii=False))
+
+    def test_agentic_projection_response_is_not_replaced_by_programmed_text(
+        self,
+    ) -> None:
+        rejected = "炎を出すことはできません。"
+        candidate = self._capability(
+            "projection.fire.start",
+            speech=rejected,
+            display=rejected,
+        )
+        responder = _AiVisibleResponder(rejected)
+
+        events = ThoughtLoop(
+            tools=_DirectOnlyTools(),
+            responder=responder,
+            agentic_turn_provider=StaticAgenticTurnProvider(candidate),
+        ).run_dicts(
+            self._turn(
+                "炎を出して。",
+                turn_id="agentic_projection_ai_repair_rejected",
+            )
+        )
+
+        self.assertEqual(responder.calls, 1)
+        self.assertEqual(
+            sum(event["type"] == "projection.effect.requested" for event in events),
+            1,
+        )
+        self.assertFalse(
+            any(event["type"] == "assistant.message" for event in events)
+        )
+        self.assertFalse(
+            any(event["type"] == "assistant.speech_delta" for event in events)
+        )
+        failure = next(
+            event for event in events if event["type"] == "phrase.generation_failed"
+        )
+        self.assertEqual(
+            failure["data"]["reason"],
+            "projection_effect_companion_postcondition_rejected",
+        )
+        self.assertNotIn(rejected, json.dumps(events, ensure_ascii=False))
 
         provider = _CapturingConversationProvider(
             {

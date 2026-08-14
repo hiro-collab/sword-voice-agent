@@ -160,8 +160,6 @@ class ThoughtCoreContractTest(TestCase):
             event_types,
             [
                 "input.acknowledged",
-                "assistant.speech_delta",
-                "assistant.message",
                 "input.understood",
                 "thought.stage",
                 "tool.started",
@@ -2746,7 +2744,8 @@ class ThoughtCoreContractTest(TestCase):
         self.assertNotIn("action.retrying", event_types)
         self.assertNotIn("feedback.requested", event_types)
         self.assertEqual(tool_names, [])
-        self.assertEqual(acknowledged["data"]["speech"], "うん、聞いたよ。")
+        self.assertEqual(acknowledged["data"]["speech"], "")
+        self.assertFalse(acknowledged["data"]["streamed"])
         self.assertNotIn(TURN["session_id"], loop.pending_action_reviews)
         self.assertEqual(tools.execute_calls, [])
         self.assertEqual(
@@ -3165,8 +3164,6 @@ class ThoughtCoreContractTest(TestCase):
             event_types,
             [
                 "input.acknowledged",
-                "assistant.speech_delta",
-                "assistant.message",
                 "input.understood",
                 "memory.retrieved",
                 "responder.started",
@@ -3187,6 +3184,10 @@ class ThoughtCoreContractTest(TestCase):
         final_message = [
             event for event in events if event["type"] == "assistant.message"
         ][-1]
+        self.assertEqual(
+            sum(event["type"] == "assistant.message" for event in events),
+            1,
+        )
         self.assertEqual(started["data"]["boundary"], "thought-core.turn_responder.v0")
         self.assertEqual(completed["data"]["adapter_kind"], "test_responder")
         self.assertTrue(completed["data"]["used_llm"])

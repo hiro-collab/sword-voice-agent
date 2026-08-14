@@ -871,6 +871,7 @@ class ThoughtLoop:
                             self._handle_projection_effect_clarification(
                                 events,
                                 factory,
+                                turn_input,
                                 reason="projection_plan_needs_clarification",
                             )
                             return events
@@ -887,6 +888,7 @@ class ThoughtLoop:
                                 self._handle_projection_effect_clarification(
                                     events,
                                     factory,
+                                    turn_input,
                                     reason="projection_plan_needs_clarification",
                                 )
                                 return events
@@ -905,6 +907,7 @@ class ThoughtLoop:
                             self._handle_projection_effect_clarification(
                                 events,
                                 factory,
+                                turn_input,
                                 reason=plan_decision.reason,
                             )
                             return events
@@ -924,6 +927,7 @@ class ThoughtLoop:
                         self._handle_projection_effect_clarification(
                             events,
                             factory,
+                            turn_input,
                             reason=projection_effect_intent.reason,
                         )
                         return events
@@ -6544,81 +6548,17 @@ class ThoughtLoop:
         turn_input: TurnInput,
         input_frame: InputFrame | None = None,
     ) -> None:
-        speech = self._input_ack_speech(turn_input, input_frame)
         events.append(
             factory.emit(
                 "input.acknowledged",
                 {
                     "text_length": len(turn_input.text),
-                    "speech": speech,
-                    "streamed": True,
+                    "speech": "",
+                    "streamed": False,
                     "input_kind": input_frame.kind if input_frame else "",
                 },
             )
         )
-        self._emit_message(
-            events,
-            factory,
-            speech=speech,
-            display=speech,
-            emotion="attentive",
-            motion="small_nod",
-            priority="immediate",
-            reflex=True,
-        )
-
-    def _input_ack_speech(
-        self,
-        turn_input: TurnInput,
-        input_frame: InputFrame | None = None,
-    ) -> str:
-        text = turn_input.text.replace(" ", "").replace("　", "")
-        if self.pending_confirmations.get(turn_input.session_id):
-            if self._is_confirmation_reply(text):
-                return "うん、確認したよ。"
-            if self._is_confirmation_cancel(text):
-                return "うん、止めるね。"
-            return "うん、確認中の操作があるよ。"
-        if input_frame and input_frame.kind == "state_query":
-            return "うん、状態を見てみるね。"
-        if input_frame and input_frame.kind == "environment_status_query":
-            return "うん、いま分かる状態を確認するね。"
-        if input_frame and input_frame.kind == "state_feedback":
-            if input_frame.continued_as_command:
-                return "うん、状態も受け取って操作も確認するね。"
-            return "うん、その状態を覚えるね。"
-        pending_action_review = self.pending_action_reviews.get(turn_input.session_id)
-        if pending_action_review and self._input_requests_pending_action_review(
-            turn_input,
-            input_frame,
-            pending=pending_action_review,
-        ):
-            return "うん、もう一度見てみるね。"
-        pending_state_query = self.pending_state_queries.get(turn_input.session_id)
-        if pending_state_query and self._room_light_feedback_label(
-            turn_input.text,
-            pending=pending_state_query,
-        ):
-            if self._looks_like_home_action_command(
-                turn_input.text
-            ) and detect_home_action_intent(turn_input.text) is not None:
-                return "うん、状態も受け取って操作も確認するね。"
-            return "うん、その状態を覚えるね。"
-        if self._direct_room_light_feedback_label(turn_input.text):
-            if self._looks_like_home_action_command(
-                turn_input.text
-            ) and detect_home_action_intent(turn_input.text) is not None:
-                return "うん、状態も受け取って操作も確認するね。"
-            return "うん、その状態を覚えるね。"
-        if detect_room_light_state_query(turn_input.text):
-            return "うん、状態を見てみるね。"
-        if (input_frame and input_frame.kind == "home_command") or detect_home_action_intent(
-            turn_input.text
-        ) is not None:
-            return "うん、操作できるか確認するね。"
-        if input_frame and input_frame.kind == "audio_check":
-            return "うん、音声入力の受け取り状態を確認するね。"
-        return "うん、聞いたよ。"
 
     def _handle_audio_check_turn(
         self,
@@ -7365,7 +7305,6 @@ class ThoughtLoop:
             )
             return
 
-        fallback_speech = self._projection_effect_companion_fallback_speech(payload)
         continuity_context = self.conversation_continuity.context_for_response(
             session_id=turn_input.session_id
         )
@@ -7383,29 +7322,60 @@ class ThoughtLoop:
             payload=payload,
             continuity_context=continuity_context,
         )
+        failure_status = ""
         if validated_result is None:
-            result = self._projection_effect_companion_fallback(
-                fallback_speech,
-                detail="agentic_projection_effect_companion_postcondition_rejected",
+            response_context, continuity_context = (
+                self._projection_effect_companion_response_context(
+                    events,
+                    turn_input=turn_input,
+                    payload=payload,
+                    repair_required=True,
+                )
+            )
+            events.append(
+                factory.emit(
+                    "responder.started",
+                    describe_responder(self.responder),
+                )
+            )
+            result, failure_status, attempt_count = (
+                self._request_validated_ai_response(
+                    turn_input,
+                    response_context=response_context,
+                    max_attempts=1,
+                    failure_prefix="projection_effect_companion",
+                    repair_goal=str(response_context["response_goal"]),
+                    validator=lambda candidate: (
+                        self._validated_projection_effect_companion(
+                            candidate,
+                            payload=payload,
+                            continuity_context=continuity_context,
+                        )
+                    ),
+                )
+            )
+            self._emit_ai_responder_completed(
+                events,
+                factory,
+                result=result,
+                failure_status=failure_status,
+                attempt_count=attempt_count,
+                response_context=response_context,
+                turn_input=turn_input,
+                continuity_used=bool(continuity_context),
             )
         else:
             result = validated_result
 
         events.append(factory.emit("projection.effect.requested", payload))
-        self._emit_message(
+        self._emit_ai_message_or_failure(
             events,
             factory,
-            speech=result.speech,
-            display=result.display,
+            result=result,
+            failure_status=failure_status if result is None else "",
             emotion="focused",
             motion="small_nod",
-            priority="normal",
-            phrase_generation_override={
-                "enabled": True,
-                "used_llm": result.used_llm,
-                "status": result.status,
-                "adapter_kind": result.adapter_kind,
-            },
+            include_provider_model=False,
         )
         events.append(
             factory.emit(
@@ -7428,20 +7398,115 @@ class ThoughtLoop:
     ) -> None:
         payload = dict(event_payload)
         action = str(payload["action"])
+        planned_start = payload.get("schemaVersion") == 2 and action == "start"
+        response_context, continuity_context = (
+            self._projection_effect_companion_response_context(
+                events,
+                turn_input=turn_input,
+                payload=payload,
+            )
+        )
+
+        if planned_start:
+            events.append(factory.emit("projection.effect.requested", payload))
+        events.append(
+            factory.emit(
+                "responder.started",
+                describe_responder(self.responder),
+            )
+        )
+        result, failure_status, attempt_count = (
+            self._request_validated_ai_response(
+                turn_input,
+                response_context=response_context,
+                max_attempts=2,
+                failure_prefix="projection_effect_companion",
+                repair_goal=(
+                    "Regenerate one short, natural Japanese response for the already-accepted "
+                    "projection-effect request. The previous AI candidate contradicted or "
+                    "exceeded the fixed action. Choose fresh wording and satisfy every fact."
+                ),
+                validator=lambda candidate: (
+                    self._validated_projection_effect_companion(
+                        candidate,
+                        payload=payload,
+                        continuity_context=continuity_context,
+                    )
+                ),
+            )
+        )
+
+        self._emit_ai_responder_completed(
+            events,
+            factory,
+            result=result,
+            failure_status=failure_status,
+            attempt_count=attempt_count,
+            response_context=response_context,
+            turn_input=turn_input,
+            continuity_used=bool(continuity_context),
+        )
+        self._emit_response_route_classified(
+            events,
+            factory,
+            turn_input=turn_input,
+            response_route="projection_effect_companion",
+            intent_kind="projection_effect",
+            responder_status=result.status if result is not None else failure_status,
+            fallback_used=False,
+            provider_route=(
+                result.provider
+                if result is not None
+                else describe_responder(self.responder)["provider"]
+            ),
+            used_llm=result is not None,
+            non_claims=[
+                "projection_effect_visible",
+                "projection_effect_completed",
+                "projection_effect_parameters_changed",
+                "device_action_proven",
+            ],
+        )
+        if not planned_start:
+            events.append(factory.emit("projection.effect.requested", payload))
+        self._emit_ai_message_or_failure(
+            events,
+            factory,
+            result=result,
+            failure_status=failure_status,
+            emotion="focused",
+            motion="small_nod",
+        )
+        events.append(
+            factory.emit(
+                "turn.completed",
+                {"status": "projection_effect_requested"},
+            )
+        )
+
+    def _projection_effect_companion_response_context(
+        self,
+        events: list[ThoughtEvent],
+        *,
+        turn_input: TurnInput,
+        payload: Mapping[str, Any],
+        repair_required: bool = False,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        action = str(payload.get("action") or "")
         plan_payload = payload.get("plan")
         if isinstance(plan_payload, Mapping):
             effect_id = str(plan_payload.get("effectId") or "")
         else:
             effect_id = str(payload.get("effectId") or "")
-        planned_start = payload.get("schemaVersion") == 2 and action == "start"
-        fallback_speech = self._projection_effect_companion_fallback_speech(payload)
         if action == "start":
             effect_name = "炎" if effect_id == "fire" else "雷"
             semantic_draft = f"{effect_name}のエフェクトを一つ出す依頼を受理した"
         elif action == "stop":
             semantic_draft = "現在のエフェクトを止める依頼を受理した"
-        else:
+        elif action == "reset":
             semantic_draft = "エフェクトをリセットする依頼を受理した"
+        else:
+            raise ValueError("projection_effect_action_invalid")
 
         continuity_context = self.conversation_continuity.context_for_response(
             session_id=turn_input.session_id
@@ -7454,17 +7519,17 @@ class ThoughtLoop:
         response_context.update(
             {
                 "response_goal": (
-                    "Express the already-accepted fixed projection-effect request "
-                    "as one short, natural Japanese companion response. The fixed "
-                    "request is authoritative; do not reinterpret or expand it."
+                    "Write one short, natural Japanese response for the already-accepted "
+                    "projection-effect request. Choose the wording freely while preserving "
+                    "the fixed action and effect."
                 ),
                 "semantic_draft": semantic_draft,
                 "required_facts": [
-                    "one fixed projection-effect request was accepted",
+                    "one projection-effect request was accepted",
                     f"fixed action is {action}",
                 ],
                 "forbidden_claims": [
-                    "do not change the action or effect",
+                    "do not change or refuse the accepted action or effect",
                     "do not add parameters, timing, position, strength, or another effect",
                     "do not claim the effect is already visible or completed",
                     "do not mention internal event names or response machinery",
@@ -7473,146 +7538,143 @@ class ThoughtLoop:
             }
         )
         if action == "start":
-            response_context["required_facts"].append(
-                f"fixed effect is {effect_id}"
+            response_context["required_facts"].append(f"fixed effect is {effect_id}")
+        if repair_required:
+            response_context["repair_required"] = True
+            response_context["response_goal"] = (
+                "Regenerate one short, natural Japanese response for the already-accepted "
+                "projection-effect request. The previous AI candidate contradicted or "
+                "exceeded the fixed action. Choose fresh wording and satisfy every fact."
             )
         if continuity_context:
             response_context["conversation_continuity"] = continuity_context
+        return response_context, continuity_context
 
-        if planned_start:
-            events.append(factory.emit("projection.effect.requested", payload))
-        events.append(
-            factory.emit(
-                "responder.started",
-                describe_responder(self.responder),
-            )
-        )
-        try:
-            ensure_execution_active()
-            result = self.responder.respond(
-                turn_input,
-                response_context=response_context,
-            )
-            ensure_execution_active()
-        except TurnDeadlineExceeded:
-            raise
-        except Exception:
-            result = self._projection_effect_companion_fallback(
-                fallback_speech,
-                detail="projection_effect_companion_responder_failed",
-            )
-        else:
-            validated_result = self._validated_projection_effect_companion(
-                result,
-                payload=payload,
-                continuity_context=continuity_context,
-            )
-            if validated_result is None:
-                result = self._projection_effect_companion_fallback(
-                    fallback_speech,
-                    detail="projection_effect_companion_postcondition_rejected",
+    def _request_validated_ai_response(
+        self,
+        turn_input: TurnInput,
+        *,
+        response_context: Mapping[str, Any],
+        max_attempts: int,
+        failure_prefix: str,
+        repair_goal: str,
+        validator: Callable[[ResponderResult], ResponderResult | None],
+    ) -> tuple[ResponderResult | None, str, int]:
+        attempts = 0
+        failure_status = f"{failure_prefix}_ai_required"
+        for attempt in range(1, max_attempts + 1):
+            attempt_context = dict(response_context)
+            if attempt > 1:
+                attempt_context["repair_required"] = True
+                attempt_context["response_goal"] = repair_goal
+            attempts = attempt
+            try:
+                ensure_execution_active()
+                candidate = self.responder.respond(
+                    turn_input,
+                    response_context=attempt_context,
                 )
-            else:
-                result = validated_result
+                ensure_execution_active()
+            except TurnDeadlineExceeded:
+                raise
+            except Exception:
+                return None, f"{failure_prefix}_ai_error", attempts
+            if not candidate.used_llm:
+                return None, f"{failure_prefix}_ai_required", attempts
+            validated = validator(candidate)
+            if validated is not None:
+                return validated, "", attempts
+            failure_status = f"{failure_prefix}_postcondition_rejected"
+        return None, failure_status, attempts
 
-        fallback_used = str(result.status or "").startswith("local_fallback")
+    def _emit_ai_responder_completed(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        *,
+        result: ResponderResult | None,
+        failure_status: str,
+        attempt_count: int,
+        response_context: Mapping[str, Any],
+        turn_input: TurnInput,
+        continuity_used: bool,
+    ) -> None:
+        responder_description = describe_responder(self.responder)
         events.append(
             factory.emit(
                 "responder.completed",
                 {
                     "boundary": TURN_RESPONDER_BOUNDARY,
-                    "adapter_kind": result.adapter_kind,
-                    "provider": result.provider,
-                    "model": result.model,
-                    "status": result.status,
-                    "used_llm": result.used_llm,
-                    "fallback_used": fallback_used,
+                    "adapter_kind": (
+                        result.adapter_kind
+                        if result is not None
+                        else responder_description["adapter_kind"]
+                    ),
+                    "provider": (
+                        result.provider
+                        if result is not None
+                        else responder_description["provider"]
+                    ),
+                    "model": (
+                        result.model
+                        if result is not None
+                        else responder_description["model"]
+                    ),
+                    "status": result.status if result is not None else failure_status,
+                    "used_llm": result is not None,
+                    "fallback_used": False,
+                    "attempt_count": attempt_count,
                     "response_context": self._public_response_context(
                         response_context,
                         turn_input=turn_input,
-                        continuity_used=bool(continuity_context),
+                        continuity_used=continuity_used,
                     ),
                 },
             )
         )
-        self._emit_response_route_classified(
-            events,
-            factory,
-            turn_input=turn_input,
-            response_route="projection_effect_companion",
-            intent_kind="projection_effect",
-            responder_status=result.status,
-            fallback_used=fallback_used,
-            provider_route=result.provider,
-            used_llm=result.used_llm,
-            non_claims=[
-                "projection_effect_visible",
-                "projection_effect_completed",
-                "projection_effect_parameters_changed",
-                "device_action_proven",
-            ],
-        )
-        if not planned_start:
-            events.append(factory.emit("projection.effect.requested", payload))
+
+    def _emit_ai_message_or_failure(
+        self,
+        events: list[ThoughtEvent],
+        factory: EventFactory,
+        *,
+        result: ResponderResult | None,
+        failure_status: str,
+        emotion: str,
+        motion: str,
+        include_provider_model: bool = True,
+    ) -> None:
+        phrase_generation: dict[str, Any]
+        if result is None:
+            phrase_generation = {
+                "enabled": True,
+                "used_llm": False,
+                "status": failure_status,
+                "required_failed": True,
+            }
+        else:
+            phrase_generation = {
+                "enabled": True,
+                "used_llm": True,
+                "status": result.status,
+                "adapter_kind": result.adapter_kind,
+            }
+            if include_provider_model:
+                phrase_generation.update(
+                    {
+                        "provider": result.provider,
+                        "model": result.model,
+                    }
+                )
         self._emit_message(
             events,
             factory,
-            speech=result.speech,
-            display=result.display,
-            emotion="focused",
-            motion="small_nod",
+            speech=result.speech if result is not None else "",
+            display=result.display if result is not None else "",
+            emotion=emotion,
+            motion=motion,
             priority="normal",
-            phrase_generation_override={
-                "enabled": True,
-                "used_llm": result.used_llm,
-                "status": result.status,
-                "adapter_kind": result.adapter_kind,
-                "provider": result.provider,
-                "model": result.model,
-            },
-        )
-        events.append(
-            factory.emit(
-                "turn.completed",
-                {"status": "projection_effect_requested"},
-            )
-        )
-
-    def _projection_effect_companion_fallback_speech(
-        self,
-        payload: Mapping[str, Any],
-    ) -> str:
-        action = str(payload.get("action") or "")
-        if action == "start":
-            plan_payload = payload.get("plan")
-            if isinstance(plan_payload, Mapping):
-                effect_id = str(plan_payload.get("effectId") or "")
-            else:
-                effect_id = str(payload.get("effectId") or "")
-            effect_name = "炎" if effect_id == "fire" else "雷"
-            return f"{effect_name}のエフェクトを出します。"
-        if action == "stop":
-            return "エフェクトを止めます。"
-        if action == "reset":
-            return "エフェクトをリセットします。"
-        raise ValueError("projection_effect_action_invalid")
-
-    def _projection_effect_companion_fallback(
-        self,
-        fallback_speech: str,
-        *,
-        detail: str,
-    ) -> ResponderResult:
-        return ResponderResult(
-            speech=fallback_speech,
-            display=fallback_speech,
-            status="local_fallback_projection_effect_companion",
-            adapter_kind="thought_core_projection_effect_fallback",
-            provider="thought-core",
-            model="local-rule-v0",
-            used_llm=False,
-            detail=detail,
-            metadata={"projection_effect_companion_fallback": True},
+            phrase_generation_override=phrase_generation,
         )
 
     def _validated_projection_effect_companion(
@@ -7776,24 +7838,81 @@ class ThoughtLoop:
         self,
         events: list[ThoughtEvent],
         factory: EventFactory,
+        turn_input: TurnInput,
         *,
         reason: str | None,
     ) -> None:
-        if reason == "projection_plan_needs_clarification":
-            speech = (
-                "炎か雷を一つ選び、位置、強さ、時間を一つの依頼で指定してください。"
+        response_context = self._response_context(
+            events,
+            current_stage="projection_effect_clarification_response",
+            include_legacy_history=False,
+        )
+        response_context.update(
+            {
+                "response_goal": (
+                    "Ask one short, natural Japanese clarification question. Choose the "
+                    "wording freely, end with a question mark, and do not claim that any "
+                    "projection effect was accepted, dispatched, visible, or completed."
+                ),
+                "semantic_draft": "the projection-effect request needs clarification",
+                "required_facts": (
+                    [
+                        "ask the user to choose exactly one fire or thunder effect",
+                        "ask for one bounded position, strength, and duration request",
+                    ]
+                    if reason == "projection_plan_needs_clarification"
+                    else [
+                        "ask the user to choose one effect action",
+                        "the available bounded actions are start, stop, and reset",
+                    ]
+                ),
+                "forbidden_claims": [
+                    "do not say the effect request was accepted or dispatched",
+                    "do not claim an effect is visible or completed",
+                    "do not mention internal event names or response machinery",
+                ],
+                "visible_phrase_contract": "projection-effect-clarification-response-v1",
+                "clarification_reason": reason
+                or "projection_effect_request_not_bounded",
+            }
+        )
+        events.append(
+            factory.emit(
+                "responder.started",
+                describe_responder(self.responder),
             )
-        else:
-            speech = "炎か雷の開始、停止、リセットのどれか一つを指定してください。"
-        self._emit_message(
+        )
+        result, failure_status, attempt_count = (
+            self._request_validated_ai_response(
+                turn_input,
+                response_context=response_context,
+                max_attempts=2,
+                failure_prefix="projection_effect_clarification",
+                repair_goal=(
+                    "Regenerate one short, natural Japanese clarification question. "
+                    "Choose fresh wording, end with a question mark, and make no claim "
+                    "that an effect was accepted, dispatched, visible, or completed."
+                ),
+                validator=self._validated_projection_effect_clarification,
+            )
+        )
+        self._emit_ai_responder_completed(
             events,
             factory,
-            speech=speech,
-            display=speech,
+            result=result,
+            failure_status=failure_status,
+            attempt_count=attempt_count,
+            response_context=response_context,
+            turn_input=turn_input,
+            continuity_used=False,
+        )
+        self._emit_ai_message_or_failure(
+            events,
+            factory,
+            result=result,
+            failure_status=failure_status,
             emotion="attentive",
             motion="small_nod",
-            priority="normal",
-            reflex=True,
         )
         events.append(
             factory.emit(
@@ -7803,6 +7922,51 @@ class ThoughtLoop:
                     "reason": reason or "projection_effect_request_not_bounded",
                 },
             )
+        )
+
+    def _validated_projection_effect_clarification(
+        self,
+        result: ResponderResult,
+    ) -> ResponderResult | None:
+        texts = tuple(
+            unicodedata.normalize(
+                "NFKC",
+                strip_persona_tags(str(value or "")),
+            ).strip()
+            for value in (result.speech, result.display)
+        )
+        if any(
+            not text
+            or len(text) > PROJECTION_EFFECT_COMPANION_MAX_CHARS
+            or "\n" in text
+            or "\r" in text
+            or ("?" not in text and "？" not in text)
+            for text in texts
+        ):
+            return None
+        normalized_texts = tuple(self._normalize_text(text) for text in texts)
+        if any(
+            any(
+                marker in normalized
+                for marker in PROJECTION_EFFECT_COMPANION_UNPROVED_CLAIMS
+            )
+            or any(
+                marker in normalized
+                for marker in ("受理しました", "受け付けました", "実行しました")
+            )
+            for normalized in normalized_texts
+        ):
+            return None
+        return ResponderResult(
+            speech=texts[0],
+            display=texts[1],
+            status=result.status,
+            adapter_kind=result.adapter_kind,
+            provider=result.provider,
+            model=result.model,
+            used_llm=True,
+            detail=result.detail,
+            metadata=result.metadata,
         )
 
     def _emit_response_route_classified(
