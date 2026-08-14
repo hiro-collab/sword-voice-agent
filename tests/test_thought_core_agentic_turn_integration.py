@@ -352,27 +352,40 @@ class AgenticTurnIntegrationTest(TestCase):
                 "projection.fire.start",
                 {"position": {"x": 0.4, "y": -0.2}, "strength": 0.8, "durationMs": 4200},
                 {"schemaVersion": 2, "action": "start", "effectId": "fire"},
+                "画面に炎の映像効果を出して。",
+                "炎の開始を要求します。",
             ),
             (
                 "projection.thunder.start",
                 {},
                 {"schemaVersion": 1, "action": "start", "effectId": "thunderBall"},
+                "雷の映像効果を始めて。",
+                "雷の開始を要求します。",
             ),
             (
                 "projection.effect.stop",
                 {},
                 {"schemaVersion": 1, "action": "stop"},
+                "映像効果を止めて。",
+                "映像効果の停止を要求します。",
             ),
             (
                 "projection.effect.reset",
                 {},
                 {"schemaVersion": 1, "action": "reset"},
+                "映像効果を初期状態に戻して。",
+                "映像効果のResetを要求します。",
             ),
         )
-        for index, (capability_id, arguments, expected) in enumerate(cases):
+        for index, (
+            capability_id,
+            arguments,
+            expected,
+            human_wish,
+            speech,
+        ) in enumerate(cases):
             with self.subTest(capability_id=capability_id):
                 tools = _DirectOnlyTools()
-                speech = f"AIが選んだ演出を開始します。{index}"
                 candidate = self._capability(
                     capability_id,
                     arguments=arguments,
@@ -394,7 +407,7 @@ class AgenticTurnIntegrationTest(TestCase):
                         agentic_turn_provider=StaticAgenticTurnProvider(candidate),
                     ).run_dicts(
                         self._turn(
-                            "会話の流れに合う演出を選んで。",
+                            human_wish,
                             turn_id=f"agentic_projection_{index}",
                         )
                     )
@@ -440,6 +453,31 @@ class AgenticTurnIntegrationTest(TestCase):
                     events[-1]["data"]["execution_receipt"],
                     "downstream_required",
                 )
+                self.assertIn("要求", speech)
+
+        provider = _CapturingConversationProvider(
+            {
+                "schemaVersion": 1,
+                "kind": "conversation",
+                "response": {"speech": "確認します。", "display": "確認中です。"},
+            }
+        )
+        ThoughtLoop(agentic_turn_provider=provider).run_dicts(
+            self._turn("現在の映像効果を確認して。")
+        )
+        capabilities = {
+            entry.capability_id: entry
+            for entry in provider.requests[0].capability_view.capabilities
+        }
+        self.assertIn(
+            "直接の停止要求",
+            capabilities["projection.effect.stop"].description,
+        )
+        self.assertIn("下流receipt", capabilities["projection.effect.stop"].description)
+        self.assertIn(
+            "直接のReset要求",
+            capabilities["projection.effect.reset"].description,
+        )
 
     def test_provider_wire_fire_normalization_reaches_existing_projection_route(self) -> None:
         candidate = _normalize_agentic_turn_provider_output(

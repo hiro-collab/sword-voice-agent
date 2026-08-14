@@ -1199,6 +1199,18 @@ class AgenticTurnRuntimeProviderTest(TestCase):
                 "must use conversation or clarification with capability null",
                 prompt,
             )
+            self.assertIn(
+                "directly asks to start, stop, reset, or otherwise invoke one available capability",
+                prompt,
+            )
+            self.assertIn(
+                "Do not downgrade a direct action request to conversation merely because validation, delivery, or a downstream receipt is still required",
+                prompt,
+            )
+            self.assertIn(
+                "the response may describe the request but must not claim completion",
+                prompt,
+            )
 
     def test_predecision_context_is_bounded_explicit_and_stably_ordered(self) -> None:
         candidate = self._conversation_candidate()

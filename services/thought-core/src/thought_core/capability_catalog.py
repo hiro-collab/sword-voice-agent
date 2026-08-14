@@ -66,12 +66,18 @@ _PROJECTION_CAPABILITIES = MappingProxyType(
         "projection.effect.stop": ProjectionCapabilitySpec(
             action="stop",
             effect_id=None,
-            description="現在のProjection Visualエフェクトを停止。argumentsは空のみ。",
+            description=(
+                "現在のProjection Visualエフェクトへの直接の停止要求に使用。"
+                "argumentsは空のみ。停止完了は下流receiptが所有。"
+            ),
         ),
         "projection.effect.reset": ProjectionCapabilitySpec(
             action="reset",
             effect_id=None,
-            description="Projection Visualエフェクトを初期状態へリセット。argumentsは空のみ。",
+            description=(
+                "Projection Visualエフェクトへの直接のReset要求に使用。"
+                "argumentsは空のみ。Reset完了は下流receiptが所有。"
+            ),
         ),
     }
 )
