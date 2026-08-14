@@ -29,7 +29,7 @@ flowchart TD
     RT -->|"probe expectation<br/>plan/config identity"| PROBES["probe 3モジュール\nreadiness証拠"]
     PROBES -->|"semantic result・count・boolean<br/>identity binding"| RT
 
-    HTTP -.->|"options → canonical URL一覧"| SURFACES["launcher-surface-catalog.js\n画面/参照先一覧"]
+    HTTP -.->|"options → canonical URL・有効条件・表示分類"| SURFACES["launcher-surface-catalog.js\n画面/参照先一覧"]
     HTTP -.->|"fresh supervisor snapshot\n→ service/status DTO"| STATUS["launcher-public-status-projection.js\n読み取り専用の公開状態変換"]
     HTTP -.->|"互換status/route契約"| ORDINARY["ordinary-route-contract.js"]
     HTTP -.->|"loopback URL・port・有効flag<br/>privacy-safe公開状態"| FEATURES["Camera / Display / Home / VOICEVOX"]
@@ -70,7 +70,7 @@ Probeは「見えたもの」を返します。Readyへ進めるかはruntime/re
 
 | ファイル | 役割 |
 | --- | --- |
-| [`launcher-surface-catalog.js`](./launcher-surface-catalog.js) | Quick Linksに出す画面、API、feedの一覧とcanonical URL |
+| [`launcher-surface-catalog.js`](./launcher-surface-catalog.js) | Quick Linksに出す画面、API、feedのcanonical URL・有効条件・表示分類 |
 | [`launcher-public-status-projection.js`](./launcher-public-status-projection.js) | Supervisorのpublic snapshotをservice状態とstartup timingへ変換する。I/O、cache、polling、Ready決定は持たない |
 | [`public/index.html`](./public/index.html) | Launcher画面の骨格 |
 | [`public/app.js`](./public/app.js) | 公開APIを読み、操作を送るブラウザUI |
@@ -195,6 +195,11 @@ canonical URLは `launcher-surface-catalog.js` が所有します。
 Effectをoperatorにも受信させると、二つのreceiverが同じintentを実行し得ます。
 そのため表示確認ではoperatorとstage-outputを分け、stage-outputを先に開きます。
 
+`Projection Effect Diagnostic`は、既存のeffect transportを固定Fire/Thunder/Stop/Resetで
+確認するoperator診断面です。上の三つのProjection Visual役割には加えず、production receiver、
+Thought Coreの意味判断、LauncherのStart/Stop authorityにもなりません。診断時も先に
+`Projection Stage Output`を開き、人間が最終表示を確認します。
+
 ## 8. APIの分類
 
 ### 読み取り
@@ -220,14 +225,14 @@ Effectをoperatorにも受信させると、二つのreceiverが同じintentを�
 
 | 目的 | 最初に見る場所 | 一緒に確認する場所 |
 | --- | --- | --- |
-| Quick Linkや表示URLを変える | [`launcher-surface-catalog.js`](./launcher-surface-catalog.js) | [`public/app.js`](./public/app.js)、[surface catalog test](../../tests/launcher-surface-catalog.test.js) |
+| Quick LinkのURL・有効条件・表示分類を変える | [`launcher-surface-catalog.js`](./launcher-surface-catalog.js) | [`public/app.js`](./public/app.js)の翻訳・描画、[surface catalog test](../../tests/launcher-surface-catalog.test.js) |
 | 起動対象serviceを変える | [`launcher-private-service-plan.js`](./launcher-private-service-plan.js) | [supervisor contract](./launcher-supervisor-contract.js)、manifest/pins |
 | Ready条件を変える | probe 3モジュール | reducer、runtime、focused tests |
 | Stop条件を変える | [`launcher-supervisor-runtime.js`](./launcher-supervisor-runtime.js) | [reducer](./launcher-supervisor-reducer.js)、[operation store](./launcher-operation-store.js)、[worker tests](../../tests/launcher-job-worker.test.js) |
 | phase/reasonを変える | [`launcher-supervisor-reducer.js`](./launcher-supervisor-reducer.js) | reducer vectors、public mapping |
 | service状態やstartup timingの公開変換を変える | [`launcher-public-status-projection.js`](./launcher-public-status-projection.js) | [`server.js`](./server.js)の`getStatus`、focused projection test |
 | UIを変える | [`public/app.js`](./public/app.js) / [`index.html`](./public/index.html) | `/api/state`の公開schema |
-| Camera選択を変える | [`server.js`](./server.js)のcamera section | privacy/redaction tests |
+| Camera選択を変える | [`launcher-camera-adapter.js`](./launcher-camera-adapter.js) | [`server.js`](./server.js)の合成、privacy/redaction tests |
 | process停止・cleanupを変える | [`launcher-supervisor-runtime.js`](./launcher-supervisor-runtime.js) | worker/reducer、ownership/lineage tests |
 | 廃止済みport回収APIの返答を変える | [`server.js`](./server.js)の`reclaimManagedPortsFromLauncher` | managed-port cutover test |
 
@@ -239,8 +244,8 @@ Effectをoperatorにも受信させると、二つのreceiverが同じintentを�
 1. **完了**: 画面URL一覧を `launcher-surface-catalog.js` へ抽出。
 2. **完了**: status aggregationを `launcher-public-status-projection.js` へ読み取り専用で抽出。
 3. **完了**: 到達不能だった旧managed-port強制回収実装を削除。互換APIはkill権限なしの廃止応答だけを返す。
-4. 次: camera enumeration/redactionを独立moduleへ抽出。
-5. 最後: HTTP route tableを薄いrouterへ抽出。
+4. **完了**: camera enumeration/selection/redactionを `launcher-camera-adapter.js` へ抽出。
+5. 次: owner valueへ直接つながる枝を、既存authorityとconsumerを一packetで閉じられる場合だけ分離。
 
 各段階で既存テストを維持し、Start/Stopの意味を変更しません。
 

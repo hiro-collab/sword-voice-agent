@@ -20,6 +20,20 @@ const SURFACE_GROUP = Object.freeze({
   BACKGROUND_REFERENCE: 'Background links'
 })
 
+// Quick Links の見た目を選ぶ公開分類。URLの意味や起動権限は持たない。
+const SURFACE_PRESENTATION_KIND = Object.freeze({
+  UI: 'ui',
+  STAGE: 'stage',
+  DIAGNOSTIC: 'diagnostic',
+  THOUGHT: 'thought',
+  DISPLAY: 'display',
+  API: 'api',
+  CAMERA: 'camera',
+  WEBSOCKET: 'websocket',
+  SPEECH: 'speech',
+  BACKGROUND: 'background'
+})
+
 const normalizeLoopbackHttpUrl = (value) =>
   String(value || '').replace(/^http:\/\/localhost(?=:|\/|$)/u, 'http://127.0.0.1')
 
@@ -52,84 +66,105 @@ const buildLauncherSurfaceCatalog = (options, selectedServiceIds) => {
   return [
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      presentationKind: SURFACE_PRESENTATION_KIND.UI,
       name: 'Expression runtime',
       url: `http://127.0.0.1:${options.AituberPort}`,
       enabled: selected.has('aituber_kit')
     },
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      presentationKind: SURFACE_PRESENTATION_KIND.UI,
       name: 'Projection Visual',
       url: projection.operator,
       enabled: selected.has('aituber_kit')
     },
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      presentationKind: SURFACE_PRESENTATION_KIND.STAGE,
       name: 'Projection Stage Output',
       url: projection.stageOutput,
       enabled: selected.has('aituber_kit')
     },
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      presentationKind: SURFACE_PRESENTATION_KIND.DIAGNOSTIC,
+      name: 'Projection Effect Diagnostic',
+      url: `http://127.0.0.1:${options.AituberPort}/operator/projection-effect-diagnostic/`,
+      enabled: selected.has('aituber_kit')
+    },
+    {
+      group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      presentationKind: SURFACE_PRESENTATION_KIND.STAGE,
       name: 'Passive Projection',
       url: projection.passive,
       enabled: selected.has('aituber_kit')
     },
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      presentationKind: SURFACE_PRESENTATION_KIND.DIAGNOSTIC,
       name: 'Body map inspector',
       url: `http://127.0.0.1:${options.AituberPort}/body-map-inspector?fov=60&scale=1`,
       enabled: selected.has('aituber_kit')
     },
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      presentationKind: SURFACE_PRESENTATION_KIND.THOUGHT,
       name: 'Thought Core API index',
       url: thoughtCoreUrl,
       enabled: selected.has('thought_core_api')
     },
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      presentationKind: SURFACE_PRESENTATION_KIND.DISPLAY,
       name: 'Display runtime GUI/API',
       url: `http://127.0.0.1:${options.TouchDesignerGuiPort}`,
       enabled: selected.has('touchdesigner_control_gui')
     },
     {
       group: SURFACE_GROUP.OPEN_IN_BROWSER,
+      presentationKind: SURFACE_PRESENTATION_KIND.UI,
       name: 'Action bridge operator',
       url: `http://127.0.0.1:${options.HomeAssistantBridgePort}/operator`,
       enabled: selected.has('home_assistant_bridge')
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      presentationKind: SURFACE_PRESENTATION_KIND.API,
       name: 'Action bridge health',
       url: `http://127.0.0.1:${options.HomeAssistantBridgePort}/health`,
       enabled: selected.has('home_assistant_bridge')
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      presentationKind: SURFACE_PRESENTATION_KIND.API,
       name: 'Environment display state',
       url: `http://127.0.0.1:${options.EnvironmentStatePort}/indicators/current`,
       enabled: selected.has('environment_state_server')
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      presentationKind: SURFACE_PRESENTATION_KIND.CAMERA,
       name: 'Reflex browser monitor',
       url: browserMonitorUrl,
       enabled: selected.has('mediapipe_camera_hub_stack') && options.MediapipeMode === 'mediamtx'
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      presentationKind: SURFACE_PRESENTATION_KIND.CAMERA,
       name: 'Reflex camera video',
       url: 'http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true',
       enabled: selected.has('mediapipe_camera_hub_stack') && options.MediapipeMode === 'mediamtx'
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      presentationKind: SURFACE_PRESENTATION_KIND.WEBSOCKET,
       name: 'Reflex Camera Hub WebSocket',
       url: `ws://127.0.0.1:${options.MediapipePort}`,
       enabled: selected.has('mediapipe_camera_hub_stack')
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      presentationKind: SURFACE_PRESENTATION_KIND.WEBSOCKET,
       name: 'Vision snapshot WebSocket',
       url: `ws://127.0.0.1:${options.VisionSnapshotProcessorPort}`,
       enabled:
@@ -138,24 +173,28 @@ const buildLauncherSurfaceCatalog = (options, selectedServiceIds) => {
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      presentationKind: SURFACE_PRESENTATION_KIND.SPEECH,
       name: 'VOICEVOX',
       url: voicevoxUrl,
       enabled: selected.has('voicevox')
     },
     {
       group: SURFACE_GROUP.LOCAL_API_OR_FEED,
+      presentationKind: SURFACE_PRESENTATION_KIND.THOUGHT,
       name: 'Thought Core health',
       url: `${thoughtCoreUrl}/health`,
       enabled: selected.has('thought_core_api')
     },
     {
       group: SURFACE_GROUP.BACKGROUND_REFERENCE,
+      presentationKind: SURFACE_PRESENTATION_KIND.BACKGROUND,
       name: 'Thought Core watcher',
       url: 'no browser URL',
       enabled: selected.has('thought_core_watcher')
     },
     {
       group: SURFACE_GROUP.BACKGROUND_REFERENCE,
+      presentationKind: SURFACE_PRESENTATION_KIND.DISPLAY,
       name: 'Display UDP receiver',
       url: '127.0.0.1:9001',
       enabled: true
@@ -165,6 +204,7 @@ const buildLauncherSurfaceCatalog = (options, selectedServiceIds) => {
 
 module.exports = {
   SURFACE_GROUP,
+  SURFACE_PRESENTATION_KIND,
   buildLauncherSurfaceCatalog,
   buildProjectionVisualUrls,
   normalizeLoopbackHttpUrl

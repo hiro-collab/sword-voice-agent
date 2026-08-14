@@ -35,6 +35,11 @@ Quick Links separates the operator and final presentation surfaces. Use
 single production effect receiver and the canonical avatar + bubble + effect
 composite used by Display Runtime. `Passive Projection` remains a compatibility
 display-state viewer and does not receive production effect intents.
+`Projection Effect Diagnostic` is a separate operator-only check for the
+existing Fire, Thunder, Stop, and Reset transport. It bypasses Thought Core and
+does not add another Stage receiver. A correlated `VERIFIED` receipt proves the
+browser delivery path only; a person still confirms the visible effect, and the
+diagnostic does not prove natural-conversation effect selection.
 
 Normal profiles keep a longer `MediapipeReadyTimeoutSeconds` budget. Camera Hub
 startup can be close to 35 seconds on the local webcam path, so the Launcher

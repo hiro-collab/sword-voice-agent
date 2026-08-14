@@ -16,7 +16,7 @@ const readInitialLanguage = () => {
 /**
  * ブラウザUIの枝。
  * server.jsの公開APIだけを使い、lifecycleの意味やprivate planを再実装しない。
- * 画面リンクの役割表示は endpointDisplayName / endpointKind に集約する。
+ * 画面リンクの役割分類はsurface catalog、翻訳と描画はこのUIに集約する。
  */
 
 const state = {
@@ -278,6 +278,7 @@ const translations = {
     'endpoint.reference': 'reference',
     'endpoint.stageView': 'passive clean view',
     'endpoint.operatorPreview': 'operator preview',
+    'endpoint.diagnostic': 'operator diagnostic',
     'endpoint.localApi': 'local API',
     'endpoint.cameraFeed': 'camera feed',
     'endpoint.displayRuntime': 'display runtime',
@@ -524,6 +525,7 @@ const translations = {
     'endpoint.reference': '参照',
     'endpoint.stageView': '投影表示',
     'endpoint.operatorPreview': '操作プレビュー',
+    'endpoint.diagnostic': '操作診断',
     'endpoint.localApi': 'ローカルAPI',
     'endpoint.cameraFeed': 'カメラ映像',
     'endpoint.displayRuntime': '表示実行画面',
@@ -1819,6 +1821,7 @@ const endpointDisplayName = (name) => {
     'Display UDP receiver': 'TD UDP',
     'Projection Visual': 'Operator stage',
     'Projection Stage Output': 'Stage output',
+    'Projection Effect Diagnostic': 'Effect diagnostic',
     'Passive Projection': 'Stage',
     'Thought Core API index': 'Core API',
     'Thought Core health': 'Core health',
@@ -1848,6 +1851,7 @@ const endpointDisplayName = (name) => {
     'Display UDP receiver': 'TD UDP',
     'Projection Visual': '操作ステージ',
     'Projection Stage Output': '投影出力',
+    'Projection Effect Diagnostic': '映像効果診断',
     'Passive Projection': 'ステージ',
     'Thought Core API index': '思考中枢API',
     'Thought Core health': '思考中枢の状態',
@@ -1870,6 +1874,7 @@ const endpointTargetLabel = (endpoint, kind, canOpen) => {
     return t('endpoint.reference')
   }
   if (kind === 'stage') return t('endpoint.stageView')
+  if (kind === 'diagnostic') return t('endpoint.diagnostic')
   if (endpoint.name === 'Projection Visual') return t('endpoint.operatorPreview')
   if (kind === 'api' || kind === 'thought') return t('endpoint.localApi')
   if (kind === 'camera') return t('endpoint.cameraFeed')
@@ -2186,9 +2191,6 @@ const renderServices = (services) => {
 const renderEndpoints = (endpoints) => {
   const groups = new Map()
   for (const endpoint of endpoints || []) {
-    if (endpointKind(endpoint) === 'compatibility') {
-      continue
-    }
     if (!groups.has(endpoint.group)) {
       groups.set(endpoint.group, [])
     }
@@ -2242,42 +2244,27 @@ const endpointGroupLabel = (group) => {
   return labels[group] ? t(labels[group]) : group
 }
 
-// URLのsemantic authorityではなく、UI上の色・説明を選ぶ分類だけを行う。
-const endpointKind = (endpoint) => {
-  const name = String(endpoint.name || '').toLowerCase()
-  const url = String(endpoint.url || '').toLowerCase()
-  if (url.startsWith('ws:') || name.includes('websocket')) return 'websocket'
-  if (
-    name.includes('projection stage output') ||
-    name.includes('passive projection') ||
-    url.includes('mode=stage-output') ||
-    url.includes('mode=passive')
-  ) return 'stage'
-  if (name.includes('thought-core')) return 'thought'
-  if (name.includes('operator') || url.includes('/operator')) return 'ui'
-  if (name.includes('aituber') || name.includes('projection')) return 'ui'
-  if (name.includes('display') || name.includes('td control') || name.includes('touchdesigner')) return 'display'
-  if (name.includes('voicevox')) return 'speech'
-  if (name.includes('mediapipe') || name.includes('mediamtx') || name.includes('camera')) return 'camera'
-  if (name.includes('health') || name.includes('environment') || url.includes('/api/')) return 'api'
-  return endpoint.group === 'Background links' ? 'background' : 'link'
-}
-
-const endpointIcon = (kind) => {
-  const icons = {
+// Catalogが選んだ表示分類を、このUIが認識するicon paletteへ安全に写す。
+const endpointIcons = Object.freeze({
     ui: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="12" rx="2"></rect><path d="M8 21h8"></path><path d="M12 17v4"></path></svg>',
     api: '<svg viewBox="0 0 24 24"><path d="M7 8l-4 4 4 4"></path><path d="M17 8l4 4-4 4"></path><path d="M14 4l-4 16"></path></svg>',
     websocket: '<svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 14 0"></path><path d="M8 12a4 4 0 0 1 8 0"></path><path d="M12 12h.01"></path><path d="M12 16v4"></path></svg>',
     thought: '<svg viewBox="0 0 24 24"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M8 14a6 6 0 1 1 8 0c-.8.6-1 1.3-1 2H9c0-.7-.2-1.4-1-2z"></path></svg>',
     stage: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"></rect><path d="M8 9h8"></path><path d="M8 13h5"></path></svg>',
+    diagnostic: '<svg viewBox="0 0 24 24"><path d="M9 3h6l1 3h3v15H5V6h3z"></path><path d="M9 11h6"></path><path d="M9 15h4"></path></svg>',
     display: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8"></path><path d="M12 16v4"></path><path d="M7 8h10"></path></svg>',
     speech: '<svg viewBox="0 0 24 24"><path d="M11 5L6 9H3v6h3l5 4z"></path><path d="M15 9a4 4 0 0 1 0 6"></path><path d="M18 6a8 8 0 0 1 0 12"></path></svg>',
     camera: '<svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"></path><circle cx="12" cy="13" r="3"></circle></svg>',
     background: '<svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"></path><path d="M8 10h8"></path><path d="M8 14h5"></path></svg>',
     link: '<svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"></path><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"></path></svg>'
-  }
-  return icons[kind] || icons.link
+})
+
+const endpointKind = (endpoint) => {
+  const kind = String(endpoint.presentationKind || '')
+  return Object.hasOwn(endpointIcons, kind) ? kind : 'link'
 }
+
+const endpointIcon = (kind) => endpointIcons[kind] || endpointIcons.link
 
 const refreshPreview = async () => {
   try {

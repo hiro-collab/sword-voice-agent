@@ -6,6 +6,7 @@ const path = require('node:path')
 const test = require('node:test')
 
 const {
+  SURFACE_PRESENTATION_KIND,
   buildLauncherSurfaceCatalog,
   buildProjectionVisualUrls,
   normalizeLoopbackHttpUrl
@@ -76,9 +77,50 @@ test('利用者向けsurface一覧に正式なstage-outputを一つだけ含め�
   assert.equal(stageOutputs.length, 1)
   assert.deepEqual(stageOutputs[0], {
     group: 'Open in browser',
+    presentationKind: 'stage',
     name: 'Projection Stage Output',
     url: 'http://127.0.0.1:3000/projection-visual/?mode=stage-output&hud=0',
     enabled: true
+  })
+})
+
+test('全surfaceの表示分類と名前とURLをcatalog一箇所で固定する', () => {
+  const selected = selectedForProfile('full-system-v0')
+  const catalog = buildLauncherSurfaceCatalog(options, selected)
+  const knownKinds = new Set(Object.values(SURFACE_PRESENTATION_KIND))
+
+  assert.ok(catalog.length > 0)
+  assert.ok(catalog.every((entry) => knownKinds.has(entry.presentationKind)))
+  assert.equal(new Set(catalog.map((entry) => entry.name)).size, catalog.length)
+  assert.equal(new Set(catalog.map((entry) => entry.url)).size, catalog.length)
+})
+
+test('映像効果診断は正式なstage receiverと分けてAIT surfaceへ公開する', () => {
+  const visual = buildLauncherSurfaceCatalog(options, selectedForProfile('visual-effects-v0'))
+  const diagnostic = visual.filter((entry) => entry.name === 'Projection Effect Diagnostic')
+
+  assert.equal(diagnostic.length, 1)
+  assert.deepEqual(diagnostic[0], {
+    group: 'Open in browser',
+    presentationKind: 'diagnostic',
+    name: 'Projection Effect Diagnostic',
+    url: 'http://127.0.0.1:3000/operator/projection-effect-diagnostic/',
+    enabled: true
+  })
+
+  const withoutAituber = buildLauncherSurfaceCatalog(options, [])
+  assert.equal(
+    withoutAituber.find((entry) => entry.name === 'Projection Effect Diagnostic').enabled,
+    false
+  )
+  assert.equal(
+    withoutAituber.find((entry) => entry.name === 'Projection Stage Output').enabled,
+    false
+  )
+  assert.deepEqual(buildProjectionVisualUrls('127.0.0.1', 3000), {
+    operator: 'http://127.0.0.1:3000/projection-visual/',
+    stageOutput: 'http://127.0.0.1:3000/projection-visual/?mode=stage-output&hud=0',
+    passive: 'http://127.0.0.1:3000/projection-visual/?mode=passive&hud=0'
   })
 })
 

@@ -1986,6 +1986,9 @@ $cases = @(
         self.assertIn("polls only the Launcher summary endpoints", readme)
         self.assertIn("Self Mirror temporal motion", readme)
         self.assertIn("Action bridge operator", readme)
+        self.assertIn("Projection Effect Diagnostic", readme)
+        self.assertIn("bypasses Thought Core", readme)
+        self.assertIn("does not add another Stage receiver", readme)
         self.assertIn("not command authority", readme)
         self.assertIn("class/count/timing summaries only", readme)
         self.assertIn("do not perform", readme)
@@ -2400,15 +2403,30 @@ assert.deepStrictEqual(previewSnapshots[2], {
 
         self.assertIn("buildLauncherSurfaceCatalog", server)
         self.assertIn("name: 'Projection Stage Output'", surface_catalog)
+        self.assertIn("name: 'Projection Effect Diagnostic'", surface_catalog)
         self.assertIn("name: 'Passive Projection'", surface_catalog)
         self.assertIn("/projection-visual/`", surface_catalog)
         self.assertIn("/projection-visual/?mode=stage-output&hud=0`", surface_catalog)
         self.assertIn("/projection-visual/?mode=passive&hud=0`", surface_catalog)
+        self.assertIn(
+            "/operator/projection-effect-diagnostic/`",
+            surface_catalog,
+        )
         self.assertIn("/projection-visual/?mode=stage-output&hud=0", stack_start)
         self.assertIn("/projection-visual/?mode=passive", stack_start)
         self.assertIn("'Projection Stage Output': 'Stage output'", app)
         self.assertIn("'Projection Stage Output': '投影出力'", app)
+        self.assertIn("'Projection Effect Diagnostic': 'Effect diagnostic'", app)
+        self.assertIn("'Projection Effect Diagnostic': '映像効果診断'", app)
         self.assertIn("'Passive Projection': 'Stage'", app)
+        self.assertIn("endpoint.presentationKind", app)
+        self.assertIn("Object.hasOwn(endpointIcons, kind)", app)
+        self.assertIn(
+            "return Object.hasOwn(endpointIcons, kind) ? kind : 'link'",
+            app,
+        )
+        self.assertNotIn("name.includes('projection')", app)
+        self.assertNotIn("url.includes('mode=stage-output')", app)
         self.assertNotIn("/projection-visual?mode=stage-output", surface_catalog)
         self.assertNotIn("/projection-visual?mode=stage-output", stack_start)
         self.assertNotIn("/projection-visual?mode=passive", surface_catalog)
