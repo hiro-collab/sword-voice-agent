@@ -206,19 +206,22 @@ planned
 
 canonical URLは `launcher-surface-catalog.js` が所有します。
 
-| 画面 | 用途 | Effect receiver |
+| 画面 | 用途 | Effect host candidate |
 | --- | --- | --- |
-| `Projection Visual` | 会話入力・調整を行うoperator | いいえ |
-| `Projection Stage Output` | avatar・吹き出し・Fire/Thunderを合成する正式な投影出力 | **はい（唯一）** |
+| `Projection Visual` | 会話入力・調整を行うoperator。単独時にもFire/Thunderを表示できる | はい |
+| `Projection Stage Output` | avatar・吹き出し・Fire/Thunderを合成するcanonical投影出力 | はい |
 | `Passive Projection` | display-state互換表示 | いいえ |
 
-Effectをoperatorにも受信させると、二つのreceiverが同じintentを実行し得ます。
-そのため表示確認ではoperatorとstage-outputを分け、stage-outputを先に開きます。
+operatorとstage-outputは、same-originのWeb Locksを使う一つのeffect-host leaseへ参加します。
+lockを取得した画面だけがready/ack、effect実行、相関receiptを所有し、非ownerは成功receipt後だけ
+同じpresentationをミラーします。したがってどちらか一画面だけでも動き、両方を開いても
+実行・receipt ownerは一つです。Web Locksが使えない場合は二重ownerへfallbackせずfail closedにします。
+Stage Outputは引き続きLauncherとDisplay Runtimeが参照するcanonical出力URLです。
 
 `Projection Effect Diagnostic`は、既存のeffect transportを固定Fire/Thunder/Stop/Resetで
-確認するoperator診断面です。上の三つのProjection Visual役割には加えず、production receiver、
+確認するoperator診断面です。上の三つのProjection Visual役割には加えず、effect-host owner、
 Thought Coreの意味判断、LauncherのStart/Stop authorityにもなりません。診断時も先に
-`Projection Stage Output`を開き、人間が最終表示を確認します。
+`Projection Visual`または`Projection Stage Output`のいずれかを開き、人間が最終表示を確認します。
 
 ## 8. APIの分類
 
@@ -282,7 +285,8 @@ Thought Coreの意味判断、LauncherのStart/Stop authorityにもなりませ�
 7. focused testは変更した境界を直接検査しているか。
 
 「根幹を変える必要がある」と思った場合は、まず枝側の入口・adapter・表示分類の欠落を確認します。
-今回のProjection Effectsでは、effect engineではなくstage-outputへの入口が欠けていました。
+Projection Effectsの表示では、surface名と実行ownerを混同しません。canonical出力URLは
+stage-output、実行・receipt ownerはeffect-host leaseが一画面だけに割り当てます。
 
 ## 12. Cleanup判定はどこで行うか
 

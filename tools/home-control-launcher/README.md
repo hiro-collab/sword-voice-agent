@@ -30,14 +30,19 @@ normal profiles, while `Fast visible demo` and `Fast action demo` use an
 first-response timing budget.
 
 Quick Links separates the operator and final presentation surfaces. Use
-`Projection Visual` for conversation input and calibration. Open
-`Projection Stage Output` before requesting a Fire or Thunder effect; it is the
-single production effect receiver and the canonical avatar + bubble + effect
-composite used by Display Runtime. `Passive Projection` remains a compatibility
-display-state viewer and does not receive production effect intents.
+`Projection Visual` for conversation input and calibration. It can also show
+Fire or Thunder when it is the current effect-host lease owner.
+`Projection Stage Output` remains the canonical avatar + bubble + effect output
+URL used by Display Runtime. Operator and Stage compete for one same-origin
+browser lock, so either page works alone and only one page executes an intent
+or publishes its receipt when both are open. The non-owner mirrors the
+presentation only after a correlated successful receipt. `Passive Projection`
+remains a compatibility display-state viewer and is never an effect-host
+candidate. If Web Locks are unavailable, effect delivery fails closed instead
+of allowing two receivers.
 `Projection Effect Diagnostic` is a separate operator-only check for the
 existing Fire, Thunder, Stop, and Reset transport. It bypasses Thought Core and
-does not add another Stage receiver. A correlated `VERIFIED` receipt proves the
+does not become another effect-host candidate. A correlated `VERIFIED` receipt proves the
 browser delivery path only; a person still confirms the visible effect, and the
 diagnostic does not prove natural-conversation effect selection.
 

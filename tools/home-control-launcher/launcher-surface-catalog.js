@@ -41,7 +41,8 @@ const buildProjectionVisualUrls = (aituberHost, aituberPort) => {
   const origin = `http://${aituberHost}:${aituberPort}`
   return Object.freeze({
     operator: `${origin}/projection-visual/`,
-    // Fire/Thunder を受け取る唯一の正式な production receiver。
+    // Launcher/Display Runtime が参照するcanonical production output。
+    // 実行・receipt ownerはAIT側のcross-tab effect-host leaseが一画面に限定する。
     stageOutput: `${origin}/projection-visual/?mode=stage-output&hud=0`,
     // display-state 互換表示。production effect receiver ではない。
     passive: `${origin}/projection-visual/?mode=passive&hud=0`

@@ -248,6 +248,21 @@ class AgenticCapabilityCatalog:
         spec = _PROJECTION_CAPABILITIES.get(capability_id)
         return spec is not None and _valid_projection_arguments(spec, arguments)
 
+    def capability_id_for_projection(
+        self,
+        *,
+        action: str,
+        effect_id: str | None,
+    ) -> str:
+        matches = [
+            capability_id
+            for capability_id, spec in _PROJECTION_CAPABILITIES.items()
+            if spec.action == action and spec.effect_id == effect_id
+        ]
+        if len(matches) != 1:
+            raise CapabilityCatalogError("agentic_projection_capability_ambiguous")
+        return matches[0]
+
     def action_for(
         self,
         capability_id: str,

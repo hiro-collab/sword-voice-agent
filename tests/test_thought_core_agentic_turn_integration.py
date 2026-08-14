@@ -420,10 +420,6 @@ class AgenticTurnIntegrationTest(TestCase):
                 )
                 with (
                     patch(
-                        "thought_core.loop.detect_projection_effect_intent",
-                        side_effect=AssertionError("fixed_projection_parser_must_not_run"),
-                    ),
-                    patch(
                         "thought_core.loop.compile_projection_effect_plan_intent",
                         side_effect=AssertionError("fixed_projection_compiler_must_not_run"),
                     ),
@@ -502,6 +498,99 @@ class AgenticTurnIntegrationTest(TestCase):
                     expected_generation,
                 )
 
+    def test_exact_effect_start_is_an_ai_constraint_not_a_fixed_dispatch(
+        self,
+    ) -> None:
+        provider = _ReceiptBackedConversationProvider(
+            self._capability(
+                "projection.fire.start",
+                speech="いいね、炎のエフェクトを表示します。",
+                display="いいね、炎のエフェクトを表示します。",
+            )
+        )
+
+        events = ThoughtLoop(
+            tools=_DirectOnlyTools(),
+            agentic_turn_provider=provider,
+        ).run_dicts(
+            self._turn("炎を出して", turn_id="constrained_fire_request")
+        )
+
+        self.assertEqual(len(provider.requests), 1)
+        bounded = provider.requests[0].bounded_capability_constraint
+        self.assertIsNotNone(bounded)
+        self.assertEqual(bounded.capability_id, "projection.fire.start")
+        self.assertEqual(dict(bounded.arguments), {})
+        requested = [
+            event for event in events if event["type"] == "projection.effect.requested"
+        ]
+        messages = [event for event in events if event["type"] == "assistant.message"]
+        self.assertEqual(len(requested), 1)
+        self.assertEqual(
+            requested[0]["data"],
+            {
+                "schemaVersion": 1,
+                "action": "start",
+                "effectId": "fire",
+            },
+        )
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(
+            messages[0]["data"]["speech"],
+            "いいね、炎のエフェクトを表示します。",
+        )
+        self.assertTrue(messages[0]["data"]["phrase_generation"]["used_llm"])
+        completed = next(event for event in events if event["type"] == "turn.completed")
+        self.assertEqual(
+            completed["data"]["provider_attempt_evidence"],
+            {
+                "evidence_class": PROVIDER_AUTHORSHIP_EVIDENCE_CLASS,
+                "decision_event_id": next(
+                    event["event_id"]
+                    for event in events
+                    if event["type"] == "agentic.decision"
+                    and event["data"]["status"] == "accepted"
+                ),
+                "assistant_message_id": messages[0]["data"]["assistant_message_id"],
+                "upstream_attempt_count": 1,
+                "retry_count": 0,
+                "fallback_count": 0,
+                "attempt_terminal_class": PROVIDER_ATTEMPT_TERMINAL_CLASS,
+                "authorship_class": PROVIDER_AUTHORSHIP_CLASS,
+            },
+        )
+
+    def test_effect_constraint_rejects_provider_refusal_without_fixed_reply(
+        self,
+    ) -> None:
+        refusal = "炎を出すことはできません。"
+        provider = _ReceiptBackedConversationProvider(
+            {
+                "schemaVersion": 1,
+                "kind": "conversation",
+                "response": {"speech": refusal, "display": refusal},
+            }
+        )
+
+        events = ThoughtLoop(agentic_turn_provider=provider).run_dicts(
+            self._turn("炎を出して。", turn_id="constrained_fire_refusal")
+        )
+
+        self.assertEqual(len(provider.requests), 1)
+        self.assertFalse(any(event["type"] == "assistant.message" for event in events))
+        self.assertFalse(
+            any(event["type"] == "assistant.speech_delta" for event in events)
+        )
+        self.assertFalse(
+            any(event["type"] == "projection.effect.requested" for event in events)
+        )
+        hold = next(event for event in events if event["type"] == "agentic.decision")
+        self.assertEqual(
+            hold["data"]["reason"],
+            "agentic_capability_constraint_mismatch",
+        )
+        self.assertNotIn(refusal, json.dumps(events, ensure_ascii=False))
+
     def test_agentic_projection_response_cannot_contradict_dispatched_effect(self) -> None:
         cases = (
             (
@@ -532,10 +621,6 @@ class AgenticTurnIntegrationTest(TestCase):
                 )
                 responder = _AiVisibleResponder(repaired)
                 with (
-                    patch(
-                        "thought_core.loop.detect_projection_effect_intent",
-                        side_effect=AssertionError("fixed_projection_parser_must_not_run"),
-                    ),
                     patch(
                         "thought_core.loop.compile_projection_effect_plan_intent",
                         side_effect=AssertionError("fixed_projection_compiler_must_not_run"),
@@ -1460,7 +1545,7 @@ class AgenticTurnIntegrationTest(TestCase):
             "agentic_capability_catalog_unavailable",
         )
 
-    def test_agentic_holds_have_one_visible_message_and_terminal_completion(self) -> None:
+    def test_agentic_holds_are_telemetry_only_with_terminal_completion(self) -> None:
         context_provider = _CapturingConversationProvider(self._capability("light_on"))
         catalog_provider = _CapturingConversationProvider(self._capability("light_on"))
         cases = (
@@ -1519,7 +1604,7 @@ class AgenticTurnIntegrationTest(TestCase):
                 ]
                 completed = [event for event in events if event["type"] == "turn.completed"]
 
-                self.assertEqual(len(hold_messages), 1)
+                self.assertEqual(hold_messages, [])
                 self.assertEqual(len(completed), 1)
                 self.assertEqual(completed[0]["data"]["status"], "held")
                 self.assertEqual(completed[0]["data"]["reason"], reason)

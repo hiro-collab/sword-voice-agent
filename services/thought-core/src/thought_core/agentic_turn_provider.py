@@ -103,6 +103,31 @@ class AgenticCapabilityView:
 
 
 @dataclass(frozen=True)
+class AgenticZeroArgumentCapabilityConstraint:
+    """One bounded zero-argument capability the provider must confirm.
+
+    A constraint is not execution authority.  The provider still authors the
+    complete decision and natural response; the loop verifies that an accepted
+    decision does not drift away from this reader-safe semantic boundary.
+    """
+
+    capability_id: str
+    arguments: Mapping[str, object] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.capability_id) is not str
+            or not self.capability_id
+            or not isinstance(self.arguments, Mapping)
+            or dict(self.arguments)
+        ):
+            raise ValueError("agentic_capability_constraint_invalid")
+        object.__setattr__(self, "arguments", MappingProxyType({}))
+
+
+@dataclass(frozen=True)
 class AgenticPredecisionContextSection:
     """One bounded, reader-safe summary available before semantic judgment."""
 
@@ -189,6 +214,9 @@ class AgenticTurnProviderRequest:
     predecision_context: AgenticPredecisionContext = field(
         default_factory=AgenticPredecisionContext
     )
+    bounded_capability_constraint: (
+        AgenticZeroArgumentCapabilityConstraint | None
+    ) = None
 
 
 class AgenticTurnProvider(Protocol):

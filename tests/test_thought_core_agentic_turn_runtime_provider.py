@@ -19,6 +19,7 @@ from thought_core.agentic_turn_provider import (  # noqa: E402
     PROVIDER_ATTEMPT_RECEIPT_CLASS,
     PROVIDER_ATTEMPT_TERMINAL_CLASS,
     AgenticActionReceipt,
+    AgenticZeroArgumentCapabilityConstraint,
     AgenticCapabilityView,
     AgenticCapabilityViewEntry,
     AgenticPredecisionContext,
@@ -1087,6 +1088,7 @@ class AgenticTurnRuntimeProviderTest(TestCase):
                 "human_wish",
                 "catalog",
                 "capabilities",
+                "bounded_capability_constraint",
                 "context_refs",
                 "agent_context",
                 "predecision_context",
@@ -1111,6 +1113,7 @@ class AgenticTurnRuntimeProviderTest(TestCase):
                 },
             ],
         )
+        self.assertIsNone(payload["bounded_capability_constraint"])  # type: ignore[index]
         predecision = payload["predecision_context"]  # type: ignore[index]
         self.assertEqual(
             predecision["schema_version"],  # type: ignore[index]
@@ -1145,6 +1148,53 @@ class AgenticTurnRuntimeProviderTest(TestCase):
         self.assertNotIn("provider_payload", serialized)
         self.assertNotIn("api_key", serialized)
         self.assertNotIn("endpoint", serialized)
+
+    def test_decision_prompt_serializes_one_zero_argument_capability_constraint(
+        self,
+    ) -> None:
+        candidate = self._conversation_candidate()
+        completion = _CapturingCompletion(candidate)
+        provider = OpenAICompatibleAgenticTurnProvider(completion)
+        request = self._provider_request(
+            human_wish="ライトをつけて。",
+            context_refs=MappingProxyType({}),
+            bounded_capability_constraint=AgenticZeroArgumentCapabilityConstraint(
+                "light_on"
+            ),
+        )
+
+        self.assertEqual(provider.decide(request), candidate)
+        payload = completion.calls[0]["input_payload"]
+        self.assertEqual(
+            payload["bounded_capability_constraint"],  # type: ignore[index]
+            {"id": "light_on", "arguments": {}},
+        )
+
+    def test_capability_constraint_rejects_nonempty_unknown_or_unavailable_rows(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "agentic_capability_constraint_invalid",
+        ):
+            AgenticZeroArgumentCapabilityConstraint(
+                "light_on",
+                MappingProxyType({"unexpected": True}),
+            )
+
+        for capability_id in ("not_catalogued", "aircon_on"):
+            with self.subTest(capability_id=capability_id):
+                completion = _CapturingCompletion(self._conversation_candidate())
+                provider = OpenAICompatibleAgenticTurnProvider(completion)
+                request = self._provider_request(
+                    human_wish="操作して。",
+                    context_refs=MappingProxyType({}),
+                    bounded_capability_constraint=(
+                        AgenticZeroArgumentCapabilityConstraint(capability_id)
+                    ),
+                )
+                self.assertIsNone(provider.decide(request))
+                self.assertEqual(completion.calls, [])
 
     def test_decision_prompt_requires_current_wish_authority_for_capability(self) -> None:
         greeting = {**self._conversation_candidate(), "capability": None}
@@ -2094,6 +2144,9 @@ class AgenticTurnRuntimeProviderTest(TestCase):
         human_wish: str,
         context_refs: Mapping[str, object],
         predecision_context: AgenticPredecisionContext | None = None,
+        bounded_capability_constraint: (
+            AgenticZeroArgumentCapabilityConstraint | None
+        ) = None,
         decision_event_id: str = DECISION_EVENT_ID,
     ) -> AgenticTurnProviderRequest:
         values: dict[str, object] = {
@@ -2127,6 +2180,8 @@ class AgenticTurnRuntimeProviderTest(TestCase):
         }
         if predecision_context is not None:
             values["predecision_context"] = predecision_context
+        if bounded_capability_constraint is not None:
+            values["bounded_capability_constraint"] = bounded_capability_constraint
         return AgenticTurnProviderRequest(**values)  # type: ignore[arg-type]
 
     @staticmethod

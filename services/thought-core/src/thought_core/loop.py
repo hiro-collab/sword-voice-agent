@@ -19,6 +19,7 @@ from .agentic_turn_provider import (
     PROVIDER_AUTHORSHIP_CLASS,
     PROVIDER_AUTHORSHIP_EVIDENCE_CLASS,
     AgenticActionReceipt,
+    AgenticZeroArgumentCapabilityConstraint,
     AgenticProviderAttemptReceipt,
     AgenticPredecisionContext,
     AgenticPredecisionContextSection,
@@ -170,6 +171,7 @@ AGENTIC_HOLD_REASON_CODES = frozenset(
     {
         "agentic_capability_catalog_unavailable",
         "agentic_capability_not_authorized",
+        "agentic_capability_constraint_mismatch",
         "agentic_context_refs_invalid",
         "agentic_decision_invalid",
         "agentic_projection_capability_invalid",
@@ -546,6 +548,26 @@ class _AgenticCapabilityRoute:
     route_kind: str
     action: dict[str, Any]
     response: Mapping[str, str]
+    decision_event_id: str
+    provider_attempt_receipt: AgenticProviderAttemptReceipt | None
+
+
+def _provider_attempt_authorship_evidence(
+    receipt: AgenticProviderAttemptReceipt,
+    *,
+    decision_event_id: str,
+    assistant_message_id: str,
+) -> dict[str, object]:
+    return {
+        "evidence_class": PROVIDER_AUTHORSHIP_EVIDENCE_CLASS,
+        "decision_event_id": decision_event_id,
+        "assistant_message_id": assistant_message_id,
+        "upstream_attempt_count": receipt.upstream_attempt_count,
+        "retry_count": receipt.retry_count,
+        "fallback_count": receipt.fallback_count,
+        "attempt_terminal_class": receipt.attempt_terminal_class,
+        "authorship_class": PROVIDER_AUTHORSHIP_CLASS,
+    }
 
 
 _TURN_REQUEST_CONTEXT: ContextVar[_TurnRequestContext | None] = ContextVar(
@@ -2012,6 +2034,31 @@ class ThoughtLoop:
             )
             return True, None
         decision_event_id = factory.reserve_event_id()
+        bounded_constraint = None
+        projection_decision = detect_projection_effect_intent(turn_input.text)
+        if projection_decision.accepted and projection_decision.action == "start":
+            if not isinstance(catalog, AgenticCapabilityCatalog):
+                self._emit_agentic_hold(
+                    events,
+                    factory,
+                    reason="agentic_capability_not_authorized",
+                )
+                return True, None
+            try:
+                constraint_capability_id = catalog.capability_id_for_projection(
+                    action="start",
+                    effect_id=projection_decision.effect_id,
+                )
+            except CapabilityCatalogError:
+                self._emit_agentic_hold(
+                    events,
+                    factory,
+                    reason="agentic_capability_not_authorized",
+                )
+                return True, None
+            bounded_constraint = AgenticZeroArgumentCapabilityConstraint(
+                constraint_capability_id
+            )
         request = AgenticTurnProviderRequest(
             human_wish=turn_input.text,
             context_refs=context_refs,
@@ -2034,6 +2081,7 @@ class ThoughtLoop:
                 }
             ),
             predecision_context=predecision_context,
+            bounded_capability_constraint=bounded_constraint,
         )
         try:
             candidate = provider.decide(request)
@@ -2090,6 +2138,20 @@ class ThoughtLoop:
             return True, None
 
         decision = result.decision
+        if bounded_constraint is not None and (
+            decision.kind != "capability"
+            or decision.capability is None
+            or decision.capability.capability_id
+            != bounded_constraint.capability_id
+            or dict(decision.capability.arguments)
+            != dict(bounded_constraint.arguments)
+        ):
+            self._emit_agentic_hold(
+                events,
+                factory,
+                reason="agentic_capability_constraint_mismatch",
+            )
+            return True, None
         decision_event = factory.emit_reserved(
             decision_event_id,
             "agentic.decision",
@@ -2127,22 +2189,15 @@ class ThoughtLoop:
                 "capability_executed": False,
             }
             if provider_attempt_receipt is not None and message_event is not None:
-                completion_data["provider_attempt_evidence"] = {
-                    "evidence_class": PROVIDER_AUTHORSHIP_EVIDENCE_CLASS,
-                    "decision_event_id": decision_event.event_id,
-                    "assistant_message_id": message_event.data[
-                        "assistant_message_id"
-                    ],
-                    "upstream_attempt_count": (
-                        provider_attempt_receipt.upstream_attempt_count
-                    ),
-                    "retry_count": provider_attempt_receipt.retry_count,
-                    "fallback_count": provider_attempt_receipt.fallback_count,
-                    "attempt_terminal_class": (
-                        provider_attempt_receipt.attempt_terminal_class
-                    ),
-                    "authorship_class": PROVIDER_AUTHORSHIP_CLASS,
-                }
+                completion_data["provider_attempt_evidence"] = (
+                    _provider_attempt_authorship_evidence(
+                        provider_attempt_receipt,
+                        decision_event_id=decision_event.event_id,
+                        assistant_message_id=message_event.data[
+                            "assistant_message_id"
+                        ],
+                    )
+                )
             events.append(
                 factory.emit(
                     "turn.completed",
@@ -2176,6 +2231,8 @@ class ThoughtLoop:
                     "display": decision.response.display,
                 }
             ),
+            decision_event_id=decision_event.event_id,
+            provider_attempt_receipt=provider_attempt_receipt,
         )
 
     def _compact_agentic_context_refs(
@@ -2226,7 +2283,6 @@ class ThoughtLoop:
         validation_subcode: str | None = None,
     ) -> None:
         reason_code = classify_agentic_hold_reason(reason)
-        speech = "AIの判断を安全に受け取れないため、今は操作を保留しています。"
         hold_data = {
             "status": "held",
             "reason": reason,
@@ -2242,15 +2298,9 @@ class ThoughtLoop:
                 dict(hold_data),
             )
         )
-        self._emit_message(
-            events,
-            factory,
-            speech=speech,
-            display=speech,
-            emotion="focused",
-            motion="small_nod",
-            priority="normal",
-        )
+        # A provider failure or rejected semantic postcondition is telemetry,
+        # not permission to manufacture an assistant reply.  User-visible
+        # language must come from an accepted AI-authored response boundary.
         events.append(
             factory.emit(
                 "turn.completed",
@@ -7323,7 +7373,9 @@ class ThoughtLoop:
             continuity_context=continuity_context,
         )
         failure_status = ""
+        provider_authorship_receipt = route.provider_attempt_receipt
         if validated_result is None:
+            provider_authorship_receipt = None
             response_context, continuity_context = (
                 self._projection_effect_companion_response_context(
                     events,
@@ -7368,7 +7420,7 @@ class ThoughtLoop:
             result = validated_result
 
         events.append(factory.emit("projection.effect.requested", payload))
-        self._emit_ai_message_or_failure(
+        message_event = self._emit_ai_message_or_failure(
             events,
             factory,
             result=result,
@@ -7377,17 +7429,21 @@ class ThoughtLoop:
             motion="small_nod",
             include_provider_model=False,
         )
-        events.append(
-            factory.emit(
-                "turn.completed",
-                {
-                    "status": "projection_effect_requested",
-                    "semantic_authority": "agentic_provider",
-                    "capability_dispatched": True,
-                    "execution_receipt": "downstream_required",
-                },
+        completion_data: dict[str, object] = {
+            "status": "projection_effect_requested",
+            "semantic_authority": "agentic_provider",
+            "capability_dispatched": True,
+            "execution_receipt": "downstream_required",
+        }
+        if provider_authorship_receipt is not None and message_event is not None:
+            completion_data["provider_attempt_evidence"] = (
+                _provider_attempt_authorship_evidence(
+                    provider_authorship_receipt,
+                    decision_event_id=route.decision_event_id,
+                    assistant_message_id=message_event.data["assistant_message_id"],
+                )
             )
-        )
+        events.append(factory.emit("turn.completed", completion_data))
 
     def _handle_projection_effect_intent(
         self,
@@ -7643,7 +7699,7 @@ class ThoughtLoop:
         emotion: str,
         motion: str,
         include_provider_model: bool = True,
-    ) -> None:
+    ) -> ThoughtEvent | None:
         phrase_generation: dict[str, Any]
         if result is None:
             phrase_generation = {
@@ -7666,7 +7722,7 @@ class ThoughtLoop:
                         "model": result.model,
                     }
                 )
-        self._emit_message(
+        return self._emit_message(
             events,
             factory,
             speech=result.speech if result is not None else "",

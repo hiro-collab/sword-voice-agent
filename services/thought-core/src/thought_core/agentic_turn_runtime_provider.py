@@ -17,6 +17,7 @@ from .agentic_turn_provider import (
     MAX_CATALOG_ID_LENGTH,
     MAX_CATALOG_VERSION_LENGTH,
     AgenticActionReceipt,
+    AgenticZeroArgumentCapabilityConstraint,
     AgenticCapabilityView,
     AgenticPredecisionContext,
     AgenticPredecisionContextSection,
@@ -185,6 +186,10 @@ _DECISION_SYSTEM_PROMPT = (
     "unknown. Do not downgrade a direct action request to conversation merely because "
     "validation, delivery, or a downstream receipt is still required. Before that receipt, "
     "the response may describe the request but must not claim completion. When "
+    "bounded_capability_constraint is present, it is a reader-safe semantic constraint, "
+    "not execution authority. Confirm it against human_wish and the catalog. If it "
+    "matches, return kind capability with that exact id and arguments; do not answer "
+    "with a capability refusal merely because downstream delivery is not yet proven. "
     "latest_user_correction is present in the "
     "predecision context, it overrides older continuity or memory summaries. Preserve "
     "missing, unavailable, stale, and conflict status instead of treating it as current "
@@ -519,10 +524,41 @@ def _decision_input_payload(request: AgenticTurnProviderRequest) -> dict[str, ob
         "human_wish": request.human_wish,
         "catalog": catalog,
         "capabilities": capabilities,
+        "bounded_capability_constraint": _bounded_capability_constraint(
+            request.bounded_capability_constraint,
+            capabilities=capabilities,
+        ),
         "context_refs": _bounded_context_refs(request.context_refs),
         "agent_context": _bounded_agent_context(request.agent_context),
         "predecision_context": predecision_context,
     }
+
+
+def _bounded_capability_constraint(
+    candidate: object,
+    *,
+    capabilities: list[dict[str, object]],
+) -> dict[str, object] | None:
+    if candidate is None:
+        return None
+    if type(candidate) is not AgenticZeroArgumentCapabilityConstraint:
+        raise ValueError("agentic_capability_constraint_invalid")
+    if (
+        type(candidate.capability_id) is not str
+        or not candidate.capability_id
+        or len(candidate.capability_id) > MAX_CAPABILITY_ID_CHARS
+        or dict(candidate.arguments)
+    ):
+        raise ValueError("agentic_capability_constraint_invalid")
+    matches = [
+        capability
+        for capability in capabilities
+        if capability.get("id") == candidate.capability_id
+        and capability.get("available") is True
+    ]
+    if len(matches) != 1:
+        raise ValueError("agentic_capability_constraint_invalid")
+    return {"id": candidate.capability_id, "arguments": {}}
 
 
 def _bounded_capability_view(
