@@ -63,7 +63,12 @@ class AiTalkCoreHandoff:
             "source": "ai_talk_core",
             "handoff_source": self.source,
             "handoff_field": field,
-            "trigger": "sword_sign",
+            # A handoff can originate from a gesture, a browser button,
+            # TouchDesigner, or another trusted local adapter.  The legacy
+            # handoff bundle does not retain that exact trigger identity, so do
+            # not invent one here.  Callers with correlated trigger evidence
+            # may still override this value through ``context`` below.
+            "trigger": "ai_talk_core_handoff",
         }
         if self.turn_id:
             request_context["turn_id"] = self.turn_id
@@ -80,19 +85,42 @@ class AiTalkCoreHandoff:
         )
 
 
+def build_input_gate_state_payload(
+    *,
+    input_enabled: bool,
+    reason: str,
+    source: str,
+    timestamp: float | None = None,
+) -> dict[str, bool | float | str | None]:
+    """Build the one backend-neutral input-gate state payload.
+
+    Gesture smoothing is only one producer of this payload.  TouchDesigner,
+    local web tools, buttons, and other trusted adapters use the same shape and
+    the same ai-talk-core decision owner.
+    """
+    if not isinstance(input_enabled, bool):
+        raise ValueError("input_enabled must be a boolean")
+    return {
+        "type": "input_gate_state",
+        "input_enabled": input_enabled,
+        "mic_enabled": input_enabled,
+        "reason": reason,
+        "source": source,
+        "timestamp": timestamp,
+    }
+
+
 def voice_state_to_input_gate_payload(
     voice_state: VoiceState,
     source: str = "sword_voice_agent",
 ) -> dict[str, bool | float | str | None]:
     reason = voice_state.reason or voice_state.phase.value
-    return {
-        "type": "input_gate_state",
-        "input_enabled": voice_state.mic_enabled,
-        "mic_enabled": voice_state.mic_enabled,
-        "reason": reason,
-        "source": source,
-        "timestamp": voice_state.timestamp,
-    }
+    return build_input_gate_state_payload(
+        input_enabled=voice_state.mic_enabled,
+        reason=reason,
+        source=source,
+        timestamp=voice_state.timestamp,
+    )
 
 
 class AiTalkCoreInputGateClient:
@@ -114,7 +142,27 @@ class AiTalkCoreInputGateClient:
         self.api_token = resolve_ai_talk_core_web_token(api_token)
 
     def send_voice_state(self, voice_state: VoiceState) -> dict[str, Any]:
-        payload = voice_state_to_input_gate_payload(voice_state, source=self.source)
+        return self.set_input_enabled(
+            voice_state.mic_enabled,
+            reason=voice_state.reason or voice_state.phase.value,
+            timestamp=voice_state.timestamp,
+        )
+
+    def set_input_enabled(
+        self,
+        input_enabled: bool,
+        *,
+        reason: str = "external",
+        source: str | None = None,
+        timestamp: float | None = None,
+    ) -> dict[str, Any]:
+        """Send one generic local trigger state to the canonical input gate."""
+        payload = build_input_gate_state_payload(
+            input_enabled=input_enabled,
+            reason=reason,
+            source=source or self.source,
+            timestamp=timestamp,
+        )
         return self._post_json(payload)
 
     def _post_json(self, payload: Mapping[str, Any]) -> dict[str, Any]:

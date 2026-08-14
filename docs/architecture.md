@@ -5,6 +5,20 @@
 `sword-voice-agent` 内の v0 service 実装が混在しています。この文書では、今後の整理で使う
 論理構成を定義します。
 
+## 誰の、どんな願いのためか
+
+第一の利用者は、このPCの前で話し、身振りをし、画面を見て、必要なら家電や
+外部表現を使いたい人です。Codex、保守者、Launcher、各種テストのためのシステムでは
+ありません。利用者の自然な願いを受け取り、意味が曖昧なら確認し、Thought Coreが
+考え、同じ応答を声・アバター・映像に表し、許可された能力だけを実行し、その結果を
+再観測して訂正できる一つのローカルAI身体を目指します。
+
+入口の機器やUIは交換可能です。刀印は現在ある一つの反射アダプターであり、入力権限の
+唯一の正本ではありません。ジェスチャー、TouchDesigner、ローカルWebツール、物理ボタン
+などは、それぞれの信号を同じ `input_enabled` 状態へ変換します。実際にマイク入力を
+受け付けるかは `ai-talk-core` の Input Gate、入力の意味は Thought Core、起動・停止は
+Launcher/Supervisorが所有します。この分離により、入口を増やしても会話経路を増殖させません。
+
 `sword-voice-agent` repository は、当面の workspace-level docs と contracts の
 正規管理場所です。workspace root 直下に一時的な `docs/` や `contracts/` が存在する
 場合でも、root 自体が Git 管理されるまでは、この repository 側を canonical とします。

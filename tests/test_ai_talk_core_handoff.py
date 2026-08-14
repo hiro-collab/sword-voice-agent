@@ -34,9 +34,18 @@ class AiTalkCoreHandoffTest(TestCase):
         self.assertEqual(request.user, "demo-user")
         self.assertEqual(request.conversation_id, "conv-1")
         self.assertEqual(request.context["source"], "ai_talk_core")
-        self.assertEqual(request.context["trigger"], "sword_sign")
+        self.assertEqual(request.context["trigger"], "ai_talk_core_handoff")
         self.assertEqual(request.context["project"], "sword-voice-agent")
         self.assertNotIn("transcript", request.context)
+
+    def test_explicit_correlated_trigger_can_override_generic_handoff(self) -> None:
+        handoff = load_handoff_json(FIXTURES / "handoff.json", source="web")
+
+        request = handoff.to_agent_request(
+            context={"trigger": "touchdesigner_button"},
+        )
+
+        self.assertEqual(request.context["trigger"], "touchdesigner_button")
 
     def test_can_opt_in_to_transcript_context(self) -> None:
         handoff = load_handoff_json(FIXTURES / "handoff.json", source="web")

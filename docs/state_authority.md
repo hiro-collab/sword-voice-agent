@@ -23,8 +23,10 @@
 | Camera Hub topic freshness | Camera Hub publisher | Environment State Server snapshot | 古い topic は stale として扱う |
 | payload accept/reject | sword-voice-agent receiver | response, log | auth、JSON、protocol validation |
 | `GateDecision.raw_active` | `GestureInputGate` | receiver response, status projection | 入力信号と閾値から判定 |
-| `GateDecision.mic_enabled` | `GestureInputGate` | ai-talk-core input gate payload | activation/release delay を含む意図 |
+| `GateDecision.mic_enabled` | `GestureInputGate` | ai-talk-core input gate payload | 刀印adapterのactivation/release delayを含む入力許可要求。他triggerのauthorityではない |
 | `GateDecision.reason` | `GestureInputGate` | UI, logs, status projection | gate の説明 |
+| external trigger `input_enabled` request | trigger-owning local adapter | `POST /api/input-gate` | TouchDesigner、Web tool、button、gestureを同じbackend-neutral stateへ変換。user intentやTurnInput authorityではない |
+| current input admission state | `ai-talk-core` Input Gate | `/api/input-gate`, body-state projection | すべてのtrigger adapterが同じ選択状態を更新し、実際の候補音声受理をfail closedで判断する。現行はlast-accepted-writeであり、複数sourceのOR/priority/lease調停は行わない |
 | `VoiceControlCommand.action` | `VoiceTurnController` | receiver response, status projection | `start_recording`, `stop_recording`, `none` |
 | `VoiceControlCommand.turn_id` | `VoiceTurnController` | receiver response, `latest_voice_turn.json` | Thought Core handoff と緩く相関する |
 | actual browser recording state | `ai-talk-core` | ai-talk-core Web UI / API | sword-voice-agent は開始/停止意図を送るだけ |

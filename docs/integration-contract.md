@@ -25,6 +25,69 @@ start/status/stop scripts at another compatible state directory with
 `-StackStateDir <path>` or `HOME_CONTROL_STACK_STATE_DIR`. Relative paths are
 resolved from the workspace root. The default path remains unchanged.
 
+## External Microphone Trigger API
+
+The canonical microphone admission endpoint is owned by `ai-talk-core`:
+
+```text
+POST http://127.0.0.1:8000/api/input-gate
+X-AI-Core-Token: <local token>
+Content-Type: application/json
+```
+
+Open the gate when a trusted local trigger becomes active:
+
+```json
+{
+  "input_enabled": true,
+  "reason": "external",
+  "source": "external"
+}
+```
+
+Close it when that trigger is released:
+
+```json
+{
+  "input_enabled": false,
+  "reason": "external",
+  "source": "external"
+}
+```
+
+`source` and `reason` are bounded diagnostic classes, not user intent. The
+existing gesture adapter uses the allowlisted `source=sword_voice_agent` class.
+An external TouchDesigner or local web-tool adapter should use the generic
+`external` class unless an additional class is separately reviewed. Unknown
+labels are normalized to `external` by `ai-talk-core`; arbitrary adapter names
+do not become persisted provenance or authority. All adapters update the same
+Input Gate. Do not create a second recorder, STT path, or Thought Core route for
+each trigger type.
+
+The current endpoint is one selected-state register, not a multi-source OR gate,
+priority arbiter, or lease manager. Each accepted request replaces the current
+state, so the last accepted write wins. Deployments with simultaneous trigger
+sources must place one trusted local coordinator in front of this endpoint;
+adapters must not assume that releasing one source preserves another source's
+active request.
+
+The endpoint changes admission state. Actual browser recording remains owned by
+the open `ai-talk-core` Web UI with input-gate auto-recording enabled, current
+microphone permission, and a selected/default microphone. Opening the gate is
+therefore not itself proof that audio was captured, transcribed, accepted as a
+user turn, or heard by the user.
+
+The API remains loopback-first and token-protected. A TouchDesigner or backend
+adapter may attach `X-AI-Core-Token` from its local process environment. Do not
+embed the token in publicly served browser JavaScript and do not enable wildcard
+CORS; a separate-origin web tool should call through its trusted local backend.
+
+Within Control code, `AiTalkCoreInputGateClient.set_input_enabled(...)` is the
+shared adapter entry. The gesture path continues to call `send_voice_state(...)`,
+which delegates to the same backend-neutral payload builder. The token comes
+from the existing `AI_TALK_CORE_WEB_TOKEN` launch configuration; never copy an
+actual token into source, documentation, or browser-delivered code.
+
 ## Launcher API
 
 The local Launcher exposes operator configuration and readiness/status
