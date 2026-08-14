@@ -14,7 +14,7 @@ const { TextDecoder } = require('node:util')
 
 const { assertAuthority, canonicalJsonSha256, deepFreeze } = require('./launcher-supervisor-contract')
 const { buildProjectionVisualUrls } = require('./launcher-surface-catalog')
-const { selectedServiceIdsForOptions } = require('./launcher-service-selection')
+const { resolveLauncherServiceSelection } = require('./launcher-service-selection')
 
 const PLAN_DIRECTORY = 'launcher-private-plan.v1'
 const PLAN_FILE = 'launcher-private-service-plan.v1.json'
@@ -487,10 +487,10 @@ const compilePrivateServicePlan = ({
     display: path.join(workspace, 'organs', 'display', 'touchdesigner-ai-controller'),
     speech: path.join(workspace, 'organs', 'speech-input', 'ai-talk-core')
   }
-  const selectedServiceIds = new Set(selectedServiceIdsForOptions({
+  const selectedServiceIds = new Set(resolveLauncherServiceSelection({
     graphServices: authority.graph.services,
     options
-  }))
+  }).selectedServiceIds)
   const homeEnabled = selectedServiceIds.has('home_assistant_bridge')
   const environmentEnabled = selectedServiceIds.has('environment_state_server')
   const cameraEnabled = selectedServiceIds.has('mediapipe_camera_hub_stack')

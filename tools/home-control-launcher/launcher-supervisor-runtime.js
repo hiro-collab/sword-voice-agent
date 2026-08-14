@@ -29,6 +29,7 @@ const {
 const { LauncherProbeExecutorError } = require('./launcher-probe-executor')
 const { LauncherProbeContractError } = require('./launcher-probe-result-binding')
 const { LauncherProbeRuntimeContextError } = require('./launcher-probe-runtime-context')
+const { resolveLauncherServiceSelection } = require('./launcher-service-selection')
 
 const inspectLocalProcess = (pid) => {
   try {
@@ -889,11 +890,15 @@ class LauncherSupervisorRuntime {
       }
       this.apply('start_requested')
 
+      const selected = new Set(resolveLauncherServiceSelection({
+        graphServices: this.authority.graph.services,
+        options
+      }).selectedServiceIds)
       const included = new Set(compiled.included_service_ids)
       let serviceLoopErrorClass = null
       for (const serviceId of this.authority.bindingDocument.binding.service_order) {
         const spec = this.authority.graph.services.find((service) => service.service_id === serviceId)
-        if (spec.ownership === 'external' && options.SkipVoicevoxCheck) {
+        if (spec.ownership === 'external' && !selected.has(serviceId)) {
           const dispatchId = this.dispatchIdFactory()
           this.apply('probe_requested', serviceId, { dispatch_id: dispatchId, action: 'probe' })
           this.apply('optional_absent', serviceId, { dispatch_id: dispatchId })

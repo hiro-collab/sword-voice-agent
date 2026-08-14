@@ -45,7 +45,8 @@ const {
 } = require('./launcher-private-service-plan')
 const {
   membershipOptionDefaults,
-  selectedServiceIdsForOptions,
+  projectLauncherServiceSelection,
+  resolveLauncherServiceSelection,
   validateProfileRecords
 } = require('./launcher-service-selection')
 
@@ -1290,11 +1291,16 @@ const previewCommand = (
     MediapipeCameraName:
       sanitizeVideoInputCaptureName(resolvedCameraName) || options.MediapipeCameraName
   }
+  const serviceSelection = projectLauncherServiceSelection({
+    graphServices: launcherRuntime.authority.graph.services,
+    options: executionOptions
+  })
   return {
     ok: true,
     profileId,
     opsProfile: lifecycleProfileIdFor(profileId),
     options: executionOptions,
+    serviceSelection: serviceSelection.publicProjection,
     demoSafeGate: effectiveDemoSafeSettings().summary,
     command_class: 'node_supervisor',
     execution_authority: 'node_supervisor',
@@ -1841,28 +1847,33 @@ const loopbackHost = (host) =>
   !host || host === '0.0.0.0' || host === 'localhost' ? '127.0.0.1' : host
 
 const managedStopPortTargets = (options) => {
-  const mediamtxEnabled = !options.SkipMediapipe && options.MediapipeMode === 'mediamtx'
+  const selected = new Set(projectLauncherServiceSelection({
+    graphServices: launcherRuntime.authority.graph.services,
+    options
+  }).selectedServiceIds)
+  const cameraSelected = selected.has('mediapipe_camera_hub_stack')
+  const mediamtxEnabled = cameraSelected && options.MediapipeMode === 'mediamtx'
   return [
     {
       key: 'home_assistant_bridge',
       label: 'Action bridge',
       host: loopbackHost(options.HomeAssistantBridgeHost),
       port: options.HomeAssistantBridgePort,
-      enabled: !options.SkipHomeAssistantBridge
+      enabled: selected.has('home_assistant_bridge')
     },
     {
       key: 'environment_state_server',
       label: 'Environment state',
       host: '127.0.0.1',
       port: options.EnvironmentStatePort,
-      enabled: !options.SkipEnvironmentState
+      enabled: selected.has('environment_state_server')
     },
     {
       key: 'mediapipe_camera_hub',
       label: 'Reflex Camera Hub',
       host: '127.0.0.1',
       port: options.MediapipePort,
-      enabled: !options.SkipMediapipe
+      enabled: cameraSelected
     },
     {
       key: 'mediapipe_browser_monitor',
@@ -1890,28 +1901,28 @@ const managedStopPortTargets = (options) => {
       label: 'Vision snapshot',
       host: '127.0.0.1',
       port: options.VisionSnapshotProcessorPort,
-      enabled: !options.SkipVisionSnapshotProcessor && !options.SkipMediapipe
+      enabled: selected.has('vision_snapshot_processor')
     },
     {
       key: 'aituber_kit',
       label: 'Expression runtime',
       host: loopbackHost(options.AituberHost),
       port: options.AituberPort,
-      enabled: !options.SkipAituber
+      enabled: selected.has('aituber_kit')
     },
     {
       key: 'touchdesigner_control_gui',
       label: 'Display runtime GUI',
       host: loopbackHost(options.TouchDesignerGuiHost),
       port: options.TouchDesignerGuiPort,
-      enabled: !options.SkipTouchDesignerGui
+      enabled: selected.has('touchdesigner_control_gui')
     },
     {
       key: 'thought_core_api',
       label: 'Thought Core API',
       host: loopbackHost(options.ThoughtCoreHost),
       port: options.ThoughtCorePort,
-      enabled: options.EnableThoughtCore
+      enabled: selected.has('thought_core_api')
     }
   ].filter((target) => target.enabled && Number.isInteger(Number(target.port)))
 }
@@ -2720,10 +2731,10 @@ const publicReadinessIdsForServiceIds = (serviceIds) => {
 }
 
 const expectedServicesForOptions = (options) => {
-  const serviceIds = selectedServiceIdsForOptions({
+  const serviceIds = resolveLauncherServiceSelection({
     graphServices: launcherRuntime.authority.graph.services,
     options
-  }).filter((serviceId) =>
+  }).selectedServiceIds.filter((serviceId) =>
     launcherRuntime.authority.graph.services.find((service) => service.service_id === serviceId)
       .public_readiness_id
   )
@@ -2797,6 +2808,10 @@ const getState = async ({ includeLocalCameraSelection = true } = {}) => {
   const savedProfileState = requireSupervisorProfile(savedProfileId)
   const selectedProfileId = savedProfileState ? DEFAULT_MODE_ID : savedProfileId
   const options = normalizeOptions(selectedProfileId, savedProfileState ? {} : config.options || {})
+  const serviceSelection = resolveLauncherServiceSelection({
+    graphServices: launcherRuntime.authority.graph.services,
+    options
+  })
   const status = await getStatus()
   const demoSafeSettings = effectiveDemoSafeSettings()
   return {
@@ -2831,6 +2846,7 @@ const getState = async ({ includeLocalCameraSelection = true } = {}) => {
         ? options
         : withoutLocalCameraSelection(options)
     },
+    serviceSelection: serviceSelection.publicProjection,
     launcherState: publicFixedStartDiagnostic(readLauncherState()),
     operation: operationState(),
     status,
@@ -2840,10 +2856,7 @@ const getState = async ({ includeLocalCameraSelection = true } = {}) => {
     demoReadinessStatus: demoReadinessStatus(demoSafeSettings, status),
     endpoints: buildLauncherSurfaceCatalog(
       options,
-      selectedServiceIdsForOptions({
-        graphServices: launcherRuntime.authority.graph.services,
-        options
-      })
+      serviceSelection.selectedServiceIds
     )
   }
 }

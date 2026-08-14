@@ -23,6 +23,8 @@ flowchart TD
     RT -->|"現在state + event<br/>→ 次state + failure class"| REDUCER["launcher-supervisor-reducer.js\n純粋な状態機械"]
     RT <-->|"operation record<br/>lock・lease・revision"| STORE["launcher-operation-store.js\noperation/lock/lease永続化"]
     RT -->|"profile + options<br/>config identity"| PLAN["launcher-private-service-plan.js\nsealed service plan"]
+    PLAN -->|"profile manifest + options"| SELECTION["launcher-service-selection.js\n起動対象の純粋な選択規則"]
+    SELECTION -->|"selected service IDs"| PLAN
     PLAN -->|"実行順序・argv・環境<br/>service/plan identity"| RT
     RT -->|"owned action request<br/>operation/service/dispatch ID"| WORKER["launcher-job-worker-client.js\n所有worker通信"]
     WORKER -->|"identity付きworker result<br/>cleanup / residue"| RT
@@ -30,6 +32,9 @@ flowchart TD
     PROBES -->|"semantic result・count・boolean<br/>identity binding"| RT
 
     HTTP -.->|"options → canonical URL・有効条件・表示分類"| SURFACES["launcher-surface-catalog.js\n画面/参照先一覧"]
+    HTTP -.->|"同じoptions<br/>→ privacy-safe選択projection"| SELECTION
+    SELECTION -.->|"selected service IDs"| SURFACES
+    SELECTION -.->|"expected public service IDs"| STATUS
     HTTP -.->|"fresh supervisor snapshot\n→ service/status DTO"| STATUS["launcher-public-status-projection.js\n読み取り専用の公開状態変換"]
     HTTP -.->|"互換status/route契約"| ORDINARY["ordinary-route-contract.js"]
     HTTP -.->|"loopback URL・port・有効flag<br/>privacy-safe公開状態"| FEATURES["Camera / Display / Home / VOICEVOX"]
@@ -40,6 +45,20 @@ flowchart TD
 秘密値、private planの完全record、raw PID/pathはpublic UIへ流さず、固定status、count、
 boolean、利用者向けloopback URLへ変換してから返します。
 
+### 責任名を混同しない
+
+| 名前 | 一言でいう責任 | 決めないこと |
+| --- | --- | --- |
+| **Launcher Service Selection** | profile manifestと明示optionから、今回の起動対象service IDを純粋に選ぶ | 起動順序、process操作、Ready、画面描画 |
+| **Launcher Private Service Plan** | 選ばれたserviceを、秘密値を含むsealed実行計画へ組み立てる | Start/Stopのphase、公開DTO |
+| **Launcher Supervisor** | contract、reducer、store、runtimeからなるlifecycle subsystem | 製品会話や映像効果の意味、UI表示 |
+| **Launcher Supervisor Runtime** | Supervisor内でplanを使い、Start/Stop/Recoveryを一つのoperationとして進める実行調整役 | schemaの再定義、製品機能の意味 |
+| **Launcher Public Status Projection** | Supervisor snapshotをprivacy-safeな表示用状態へ写す | probe実行、Ready判定、lifecycle操作 |
+
+`Supervisor`はcontract/reducer/store/runtimeをまとめたlifecycle subsystemです。その中で
+`Launcher Supervisor Runtime`が実行を調整します。Service SelectionとPublic Status Projectionは
+Supervisor外のpure projectionであり、別のSupervisor、Observer、常駐processとして増やしてはいけません。
+
 ### 根幹（spine）
 
 | 順 | ファイル | 人間向けの役割 | ここに置かないもの |
@@ -47,9 +66,10 @@ boolean、利用者向けloopback URLへ変換してから返します。
 | 1 | [`launcher-supervisor-contract.js`](./launcher-supervisor-contract.js) | 正しいID、hash、authority、worker messageの定義 | 起動処理、UI |
 | 2 | [`launcher-supervisor-reducer.js`](./launcher-supervisor-reducer.js) | operationのphaseと失敗理由を決める純粋状態機械 | filesystem、HTTP、process起動 |
 | 3 | [`launcher-operation-store.js`](./launcher-operation-store.js) | operation、lock、supervisor leaseをprivate領域へ安全に保存 | 公開DTO、製品機能の意味 |
-| 4 | [`launcher-private-service-plan.js`](./launcher-private-service-plan.js) | profileから実行対象、順序、引数、環境をsealed planへ確定 | 実行、UI公開 |
+| 選択規則 | [`launcher-service-selection.js`](./launcher-service-selection.js) | profile membershipとoptionを同じ宣言的規則で起動対象serviceへ写す | 実行順序、process操作、Ready判定 |
+| 4 | [`launcher-private-service-plan.js`](./launcher-private-service-plan.js) | 選択結果から順序、引数、環境をsealed planへ確定 | 実行、UI公開 |
 | 5 | [`launcher-job-worker-client.js`](./launcher-job-worker-client.js) | planを実行する所有workerと固定JSON lineで通信 | 任意shell、semantic判断 |
-| 6 | [`launcher-supervisor-runtime.js`](./launcher-supervisor-runtime.js) | 1〜5を束ね、Start/Stop/Recoveryを一つのoperationとして進める | HTTP route、画面描画 |
+| 6 | [`launcher-supervisor-runtime.js`](./launcher-supervisor-runtime.js) | 1〜5と選択規則を束ね、Start/Stop/Recoveryを一つのoperationとして進める | HTTP route、画面描画 |
 
 [`server.js`](./server.js)はこの根幹の**合成ルート**です。HTTP受付、設定保存、freshなSupervisor
 snapshotの取得、公開responseの組立て、static UI配信を担当します。service状態とstartup timingの変換は

@@ -13,7 +13,7 @@ const {
 } = require('../tools/home-control-launcher/launcher-surface-catalog')
 const {
   membershipOptionDefaults,
-  selectedServiceIdsForOptions
+  resolveLauncherServiceSelection
 } = require('../tools/home-control-launcher/launcher-service-selection')
 
 const graph = JSON.parse(fs.readFileSync(
@@ -30,10 +30,10 @@ const selectedForProfile = (profileId, overrides = {}) => {
     graphServices: graph.services,
     profileManifest: profile
   })
-  return selectedServiceIdsForOptions({
+  return resolveLauncherServiceSelection({
     graphServices: graph.services,
     options: { ...options, ...membership, ...overrides }
-  })
+  }).selectedServiceIds
 }
 
 const options = Object.freeze({

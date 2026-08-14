@@ -25,6 +25,12 @@ const state = {
   selectedProfileId: 'thought-core-v0',
   configIdentity: null,
   options: {},
+  serviceSelection: {
+    schema_version: 'launcher_service_selection.v0',
+    rows: [],
+    required_missing_count: 0,
+    raw_private_publication_flags: false
+  },
   busy: false,
   operation: 'idle',
   operationDetail: 'Waiting for an action.',
@@ -666,30 +672,6 @@ const serviceRolesJa = {
   voicevox: '音声'
 }
 
-const launchScopeItems = [
-  { field: 'EnableThoughtCore', label: 'Thought Core API', enabledWhen: 'truthy' },
-  { field: 'EnableThoughtCoreWatch', label: 'Thought Core watcher', enabledWhen: 'truthy' },
-  { field: 'SkipAituber', label: 'Expression UI', enabledWhen: 'falsy' },
-  { field: 'SkipHomeAssistantBridge', label: 'Action bridge', enabledWhen: 'falsy' },
-  { field: 'SkipEnvironmentState', label: 'Environment state', enabledWhen: 'falsy' },
-  { field: 'SkipMediapipe', label: 'Reflex sensor', enabledWhen: 'falsy' },
-  { field: 'SkipVisionSnapshotProcessor', label: 'Vision snapshot', enabledWhen: 'falsy' },
-  { field: 'SkipTouchDesignerGui', label: 'Display runtime GUI', enabledWhen: 'falsy' },
-  { field: 'SkipVoicevoxCheck', label: 'VOICEVOX readiness check', enabledWhen: 'falsy' }
-]
-
-const launchScopeLabelsJa = {
-  EnableThoughtCore: '思考中枢API',
-  EnableThoughtCoreWatch: '思考中枢の監視',
-  SkipAituber: '表情表示',
-  SkipHomeAssistantBridge: '操作ブリッジ',
-  SkipEnvironmentState: '環境状態',
-  SkipMediapipe: 'カメラ反射入力',
-  SkipVisionSnapshotProcessor: '視覚状態の取得',
-  SkipTouchDesignerGui: '投影表示GUI',
-  SkipVoicevoxCheck: 'VOICEVOX準備確認'
-}
-
 const fieldLabels = {
   StopExisting: 'Restart managed services first',
   EnableThoughtCore: 'Start Thought Core API',
@@ -736,38 +718,6 @@ const switchDescriptionsJa = {
 
 const positiveDisplayFields = new Set(['ThoughtCoreNoProvider'])
 
-const enableFieldsByService = {
-  thought_core_api: ['EnableThoughtCore'],
-  thought_core_watcher: ['EnableThoughtCoreWatch']
-}
-
-const skipFieldsByService = {
-  home_assistant_bridge: ['SkipHomeAssistantBridge'],
-  environment_state_server: ['SkipEnvironmentState'],
-  mediapipe: ['SkipMediapipe'],
-  vision_snapshot_processor: ['SkipVisionSnapshotProcessor', 'SkipMediapipe'],
-  aituber_kit: ['SkipAituber'],
-  touchdesigner_control_gui: ['SkipTouchDesignerGui'],
-  voicevox: ['SkipVoicevoxCheck', 'SkipAituber']
-}
-
-const startupTargetFieldsByService = {
-  thought_core_api: ['EnableThoughtCore'],
-  thought_core_watcher: ['EnableThoughtCoreWatch'],
-  home_assistant_bridge: ['SkipHomeAssistantBridge'],
-  environment_state_server: ['SkipEnvironmentState'],
-  mediapipe: ['SkipMediapipe'],
-  vision_snapshot_processor: ['SkipVisionSnapshotProcessor'],
-  aituber_kit: ['SkipAituber'],
-  touchdesigner_control_gui: ['SkipTouchDesignerGui'],
-  voicevox: ['SkipVoicevoxCheck']
-}
-
-const startupTargetDependenciesByService = {
-  vision_snapshot_processor: [{ field: 'SkipMediapipe', label: 'Reflex sensor', labelJa: 'カメラ反射入力' }],
-  voicevox: [{ field: 'SkipAituber', label: 'Expression UI', labelJa: '表情表示' }]
-}
-
 const operationLabels = {
   idle: 'Launcher standby',
   starting: 'Starting stack',
@@ -800,9 +750,6 @@ const localizedFieldLabel = (value) =>
 
 const localizedSwitchDescription = (field) =>
   state.language === 'ja' && switchDescriptionsJa[field] ? switchDescriptionsJa[field] : switchDescriptions[field]
-
-const localizedLaunchScopeLabel = (item) =>
-  state.language === 'ja' && launchScopeLabelsJa[item.field] ? launchScopeLabelsJa[item.field] : item.label
 
 const localizedServiceLabel = (name) =>
   state.language === 'ja' && serviceLabelsJa[name] ? serviceLabelsJa[name] : serviceLabels[name]
@@ -1028,6 +975,76 @@ const applyPreviewOptions = (previewOptions) => {
   }
 }
 
+const applyServiceSelection = (projection) => {
+  const projectionValid = projection?.schema_version === 'launcher_service_selection.v0' &&
+    projection?.raw_private_publication_flags === false &&
+    Number.isSafeInteger(projection?.required_missing_count) &&
+    projection.required_missing_count >= 0 &&
+    Array.isArray(projection?.rows)
+  const rows = projectionValid ? projection.rows : []
+  const safeRows = []
+  const serviceIds = new Set()
+  const publicIds = new Set()
+  let rowsValid = projectionValid
+  for (const row of rows) {
+    const directFields = Array.isArray(row?.direct_fields) ? row.direct_fields : []
+    const dependencyFields = Array.isArray(row?.dependency_fields) ? row.dependency_fields : []
+    const valid = /^[a-z0-9_]+$/u.test(String(row?.service_id || '')) &&
+      /^[a-z0-9_]+$/u.test(String(row?.public_readiness_id || '')) &&
+      directFields.length === 1 && directFields.every((condition) =>
+        coreSwitchFields.includes(condition?.field) && typeof condition?.selected_value === 'boolean'
+      ) && dependencyFields.every((condition) =>
+        coreSwitchFields.includes(condition?.field) &&
+        typeof condition?.selected_value === 'boolean' &&
+        /^[a-z0-9_]+$/u.test(String(condition?.public_readiness_id || ''))
+      ) &&
+      !serviceIds.has(row.service_id) &&
+      !publicIds.has(row.public_readiness_id)
+    if (!valid) {
+      rowsValid = false
+      break
+    }
+    serviceIds.add(row.service_id)
+    publicIds.add(row.public_readiness_id)
+    safeRows.push({
+      service_id: String(row.service_id),
+      public_readiness_id: String(row.public_readiness_id),
+      direct_fields: directFields.map((condition) => ({
+        field: condition.field,
+        selected_value: condition.selected_value
+      })),
+      dependency_fields: dependencyFields.map((condition) => ({
+        field: condition.field,
+        selected_value: condition.selected_value,
+        public_readiness_id: String(condition.public_readiness_id)
+      }))
+    })
+  }
+  state.serviceSelection = {
+    schema_version: 'launcher_service_selection.v0',
+    rows: rowsValid ? safeRows : [],
+    required_missing_count: rowsValid ? projection.required_missing_count : 0,
+    raw_private_publication_flags: false
+  }
+}
+
+const selectionRows = () => state.serviceSelection?.rows || []
+
+const selectionConditionMatches = (condition) =>
+  state.options[condition.field] === condition.selected_value
+
+const selectionRowIsSelected = (row) =>
+  row.direct_fields.every(selectionConditionMatches) &&
+  row.dependency_fields.every(selectionConditionMatches)
+
+const selectionRowForPublicId = (publicReadinessId) =>
+  selectionRows().find((row) => row.public_readiness_id === publicReadinessId) || null
+
+const launchScopeRows = () => {
+  const rowByDirectField = new Map(selectionRows().map((row) => [row.direct_fields[0].field, row]))
+  return coreSwitchFields.map((field) => rowByDirectField.get(field)).filter(Boolean)
+}
+
 const videoInputDevices = () =>
   (state.videoInputDevices || [])
     .map((device) => ({
@@ -1200,6 +1217,7 @@ const applyProfileDefaults = async () => {
       options: profileOptions()
     })
   })
+  applyServiceSelection(preview.serviceSelection)
   applyPreviewOptions(preview.options)
   setCommandPreview(preview.commandLine)
   renderControls()
@@ -1238,27 +1256,25 @@ const isLaunchServiceEnabled = (field) => {
   return Boolean(state.options[field])
 }
 
-const launchScopeItemIsEnabled = (item) =>
-  item.enabledWhen === 'falsy' ? !state.options[item.field] : Boolean(state.options[item.field])
-
 const summarizeLaunchScope = () => {
   const summary = {
     enabled: [],
     skipped: []
   }
-  for (const item of launchScopeItems) {
-    if (launchScopeItemIsEnabled(item)) {
-      summary.enabled.push(localizedLaunchScopeLabel(item))
+  for (const row of launchScopeRows()) {
+    if (selectionRowIsSelected(row)) {
+      summary.enabled.push(localizedServiceLabel(row.public_readiness_id))
     } else {
-      summary.skipped.push(localizedLaunchScopeLabel(item))
+      summary.skipped.push(localizedServiceLabel(row.public_readiness_id))
     }
   }
   return summary
 }
 
 const summarizeLaunchServices = () => {
-  const enabled = launchScopeItems.filter((item) => launchScopeItemIsEnabled(item)).length
-  const total = launchScopeItems.length
+  const rows = launchScopeRows()
+  const enabled = rows.filter(selectionRowIsSelected).length
+  const total = rows.length
   return {
     card: `${enabled}/${total} ${t('summary.enabled')}`,
     drawer: `${enabled}/${total} ${t('summary.servicesNoun')}`
@@ -1890,20 +1906,17 @@ const endpointTargetLabel = (endpoint, kind, canOpen) => {
 }
 
 const serviceIsIncluded = (name) => {
-  const enableFields = enableFieldsByService[name] || []
-  if (enableFields.length > 0) {
-    return enableFields.some((field) => state.options[field])
-  }
-  const skipFields = skipFieldsByService[name] || []
-  return !skipFields.some((field) => state.options[field])
+  const row = selectionRowForPublicId(name)
+  return row ? selectionRowIsSelected(row) : false
 }
 
-const serviceStartupTargetFields = (name) => startupTargetFieldsByService[name] || []
+const serviceStartupTargetFields = (name) =>
+  selectionRowForPublicId(name)?.direct_fields || []
 
 const serviceStartupTargetBlockers = (name) =>
-  (startupTargetDependenciesByService[name] || [])
-    .filter((dependency) => !displaySwitchValue(dependency.field))
-    .map((dependency) => (state.language === 'ja' && dependency.labelJa ? dependency.labelJa : dependency.label))
+  (selectionRowForPublicId(name)?.dependency_fields || [])
+    .filter((dependency) => !selectionConditionMatches(dependency))
+    .map((dependency) => localizedServiceLabel(dependency.public_readiness_id))
 
 const serviceStateGroup = (serviceState) => {
   const value = String(serviceState || 'DOWN').toUpperCase()
@@ -1922,9 +1935,9 @@ const serviceIsBooting = (service, included) =>
   serviceStateGroup(service?.state) !== 'ok'
 
 const setServiceStartupTarget = (name, checked) => {
-  const fields = serviceStartupTargetFields(name)
-  for (const field of fields) {
-    setSwitchValue(field, checked)
+  const conditions = serviceStartupTargetFields(name)
+  for (const condition of conditions) {
+    setOption(condition.field, checked ? condition.selected_value : !condition.selected_value)
   }
   renderControls()
   renderLaunchSummary()
@@ -2281,6 +2294,7 @@ const refreshPreview = async () => {
         options: currentOptions()
       })
     })
+    applyServiceSelection(preview.serviceSelection)
     applyPreviewOptions(preview.options)
     setCommandPreview(preview.commandLine)
   } catch (error) {
@@ -2294,6 +2308,7 @@ const refreshState = async () => {
   state.selectedProfileId = payload.config?.selectedProfileId || 'thought-core-v0'
   state.configIdentity = payload.config?.configIdentity || null
   state.options = payload.config?.options || {}
+  applyServiceSelection(payload.serviceSelection)
   $('workspace-root').textContent = payload.portMode
     ? `${payload.workspaceRoot} · ${payload.portMode}`
     : payload.workspaceRoot

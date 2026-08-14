@@ -623,7 +623,7 @@ const validateLegacyDrift = (repositoryRoot, graph) => {
     fail('drift_launcher_status_projection')
   }
   if (!/require\('\.\/launcher-service-selection'\)/u.test(server) ||
-      !/selectedServiceIdsForOptions\(\{/u.test(selection) ||
+      !/resolveLauncherServiceSelection\(\{/u.test(selection) ||
       !/validateProfileRecords\(\{/u.test(server) ||
       /legacy_profile_member/u.test(server) ||
       /requirement\s*===\s*'required'/u.test(server) ||
@@ -632,17 +632,19 @@ const validateLegacyDrift = (repositoryRoot, graph) => {
       !/new\s+TextDecoder\('utf-8',\s*\{\s*fatal:\s*true\s*\}\)/u.test(server) ||
       !/readProfiles\s*=\s*\(\)\s*=>\s*readBoundedJsonFile\(PROFILE_FILE,\s*\[\]\)/u.test(server) ||
       !/readBoundedJsonFile\(path\.join\(PROFILE_MANIFEST_DIR/u.test(server) ||
+      !/const\s+SERVICE_SELECTION_RULES\s*=\s*Object\.freeze\(\[/u.test(serviceSelection) ||
       !/membershipOptionDefaults/u.test(serviceSelection) ||
-      !/selectedServiceIdsForOptions/u.test(serviceSelection) ||
+      !/projectLauncherServiceSelection/u.test(serviceSelection) ||
+      !/resolveLauncherServiceSelection/u.test(serviceSelection) ||
+      !/public_readiness_id/u.test(serviceSelection) ||
+      !/direct_fields/u.test(serviceSelection) ||
+      !/dependency_fields/u.test(serviceSelection) ||
+      !/raw_private_publication_flags:\s*false/u.test(serviceSelection) ||
       !/validateProfileRecords/u.test(serviceSelection) ||
       !/launcher_required_service_missing/u.test(serviceSelection)) fail('drift_launcher_service_selection')
-  const launcherServiceIds = [...serviceSelection.matchAll(/case\s+'([^']+)'/gu)].map((match) => match[1])
-  if (/serviceId\s*===\s*'voicevox'/u.test(serviceSelection)) launcherServiceIds.push('voicevox')
-  const publicLauncherServiceIds = launcherServiceIds
-    .filter((serviceId) => graph.services.find((service) => service.service_id === serviceId)?.public_readiness_id !== null)
-    .sort()
-  const expectedLauncherServiceIds = graph.services.filter((service) => service.public_readiness_id !== null).map((service) => service.service_id).sort()
-  if (JSON.stringify(publicLauncherServiceIds) !== JSON.stringify(expectedLauncherServiceIds)) fail('drift_launcher_readiness_list')
+  const launcherServiceIds = [...serviceSelection.matchAll(/service_id:\s*'([^']+)'/gu)].map((match) => match[1]).sort()
+  const expectedLauncherServiceIds = graph.services.map((service) => service.service_id).sort()
+  if (JSON.stringify(launcherServiceIds) !== JSON.stringify(expectedLauncherServiceIds)) fail('drift_launcher_readiness_list')
   const stackIds = [...stack.matchAll(/\$specs\s*\+=\s*New-ServiceSpec[\s\S]{0,400}?-Name\s+"([^"]+)"/gu)].map((match) => match[1])
   const expectedStack = [...new Set(graph.services.flatMap((service) => service.start.legacy_spec_ids))].sort()
   if (JSON.stringify([...new Set(stackIds)].sort()) !== JSON.stringify(expectedStack)) fail('drift_stack_service_list')

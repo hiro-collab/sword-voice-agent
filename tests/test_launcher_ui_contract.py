@@ -2252,7 +2252,6 @@ assert.deepStrictEqual(previewSnapshots[2], {
 
         ja_table = extract_between(app, "  ja: {", "  }\n}\n\nconst t =")
         service_labels_ja = extract_between(app, "const serviceLabelsJa = {", "}\nconst hiddenServiceKeys")
-        launch_scope_labels_ja = extract_between(app, "const launchScopeLabelsJa = {", "}\n\nconst fieldLabels")
         field_labels_ja = extract_between(app, "const fieldLabelsJa = {", "}\n\nconst switchDescriptions")
         switch_descriptions_ja = extract_between(app, "const switchDescriptionsJa = {", "}\n\nconst positiveDisplayFields")
         endpoint_labels_ja = extract_between(app, "  const labelsJa = {", "  }\n  if (state.language === 'ja')")
@@ -2263,8 +2262,8 @@ assert.deepStrictEqual(previewSnapshots[2], {
         self.assertIn("thought_core_api: '思考中枢API'", service_labels_ja)
         self.assertIn("thought_core_watcher: '思考中枢の監視'", service_labels_ja)
         self.assertIn("vision_snapshot_processor: '視覚状態の取得'", service_labels_ja)
-        self.assertIn("EnableThoughtCore: '思考中枢API'", launch_scope_labels_ja)
-        self.assertIn("SkipVisionSnapshotProcessor: '視覚状態の取得'", launch_scope_labels_ja)
+        self.assertIn("const launchScopeRows", app)
+        self.assertIn("localizedServiceLabel(row.public_readiness_id)", app)
         self.assertIn("EnableThoughtCore: '思考中枢APIを起動'", field_labels_ja)
         self.assertIn("SkipVisionSnapshotProcessor: '視覚状態の取得を起動'", field_labels_ja)
         self.assertIn("外部LLMを使わない簡易応答のみ", switch_descriptions_ja)
@@ -2274,7 +2273,6 @@ assert.deepStrictEqual(previewSnapshots[2], {
         for japanese_block in [
             ja_table,
             service_labels_ja,
-            launch_scope_labels_ja,
             field_labels_ja,
             switch_descriptions_ja,
             endpoint_labels_ja,
@@ -2375,10 +2373,17 @@ assert.deepStrictEqual(previewSnapshots[2], {
         css = read_public("styles.css")
 
         self.assertIn("const serviceStartupTargetFields", app)
-        self.assertIn("const startupTargetFieldsByService", app)
         self.assertIn("const serviceStartupTargetBlockers", app)
-        self.assertIn("vision_snapshot_processor: ['SkipVisionSnapshotProcessor']", app)
-        self.assertIn("voicevox: ['SkipVoicevoxCheck']", app)
+        self.assertIn("selectionRowForPublicId", app)
+        self.assertIn("?.direct_fields || []", app)
+        self.assertIn("?.dependency_fields || []", app)
+        self.assertNotIn("startupTargetFieldsByService", app)
+        self.assertNotIn("startupTargetDependenciesByService", app)
+        self.assertIn("const projectionValid", app)
+        self.assertIn("rows: rowsValid ? safeRows : []", app)
+        self.assertIn("return row ? selectionRowIsSelected(row) : false", app)
+        self.assertIn("!serviceIds.has(row.service_id)", app)
+        self.assertIn("!publicIds.has(row.public_readiness_id)", app)
         self.assertIn("t('service.requires', { targets: targetBlockers.join(', ') })", app)
         self.assertIn("const setServiceStartupTarget", app)
         self.assertIn('data-service-startup-target="${escapeHtml(name)}"', app)
@@ -2653,12 +2658,17 @@ assert.deepStrictEqual(previewSnapshots[2], {
         self.assertIn("const ORDINARY_ROUTE_MODE_ID = 'full-system-v0'", server)
         self.assertIn("normalizeOptions(ORDINARY_ROUTE_MODE_ID, {})", server)
         self.assertIn("lifecycleProfileIdFor", server)
-        self.assertIn("selectedServiceIdsForOptions", server)
-        self.assertIn("selectedServiceIdsForOptions", private_plan)
+        self.assertIn("resolveLauncherServiceSelection", server)
+        self.assertIn("projectLauncherServiceSelection", server)
+        self.assertIn("resolveLauncherServiceSelection", private_plan)
         self.assertIn("selectedServiceIds", surface_catalog)
         self.assertIn("membershipOptionDefaults", selection)
-        self.assertIn("selectedServiceIdsForOptions", selection)
+        self.assertIn("SERVICE_SELECTION_RULES", selection)
+        self.assertIn("projectLauncherServiceSelection", selection)
+        self.assertIn("resolveLauncherServiceSelection", selection)
         self.assertIn("validateProfileRecords", selection)
+        self.assertIn("serviceSelection", server)
+        self.assertIn("serviceSelection", read_public("app.js"))
 
         demo_fast = profiles["demo-fast"]["options"]
         self.assertEqual(profiles["demo-fast"]["group"], "Compatibility")
@@ -2741,7 +2751,7 @@ const resolve = (profileId, overrides = {}) => {
   const manifest = loadProfile(profileId)
   const before = JSON.stringify(manifest)
   const defaults = selection.membershipOptionDefaults({ graphServices: graph.services, profileManifest: manifest })
-  const selected = selection.selectedServiceIdsForOptions({
+  const selected = selection.resolveLauncherServiceSelection({
     graphServices: graph.services,
     options: { ...defaults, SkipVoicevoxCheck: false, ...overrides }
   })
@@ -2751,9 +2761,9 @@ const resolve = (profileId, overrides = {}) => {
 const conversation = resolve('thought-core-v0')
 const visual = resolve('visual-effects-v0')
 const full = resolve('full-system-v0')
-assert.deepEqual(conversation, ['openai_provider_broker', 'thought_core_api', 'aituber_kit', 'voicevox'])
-assert.deepEqual(visual, conversation)
-assert.deepEqual(full, [
+assert.deepEqual(conversation.selectedServiceIds, ['openai_provider_broker', 'thought_core_api', 'aituber_kit', 'voicevox'])
+assert.deepEqual(visual.selectedServiceIds, conversation.selectedServiceIds)
+assert.deepEqual(full.selectedServiceIds, [
   'home_assistant_bridge',
   'environment_state_server',
   'openai_provider_broker',
@@ -2768,7 +2778,7 @@ assert.deepEqual(full, [
 assert.deepEqual(resolve('full-system-v0', {
   SkipMediapipe: true,
   SkipVisionSnapshotProcessor: true
-}), [
+}).selectedServiceIds, [
   'home_assistant_bridge',
   'environment_state_server',
   'openai_provider_broker',
@@ -2782,6 +2792,22 @@ assert.throws(
   () => resolve('thought-core-v0', { SkipAituber: true }),
   /launcher_required_service_missing/
 )
+const publicRows = full.publicProjection.rows
+assert.equal(full.publicProjection.schema_version, 'launcher_service_selection.v0')
+assert.equal(full.publicProjection.raw_private_publication_flags, false)
+assert.equal(publicRows.length, 9)
+assert.equal(publicRows.some((row) => row.service_id === 'openai_provider_broker'), false)
+assert.equal(publicRows.find((row) => row.service_id === 'mediapipe_camera_hub_stack').public_readiness_id, 'mediapipe')
+assert.deepEqual(publicRows.find((row) => row.service_id === 'vision_snapshot_processor'), {
+  service_id: 'vision_snapshot_processor',
+  public_readiness_id: 'vision_snapshot_processor',
+  selected: true,
+  direct_fields: [{ field: 'SkipVisionSnapshotProcessor', selected_value: false }],
+  dependency_fields: [{ field: 'SkipMediapipe', selected_value: false, public_readiness_id: 'mediapipe' }]
+})
+assert.deepEqual(publicRows.find((row) => row.service_id === 'voicevox').dependency_fields, [
+  { field: 'SkipAituber', selected_value: false, public_readiness_id: 'aituber_kit' }
+])
 assert.throws(
   () => selection.membershipOptionDefaults({
     graphServices: graph.services,
@@ -2797,13 +2823,49 @@ assert.throws(
   /launcher_profile_membership_invalid/
 )
 assert.throws(
-  () => selection.selectedServiceIdsForOptions({
+  () => selection.resolveLauncherServiceSelection({
     graphServices: [graph.services[2], graph.services[2]],
     options: { EnableThoughtCore: true }
   }),
   /launcher_service_selection_invalid/
 )
-console.log(JSON.stringify({ conversation, visual, full }))
+const ownershipDrift = graph.services.map((service) =>
+  service.service_id === 'voicevox' ? { ...service, ownership: 'owned' } : service
+)
+assert.throws(
+  () => selection.membershipOptionDefaults({
+    graphServices: ownershipDrift,
+    profileManifest: loadProfile('thought-core-v0')
+  }),
+  /launcher_profile_membership_invalid/
+)
+assert.throws(
+  () => selection.validateProfileRecords({
+    graphProfileId: graph.profile_id,
+    graphServices: ownershipDrift,
+    defaultProfiles: [{ id: 'thought-core-v0', options: {} }],
+    profileManifests: [loadProfile('thought-core-v0')]
+  }),
+  /launcher_profile_projection_invalid/
+)
+assert.throws(
+  () => selection.validateProfileRecords({
+    graphProfileId: graph.profile_id,
+    graphServices: graph.services,
+    defaultProfiles: [{ id: 'thought-core-v0', options: {} }],
+    profileManifests: [{
+      profile_id: 'thought-core-v0',
+      lifecycle_profile_id: graph.profile_id,
+      services: ['openai_provider_broker', 'aituber_kit']
+    }]
+  }),
+  /launcher_profile_projection_invalid/
+)
+console.log(JSON.stringify({
+  conversation: conversation.selectedServiceIds,
+  visual: visual.selectedServiceIds,
+  full: full.selectedServiceIds
+}))
 """
         result = subprocess.run(
             ["node", "-e", script],
@@ -2819,6 +2881,7 @@ console.log(JSON.stringify({ conversation, visual, full }))
 
     def test_launcher_passes_readiness_timeouts_to_node_plan_and_compatibility_json(self) -> None:
         server = read_launcher_server()
+        private_plan = (ROOT / "tools" / "home-control-launcher" / "launcher-private-service-plan.js").read_text(encoding="utf-8")
         app = read_public("app.js")
         system = read_system_script()
         stack_start = read_stack_start_script()
@@ -2827,8 +2890,8 @@ console.log(JSON.stringify({ conversation, visual, full }))
         self.assertIn("MediapipeReadyTimeoutSeconds: 90", server)
         self.assertIn("'VoicevoxReadyTimeoutSeconds'", server)
         self.assertIn("'MediapipeReadyTimeoutSeconds'", server)
-        self.assertIn("options.VoicevoxReadyTimeoutSeconds", server)
-        self.assertIn("options.MediapipeReadyTimeoutSeconds", server)
+        self.assertIn("options.VoicevoxReadyTimeoutSeconds", private_plan)
+        self.assertIn("options.MediapipeReadyTimeoutSeconds", private_plan)
         self.assertIn("launcherRuntime.start", server)
         self.assertIn("numericOptionFields", app)
         self.assertIn("readyTimeoutOptionFields", app)
@@ -2855,7 +2918,7 @@ console.log(JSON.stringify({ conversation, visual, full }))
         self.assertIn("TERM: 'dumb'", server)
         self.assertIn("fs.appendFileSync(STACK_LOG_FILE, sanitizedContent, 'utf8')", server)
         self.assertIn("redactCameraSelectionInCommandText(", server)
-        self.assertIn("stripAnsiControlSequences(buffer.toString('utf8'))", server)
+        self.assertIn("Buffer.isBuffer(content) ? content.toString('utf8') : content", server)
 
     def test_launcher_config_status_uses_compact_redacted_classes(self) -> None:
         server = read_launcher_server()
