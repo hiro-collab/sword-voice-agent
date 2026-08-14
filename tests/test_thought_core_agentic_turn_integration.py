@@ -353,28 +353,28 @@ class AgenticTurnIntegrationTest(TestCase):
                 {"position": {"x": 0.4, "y": -0.2}, "strength": 0.8, "durationMs": 4200},
                 {"schemaVersion": 2, "action": "start", "effectId": "fire"},
                 "画面に炎の映像効果を出して。",
-                "炎の開始を要求します。",
+                "炎のエフェクトを表示します。",
             ),
             (
                 "projection.thunder.start",
                 {},
                 {"schemaVersion": 1, "action": "start", "effectId": "thunderBall"},
                 "雷の映像効果を始めて。",
-                "雷の開始を要求します。",
+                "雷のエフェクトを出します。",
             ),
             (
                 "projection.effect.stop",
                 {},
                 {"schemaVersion": 1, "action": "stop"},
                 "映像効果を止めて。",
-                "映像効果の停止を要求します。",
+                "エフェクトを止めます。",
             ),
             (
                 "projection.effect.reset",
                 {},
                 {"schemaVersion": 1, "action": "reset"},
                 "映像効果を初期状態に戻して。",
-                "映像効果のResetを要求します。",
+                "エフェクトをリセットします。",
             ),
         )
         for index, (
@@ -390,7 +390,7 @@ class AgenticTurnIntegrationTest(TestCase):
                     capability_id,
                     arguments=arguments,
                     speech=speech,
-                    display=f"Projection {index}",
+                    display=speech,
                 )
                 with (
                     patch(
@@ -453,7 +453,116 @@ class AgenticTurnIntegrationTest(TestCase):
                     events[-1]["data"]["execution_receipt"],
                     "downstream_required",
                 )
-                self.assertIn("要求", speech)
+                speech_events = [
+                    event
+                    for event in events
+                    if event["type"] == "assistant.speech_delta"
+                ]
+                message_events = [
+                    event for event in events if event["type"] == "assistant.message"
+                ]
+                expected_generation = {
+                    "enabled": True,
+                    "used_llm": True,
+                    "status": "agentic_provider_decision_response",
+                    "adapter_kind": "agentic_turn_provider",
+                }
+                self.assertEqual(
+                    speech_events[0]["data"]["phrase_generation"],
+                    expected_generation,
+                )
+                self.assertEqual(
+                    message_events[0]["data"]["phrase_generation"],
+                    expected_generation,
+                )
+
+    def test_agentic_projection_response_cannot_contradict_dispatched_effect(self) -> None:
+        cases = (
+            (
+                "projection.fire.start",
+                "炎を出して。",
+                "炎を出すことはできません。",
+                "炎のエフェクトを出します。",
+            ),
+            (
+                "projection.effect.stop",
+                "映像効果を止めて。",
+                "映像効果を止めることはできません。",
+                "エフェクトを止めます。",
+            ),
+            (
+                "projection.effect.reset",
+                "映像効果をリセットして。",
+                "映像効果をリセットできません。",
+                "エフェクトをリセットします。",
+            ),
+        )
+        for index, (capability_id, human_wish, rejected, fallback) in enumerate(cases):
+            with self.subTest(capability_id=capability_id):
+                candidate = self._capability(
+                    capability_id,
+                    speech=rejected,
+                    display=rejected,
+                )
+                with (
+                    patch(
+                        "thought_core.loop.detect_projection_effect_intent",
+                        side_effect=AssertionError("fixed_projection_parser_must_not_run"),
+                    ),
+                    patch(
+                        "thought_core.loop.compile_projection_effect_plan_intent",
+                        side_effect=AssertionError("fixed_projection_compiler_must_not_run"),
+                    ),
+                ):
+                    events = ThoughtLoop(
+                        tools=_DirectOnlyTools(),
+                        agentic_turn_provider=StaticAgenticTurnProvider(candidate),
+                    ).run_dicts(
+                        self._turn(
+                            human_wish,
+                            turn_id=f"agentic_projection_rejected_{index}",
+                        )
+                    )
+
+                requested = [
+                    event
+                    for event in events
+                    if event["type"] == "projection.effect.requested"
+                ]
+                speech_deltas = [
+                    event
+                    for event in events
+                    if event["type"] == "assistant.speech_delta"
+                ]
+                messages = [
+                    event for event in events if event["type"] == "assistant.message"
+                ]
+
+                self.assertEqual(len(requested), 1)
+                self.assertEqual(len(speech_deltas), 1)
+                self.assertEqual(len(messages), 1)
+                self.assertEqual(speech_deltas[0]["data"]["delta"], fallback)
+                self.assertEqual(messages[0]["data"]["speech"], fallback)
+                self.assertEqual(messages[0]["data"]["display"], fallback)
+                expected_generation = {
+                    "enabled": True,
+                    "used_llm": False,
+                    "status": "local_fallback_projection_effect_companion",
+                    "adapter_kind": "thought_core_projection_effect_fallback",
+                }
+                self.assertEqual(
+                    speech_deltas[0]["data"]["phrase_generation"],
+                    expected_generation,
+                )
+                self.assertEqual(
+                    messages[0]["data"]["phrase_generation"],
+                    expected_generation,
+                )
+                self.assertEqual(
+                    speech_deltas[0]["data"]["assistant_message_id"],
+                    messages[0]["data"]["assistant_message_id"],
+                )
+                self.assertNotIn(rejected, json.dumps(events, ensure_ascii=False))
 
         provider = _CapturingConversationProvider(
             {

@@ -7365,19 +7365,46 @@ class ThoughtLoop:
             )
             return
 
+        fallback_speech = self._projection_effect_companion_fallback_speech(payload)
+        continuity_context = self.conversation_continuity.context_for_response(
+            session_id=turn_input.session_id
+        )
+        result = ResponderResult(
+            speech=route.response["speech"],
+            display=route.response["display"],
+            status="agentic_provider_decision_response",
+            adapter_kind="agentic_turn_provider",
+            provider="agentic_provider",
+            model="agentic-turn-provider",
+            used_llm=True,
+        )
+        validated_result = self._validated_projection_effect_companion(
+            result,
+            payload=payload,
+            continuity_context=continuity_context,
+        )
+        if validated_result is None:
+            result = self._projection_effect_companion_fallback(
+                fallback_speech,
+                detail="agentic_projection_effect_companion_postcondition_rejected",
+            )
+        else:
+            result = validated_result
+
         events.append(factory.emit("projection.effect.requested", payload))
         self._emit_message(
             events,
             factory,
-            speech=route.response["speech"],
-            display=route.response["display"],
+            speech=result.speech,
+            display=result.display,
             emotion="focused",
             motion="small_nod",
             priority="normal",
             phrase_generation_override={
                 "enabled": True,
-                "status": "agentic_provider_decision_response",
-                "adapter_kind": "agentic_turn_provider",
+                "used_llm": result.used_llm,
+                "status": result.status,
+                "adapter_kind": result.adapter_kind,
             },
         )
         events.append(
@@ -7407,15 +7434,13 @@ class ThoughtLoop:
         else:
             effect_id = str(payload.get("effectId") or "")
         planned_start = payload.get("schemaVersion") == 2 and action == "start"
+        fallback_speech = self._projection_effect_companion_fallback_speech(payload)
         if action == "start":
             effect_name = "炎" if effect_id == "fire" else "雷"
-            fallback_speech = f"{effect_name}のエフェクトを出します。"
             semantic_draft = f"{effect_name}のエフェクトを一つ出す依頼を受理した"
         elif action == "stop":
-            fallback_speech = "エフェクトを止めます。"
             semantic_draft = "現在のエフェクトを止める依頼を受理した"
         else:
-            fallback_speech = "エフェクトをリセットします。"
             semantic_draft = "エフェクトをリセットする依頼を受理した"
 
         continuity_context = self.conversation_continuity.context_for_response(
@@ -7552,6 +7577,25 @@ class ThoughtLoop:
                 {"status": "projection_effect_requested"},
             )
         )
+
+    def _projection_effect_companion_fallback_speech(
+        self,
+        payload: Mapping[str, Any],
+    ) -> str:
+        action = str(payload.get("action") or "")
+        if action == "start":
+            plan_payload = payload.get("plan")
+            if isinstance(plan_payload, Mapping):
+                effect_id = str(plan_payload.get("effectId") or "")
+            else:
+                effect_id = str(payload.get("effectId") or "")
+            effect_name = "炎" if effect_id == "fire" else "雷"
+            return f"{effect_name}のエフェクトを出します。"
+        if action == "stop":
+            return "エフェクトを止めます。"
+        if action == "reset":
+            return "エフェクトをリセットします。"
+        raise ValueError("projection_effect_action_invalid")
 
     def _projection_effect_companion_fallback(
         self,
