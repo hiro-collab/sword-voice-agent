@@ -1152,7 +1152,22 @@ class AgenticTurnRuntimeProviderTest(TestCase):
     def test_decision_prompt_serializes_one_zero_argument_capability_constraint(
         self,
     ) -> None:
-        candidate = self._conversation_candidate()
+        candidate = {
+            "schemaVersion": 1,
+            "kind": "capability",
+            "response": {
+                "speech": "照明をつけます。",
+                "display": "照明をつけます。",
+            },
+            "capability": {
+                "id": "light_on",
+                "arguments": {
+                    "position": None,
+                    "strength": None,
+                    "durationMs": None,
+                },
+            },
+        }
         completion = _CapturingCompletion(candidate)
         provider = OpenAICompatibleAgenticTurnProvider(completion)
         request = self._provider_request(
@@ -1163,11 +1178,25 @@ class AgenticTurnRuntimeProviderTest(TestCase):
             ),
         )
 
-        self.assertEqual(provider.decide(request), candidate)
+        result = provider.decide(request)
+        self.assertEqual(
+            result["capability"]["arguments"],  # type: ignore[index]
+            {},
+        )
         payload = completion.calls[0]["input_payload"]
         self.assertEqual(
             payload["bounded_capability_constraint"],  # type: ignore[index]
             {"id": "light_on", "arguments": {}},
+        )
+        system_prompt = completion.calls[0]["system_prompt"]
+        self.assertIsInstance(system_prompt, str)
+        self.assertIn(
+            "returning position, strength, and durationMs all as null",
+            system_prompt,
+        )
+        self.assertIn(
+            "do not invent non-null argument values",
+            system_prompt,
         )
 
     def test_capability_constraint_rejects_nonempty_unknown_or_unavailable_rows(
